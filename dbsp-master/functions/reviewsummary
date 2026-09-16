@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION reviewsummary(i_personid uuid, pagenumber bigint, pagesize bigint, i_searchtext character varying)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, intakeserviceid uuid, servicerequestnumber character varying, workername character varying, workerid bigint, createddate timestamp without time zone, reviewtype text, submissiondata jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+declare querytxt text;
+declare youthstatussearch character varying;
+
+begin
+ 
+ if(i_searchtext != '' and i_searchtext is not null)
+ then 
+youthstatussearch := ' AND fp.focuspersonstatustypekey = ''' || i_searchtext || '''';    
+ else
+ youthstatussearch='';
+ end if;
+ querytxt='
+
+select count(1) over() as totalcount, x.* from (
+
+(select INS.intakenumber,  ASM.objectid as intakeserviceid ,INS.servicerequestnumber ,UP.displayname as workername
+,UP.cjamspid as workerid,ASM.insertedon as createddate, ASMT.titleheadertext as reviewtype,ASM.submissiondata
+ from assessment ASM 
+ join assessmenttemplate ASMT on ASMT.assessmenttemplateid=ASM.assessmenttemplateid  and ASMT.name in (''initialScr'',''subsequentScr'') and ASMT.activeflag=1
+join intakeservicerequest INS on INS.intakeserviceid=ASM.objectid and INS.activeflag=1
+join userprofile UP on UP.securityusersid=ASM.securityusersid and UP.activeflag=1
+where ASM.activeflag=1 and ASM.objectname=''servicerequest'' and  ASM.objectid in (
+select distinct fp.intakeserviceid from focuspersoncasestatus fp where fp.personid='''||i_personid||''''||youthstatussearch||'
+--   select INTSR.intakeserviceid from intakeservicerequest INTSR 
+--   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+--   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype=''Youth''
+--   join person p on Acc.personid=p.personid and p.activeflag=1
+--   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+--   where ACC.personid ='''||i_personid||''''||youthstatussearch||'
+))
+
+union all
+
+(select ASM.intakenumber, ASM.objectid as intakeserviceid ,'''' as servicerequestnumber ,UP.displayname as workername
+,UP.cjamspid as workerid,ASM.insertedon as createddate, ASMT.titleheadertext as reviewtype,ASM.submissiondata
+ from assessment ASM 
+ join assessmenttemplate ASMT on ASMT.assessmenttemplateid=ASM.assessmenttemplateid  and ASMT.name in (''initialScr'',''subsequentScr'') and ASMT.activeflag=1
+join intakedastatus INS on INS.intakenumber=ASM.intakenumber and INS.activeflag=1
+join userprofile UP on UP.securityusersid=ASM.securityusersid and UP.activeflag=1
+where ASM.activeflag=1 and ( ASM.objectid =''00000000-0000-0000-0000-000000000000'' or  ASM.objectid  is null)   and  ASM.intakenumber in (
+select distinct fp.intakenumber from focuspersoncasestatus fp where fp.personid='''||i_personid||''''||youthstatussearch||'
+--   select INTSR.intakeserviceid from intakeservicerequest INTSR 
+--   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+--   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype=''Youth''
+--   join person p on Acc.personid=p.personid and p.activeflag=1
+--   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+--   where ACC.personid ='''||i_personid||''''||youthstatussearch||'
+))) as x
+
+ limit  '||pagesize||'  offset '||pagenumber;
+  --limit pagesize offset pagenumber;
+   return query execute querytxt;
+    end;
+
+
+$function$
+

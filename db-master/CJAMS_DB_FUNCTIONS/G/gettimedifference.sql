@@ -1,0 +1,57 @@
+ CREATE OR REPLACE FUNCTION public.gettimedifference(actutaltime timestamp without time zone)                                                                      
+  RETURNS SETOF text                                                                                                                                               
+  LANGUAGE plpgsql                                                                                                                                                 
+ AS $function$                                                                                                                                                     
+                                                                                                                                                                   
+ DECLARE timediff text;                                                                                                                                            
+ DECLARE rec RECORD;                                                                                                                                               
+                                                                                                                                                                   
+ BEGIN                                                                                                                                                             
+                                                                                                                                                                   
+ timediff := '';                                                                                                                                                   
+                                                                                                                                                                   
+ select date_part('month', age(now(), actutaltime)) as month, date_part('year', age(now(), actutaltime)) as year, date_part('day', age(now(), actutaltime)) as day,
+        date_part('hour', age(now(), actutaltime)) as hour, date_part('minute', age(now(), actutaltime)) as minute into rec;                                       
+                                                                                                                                                                   
+ if(rec.year = 0 and rec.month = 0 and rec.day = 0 and rec.hour = 0 and rec.minute = 0) then                                                                       
+         timediff := timediff || 'Just now';                                                                                                                       
+ elsif(rec.year = 0 and rec.month = 0 and rec.day = 0 and rec.hour = 0 and rec.minute = 1) then                                                                    
+         timediff := rec.minute || ' min ago';                                                                                                                     
+ elsif(rec.year = 0 and rec.month = 0 and rec.day = 0 and rec.hour = 0 and rec.minute > 1) then                                                                    
+         timediff := rec.minute || ' min ago';                                                                                                                     
+ elsif(rec.year = 0 and rec.month = 0 and rec.day = 0 and rec.hour > 1) then                                                                                       
+         timediff := rec.hour || ' hrs ' || rec.minute || ' min ago';                                                                                              
+ elsif(rec.year = 0 and rec.month = 0 and rec.day = 0 and rec.hour = 1) then                                                                                       
+         timediff := rec.hour || ' hr ' || rec.minute || ' min ago';                                                                                               
+ elsif(rec.year = 0 and rec.month = 0 and rec.day = 1) then                                                                                                        
+         timediff := rec.day || ' day ago';                                                                                                                        
+ elsif(rec.year = 0 and rec.month = 0 and rec.day > 1) then                                                                                                        
+         timediff := rec.day || ' days ago';                                                                                                                       
+ elsif(rec.year = 0 and rec.month = 1) then                                                                                                                        
+         if(rec.day = 0) then                                                                                                                                      
+                 timediff := rec.month || ' month ago';                                                                                                            
+         else                                                                                                                                                      
+                 timediff := rec.month || ' month ' || rec.day || ' day(s) ago';                                                                                   
+         end if;                                                                                                                                                   
+ elsif(rec.year = 0 and rec.month > 1) then                                                                                                                        
+         if(rec.day = 0) then                                                                                                                                      
+                 timediff := rec.month || ' months ago';                                                                                                           
+         else                                                                                                                                                      
+                 timediff := rec.month || ' months ' || rec.day || ' day(s) ago';                                                                                  
+         end if;                                                                                                                                                   
+ elsif(rec.year != 0) then                                                                                                                                         
+         if(rec.month = 0) then                                                                                                                                    
+                 timediff := rec.year || ' year(s) ago';                                                                                                           
+         elsif(rec.month = 1) then                                                                                                                                 
+                 timediff := rec.year || ' year(s) ' || rec.month || ' month ago';                                                                                 
+         else                                                                                                                                                      
+                 timediff := rec.year || ' year(s) ' || rec.day || ' day(s) ago';                                                                                  
+         end if;                                                                                                                                                   
+ end if;                                                                                                                                                           
+                                                                                                                                                                   
+ RETURN QUERY select timediff;                                                                                                                                     
+                                                                                                                                                                   
+ END;                                                                                                                                                              
+                                                                                                                                                                   
+ $function$                                                                                                                                                        
+

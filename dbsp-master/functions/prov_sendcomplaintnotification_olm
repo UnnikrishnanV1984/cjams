@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION prov_sendcomplaintnotification_olm(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_subject character VARYING;
+v_body character varying;
+v_success character VARYING;
+v_tousersid json;
+v_eventcode character varying;
+response CHARACTER varying;
+currentRow record;
+v_tousers json;
+v_selected_users json;
+v_provider_id character varying;
+v_complaint_number  character varying;
+v_subjectemail character varying;
+v_assignsecurityuserid json;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityuserid';
+v_complaint_number := objectls->>'complaint_number';
+v_subject := objectls->>'notification_subject';
+v_body := objectls->>'notification_body';
+v_assignsecurityuserid := objectls->>'assignsecurityuserid';
+
+-- for currentRow IN SELECT distinct mu.securityusersid as toworkeridno
+-- from muser mu 
+-- join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+-- join role r on r.id = rm.roleid and r.activeflag = 1
+-- where r.name in  ('Program Manager', 
+--                         'Executive Director',
+--                         'Deputy Director') 
+-- and mu.activeflag =1
+-- and mu.securityusersid not in (v_fromsecurityuserid)
+-- and rm.teamtypekey='OLM'
+-- loop
+--     BEGIN
+--         SELECT prov_send_notification into v_success
+--         FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid,  currentRow.toworkeridno, 'System', 'High',  v_subject, v_subject, v_complaint_number,  false);
+--     END;
+-- -- end loop;
+
+-- select json_agg(a) into v_tousers from ( 
+--     SELECT distinct mu.securityusersid as toworkeridno 
+--     , mu.email 
+--         from muser mu 
+--         join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+--         join role r on r.id = rm.roleid and r.activeflag = 1
+--         where r.name in  ('Program Manager', 
+--                         'Executive Director',
+--                         'Deputy Director')  
+--         and mu.activeflag =1
+--         and mu.securityusersid not in (v_fromsecurityuserid)
+--         and rm.teamtypekey='OLM'
+-- )a;
+
+v_subjectemail = v_subject;
+
+
+select json_agg(a) into v_tousers from ( 
+    SELECT distinct mu.securityusersid as toworkeridno 
+    , mu.email 
+        from muser mu 
+        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+        join role r on r.id = rm.roleid and r.activeflag = 1
+        where r.name in  ('Program Manager', 
+                        'Executive Director',
+                        'Deputy Director')  
+        and mu.activeflag =1
+        and mu.securityusersid not in (v_fromsecurityuserid)
+        and rm.teamtypekey='OLM'
+)a;
+
+select json_agg(a) into v_selected_users from ( 
+    select mu.email, mu.securityusersid 
+    from muser mu 
+    where securityusersid in (
+    select ltrim(rtrim( x.a::character varying, '"'), '"') as users from (SELECT json_array_elements(v_assignsecurityuserid) a)  x
+    )
+)a;
+
+
+
+
+
+RETURN json_build_object('response',v_success, 'ROLE_WORKERS', v_tousers,
+    'SELECTED_WORKER', v_selected_users,
+    'subject', v_subjectemail, 
+    'body', v_body);
+end;
+$function$
+

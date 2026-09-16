@@ -1,0 +1,106 @@
+-- FUNCTION: cjams.sp_validate_ssn(integer)
+
+DROP FUNCTION IF EXISTS cjams.sp_validate_ssn(integer);
+
+CREATE OR REPLACE FUNCTION cjams.sp_validate_ssn(
+	vs_ssn integer,
+	OUT vs_message integer)
+    RETURNS integer
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+
+---------------------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author            : Sandhya
+-- Modified by       : Tamarie Watson 
+-- Date Created      : 04.04.2008
+-- FE                : Validate SSN
+-- sandhya 04.09.08  : Variable datatypes changed from char to Int in DB so changed here accordingly. 
+-- Description of Changes: 
+-- 	06/08/2011		T. Watson		PRJ-01775		Removed high group checks against TB_SSN_VALIDATION_RULES, and
+--													replaced with new SSA SSN Randomization rules taking effect 06/25/2011
+---------------------------------------------------------------------------------------------------------------
+
+DECLARE LS_SSN VARCHAR (10) DEFAULT '';--
+DECLARE LS_SSN_AREA INTEGER DEFAULT 0;--
+DECLARE LS_SSN_GROUP INTEGER DEFAULT 0;--
+DECLARE LS_SSN_GROUP1 INTEGER DEFAULT 0;--
+DECLARE LS_SSN_GROUP2 INTEGER DEFAULT 0;--
+DECLARE LS_SSN_GROUP3 INTEGER DEFAULT 0;--
+DECLARE LS_SSN_GROUP4 INTEGER DEFAULT 0;--
+DECLARE LL_LEN_SSN INTEGER DEFAULT 0;--
+BEGIN
+ VS_MESSAGE := 1;--
+raise notice '>>>>>>>>>>VS_SSN %',VS_SSN;
+ LS_SSN := coalesce(VS_SSN,'0');--
+ LL_LEN_SSN := LENGTH(LTRIM(RTRIM(LS_SSN)));--
+raise notice 'LS_SSN>>>>>>> % ',LS_SSN;
+raise notice '>>>>>>>>LL_LEN_SSN >>>>>%',LL_LEN_SSN;
+IF VS_SSN IS NULL OR VS_SSN = 0 OR LL_LEN_SSN < 7 THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+IF LL_LEN_SSN >= 7 THEN
+Raise notice 'inside IF LL_LEN_SSN >= 7 THEN>>>>>';
+  -- WHILE LL_LEN_SSN < 9 DO
+   loop EXIT WHEN LL_LEN_SSN >= 9::bigint ;
+          LS_SSN := '0' || LS_SSN;--
+          LL_LEN_SSN := LENGTH(LTRIM(RTRIM(LS_SSN)));--
+  -- END WHILE;--
+   END loop;
+END IF;--
+
+IF SUBSTR(LS_SSN,1,1)='9' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+end if;--
+
+IF SUBSTR(LS_SSN,1,3)='666' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+IF SUBSTR(LS_SSN,1,3)='000' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+IF SUBSTR(LS_SSN,4,2)='00' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+IF SUBSTR(LS_SSN,6,4)='0000' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+-- The next 3 checks are being done to match FMIS validation rules. Not part of SSA rules, but part of requirements for this project.
+
+IF LS_SSN = '123456789' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+IF (LS_SSN = '111111111') or (LS_SSN = '222222222') or (LS_SSN = '333333333') or (LS_SSN = '444444444') OR 
+	(LS_SSN = '555555555') or (LS_SSN = '666666666') or (LS_SSN = '777777777') or (LS_SSN = '888888888') OR (LS_SSN = '999999999' ) THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+IF LS_SSN = '987654321' THEN
+	 VS_MESSAGE := -1;--
+	RETURN;--
+END IF;--
+
+RETURN;-- 
+ 
+END;
+
+$BODY$;
+
+

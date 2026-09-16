@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION prov_getappassignedorientations(trgorientation json)
+ RETURNS TABLE(durationinfo json, traininglist json)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+jsondata json;
+v_personid string;
+v_personrole string;
+v_objectid string;
+v_objecttype string;
+v_applicantid string;
+v_providerid string;
+begin
+ 
+v_objectid=trgorientation->>'object_id' ;
+v_personrole=trgorientation->>'personrole';
+v_personid=trgorientation->>'personid';
+v_objecttype=trgorientation->>'object_type';
+v_applicantid=trgorientation->>'applicant_id';
+
+IF(lower(v_objecttype)='provider') then 
+    v_providerid =v_objectid;
+END IF;  
+
+return query select (SELECT JSON_AGG(trgobj) FROM ( select sum(case when pot.training_type = 'In-Service Training' then pot.duration else 0 end )::int as totalinserviceduration,
+sum(case when pot.training_type = 'Pre-Service Training' then pot.duration else 0 end )::int as totalprideduration,
+sum(pot.duration)::int as totalduration
+from providerorientationtrainingattendance pota
+join providerorientationtraining pot on pota.training_number= pot.training_number
+where (pota.delete_sw='N' or pota.delete_sw is null) and pota.is_attended = true and pot.training_type != 'Information Meeting'
+and CASE WHEN v_personid IS NOT NULL THEN pota.personid = v_personid ELSE true end
+and CASE WHEN v_personrole IS NOT NULL THEN pota.personrole = v_personrole ELSE true END      
+and case when (v_providerid is not null) then (pota.object_id is not null) and ((pota.object_id=v_applicantid) or (((pota.object_id in (select applicant_id from providerapprovalphaserecord where provider_id=v_providerid)) or (pota.object_id=v_providerid)) and (pot.training_date <= tppa.create_ts::date)))  ELSE true end
+) trgobj) durationinfo,
+(SELECT JSON_AGG(trgobj) FROM (  
+select  pota.training_number, pota.orientation_training_attendance_id,  pota.object_id, pota.narrative, pota.phase, pota.is_attended, pota.is_intent_to_attend, 
+pota.attendee_first_nm, pota.attendee_last_nm, pota.personid, pota.personrole, pot.orientation_training_id, pot.training_number, pot.training_type, pot.training_date, 
+pot.start_datetime, pot.end_datetime, pot.duration, pot.medium, pot.addr_line1, pot.addr_line2,pot.addr_city, pot.addr_state, pot.addr_zip, pot.training_url, 
+pot.narrative, pot.instructor_1, pot.instructor_2, pot.jurisdiction, pot.training_topic, pot.training_status, pot.room_no, pot.session_type, pot.session_no, pot.is_cfe,
+(select json_agg(x) from (
+    select firstname,lastname from person where personid=pota.personid ::uuid and activeflag=1
+    ) x )personinfo
+from providerorientationtrainingattendance pota
+join providerorientationtraining pot on pota.training_number= pot.training_number
+where (pota.delete_sw='N' or pota.delete_sw is null)
+and CASE WHEN v_personid IS NOT NULL THEN pota.personid = v_personid ELSE true end
+and CASE WHEN v_personrole IS NOT NULL THEN pota.personrole = v_personrole ELSE true END      
+and case when (v_providerid is not null) then (pota.object_id is not null) and ((pota.object_id = v_applicantid) or (pota.object_id=v_providerid and pot.training_date BETWEEN (tppa.create_ts::date  - interval '12 MONTHS') AND tppa.create_ts::date)) ELSE true end
+and case when ((lower(v_objecttype)='application' and v_applicantid IS NOT null)) then (pota.object_id is not null) and  (pota.object_id=v_applicantid) ELSE true END      
+    order by pot.start_datetime desc
+    ) trgobj) traininginfo
+from tb_public_provider_applicant tppa where tppa.applicant_id = v_applicantid limit 1;
+END;
+$function$
+

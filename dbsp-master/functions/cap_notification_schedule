@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION cap_notification_schedule()
+ RETURNS TABLE(status text, msgdata jsonb, username character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+DECLARE
+
+v_providernm character varying;
+v_notifymsg character varying;
+v_msg character varying;
+v_username character varying;
+v_toemailid character varying;
+v_provideruserid character varying;
+v_prov_id integer;
+v_hasattachments boolean default false;
+v_deficiency character varying;
+v_notifystatus text;
+i json;
+v_msgdata jsonb;
+v_capstatus character varying;
+
+BEGIN  
+-- Subject and Body for Email
+
+  
+SELECT coalesce(lastname,'') ||', '|| coalesce(firstname,'') into v_username                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+     FROM userprofile WHERE securityusersid = v_securityuserid;
+
+    
+       
+   
+select  jsonb_agg(x) as msgdata into v_msgdata from ( 
+select distinct  mu.securityusersid,mu.email ,tpc.provider_id, tpcd.deficiency_violationname ,tpcd.cap_number,
+(CASE WHEN (tp.provider_nm is null OR tp.provider_nm ='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) ELSE tp.provider_nm END) AS provider_nms
+from tb_provider_complaint tpc 
+join tb_provider_complaint_deficiency tpcd on tpc.provider_complaintid = tpcd.provider_complaintid and tpcd.activeflag =1
+join tb_provider_userconfig tpu on tpc.provider_id = tpu.provider_id and tpu.activeflag = 1
+join muser mu on mu.securityusersid = tpu.securityusers_id ::character varying
+join tb_provider tp on tp.provider_id = tpu.provider_id  and   tp.delete_sw = 'N'
+where  tpc.activeflag =1 and cap_status='101'
+and trunc(DATE_PART('day',  now()::timestamp-tpcd.inserted_on::timestamp ))>=9)x;
+
+
+FOR i in select jsonb_array_elements(v_msgdata)
+loop
+v_msg :=  'CAP Notification for ('|| coalesce(v_providernm,'') || ' - ' || coalesce(v_prov_id,0) ||') with Deficiency/Violation of ' || coalesce(i ->> 'cap_number' ,'') ||' by '|| coalesce(v_username,'')  ;
+v_notifymsg :=   'CAP Notification for (' || coalesce(v_providernm,'') || ' - ' || coalesce(v_prov_id,0) ||') with Deficiency/Violation of ' || coalesce(i ->> 'cap_number' ,'') ||' by '|| coalesce(v_username,'')  ;
+
+RAISE NOTICE 'v_msg(v_msg)---:%',v_msg;
+RAISE NOTICE 'v_notifymsg-:%',v_notifymsg;
+RAISE NOTICE 'v_providernm()---:%',i->>'securityusersid';
+
+SELECT prov_send_notification INTO v_notifystatus FROM prov_send_notification(i->>'securityusersid',v_securityuserid,i->>'securityusersid',
+                         'System', 'High', v_msg,  v_notifymsg , i ->> 'cap_number',false , v_hasattachments);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+
+end loop;
+
+v_notifystatus:='SUCCESS';  
+return query
+
+select v_notifystatus,v_msgdata,v_username ;
+
+END;
+$function$
+

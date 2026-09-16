@@ -1,0 +1,135 @@
+CREATE OR REPLACE FUNCTION as_getactivitytask_2704(v_investigationid uuid, activitiesid character varying, taskid character varying, taskstatus character varying, pageno integer, pagesize integer, sortcolumn character varying, sortorder character varying, v_securityusersid character varying DEFAULT ''::character varying)
+ RETURNS TABLE(totalcount bigint, activityid uuid, activitytaskid uuid, actvityname text, duedate timestamp without time zone, task character varying, amtaskid uuid, tasktype character varying, required boolean, assignedon timestamp without time zone, taskstatustype character varying, completeddate timestamp without time zone, dispositionstatus character varying, expceptionrequest character varying, assignedto character varying, activitytasktypekey character varying, insertedon timestamp without time zone, assignloadnumber character varying, location character varying, outofoffice boolean, activitytaskstatustypekey character varying, activitytaskdispositiontypekey character varying, taskdescription text, loadnumber character varying, startdatetime timestamp without time zone, enddatetime timestamp without time zone, activitytypekey character varying, taskdispositiontypekey character varying, iseditable boolean, iscontinual boolean, notes text, notescount bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+ IF activitiesid ='null' THEN
+activitiesid:=null;
+END IF;
+ 
+IF taskid ='null' THEN
+taskid:=null;
+END IF;
+IF taskstatus ='null' THEN
+taskstatus:=null;
+END IF;
+
+RETURN QUERY  
+
+SELECT 
+  COUNT(1) OVER() totalCOUNT,
+  a.ActivityId, at.ActivityTaskId, 
+  a.description,
+  /* For geting duedate from placement */  
+   CASE  
+      WHEN (amt.duedatetype ='Placement' AND at.duedate is null)  THEN 
+       (SELECT(pal.startdatetime + interval '1' day * amt.duedateoffset) 
+     FROM investigation invs 
+        INNER JOIN placement pal ON pal.intakeserviceid=invs.intakeserviceid
+        WHERE invs.investigationid='8e3faa0d-8603-403b-bfa2-fc5f13059b84' and pal.activeflag=1 LIMIT 1 ) 
+        WHEN  at.duedate is null THEN at.assignedon + interval '1' day * amt.duedateoffset --else at.duedate       
+        ELSE at.duedate    
+   END,
+  
+  at.name task, 
+  at.amtaskid,
+  att.TypeDescription as tasktypeType,
+  at.Required , 
+  at.AssignedOn ,
+  atst.typedescription as taskstatus,
+  at.completeddate,
+  atd.typedescription as dispositionstatus , 
+  CAST(CASE it.ExceptionRequestDate  WHEN null THEN 'false'else 'true' END as character varying) as expceptionrequest,
+  u.displayname Assignedto,
+  at.ActivityTaskTypeKey,
+  at.insertedon, 
+  at.assignedto as assignloadnumber,
+  at.location,
+  at.outofoffice,
+  atst.ActivityTaskStatusTypeKey,
+  at.ActivityTaskDispositionTypekey,
+  at.description as taskdescription,
+  u.loadnumber as loadnumber,
+  at.startdatetime, 
+  at.ENDdatetime, 
+  att.activitytypekey,
+  at.taskdispositiontypekey,
+  at.iseditable,
+  at.iscontinual,
+  at.notes,
+  (SELECT  COUNT(*)
+  FROM  activitytask ac1
+  INNER JOIN  activity act1 ON ac1.activityid = act1.activityid AND act1.activeflag =1
+  INNER JOIN  activitytaskprogressnoteconfig atpc ON atpc.amtaskid = ac1.amtaskid  AND atpc.activeflag =1 
+  INNER JOIN  investigation inv ON inv.intakeserviceid = atpc.intakeserviceid AND inv.activeflag =1 
+  AND inv.investigationid = act1.objectid
+  INNER JOIN  progressnote pn ON pn.notesid = atpc.notesid AND pn.activeflag =1 
+  WHERE act1.activityid =a.activityid AND ac1.activeflag =1 AND  ac1.name ='Protective Supervision'
+  ) 
+FROM activitytask at
+LEFT JOIN Activity a  on a.activityid = at.activityid   AND a.activeflag =1  
+LEFT JOIN ammappingtask amt on amt.amtaskid=at.amtaskid AND  amt.activeflag =1 AND amt.ammappingid = a.ammappingid
+LEFT JOIN ammapping amp on amp.amactivityid = a.amactivityid AND  amp.activeflag =1 AND amp.ammappingid = amt.ammappingid
+LEFT JOIN investigationtask it on it.activitytaskid = at.activitytaskid
+LEFT JOIN activitytasktype att on att.ActivityTaskTypeKey = at.ActivityTaskTypeKey 
+    AND att.activitytypekey in('Investigation','Allegation')
+LEFT JOIN ActivityTaskStatusType atst on  atst.ActivityTaskStatusTypeKey = at.ActivityTaskStatusTypeKey
+    AND atst.activitytypekey in('Investigation','Allegation')
+LEFT JOIN ActivityTaskDispositionType atd on atd.ActivityTaskDispositionTypekey= at.ActivityTaskDispositionTypekey
+INNER JOIN (SELECT  t.loadnumber,
+     tma.SecurityUsersId , 
+     u.DisplayName  
+     FROM teammember t 
+     INNER JOIN  as_teammemberassignment tma on tma.teammemberid = t.teammemberid  AND  tma.activeflag =1
+        INNER JOIN userprofile u on u.SecurityUsersId = tma.SecurityUsersId AND  tma.activeflag =1 
+        AND u.securityusersid =  CASE coalesce('','') WHEN '' THEN u.securityusersid else '' END 
+        WHERE t.activeflag =1 group by  tma.SecurityUsersId , t.loadnumber, u.DisplayName ) as u 
+     ON u.SecurityUsersId = at.assignedto
+WHERE   at.activeflag =1 AND a.objectid  =v_investigationid
+AND (activitiesid is null or CAST(a.activityid as character varying) =activitiesid)
+AND (taskid is null or CAST(at.ActivityTasktypekey as character varying) =taskid) 
+AND (taskstatus is null or lower(CAST(atst.ActivityTaskStatusTypeKey as character varying)) ~ lower(taskstatus)    )
+
+ORDER BY 
+ ( CASE sortorder WHEN 'asc' THEN 
+  CASE sortcolumn 
+  WHEN 'assigneddate' THEN 
+         CAST(at.AssignedOn as character varying ) 
+        WHEN 'activity' then 
+         CAST( a.description as character varying)
+  WHEN 'task' then 
+          CAST( at.description as character varying) 
+        WHEN 'taskstatus' then 
+          CAST( atst.typedescription as character varying) 
+        WHEN 'completeddate' then 
+          CAST( at.completeddate as character varying) 
+        WHEN 'duedate' then 
+          CAST( at.duedate as character varying)
+        WHEN 'sequence' then 
+          CAST( amt."sequence" as character varying)
+  ELSE 
+  CAST(amt."sequence" as character varying) END END) asc,
+ ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'assigneddate' then 
+          CAST(at.AssignedOn as character varying ) 
+         when 'activity' then 
+         CAST( a.description as character varying)
+  when 'task' then 
+          CAST( at.description as character varying) 
+           when 'taskstatus' then 
+          CAST( atst.typedescription as character varying) 
+          when 'completeddate' then 
+          CAST( at.completeddate as character varying) 
+          when 'duedate' then 
+          CAST( amt."sequence" as character varying) 
+          when 'sequence' then 
+          CAST( amt."sequence" as character varying)
+  else CAST(amt."sequence" as character varying)  end end) desc
+ limit pagesize  offset pageno ;
+
+END;
+
+$function$
+

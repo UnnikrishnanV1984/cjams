@@ -1,0 +1,68 @@
+CREATE OR REPLACE FUNCTION as_getpoporientationreportwithdisp(p_intakenumber character varying, p_intakeserviceid uuid, p_caseworkerid character varying)
+ RETURNS TABLE(youthpid bigint, youthname character varying, officeaddress character varying, youthphonenumber character varying, caseworkername character varying, casesupervisorname character varying, casemanager character varying[], petitionnumber character varying, facility character varying, courtname character varying, courtorderdatetime timestamp without time zone, periodoftime timestamp without time zone, courtauthorized character varying, adjudicationdatetime timestamp without time zone, conditiontypedescription character varying, officeworkername character varying, officeworkerphone character varying, disposition jsonb)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+
+     RETURN QUERY 
+   select distinct p.cjamspid as youthpid,--isr.intakenumber,isr.intakeserviceid,
+    cast ((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname 
+    end) as character varying) as youthname,
+    cast((select address
+                 from userprofileaddress where  securityusersid = cwup.securityusersid and activeflag = 1
+       group by 1 order by max(insertedon) desc limit 1) as character varying)  as officeaddress,
+    cast(pph.phoneextension||'-'||pph.phonenumber as character varying) as youthphonenumber,
+    cast(cwup.firstname||' '||cwup.lastname as character varying) as caseworkername,
+    cast(csup.firstname||' '||csup.lastname as character varying) as casesupervisorname,
+    (select array_agg(cast(up.firstname||' '||up.lastname as character varying))
+     from servicerequestappointment sra 
+        join servicerequestappointmentactor sraa on sra.servreqaptmtid =sraa.servreqaptmtid and sraa.activeflag=1
+     join userprofile up on cast(sraa.workerid as character varying)=up.securityusersid and up.activeflag=1
+        where  
+        sra.intakeserviceid=isr.intakeserviceid and sra.activeflag=1 and sra.title='COA') as casemanager,
+    isrp.petitionid as petitionnumber,
+    cast(pr.providername as character varying) as facility,
+    cast('Baltimore City Court' as character varying) as courtname,
+    iscra.courtorderdatetime,
+    iscra.expirationdate as periodoftime,
+    cast('Probation' as character varying) as courtauthorized,
+    
+    iscra.adjudicationdatetime,
+    cast(iscra.conditiontypedescription as character varying) as conditiontypedescription,
+     cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = p_caseworkerid) as character varying) as  officeworkername,
+      cast((select distinct phonenumber from userprofilephonenumber where securityusersid = p_caseworkerid ) as character varying) as officeworkerphone,
+    -- cast((iscra.conditiontypedescription ) as character varying) as disposition 
+      (select json_agg(e) 
+    FROM (
+       select distinct ct.description 
+    from conditiontype 
+    left join intakeservicerequestcourtaction israc on israc.intakenumber = p_intakenumber and israc.activeflag =1
+    left join intakeservicerequestcourtconditiontypeconfig ict on ict.intakeservicerequestcourtactionid=israc.intakeservicerequestcourtactionid and ict.activeflag =1
+    join conditiontype ct on ct.conditiontypekey=ict.conditiontypekey)e ):: jsonb 
+    from routing r  
+   join intakeservicerequest isr on ((cast(isr.intakeserviceid as character varying)= r.objectid) or (isr.intakenumber = r.objectid)) and isr.activeflag = 1
+   join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+   join actor a on a.actorid = isra.actorid and a.activeflag = 1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join personphonenumber pph on pph.personid = p.personid and pph.activeflag = 1
+   join userprofile cwup on cwup.securityusersid = r.tosecurityusersid and cwup.activeflag = 1
+   left join userprofileaddress cwupa on cwupa.securityusersid = cwup.securityusersid and cwup.activeflag = 1 and cwupa.userprofileaddresstypekey = 'O'
+   join userprofile csup on csup.securityusersid = r.fromsecurityusersid and csup.activeflag = 1
+   left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing) ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1 and ich.recno = 1 
+   left join intakeservicerequestcourtaction iscra on iscra.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and iscra.activeflag = 1
+   left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+   left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+   left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on pl.intakeserviceid = isr.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   left join placementadmissionauthorizationtype pla on pla.placementadmissionauthorizationtypekey = pl.placementadmissionauthorizationtypekey and pla.activeflag = 1
+   left join intakeservicerequestcourthearing ichd on ichc.intakeservicerequestcourthearingid = ichd.intakeservicerequestcourthearingid and ichd.hearingtypekey = 'Disp' and ichd.activeflag = 1
+   left join intakeservicerequestcourtaction isrcd on isrcd.intakeservicerequestcourthearingid = ichd.intakeservicerequestcourthearingid and isrcd.activeflag = 1
+    
+   where  r.activeflag =1  and r.toroleid = 'JSCW' 
+   and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+   and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end)
+   and (case when p_caseworkerid is not null then r.tosecurityusersid = p_caseworkerid else true end);
+  
+END;
+$function$
+

@@ -1,0 +1,505 @@
+CREATE OR REPLACE FUNCTION cpsresponsetimerupdate(v_intakeserviceid uuid)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+-------------------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 03/21/2022
+-- CPS Response Timer Update (CIDM-4348 - B-124723/B-124724)
+
+-- Argument(s): 1) IN v_intakeserviceid - CPS ID
+
+-- Revision(s)
+
+-------------------------------------------------------------------------------------------------------------
+declare vs_cpstype character varying; 
+declare vs_roletype character varying; 
+declare l_status text;
+ 
+declare vt_responsetimer timestamp;
+declare vt_contactdate timestamp;
+declare vt_allegedvictimresponsetime timestamp;
+declare vt_caregiverresponsetime timestamp;
+declare vt_otherchildrensponsetime timestamp;
+declare vt_finalresponsetime  timestamp;
+   
+   
+declare vl_icc_count integer;
+declare vl_missing_info integer default 0;
+declare vl_witsid bigint;
+declare vl_allegedvictim_witsid bigint;
+declare vl_caregiver_witsid bigint;
+declare vl_otherchildren_witsid bigint;
+declare vl_final_witsid bigint;
+declare vl_icc_contact_count integer;
+
+declare vu_personid uuid;
+
+declare v_timerdetails json;
+
+-- Alleged Victim
+cur_victim_person record;
+cur_victim_person_refcur REFCURSOR;
+
+cur_icc_person record;
+cur_icc_person_refcur REFCURSOR;
+
+cur_other_person record;
+cur_other_person_refcur REFCURSOR;
+
+
+BEGIN
+ DROP TABLE IF EXISTS tmp_responsetimer;
+ CREATE TEMPORARY TABLE tmp_responsetimer( roletype character varying, 
+            personid uuid,
+            witsid bigint, 
+            contactdate timestamp,
+            selectedcontact character varying 
+           );
+    
+ -- RAISE NOTICE 'v_intakeserviceid >> %', v_intakeserviceid; 
+ 
+ select isr.actiontype, 
+  isr.responsetimer,
+  ( select count(*)
+   from intakeservicerequestactor insr
+    where insr.intakeserviceid = isr.intakeserviceid
+   and insr.activeflag = 1
+   and insr.intakeservicerequestpersontypekey = 'ICC' -- Initial Contact Caregiver
+  ) as ICC_count
+ into vs_cpstype, 
+  vt_responsetimer,
+  vl_icc_count 
+ from intakeservicerequest isr
+ where isr.intakeserviceid = v_intakeserviceid ; 
+
+ -- RAISE NOTICE 'vs_cpstype >> %', vs_cpstype; 
+ -- RAISE NOTICE 'vt_responsetimer >> %', vt_responsetimer; 
+ -- RAISE NOTICE 'vl_icc_count >> %', vl_icc_count; 
+ 
+ IF vt_responsetimer is not null and vt_responsetimer::date <= '2022-03-18'::date
+  and vl_icc_count = 0 THEN
+  -- for responsetimer value is NOT NULL and Initial Contact Caregiver (ICC) person is NOT available
+  -- Do not re-validate (this is to avoid re-setting of the responsetimer for the old cases)
+  -- RAISE NOTICE 'Do not re-validate Response Timer'; 
+ ELSE
+  -- RAISE NOTICE 'Do re-validate >> Alleged victim '; 
+  
+  -- 1) Alleged victim - consider max conatct date
+  -- CPS-IR or CPS-AR
+  -- Face To Face OR Initial Face to Face 
+  -- Completed
+  OPEN cur_victim_person_refcur FOR
+   select distinct insr.personid
+    from intakeservicerequestactor insr
+   where insr.intakeserviceid = v_intakeserviceid
+    and insr.activeflag = 1
+    and insr.intakeservicerequestpersontypekey = 'AV'
+   ;
+  loop
+   fetch cur_victim_person_refcur into cur_victim_person ;
+   exit when not found;
+
+   vu_personid := cur_victim_person.personid;
+   vl_witsid := null; 
+   vt_contactdate := null;
+   
+   -- RAISE NOTICE 'vu_personid >> %', vu_personid;
+   
+   select 'AV' as roletype,
+    p.witsid, 
+    p.starttime -- p.endtime -- p.contactdate 
+   into vs_roletype,
+    vl_witsid,
+    vt_contactdate
+   from progressnote p 
+    inner join progressnotetype pt on pt.progressnotetypeid = p.progressnotetypeid
+     and lower(pt.progressnotetypekey) in ('initialfacetoface', 'face to face')
+    inner join contactparticipant cp on cp.progressnoteid = p.progressnoteid 
+     and cp.activeflag = 1
+   where p.entitytypeid = v_intakeserviceid::character varying
+    and lower(p.entitytype) = 'intakeservicerequest' 
+    and p.activeflag = 1
+    and p.attemptindicator <> true -- Completed
+    and cp.intakeservicerequestactorid 
+     in ( select insr1.intakeservicerequestactorid
+        from intakeservicerequestactor insr1
+       where insr1.intakeserviceid = v_intakeserviceid
+        and insr1.personid = vu_personid
+        and insr1.activeflag = 1
+      )
+   order by p.starttime -- p.endtime -- p.contactdate 
+   limit 1;
+   
+   -- RAISE NOTICE 'vl_witsid >> %', vl_witsid;
+   -- RAISE NOTICE 'vt_contactdate >> %', vt_contactdate;
+   
+   IF vl_witsid > 0 THEN
+    Insert into tmp_responsetimer
+     ( roletype, personid, witsid, contactdate, selectedcontact ) 
+    values
+     ( vs_roletype, vu_personid, vl_witsid, vt_contactdate, NULL );
+   ELSE
+    Insert into tmp_responsetimer
+     ( roletype, personid, witsid, contactdate, selectedcontact ) 
+    values
+     ( 'AV', vu_personid, NULL, NULL, NULL );
+   END IF; 
+  end loop;
+  close cur_victim_person_refcur; 
+  
+  -- 2) Initial Contact Caregiver - consider min conatct date
+  IF vs_cpstype  = 'IR' THEN
+   -- Face To Face OR Initial Face to Face 
+   -- Attempted or Completed 
+   OPEN cur_icc_person_refcur FOR
+    select distinct insr.personid
+     from intakeservicerequestactor insr
+    where insr.intakeserviceid = v_intakeserviceid
+     and insr.activeflag = 1
+     and insr.intakeservicerequestpersontypekey = 'ICC'
+    ;
+   loop
+    fetch cur_icc_person_refcur into cur_icc_person ;
+    exit when not found;
+
+    vu_personid := cur_icc_person.personid;
+    vl_witsid := null; 
+    vt_contactdate := null;
+    
+    -- RAISE NOTICE 'vu_personid >> %', vu_personid;
+    
+    select 'ICC' as roletype,
+     p.witsid, 
+     p.starttime -- p.endtime -- p.contactdate 
+    into vs_roletype,
+     vl_witsid,
+     vt_contactdate
+    from progressnote p 
+     inner join progressnotetype pt on pt.progressnotetypeid = p.progressnotetypeid
+      and lower(pt.progressnotetypekey) in ('initialfacetoface', 'face to face')
+     inner join contactparticipant cp on cp.progressnoteid = p.progressnoteid 
+      and cp.activeflag = 1
+    where p.entitytypeid = v_intakeserviceid::character varying
+     and lower(p.entitytype) = 'intakeservicerequest' 
+     and p.activeflag = 1
+     -- and p.attemptindicator any -- (Attempted or Completed)
+     and cp.intakeservicerequestactorid 
+      in ( select insr1.intakeservicerequestactorid
+         from intakeservicerequestactor insr1
+        where insr1.intakeserviceid = v_intakeserviceid
+         and insr1.personid = vu_personid
+         and insr1.activeflag = 1
+       )
+    order by p.starttime -- p.endtime -- p.contactdate 
+    limit 1;
+    
+    -- RAISE NOTICE 'vl_witsid >> %', vl_witsid;
+    -- RAISE NOTICE 'vt_contactdate >> %', vt_contactdate;
+    
+    IF vl_witsid > 0 THEN
+     Insert into tmp_responsetimer
+      ( roletype, personid, witsid, contactdate, selectedcontact ) 
+     values
+      ( vs_roletype, vu_personid, vl_witsid, vt_contactdate, NULL );
+    ELSE
+     Insert into tmp_responsetimer
+      ( roletype, personid, witsid, contactdate, selectedcontact ) 
+     values
+      ( 'ICC', vu_personid, NULL, NULL, NULL );
+    END IF; 
+   end loop;
+   close cur_icc_person_refcur; 
+
+  ELSE -- CPS-AR
+   -- Face To Face OR Initial Face to Face 
+   -- Completed 
+   OPEN cur_icc_person_refcur FOR
+    select distinct insr.personid
+     from intakeservicerequestactor insr
+    where insr.intakeserviceid = v_intakeserviceid
+     and insr.activeflag = 1
+     and insr.intakeservicerequestpersontypekey = 'ICC'
+    ;
+   loop
+    fetch cur_icc_person_refcur into cur_icc_person ;
+    exit when not found;
+
+    vu_personid := cur_icc_person.personid;
+    vl_witsid := null; 
+    vt_contactdate := null;
+    
+    -- RAISE NOTICE 'vu_personid >> %', vu_personid;
+    
+    select 'ICC' as roletype,
+     p.witsid, 
+     p.starttime -- p.endtime -- p.contactdate 
+    into vs_roletype,
+     vl_witsid,
+     vt_contactdate
+    from progressnote p 
+     inner join progressnotetype pt on pt.progressnotetypeid = p.progressnotetypeid
+      and lower(pt.progressnotetypekey) in ('initialfacetoface', 'face to face')
+     inner join contactparticipant cp on cp.progressnoteid = p.progressnoteid 
+      and cp.activeflag = 1
+    where p.entitytypeid = v_intakeserviceid::character varying
+     and lower(p.entitytype) = 'intakeservicerequest' 
+     and p.activeflag = 1
+     and p.attemptindicator <> true -- Completed
+     and cp.intakeservicerequestactorid 
+      in ( select insr1.intakeservicerequestactorid
+         from intakeservicerequestactor insr1
+        where insr1.intakeserviceid = v_intakeserviceid
+         and insr1.personid = vu_personid
+         and insr1.activeflag = 1
+       )
+    order by p.starttime -- p.endtime -- p.contactdate 
+    limit 1;
+    
+    -- RAISE NOTICE 'vl_witsid >> %', vl_witsid;
+    -- RAISE NOTICE 'vt_contactdate >> %', vt_contactdate;
+    
+    IF vl_witsid > 0 THEN
+     Insert into tmp_responsetimer
+      ( roletype, personid, witsid, contactdate, selectedcontact ) 
+     values
+      ( vs_roletype, vu_personid, vl_witsid, vt_contactdate, NULL );
+    ELSE
+     Insert into tmp_responsetimer
+      ( roletype, personid, witsid, contactdate, selectedcontact ) 
+     values
+      ( 'ICC', vu_personid, NULL, NULL, NULL );
+    END IF; 
+   end loop;
+   close cur_icc_person_refcur; 
+  
+  END IF;
+  
+  IF vl_icc_count = 0 THEN
+   Insert into tmp_responsetimer
+    ( roletype, personid, witsid, contactdate, selectedcontact ) 
+   values
+    ( 'ICC', NULL, NULL, NULL, NULL );
+  END IF;
+  
+  -- 3) Child & Other Child - consider max conatct date
+  -- CPS-IR or CPS-AR
+  -- Face To Face OR Initial Face to Face 
+  -- Attempted or Completed 
+  OPEN cur_other_person_refcur FOR
+   select distinct insr.personid
+    from intakeservicerequestactor insr,
+     actor act
+   where  insr.actorid = act.actorid
+    and insr.intakeserviceid = v_intakeserviceid
+    and insr.activeflag = 1
+    and act.activeflag = 1
+    and insr.intakeservicerequestpersontypekey in ('CHILD', 'OTHERCHILD')
+    and act.ishouseholdmember = 1
+   ;
+  loop
+   fetch cur_other_person_refcur into cur_other_person ;
+   exit when not found;
+
+   vu_personid := cur_other_person.personid;
+   vl_witsid := null; 
+   vt_contactdate := null;
+   
+   -- RAISE NOTICE 'vu_personid >> %', vu_personid;
+   
+   select 'OTH' as roletype,
+    p.witsid, 
+    p.starttime -- p.endtime -- p.contactdate 
+   into vs_roletype,
+    vl_witsid,
+    vt_contactdate
+   from progressnote p 
+    inner join progressnotetype pt on pt.progressnotetypeid = p.progressnotetypeid
+     and lower(pt.progressnotetypekey) in ('initialfacetoface', 'face to face')
+    inner join contactparticipant cp on cp.progressnoteid = p.progressnoteid 
+     and cp.activeflag = 1
+   where p.entitytypeid = v_intakeserviceid::character varying
+    and lower(p.entitytype) = 'intakeservicerequest' 
+    and p.activeflag = 1
+    -- and p.attemptindicator any -- (Attempted or Completed)
+    and cp.intakeservicerequestactorid 
+     in ( select insr1.intakeservicerequestactorid
+        from intakeservicerequestactor insr1
+       where insr1.intakeserviceid = v_intakeserviceid
+        and insr1.personid = vu_personid
+        and insr1.activeflag = 1
+      )
+   order by p.starttime -- p.endtime -- p.contactdate 
+   limit 1;
+   
+   -- RAISE NOTICE 'vl_witsid >> %', vl_witsid;
+   -- RAISE NOTICE 'vt_contactdate >> %', vt_contactdate;
+   
+   IF vl_witsid > 0 THEN
+    Insert into tmp_responsetimer
+     ( roletype, personid, witsid, contactdate, selectedcontact ) 
+    values
+     ( vs_roletype, vu_personid, vl_witsid, vt_contactdate, NULL );
+   ELSE
+    Insert into tmp_responsetimer
+     ( roletype, personid, witsid, contactdate, selectedcontact ) 
+    values
+     ( 'OTH', vu_personid, NULL, NULL, NULL );
+   END IF; 
+  end loop;
+  close cur_other_person_refcur; 
+  
+  -- Verify if any one ICC Contact date is available
+  vl_icc_contact_count := 0;
+  
+  select count(*)
+   into vl_icc_contact_count
+  from tmp_responsetimer
+  where roletype = 'ICC' 
+   and contactdate is not null ;
+  
+  IF vl_icc_contact_count > 0 THEN
+   -- Delete other ICC Contact with No Contact date(s) (if any)
+   delete from tmp_responsetimer
+   where roletype = 'ICC' 
+    and contactdate is null ; 
+  END IF; 
+  
+  -- Verify all required dates are available
+  select count(*)
+   into vl_missing_info 
+  from tmp_responsetimer 
+  where contactdate is null ;
+  
+  -- RAISE NOTICE 'vl_missing_info >> %', vl_missing_info;
+  
+  IF vl_missing_info = 0 THEN
+   -- 1) Alleged victim - consider max conatct date
+   update tmp_responsetimer
+    set selectedcontact = 'Y'
+   WHERE roletype = 'AV'
+    and witsid = ( select witsid 
+         from tmp_responsetimer 
+        where roletype = 'AV'
+        order by contactdate desc 
+        limit 1
+         ); 
+
+   
+   -- for Unit Testing
+   /*
+   select contactdate, witsid
+    into vt_allegedvictimresponsetime, vl_allegedvictim_witsid
+   from tmp_responsetimer 
+   where roletype = 'AV'
+    and selectedcontact = 'Y';
+    
+   RAISE NOTICE 'AV >> %', vt_allegedvictimresponsetime; 
+   RAISE NOTICE 'AV >> %', vl_allegedvictim_witsid; 
+   */
+   
+   -- 2) Initial Contact Caregiver - consider min conatct date
+   update tmp_responsetimer
+    set selectedcontact = 'Y'
+   WHERE roletype = 'ICC'
+    and witsid = ( select witsid 
+         from tmp_responsetimer 
+        where roletype = 'ICC'
+        order by contactdate 
+        limit 1
+        ); 
+
+   -- for Unit Testing
+   /*
+   select contactdate, witsid
+    into vt_caregiverresponsetime, vl_caregiver_witsid
+   from tmp_responsetimer 
+   where roletype = 'ICC'
+    and selectedcontact = 'Y';
+    
+   RAISE NOTICE 'ICC >> %', vt_caregiverresponsetime; 
+   RAISE NOTICE 'ICC >> %', vl_caregiver_witsid; 
+   */
+
+   -- 3) Child & Other Child - consider max conatct date
+   update tmp_responsetimer
+    set selectedcontact = 'Y'
+   WHERE roletype = 'OTH'
+    and witsid = ( select witsid 
+         from tmp_responsetimer 
+        where roletype = 'OTH'
+        order by contactdate desc 
+        limit 1
+         ); 
+         
+   -- for Unit Testing
+   /*
+   select contactdate, witsid
+    into vt_otherchildrensponsetime, vl_otherchildren_witsid
+   from tmp_responsetimer 
+   where roletype = 'OTH'
+    and selectedcontact = 'Y';
+    
+   RAISE NOTICE 'OTH >> %', vt_otherchildrensponsetime; 
+   RAISE NOTICE 'OTH >> %', vl_otherchildren_witsid;       
+   */
+   
+   -- 4) Final Response timer (lt_responsetimer) 
+      -- consider max conatct date from 1,2 & 3
+   select contactdate, 
+    witsid
+   into vt_finalresponsetime, 
+    vl_final_witsid
+   from tmp_responsetimer 
+   where selectedcontact = 'Y'
+   order by contactdate desc
+   limit 1;
+   
+   select array_to_json(array_agg(row_to_json(timer))) as Timerdetails
+    into v_timerdetails
+   from ( select distinct roletype, 
+      contactdate,
+      witsid
+     from tmp_responsetimer
+     where selectedcontact = 'Y'
+     order by roletype
+    ) timer  
+   ;
+   
+   -- RAISE NOTICE 'Final ResponseTimer >> %', vt_finalresponsetime; 
+   -- RAISE NOTICE 'Final ResponseTimer >> %', vl_final_witsid;
+   -- RAISE NOTICE 'v_timerdetails >> %', v_timerdetails;       
+   
+   l_status := 'Stop Response Timer' ;
+   
+   update intakeservicerequest
+   set responsetimer = vt_finalresponsetime, 
+    responsetimerdetails = v_timerdetails,
+    updatedby = 'cwadmin',
+    updatedon = now()
+   where intakeserviceid = v_intakeserviceid;
+  ELSE
+   l_status := 'Reset Response Timer' ;
+   -- RAISE NOTICE 'Reset ResponseTimer'; 
+   
+   IF vt_responsetimer is not null THEN
+    update intakeservicerequest
+    set responsetimer = NULL, 
+     responsetimerdetails = NULL,
+     updatedby = 'cwadmin',
+     updatedon = now()
+    where intakeserviceid = v_intakeserviceid;
+   END IF; 
+  END IF; 
+  
+  -- RAISE NOTICE 'l_status >> %', l_status; 
+ END IF; 
+ 
+ DROP TABLE IF EXISTS tmp_responsetimer;
+ 
+ RETURN l_status;
+END;
+
+$function$
+

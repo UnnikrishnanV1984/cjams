@@ -1,0 +1,189 @@
+CREATE OR REPLACE FUNCTION createreviewactivity(servicerequestid uuid, securityuserid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_investigationid uuid;
+v_objectid uuid;
+v_datypeid uuid;
+v_dasubtypeid uuid;
+v_activity  record;
+v_ammappingid uuid;
+newactivityid uuid;
+duedate timestamp;
+loadnumber character varying;
+v_teamid uuid;
+v_supteamid character varying;
+v_teammemberid uuid;
+v_supsecurityid character varying;
+BEGIN      
+ 
+duedate:=CAST(now() as date) +7;
+
+/*Sevicerequest typeconfig Id and datype subtype taken*/
+    SELECT ISR.intakeservreqtypeid,intakeservicerequestclassid,
+        servicerequesttypeconfigid 
+    INTO v_datypeid,v_dasubtypeid,v_objectid
+    FROM  intakeservicerequest ISR
+    INNER JOIN   servicerequesttypeconfig SRTC 
+        ON SRTC.intakeservreqtypeid =  ISR.intakeservreqtypeid 
+        AND SRTC.intakeservicerequestplantypekey='INV'         
+        AND SRTC.servicerequestsubtypeid  = ISR.intakeservicerequestclassid 
+        AND SRTC.activeflag =1
+        where ISR.intakeserviceid = servicerequestid;
+ 
+ /*GET INVESTIGATION ID BASED ON SERVICEREQUEST ID*/
+    select investigationid  into v_investigationid from investigation 
+    where intakeserviceid = servicerequestid;
+
+/*GET TEAMID BASED ON SECURITY USER ID */
+        SELECT  tm.teamid into v_teamid
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId = securityuserid
+        AND   tma.activeflag =1;
+
+/*GET SUPERVISOR LOADNUMBER BASED ON TEAMID*/
+     SELECT  t.loadnumber,t.teammemberid into loadnumber,v_teammemberid
+     FROM teammember   t
+     WHERE  teamid =v_teamid AND lower(roletypekey) like 'apcs%' 
+     and activeflag =1 limit 1 ; 
+     RAISE NOTICE 'loadnumber %',loadnumber;
+
+/*GET SUPERVISOR SECURITYUSERID*/ 
+ SELECT  securityusersid into  v_supsecurityid  
+    FROM teammemberassignment WHERE teammemberid = v_teammemberid 
+    AND activeflag =1 ;
+    
+ /*GET SUPERVISOR TEAM ID*/
+     select cast(tm.teammemberid as character varying) into  v_supteamid from teammemberassignment TMA inner join teammember TM on TM.teammemberid = TMA.teammemberid 
+where TMA.securityusersid =securityuserid  and lower(tm.roletypekey) like 'apcs%';
+
+ if  coalesce(loadnumber,'')  !=''  and coalesce(v_supteamid,'') ='' then 
+     /*GET REVIEW ACTIVITY */
+    FOR v_activity IN
+    SELECT  am.name,    am.amactivityid,
+            am.ammappingid,v_investigationid,am.description,  
+            am.activitytypekey, am.helptext 
+    FROM investigationmapping as im  
+    INNER JOIN ammapping am on am.ammappingid = im.ammappingid 
+        AND am.activitytypekey ='Investigation'
+        AND im.isreviewactivity =true
+    INNER JOIN ( select distinct ammappingid from (SELECT distinct ammappingid FROM ammappingtask amt
+                    INNER JOIN activitytasktype ats on ats.activitytasktypekey = amt.activitytasktypekey 
+                        AND amt.activeflag =1 and ats.activeflag =1 
+                        AND ats.activitytypekey ='Investigation' 
+                    union all
+                    SELECT distinct ammappingid FROM ammappinggoal amt
+                    INNER JOIN activitygoaltype ats on ats.activitygoaltypekey = amt.activitygoaltypekey 
+                        AND amt.activeflag =1 and ats.activeflag =1 
+                        AND ats.activitytypekey ='Investigation'
+                     ) as t
+                ) as amt    
+               on amt.ammappingid = am.ammappingid
+
+    WHERE im.objectid =v_objectid 
+    AND am.amactivityid not in (select amactivityid from activity where objectid =v_investigationid)
+    AND im.isreviewactivity =true
+
+    LOOP
+
+         INSERT INTO activity
+               ( 
+                description,  amactivityid
+               ,ammappingid,objectid,sourcedescription
+               ,activitytypekey,helptext,sequence
+               ,updatedby,insertedby
+               ,effectivedate,expirationdate
+                )
+              values
+              (
+               v_activity.name,  v_activity.amactivityid,
+               v_activity.ammappingid, v_investigationid, v_activity.description, 
+               v_activity.activitytypekey, v_activity.helptext, 1,
+               securityuserid,securityuserid, now(),duedate) RETURNING "activityid" INTO  newactivityid;
+
+    /*ACTIVIY TASK taken from activity mapping based on mapping id  (task status hardcoded)*/ 
+        INSERT INTO  activitytask
+               ( 
+               activityid,name,description
+               ,helptext,amtaskid,assignedto
+               ,assignedon ,activitytaskstatustypekey 
+               ,activitytasktypekey,activityprioritytypekey,duedate
+                ,sequence,required,activeflag
+               ,updatedby,insertedby,EffectiveDate
+              )
+         SELECT  newactivityid ,ta.name, ta.description,
+                 am.helptext,ta.amtaskid,loadnumber,
+                 now(),'InvOpen',
+                  amt.activitytasktypekey, amt.activityprioritytypekey,duedate
+                  ,1,true,1,
+                  securityuserid,securityuserid, now()
+        FROM investigationmapping as im  
+        INNER JOIN servicerequesttypeconfig as sc
+            on sc.servicerequesttypeconfigid = im.objectid 
+        INNER JOIN ammapping am on am.ammappingid = im.ammappingid 
+            AND am.activitytypekey ='Investigation'
+        INNER JOIN  ammappingtask amt   on amt.ammappingid = am.ammappingid
+        INNER JOIN activitytasktype ats on ats.activitytasktypekey = amt.activitytasktypekey 
+            AND amt.activeflag =1 and ats.activeflag =1 
+            AND ats.activitytypekey ='Investigation'
+            AND amt.required =true 
+        INNER JOIN amtask ta on ta.amtaskid = amt.amtaskid 
+            AND ta.activeflag =1 and ats.activeflag =1 
+            AND ta.activitytypekey ='Investigation'  
+        WHERE sc.servicerequesttypeconfigid in (v_objectid)
+        AND sc.activeflag  =1 
+        AND sc.intakeservicerequestplantypekey='INV' 
+         and am.ammappingid =v_activity.ammappingid;
+    /*Task end */ 
+
+    /*ACTIVIY GOAL taken from activity mapping based on mapping id  (GOAL status hardcoded)*/
+        INSERT INTO  activitygoal
+                   (activityid,name,description
+                   ,helptext,amgoalid,assignedto
+                   ,activitygoalstatustypekey ,activitygoaltypekey
+                   ,activityprioritytypekey,duedate, required,sequence
+                   ,updatedby,insertedby,effectivedate
+        )
+         SELECT  
+                    newactivityid ,ta.name, ta.description, 
+                    am.helptext,ta.amgoalid, loadnumber, 
+                    'InvUnmet', amt.activitygoaltypekey, 
+                    amt.activityprioritytypekey,duedate, true,1,
+                    securityuserid,securityuserid, now()
+
+        FROM investigationmapping as im  
+        INNER JOIN servicerequesttypeconfig as sc
+            on sc.servicerequesttypeconfigid = im.objectid 
+        INNER JOIN ammapping am on am.ammappingid = im.ammappingid 
+            AND am.activitytypekey ='Investigation'
+        INNER JOIN  ammappinggoal amt   on amt.ammappingid = am.ammappingid 
+          AND amt.required =true 
+        INNER JOIN activitygoaltype ats on ats.activitygoaltypekey = amt.activitygoaltypekey 
+            AND amt.activeflag =1 and ats.activeflag =1 
+            AND ats.activitytypekey ='Investigation'
+        INNER JOIN amgoal ta on ta.amgoalid = amt.amgoalid 
+            AND ta.activeflag =1 and ats.activeflag =1 
+            AND ta.activitytypekey ='Investigation'
+        WHERE  sc.servicerequesttypeconfigid in (v_objectid)
+        AND sc.activeflag  =1 
+        AND sc.intakeservicerequestplantypekey='INV' 
+         and am.ammappingid =v_activity.ammappingid;
+
+ END LOOP;
+    UPDATE investigation SET  investigationreviewtypekey ='PendSupRev',investigationreviewtypedate = now() where investigationid = v_investigationid;
+  
+ elseif coalesce(v_supteamid,'') !='' then
+      UPDATE investigation SET  investigationreviewtypekey ='ANEReview',investigationreviewtypedate = now() where investigationid = v_investigationid;
+   end if;
+    
+RETURN
+  v_supsecurityid;
+END;
+ 
+
+$function$
+

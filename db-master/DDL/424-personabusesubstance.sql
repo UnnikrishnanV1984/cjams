@@ -1,0 +1,1 @@
+ALTER TABLE cjams.personabusesubstance ALTER COLUMN drugfrequencydetails TYPE character varying(500); 

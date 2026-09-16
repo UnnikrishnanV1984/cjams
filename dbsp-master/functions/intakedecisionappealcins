@@ -1,0 +1,70 @@
+CREATE OR REPLACE FUNCTION intakedecisionappealcins(i_evalutionid uuid, i_secid character varying)
+ RETURNS TABLE(currentdate character varying, youthname character varying, youthid character varying, complaint_id character varying, mother json, father json, other json, complaintdate character varying, offensename character varying[], offensedate character varying, reviewcomments character varying, officername character varying, officerphone character varying)
+ LANGUAGE plpgsql
+AS $function$
+   BEGIN    
+ RETURN QUERY    
+   (select CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+   cast(p.firstname ||' '|| p.lastname as character varying) as youthname,
+   cast (p.cjamspid as character varying)as youthid,
+       complaintid as complaint_id,
+       (select row_to_json(x) from 
+  (select person.firstname||' '||person.lastname as fullname,
+   (select json_agg(x) from
+    (select PA.address,PA.address2 ,PA.zipcode,PA.city,PA.state,PA.country from personaddress PA 
+    where PA.personid IN (select personrelativeid from personrelation where personrelation.personid = p.personid
+            and personrelation.actorrelationshipkey='mother')) as x
+   ) as address
+  from person  
+            where person.personid IN (select personrelativeid from personrelation where personrelation.personid = p.personid
+            and personrelation.actorrelationshipkey='mother')) as x
+  ) as mother,
+  (select row_to_json (x) from 
+  (select person.firstname||' '||person.lastname as fullname,
+   (select json_agg(x) from
+    (select PA.address,PA.address2 ,PA.zipcode,PA.city,PA.state,PA.country from personaddress PA 
+    where PA.personid IN (select personrelativeid from personrelation where personrelation.personid = p.personid
+            and personrelation.actorrelationshipkey='father')) as x
+   ) as address
+  from person  
+            where person.personid IN (select personrelativeid from personrelation where personrelation.personid = p.personid
+            and personrelation.actorrelationshipkey='father')) as x
+  ) as father,
+  (select row_to_json (x) from 
+  (select person.firstname||' '||person.lastname as fullname,
+   (select json_agg(x) from
+    (select PA.address,PA.address2 ,PA.zipcode,PA.city,PA.state,PA.country from personaddress PA 
+    where PA.personid IN (select personrelativeid from personrelation where personrelation.personid = p.personid
+            and personrelation.actorrelationshipkey='father')) as x
+   ) as address
+  from person  
+            where person.personid IN (select personrelativeid from personrelation where personrelation.personid = p.personid
+            and personrelation.actorrelationshipkey='father')) as x
+  ) as other,
+       cast (to_char(complaintreceiveddate,'MM/DD/YYYY') as character varying) as complaintdate,
+       (select array_agg(AG.name)  from  allegation AG
+       join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+       where  ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as offensename,
+      cast (case 
+     when inve.unknownrange=0 then to_char(inve.offensedate,'MM/DD/YYYY') 
+      when inve.unknownrange=1 then to_char(inve.offensedate,'MM/DD/YYYY')
+       when inve.unknownrange=2 then to_char(inve.begindate,'MM/DD/YYYY')|| ' - ' || to_char(inve.enddate,'MM/DD/YYYY')
+       end as character varying) as offensedate,
+       cast (itsdc.reviewcomments as character varying) as reviewcomments,
+       (select distinct up.fullname from userprofile up where securityusersid = i_secid) as officername,
+            (select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as officerphone
+       from intakeservicerequestevaluation inve
+       join intakeservicerequest ins on ins.intakenumber=inve.intakenumber 
+       left join intakeservicerequestdispositioncode itsdc on ins.intakeserviceid =itsdc.intakeserviceid and itsdc.activeflag=1
+       left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=ins.intakeserviceid and INSRA.activeflag=1
+  left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+  join person p on ACC.personid=p.personid and p.activeflag=1
+  left join personaddress pa on p.personid = pa.personid and pa.activeflag=1
+  left join personrelation pr on p.personid = pr.personid and pr.activeflag=1
+       join intakeservicerequestevaluationconfig ITSEC on ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1
+       join allegation AG on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+       where  inve.intakeservicerequestevaluationid = i_evalutionid) ; 
+     
+   end;
+  $function$
+

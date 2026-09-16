@@ -1,0 +1,3 @@
+INSERT INTO cjams.providermaltreatmenttype
+(providermaltreatmenttypeid, providermaltreatmenttypekey, typedescription, displayorder, activeflag, insertedby, updatedby, effectivedate, insertedon, updatedon, old_id)
+VALUES('2828bf81-4a9d-47cd-bc79-779df44d5d22'::uuid, 'LAFC', 'Living Arrangement in foster care', 6, 1, 'admin', 'CIDM-4929', '2022-08-12 17:36:53.087', NULL, '2022-08-12 17:36:53.087', NULL)on conflict do nothing;

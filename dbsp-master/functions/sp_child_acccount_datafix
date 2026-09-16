@@ -1,0 +1,276 @@
+CREATE OR REPLACE FUNCTION sp_child_acccount_datafix(as_county_cd character varying)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- To Update Child Account Balances in tb_client_account\r
+-- Revision(s)\r
+-- 06/22/2020 - Modifications for 5472 - Bank Service Charges- No approval is required in CJAMS \r
+------------------------------------------------------------------------\r
+DECLARE vs_cursor_sql VARCHAR(12000) ;\r
+\r
+DECLARE vd_date_2months DATE;\r
+\r
+DECLARE vl_row_cnt BIGINT DEFAULT 0;\r
+DECLARE vl_client_acc_id BIGINT DEFAULT NULL;\r
+\r
+DECLARE vdc_total_credit decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_total_debit decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_total_balance decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_obligated_for_COC decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_obligated_for_ANC decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_available_bal decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_total_acc_balance decimal(10,2) DEFAULT 0.00;\r
+\r
+DECLARE vl_commingled_acc_id BIGINT DEFAULT NULL;\r
+\r
+--Log Error\r
+DECLARE SQLCODE INT DEFAULT 0;\r
+DECLARE al_sqlcode INT DEFAULT 0;\r
+DECLARE as_error VARCHAR(3000);\r
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';\r
+p_sp_error CHAR(5);\r
+\r
+CUR_CHILD_ACCOUNTS REFCURSOR;\r
+\r
+BEGIN\r
+\r
+ SELECT F_daymonth((current_date - interval '1 month')::date  ,'L' , 'C') \r
+    INTO vd_date_2months;\r
+ \r
+ vs_cursor_sql := ''; -- INITIAL VALUE\r
+\r
+ vs_cursor_sql :=\r
+ ' SELECT TCA.CLIENT_ACCOUNT_ID, '||\r
+ '        TCA.OBLIGATED_FOR_ANC '||\r
+ '   FROM TB_CLIENT_ACCOUNT  TCA '||\r
+ ' WHERE TCA.ACCOUNT_TYPE_CD in ( ''590'', ''591'' )'||\r
+ '       AND TCA.STATUS_CD = ''592'' '||\r
+ '   AND TCA.DELETE_SW = ''N'' '||\r
+ '   AND btrim(TCA.COUNTY_CD)= '|| ''''||btrim(as_county_cd)||'''' ;\r
+   \r
+        \r
+ vl_row_cnt := 0; -- INITIAL VALUE\r
+\r
+ SELECT COUNT(TCA.CLIENT_ACCOUNT_ID)\r
+  INTO vl_row_cnt\r
+  FROM TB_CLIENT_ACCOUNT TCA\r
+ WHERE TCA.ACCOUNT_TYPE_CD IN ( '590', '591' )\r
+  AND TCA.STATUS_CD = '592'\r
+  AND TCA.DELETE_SW = 'N'\r
+  AND Btrim(TCA.COUNTY_CD) = Btrim(as_county_cd) ;\r
+    \r
+\r
+ IF vl_row_cnt > 0 THEN\r
+   OPEN CUR_CHILD_ACCOUNTS FOR EXECUTE vs_cursor_sql;\r
+   \r
+   loop EXIT WHEN vl_row_cnt = 0::bigint ;\r
+  vl_client_acc_id := NULL; -- INITIAL VALUE\r
+  vdc_obligated_for_ANC := NULL; -- INITIAL VALUE\r
+\r
+  FETCH CUR_CHILD_ACCOUNTS INTO vl_client_acc_id, vdc_obligated_for_ANC;\r
+\r
+  -- Get Sum of All Credit Transactions\r
+  -- If Adjustments consider only Approved transactions\r
+  vdc_total_credit := 0.00; -- INITIAL VALUE\r
+\r
+  SELECT SUM(COALESCE(TR.TRANSACTION_AMOUNT_NO,0))\r
+   INTO vdc_total_credit\r
+  FROM TB_ACCOUNT_TRANSACTION  TR\r
+  WHERE TR.CLIENT_ACCOUNT_ID =  vl_client_acc_id\r
+     AND (  TR.TRANSACTION_TYPE_CD <> '588' \r
+     OR\r
+     ( TR.TRANSACTION_TYPE_CD = '588' AND TR.TRANSACTION_SOURCE_CD = '5472' )\r
+     OR\r
+     ( TR.TRANSACTION_TYPE_CD = '588' AND TR.TRANSACTION_SOURCE_CD <> '5472' \r
+      AND TR.ADJUSTMENT_APPROVAL_STATUS_CD = '3047' ) \r
+    )\r
+     AND TR.TRANSACTION_TYPE_CD <> '5530'    \r
+     AND TR.CREDIT_DEBIT_SW = 'C'\r
+     AND TR.DELETE_SW = 'N' ;\r
+\r
+  al_sqlcode := SQLCODE;\r
+  IF al_sqlcode < 0 THEN\r
+   as_error := 'Error in getting Total Credit Transactions.';\r
+  END IF ;\r
+\r
+  IF vdc_total_credit is NULL THEN\r
+   vdc_total_credit := 0.00;\r
+  END IF;\r
+\r
+  -- Get Sum of All Debit Transactions\r
+  -- If Adjustments consider only Approved transactions\r
+  vdc_total_debit := 0.00; -- INITIAL VALUE\r
+\r
+  SELECT SUM(COALESCE(TR.TRANSACTION_AMOUNT_NO,0))\r
+   INTO vdc_total_debit\r
+  FROM TB_ACCOUNT_TRANSACTION  TR\r
+  WHERE TR.CLIENT_ACCOUNT_ID =  vl_client_acc_id\r
+   AND (  TR.TRANSACTION_TYPE_CD <> '588' \r
+     OR\r
+     ( TR.TRANSACTION_TYPE_CD = '588' AND TR.TRANSACTION_SOURCE_CD = '5472' )\r
+     OR\r
+     ( TR.TRANSACTION_TYPE_CD = '588' AND TR.TRANSACTION_SOURCE_CD <> '5472' \r
+      AND TR.ADJUSTMENT_APPROVAL_STATUS_CD = '3047' ) \r
+    )\r
+   AND TR.TRANSACTION_TYPE_CD <> '5530'    \r
+   AND TR.CREDIT_DEBIT_SW = 'D'\r
+   AND TR.DELETE_SW = 'N' ;\r
+\r
+  al_sqlcode := SQLCODE;\r
+  IF al_sqlcode < 0 THEN\r
+   as_error := 'Error in getting Total Debit Transactions.';\r
+  END IF ;\r
+\r
+  IF vdc_total_debit is NULL THEN\r
+   vdc_total_debit := 0.00;\r
+  END IF;\r
+\r
+  -- Total Balance = Sum of All Credits - Sum of All Debits\r
+  vdc_total_balance := vdc_total_credit - vdc_total_debit;\r
+\r
+  -- Get Obligated for COC (SSI, SSA or Other [COC]) as of current date\r
+  -- Receipts + Adj Credit - Adj Debit where Benefit_Start_dt > 2MonthsDate\r
+  vdc_obligated_for_COC := 0.00; -- INITIAL VALUE\r
+\r
+  SELECT\r
+   ( SELECT SUM(COALESCE(TR.TRANSACTION_AMOUNT_NO,0))\r
+    FROM TB_ACCOUNT_TRANSACTION TR\r
+      WHERE TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID\r
+    AND TR.DELETE_SW = 'N'\r
+    AND TR.CREDIT_DEBIT_SW = 'C'\r
+    AND TR.TRANSACTION_SOURCE_CD IN ('587','586','585') \r
+    AND BENEFIT_START_DT > vd_date_2months\r
+    )\r
+   +\r
+   COALESCE((\r
+     SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)) \r
+    FROM TB_ACCOUNT_TRANSACTION TR1\r
+      WHERE TR1.TRANSACTION_TYPE_CD = '588'\r
+    AND TR1.CREDIT_DEBIT_SW = 'C'\r
+    AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+    AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+    AND TR1.REFERENCE_TRANSACTION_ID in\r
+      (\r
+        SELECT TR.TRANSACTION_ID\r
+       FROM TB_ACCOUNT_TRANSACTION TR\r
+        WHERE TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID\r
+       AND TR.DELETE_SW = 'N'\r
+       AND TR.CREDIT_DEBIT_SW = 'C'\r
+       AND TR.TRANSACTION_SOURCE_CD IN ('587','586','585') \r
+       AND BENEFIT_START_DT > vd_date_2months\r
+      )\r
+\r
+   ),0)\r
+  -\r
+   COALESCE((\r
+     SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)) \r
+    FROM TB_ACCOUNT_TRANSACTION TR1\r
+      WHERE TR1.TRANSACTION_TYPE_CD = '588'\r
+    AND TR1.CREDIT_DEBIT_SW = 'D'\r
+    AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+    AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+    AND TR1.REFERENCE_TRANSACTION_ID in\r
+      (\r
+        SELECT TR.TRANSACTION_ID\r
+       FROM TB_ACCOUNT_TRANSACTION TR\r
+        WHERE TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID\r
+       AND TR.DELETE_SW = 'N'\r
+       AND TR.CREDIT_DEBIT_SW = 'C'\r
+       AND TR.TRANSACTION_SOURCE_CD IN ('587','586','585') \r
+       AND BENEFIT_START_DT > vd_date_2months\r
+      )\r
+\r
+   ),0)\r
+    INTO vdc_obligated_for_COC\r
+   FROM TB_CLIENT_ACCOUNT CA\r
+  WHERE CA.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+   AND CA.DELETE_SW = 'N' ;\r
+\r
+  al_sqlcode := SQLCODE;\r
+  IF al_sqlcode < 0 THEN\r
+   as_error := 'Error in getting Obligated for COC Transactions as of current date.';\r
+  END IF ;\r
+\r
+  IF vdc_obligated_for_COC is NULL THEN\r
+   vdc_obligated_for_COC := 0.00;  \r
+  END IF;\r
+\r
+  IF vdc_obligated_for_ANC is NULL THEN\r
+   vdc_obligated_for_ANC := 0.00;\r
+  END IF;\r
+\r
+  -- Available Balance = Total Balance - ( Obligated for COC + Obligated for ANC )\r
+\r
+  vdc_available_bal := vdc_total_balance - ( vdc_obligated_for_ANC + vdc_obligated_for_COC );\r
+\r
+  UPDATE TB_CLIENT_ACCOUNT\r
+  SET TOTAL_BALANCE_NO = vdc_total_balance,\r
+   OBLIGATED_FOR_COC = vdc_obligated_for_COC,\r
+   AVAILABLE_BALANCE_NO = vdc_available_bal,\r
+   UPDATE_TS = CURRENT_TIMESTAMP,\r
+   UPDATE_USER_ID = 'finance'\r
+  WHERE CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+   AND DELETE_SW = 'N' ;\r
+  \r
+  al_sqlcode := SQLCODE;\r
+  IF al_sqlcode < 0 THEN\r
+   as_error := 'Error in Updating Child Account Balances.';\r
+  END IF ;\r
+    \r
+  -- Update Total Balance No in Commingled Account - START\r
+  vl_commingled_acc_id := NULL; -- INITIAL VALUE\r
+\r
+  SELECT COMM_ACCOUNT_ID\r
+   INTO vl_commingled_acc_id\r
+  FROM TB_CLIENT_ACCOUNT\r
+  WHERE CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+  AND DELETE_SW = 'N' ;\r
+  \r
+  al_sqlcode := SQLCODE;\r
+  IF al_sqlcode < 0 THEN\r
+   as_error := 'Error in getting Commingled Account ID.';\r
+  END IF ;    \r
+   \r
+  IF vl_commingled_acc_id is NULL THEN\r
+   vl_commingled_acc_id := 0;\r
+  END IF;   \r
+      \r
+  IF vl_commingled_acc_id > 0 THEN\r
+   vdc_total_acc_balance := 0.00; -- INITIAL VALUE\r
+\r
+   SELECT SUM(COALESCE(TOTAL_BALANCE_NO,0))\r
+     INTO vdc_total_acc_balance\r
+    FROM TB_CLIENT_ACCOUNT\r
+   WHERE COMM_ACCOUNT_ID = vl_commingled_acc_id\r
+   AND DELETE_SW = 'N' ;\r
+\r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in Selecting Total Balance to update Commingled Account.';\r
+   END IF ;\r
+      \r
+   UPDATE TB_COMMINGLED_ACCOUNT\r
+    SET TOTAL_BALANCE_NO = vdc_total_acc_balance,\r
+     UPDATE_TS = CURRENT_TIMESTAMP,\r
+     UPDATE_USER_ID = 'finance'\r
+   WHERE COMM_ACCOUNT_ID = vl_commingled_acc_id\r
+    AND DELETE_SW = 'N' ;\r
+\r
+    \r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in Updating Commingled Account.';\r
+   END IF ;\r
+  END IF;\r
+  -- Update Total Balance No in Commingled Account - END \r
+  \r
+  vl_row_cnt := vl_row_cnt  - 1; \r
+    END loop;\r
+    CLOSE CUR_CHILD_ACCOUNTS ;\r
+ END IF;\r
+END;\r
+\r
+$function$
+

@@ -1,0 +1,1 @@
+ALTER TABLE cjams.investigationallegationmaltreators ALTER COLUMN oahearingnarrative TYPE character varying;

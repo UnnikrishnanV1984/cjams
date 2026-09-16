@@ -1,0 +1,1 @@
+ALTER TABLE cjams.intakeserv ALTER COLUMN intakeservtypekey  type varchar(100); 

@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION as_getactivitytaskbyremindate(userid character varying, pageno integer, pagesize integer)
+ RETURNS TABLE(totalcount bigint, activityid uuid, activitytaskid uuid, actvityname text, duedate timestamp without time zone, task character varying, required boolean, assignedon timestamp without time zone, taskstatustype character varying, completeddate timestamp without time zone, activitytasktypekey character varying, insertedon timestamp without time zone, assignloadnumber character varying, outofoffice boolean, activitytaskstatustypekey character varying, activitytaskdispositiontypekey character varying, taskdescription text, reminderdate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+DECLARE v_pageoffset int;
+  v_pagenumber int;
+  
+BEGIN
+ v_pagenumber := pageno-1;
+ v_pageoffset = v_pagenumber * pagesize;
+RETURN QUERY  
+
+SELECT count(1) OVER() totalcount, 
+ --count(*) as TotalCount
+ --,COUNT(CASE WHEN atst.typedescription = 'Open' THEN 1 END) as OpenTask
+ --,COUNT(CASE WHEN atst.typedescription = 'Closed' THEN 1 END) as CancelledTask
+act.ActivityId, 
+ acttask.ActivityTaskId, 
+ act.description, 
+ acttask.duedate, 
+ acttask.name As task,
+ acttask.Required , 
+ acttask.AssignedOn ,
+ atst.typedescription as taskstatus,
+acttask.completeddate,
+acttask.ActivityTaskTypeKey,
+acttask.insertedon, 
+acttask.assignedto as assignloadnumber,
+acttask.outofoffice,
+acttask.ActivityTaskStatusTypeKey,
+acttask.ActivityTaskDispositionTypekey,
+acttask.description as taskdescription,
+acttask.reminderdate
+
+FROM intakeservicerequest AS ISR 
+INNER JOIN AreaTeamMemberServiceRequest  AS ATSR  ON  ATSR.IntakeServiceId   = ISR.IntakeServiceId AND   ATSR.ActiveFlag = 1                                                           
+INNER JOIN TeamMember AS TM  ON  ATSR.TeamMemberId   = TM.TeamMemberId                                                                        
+INNER JOIN as_teammemberassignment   AS TMA  ON  TMA.TeamMemberId   = ATSR.TeamMemberId     AND TMA.ActiveFlag = 1                                                     
+--INNER JOIN muser muser ON muser.securityusersid=TMA.securityusersid and muser.activeflag=1
+INNER JOIN Investigation invst ON ISR.intakeserviceid=invst.intakeserviceid and invst.activeflag=1
+INNER JOIN Activity act on invst.investigationid = act.objectid and act.activeflag=1
+INNER JOIN amactivity am on am.amactivityid=act.amactivityid and am.activeflag=1
+INNER JOIN Activitytask acttask on act.activityid = acttask.activityid  and acttask.activeflag = 1 and act.activeflag = 1  
+inner join activitytaskstatustype atst on acttask.activitytaskstatustypekey = atst.activitytaskstatustypekey and atst.activeflag=1 and acttask.activeflag=1
+and TMA.securityusersid = userid
+/* For getting remainderdate projecthome-Reconsideration and Adult Foster Care - Reconsideration*/
+where  am.iscontinue=true and acttask.reminderdate<=now()and acttask.activitytaskstatustypekey!='InvClosed' order by acttask.duedate asc
+
+ limit pagesize  offset v_pageoffset ;
+END;
+
+
+$function$
+

@@ -1,0 +1,2 @@
+create index Xie1_tb_receivable_detail_history on tb_receivable_detail_history(receivable_detail_id);
+create index Xie2_tb_receivable_detail_history on tb_receivable_detail_history(write_off_request_user_id);

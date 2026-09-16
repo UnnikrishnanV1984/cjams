@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION as_getfostercareratehist(v_mainrateid integer, v_lipagesize bigint, v_lipagenumber bigint, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, rate_id integer, main_rate_id integer, service_id integer, start_dt date, end_dt date, min_age_no integer, max_age_no integer, monthly_rate_no numeric, per_diem_rate_no numeric, monthly_clothing_no numeric, emergency_per_diem_no numeric, emergency_bed_fee numeric, ratetype character varying, rate_type_cd text, difficulty_level_cd character, max_clothing_no numeric, monthly_stipend_no numeric, monthly_differential_no numeric, service_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+  select count(1) over() as totalcount, tfc.rate_id, tfc.main_rate_id, tfc.service_id, tfc.start_dt, tfc.end_dt, tfc.min_age_no, tfc.max_age_no, tfc.monthly_rate_no, tfc.per_diem_rate_no, tfc.monthly_clothing_no, tfc.emergency_per_diem_no, tfc.emergency_bed_fee, tpv.value_tx as ratetype, 
+  TRIM(tfc.rate_type_cd), tfc.difficulty_level_cd, tfc.max_clothing_no, tfc.monthly_stipend_no, tfc.monthly_differential_no, ts.service_nm 
+  from tb_foster_care_rate_stg tfc
+  join tb_services ts on ts.service_id = tfc.service_id
+  join tb_picklist_values tpv on TRIM(tpv.PICKLIST_VALUE_CD)=TRIM(tfc.rate_type_cd) and tpv.active_sw='Y' and tpv.delete_sw='N' and  PICKLIST_type_id=82
+                 where tfc.delete_sw='N'
+                 and 
+                 (v_mainrateid is null or tfc.main_rate_id=v_mainrateid)
+                order by ( CASE sortorder when 'asc' then 
+  CASE sortcolumn 
+  when 'ratetype' then 
+          cast( tpv.value_tx as character varying)  
+        when 'service_nm' then 
+          cast( ts.service_nm as character varying)  
+  else null end end) asc,
+  ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'ratetype' then 
+          cast( tpv.value_tx as character varying) 
+  when 'service_nm' then 
+          cast( ts.service_nm as character varying)  
+  else null end end) desc,tfc.rate_id desc nulls last
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+$function$
+

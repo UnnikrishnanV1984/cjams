@@ -1,0 +1,1 @@
+ALTER TABLE cjams.adoptionapplicabilityinfo ADD ivecomment text NULL;

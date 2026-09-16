@@ -1,0 +1,43 @@
+CREATE OR REPLACE FUNCTION getdisposition(p_sid uuid)
+ RETURNS TABLE(seenwithin integer, dateseen timestamp without time zone, edl boolean, financial boolean, jointinvestigation boolean, investigationsummary text, duedate timestamp without time zone, completiondate timestamp without time zone, statusid uuid, dispositionid uuid, visitinfo text, statusdate timestamp without time zone, dispositionstatus character varying, istaskclosed boolean, isgoalclosed boolean)
+ LANGUAGE plpgsql
+AS $function$
+declare v_taskopencount bigint;
+declare v_goalopencount bigint;
+  
+BEGIN    
+    Select count(1) into v_taskopencount from  activitytask ats inner join activity a on a.activityid = ats.activityid  and a.activeflag =1
+inner join investigation inv on inv.investigationid = a.objectid  
+where inv.IntakeServiceId =p_sid  
+and  lower(activitytaskstatustypekey) not in ('invclosed','allegclosed') and ats.activeflag =1 ;
+
+ Select count(1) into v_goalopencount from  activitygoal atg inner join activity a on a.activityid = atg.activityid  and a.activeflag =1
+inner join investigation inv on inv.investigationid = a.objectid   
+where inv.IntakeServiceId =p_sid  
+and  lower(activitygoalstatustypekey) not  in ('invmet','allegmet') and atg.activeflag =1;
+    
+    RETURN QUERY 
+    
+(select  a.seenwithin ,a.dateseen,b.edl,b.financial,b.jointinvestigation,b.investigationsummary,coalesce(C.targetcompletedate,c.insertedon::Date+srtc.duedateoffset) As duedate,
+cast ((select    min( insertedon)  from IntakeServiceRequestDispositionCode where IntakeServiceId= p_sid 
+and IntakeSerReqStatusTypeid =a.intakeserreqstatustypeid and ActiveFlag =1 
+)  as timestamp) as completiondate ,a.intakeserreqstatustypeid statusid, 
+ a.ServiceRequestTypeConfigIdDispostionId dispositionid,c.visitinfo,a.statusdate,
+ ISRST.intakeserreqstatustypekey,
+ cast( case  coalesce (v_taskopencount,0) when 0 then 'true' else 'false' end as boolean),
+  cast( case  coalesce (v_goalopencount,0) when 0 then 'true' else 'false' end as boolean)
+ from 
+IntakeServiceRequestDispositionCode A inner join Investigation B on a.IntakeServiceId = b.IntakeServiceId  join intakeservicerequest C 
+on A.IntakeServiceId=C.IntakeServiceId
+ join servicerequesttypeconfig srtc on srtc.IntakeServReqTypeId = c.IntakeServReqTypeId
+ and srtc.ServiceRequestSubTypeId = c.intakeservicerequestclassid
+ INNER JOIN intakeserreqstatustype ISRST ON ISRST.intakeserreqstatustypeid = A.intakeserreqstatustypeid
+ where A.IntakeServiceId= p_sid
+ order by A.updatedon desc limit 1);
+
+    
+    
+END;
+
+$function$
+

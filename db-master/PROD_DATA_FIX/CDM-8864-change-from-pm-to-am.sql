@@ -1,0 +1,1 @@
+update progressnote set endtime = '2021-01-05 10:40:00' where progressnoteid = 'a0f19e1a-94c9-4396-8ee5-b73b133a942b'

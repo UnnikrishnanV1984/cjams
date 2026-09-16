@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION as_getdocumenthistorywithfilter(pagenumber bigint, pagesize bigint, v_documenttemplatekey character varying, v_roletypekey character varying, v_intakeserviceid uuid DEFAULT NULL::uuid, v_intakenumber character varying DEFAULT NULL::character varying, v_restitutionno bigint DEFAULT NULL::bigint, v_persontypekey character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, title character varying, inputfields text, headertemplatehtml character varying, isheaderrequired boolean, youthbasedocument boolean, documenttemplatekey character varying, "generatedBy" character varying, "generatedDateTime" timestamp without time zone, documentpath character varying, beforesubmit boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+v_versionnumber bigint;
+v_resintakenumber character varying;
+v_pageoffset int;
+v_pagenumber int;
+
+BEGIN 
+
+v_pagenumber := pagenumber-1;
+v_pageoffset = v_pagenumber * pagesize;
+
+SELECT max(ev.versionno) INTO v_versionnumber
+ FROM  evaluationdocument ev  
+WHERE  ev.activeflag =1   
+AND ev.documenttemplatekey = v_documenttemplatekey
+AND (ev.intakenumber = v_intakenumber) OR( ev.intakeserviceid = v_intakeserviceid);
+
+SELECT isr.intakenumber INTO v_resintakenumber
+FROM intakeserreqrestitution isr 
+WHERE isr.activeflag=1 AND isr.restitutionno = v_restitutionno;
+
+RETURN query
+SELECT  
+    count(1) over(),
+  ev.documentname,
+ (
+  select string_agg(inputfield, ',')
+ from
+  documenttemplateinputfieldsconfig dtifc
+ where
+  dtifc.roletypekey = v_roletypekey
+  and dtifc.documenttemplatekey = dtrc.documenttemplatekey
+ group by
+  dtifc.documenttemplatekey) as inputfields,
+
+ ev.headertemplatehtml,
+ ev.isheaderrequired,
+ ev.youthbasedocument,
+ ev.documenttemplatekey,
+ (SELECT UP.fullname
+ FROM
+ userprofile UP 
+ WHERE UP.securityusersid = dt.insertedby
+ and UP.activeflag = 1 limit 1),
+ dt.insertedon as generatedate,
+ dt.documentpath,
+ dtrc.beforesubmit
+from documenttemplate ev  
+inner join evaluationdocument   dt on dt.documenttemplatekey= ev.documenttemplatekey and dt.activeflag =1 
+inner join documenttemplateroletypeconfig  dtrc on dtrc.documenttemplatekey = dt.documenttemplatekey and dtrc.activeflag = 1 
+inner join intakedocclassification idc on idc.documenttemplatekey = dt.documenttemplatekey and idc.activeflag=1
+where ev.activeflag =1 and 
+ dtrc.roletypekey =v_roletypekey --and idc.roletype_key = v_roletypekey  
+and case when  v_restitutionno is not  null  then 
+            dt.intakenumber = v_resintakenumber
+   when  v_intakenumber is not null then 
+     dt.intakenumber = v_intakenumber
+   when v_intakeserviceid is not null then
+     dt.intakeserviceid = v_intakeserviceid
+       end
+and dt.versionno < v_versionnumber
+and ev.documenttemplatekey = v_documenttemplatekey
+and (case when v_persontypekey is not null then dt.persontypekey = v_persontypekey else true end) 
+  LIMIT pagesize OFFSET v_pageoffset; 
+END;
+$function$
+

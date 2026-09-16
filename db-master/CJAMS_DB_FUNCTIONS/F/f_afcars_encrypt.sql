@@ -1,0 +1,39 @@
+-- Drop Function if exists cjams.f_afcars_encrypt(character varying); 
+
+CREATE OR REPLACE FUNCTION cjams.f_afcars_encrypt(vs_entity_id character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+
+-- To Encrypt the Case/Client/User IDs for Federal Reporting
+-- This Procedure is calling Sub SP based on the Entity IDs with length 
+
+-- Revision(s):
+-- 01/05/2022 - Vineet Tirodkar - Commented RAISE NOTICEs for Log file size issue (CIDM-4132)
+------------------------------------------------------------------------
+DECLARE vl_encrypt_entity_id VARCHAR(12);
+	
+BEGIN
+	IF length(vs_entity_id) <= 9 THEN
+		-- RAISE NOTICE 'Call f_afcars_encrypt_chessie - INPUT %', vs_entity_id;
+		
+		select *
+			from cjams.f_afcars_encrypt_chessie(vs_entity_id) 
+		into vl_encrypt_entity_id ;
+	ELSE
+		-- RAISE NOTICE 'Call f_afcars_encrypt_cjams - INPUT %', vs_entity_id;
+		
+		select *
+			from cjams.f_afcars_encrypt_cjams(vs_entity_id) 
+		into vl_encrypt_entity_id ;
+	END IF;
+	
+	-- RAISE NOTICE 'OUTPUT %', vl_encrypt_entity_id;
+	
+	RETURN vl_encrypt_entity_id;
+END;
+
+$function$
+;

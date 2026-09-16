@@ -1,0 +1,81 @@
+CREATE OR REPLACE FUNCTION as_listintakeservicestatus(userid character varying, reqforservice character varying, pagenumber integer, pagelimit integer, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, insertedon timestamp without time zone, sstastatustypekey character varying, requestforservice character varying, reqforservstatus character varying, raname character varying, asstscore text, assessmentscore bigint, daterecieved timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+DECLARE totalcount integer;
+
+ BEGIN
+ v_limit=10;
+    v_pagenumber := pageNumber-1;
+    v_pageoffset = v_pagenumber * v_limit;
+   
+   if(Reqforservice =null or Reqforservice ='') then
+   
+   Reqforservice=null;
+   
+   end if;
+   
+ RETURN QUERY 
+ 
+select count, a.intakenumber, a.insertedon, a.sstastatustypekey, a.requestforservice,
+a.reqforservstatus,a.raname, cast(a.asstscore as text), sum(a.assessmentscore),a.daterecieved from (
+select count(1)  over(), rfs.intakenumber,rfs.insertedon,ids.sstastatustypekey,
+ rfs.intakeservtypekey as requestforservice, 
+ coalesce(asst.score,0) as assessmentscore,
+ rfs.reqforservstatus as reqforservstatus,
+ ids.raname
+ 
+  ,(select Json_agg(asst) as asstscore from 
+  (SELECT  
+  amt.titleheadertext,
+  asm.score  
+  FROM
+  assessment asm
+  JOIN assessmenttemplate amt ON amt.assessmenttemplateid=asm.assessmenttemplateid 
+  AND amt.activeflag=1
+  where asm.intakenumber=rfs.intakenumber 
+   ) asst),
+   ids.daterecieved
+ 
+ from intakedastaging  ids 
+ inner join intakereqforservconfig rfs on ids.intakenumber=rfs.intakenumber
+ left join assessment asst on asst.intakenumber=rfs.intakenumber 
+ and asst.activeflag=1 
+   where ids.insertedby = userid and ids.activeflag=1 
+ and rfs.reqforservstatus='Pending' 
+   and CASE WHEN Reqforservice is NOT NULL THEN (rfs.intakeservtypekey = Reqforservice) ELSE TRUE END
+) a
+group by count, a.intakenumber, a.insertedon, a.sstastatustypekey, a.requestforservice,
+a.reqforservstatus,a.raname, cast(a.asstscore as text),a.assessmentscore,a.daterecieved
+order by  
+ ( CASE sortorder when 'asc' then 
+  CASE sortcolumn 
+  when 'datereceived' then 
+          cast( a.insertedon as character varying) 
+         when 'assessmentscore' then 
+         cast( a.assessmentscore as character varying)
+  when 'intakenumber' then 
+          cast( a.intakenumber as character varying) 
+  else cast( a.insertedon as character varying) end end) asc,
+ ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'datereceived' then 
+          cast( a.insertedon as character varying) 
+          when 'assessmentscore' then 
+          cast( a.assessmentscore as character varying)
+  when 'intakenumber' then 
+          cast( a.intakenumber as character varying) 
+  else cast( a.insertedon as character varying) end end) desc
+ 
+ LIMIT v_limit OFFSET v_pageoffset ;  
+                     
+END
+
+$function$
+

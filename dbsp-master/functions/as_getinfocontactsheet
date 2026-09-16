@@ -1,0 +1,145 @@
+CREATE OR REPLACE FUNCTION as_getinfocontactsheet(p_intakenumber character varying, p_intakeserviceid uuid, i_secid character varying)
+ RETURNS TABLE(infojson json)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+     RETURN QUERY 
+      (select json_agg(b) as infojson from (
+   select distinct isr.intakenumber,cast(isr.intakeserviceid as character varying),
+    cast(p.cjamspid as character varying) as youthpid,
+    cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as character varying) as youthname,
+    cast(p.dob as character varying) as dob,
+    cast(pa.address as character varying)as address,
+    pa.city,
+    pa.state,
+    pa.zipcode,
+    cast(coalesce(pph.phoneextension,'000')||'-'||pph.phonenumber as character varying) as homephonenumber,
+    cast(coalesce(pphs.phoneextension,'000')||'-'||pphs.phonenumber as character varying) as workphonenumber,
+    pgdetail.parentguaridanname as parentguaridanname,
+    pl.addate as admissiondate,
+    isrca.courtorderdatetime as courtdate,
+    isr.servicerequestnumber,
+    isrca.magistratename,
+    cast(p.cjamspid as character varying),
+    (select string_agg(al."name",', ')
+    from intakeservicerequestevaluationconfig isrec
+    join allegation al on al.allegationid = isrec.allegationid and al.activeflag = 1
+    where isrec.intakeservicerequestevaluationid = isrpc.intakeservicerequestevaluationid and isrec.activeflag = 1) as "allegationname",
+    cast(null as character varying) as "FMD",
+    cast(null as character varying) as "Transmitter",
+    cast(null as character varying) as safetyconcern,
+    s.schoolname as schoolname,
+    s.address as schooladdress,
+    s.phonenumber as schoolcontactnumber,
+    s.city as schoolcity,
+    s.statekey as schoolstate,
+    s.zipcode as schoolzipcode,
+    cast(upcw.lastname||', '||upcw.firstname as character varying) as proboff,-- case worker 
+    cast(coalesce(uppcw.phoneextension,'000')||'-'||uppcw.phonenumber as character varying) as proboffphone,
+    cast(upcwf.lastname||', '||upcwf.firstname as character varying) as cmsname, -- Case Supervisor,DJS
+    cast(coalesce(uppcwf.phoneextension,'000')||'-'||uppcwf.phonenumber as character varying) as cmsphone,
+    cast(upadu.lastname||', '||upadu.firstname as character varying) as cdo --aaron - ADU
+   from  intakeservicerequest isr  
+   left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on isr.intakeserviceid = pl.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   left join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and  isra.activeflag = 1
+   join actor a on a.actorid = isra.actorid  and a.activeflag =1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1
+   left join personphonenumber pph on pph.personid = p.personid and pph.personphonetypekey = 'P' and pph.activeflag = 1
+   left join personphonenumber pphs on pphs.personid = p.personid and pphs.personphonetypekey = 'S' and pphs.activeflag = 1
+   left join (select  isra.intakeserviceid,
+        row_number() over(partition by isra.intakeserviceid order by rel) as recno,
+        cast(p.firstname||' '||p.lastname as character varying) as parentguaridanname,
+    cast(coalesce(pph.phoneextension,'000')||pph.phonenumber as character varying) as parentcontactnumber,
+    cast(pa.address||' '||pa.address2||' '||pa.city||','||pa.state||','||pa.zipcode as character varying) as parentaddress
+   from intakeservicerequestactor isra  
+   left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+   join actor a on a.actorid = isra.actorid and a.activeflag =1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join personphonenumber pph on pph.personid = p.personid
+   left join personaddress pa on pa.personid = p.personid
+   join (select 1 as seq,'father' as relation union 
+      select 2 as seq,'mother' as relation union
+      select 3 as seq,'fosterparent' as relation union 
+      select 4 as seq,'stepparent' as relation union
+      select 5 as seq,'adoptiveparent' as relation union 
+      select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey )pgdetail on pgdetail.intakeserviceid = isr.intakeserviceid and pgdetail.recno = 1 
+   left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing where activeflag = 1) ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1 and ich.recno = 1
+   left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+   left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+   left join (select *,row_number() over(partition by intakeservicerequestcourthearingid order by updatedon desc) as recno from intakeservicerequestcourtaction where activeflag = 1) isrca on isrca.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and isrca.recno = 1 
+   left join intakeservreqevalpetitionconfig isrpc on isrpc.intakeservicerequestpetitionid = isrp.intakeservicerequestpetitionid and isrpc.activeflag = 1
+   left join personeducation pe on pe.personid = p.personid and pe.activeflag = 1
+   left join school s on s.schoolid = pe.schoolid and s.activeflag = 1
+   left join routing adu on ((cast(isr.intakeserviceid as character varying)= adu.objectid) or (isr.intakenumber = adu.objectid)) and  adu.toroleid = 'JSADU' 
+   left join userprofile upadu on upadu.securityusersid = adu.tosecurityusersid and upadu.activeflag = 1
+   left join routing cwr on ((cast(isr.intakeserviceid as character varying)= cwr.objectid) or (isr.intakenumber = cwr.objectid)) and  cwr.toroleid = 'JSCW'
+   left join userprofile upcw on upcw.securityusersid = cwr.tosecurityusersid and upcw.activeflag = 1
+   left join userprofilephonenumber uppcw on uppcw.securityusersid = upcw.securityusersid and uppcw.activeflag = 1
+   left join userprofile upcwf on upcwf.securityusersid = cwr.fromsecurityusersid and upcwf.activeflag = 1
+   left join userprofilephonenumber uppcwf on uppcwf.securityusersid = upcwf.securityusersid and uppcwf.activeflag = 1
+   where isr.activeflag = 1
+   and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end) 
+   and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end)
+   union ALL
+   select distinct
+          ida.intakenumber,
+    cast(null  as character varying) as intakeserviceid,
+    cast(coalesce(obj->>'cjamspid','') as character varying) as youthpid,
+    cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+      cast(obj->>'Dob'as character varying) as dob,
+     cast(obj->>'address'as character varying) as address,
+     cast(obj->>'City' as character varying) as city,
+     cast(obj->>'State' as character varying) as state,
+     cast(obj->>'zipcode' as character varying) as zipcode,
+    cast( obj->>'phoneNo' as character varying) as homephonenumber,
+     cast(null as  character varying) workphonenumber,
+      cast((select cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   
+                       from intakedastaging ida , jsonb_array_elements(ida.jsondata->'persons') obj
+                       where ida.activeflag=1  and obj->>'Role' ='parent-or-guard'  and (obj->>'RelationshiptoRA' ='father' or obj->>'RelationshiptoRA' ='mother') and ida.intakenumber=p_intakenumber)  as character varying) as parentguaridanname,
+     pl.addate as admissiondate,
+     isrca.courtorderdatetime as courtdate,
+     null as servicerequestnumber,
+     isrca.magistratename,
+     cast(coalesce(obj->>'cjamspid','') as character varying) as cjamspid,
+    (select string_agg(al."name",', ')
+    from intakeservicerequestevaluationconfig isrec
+    join allegation al on al.allegationid = isrec.allegationid and al.activeflag = 1
+    where isrec.intakeservicerequestevaluationid = isrpc.intakeservicerequestevaluationid and isrec.activeflag = 1) as "name",
+      cast(null as character varying) as "FMD",
+      cast(null as character varying) as "Transmitter",
+      cast(null as character varying) as safetyconcern,
+   obj->>'school' as schoolname ,
+   cast(null as character varying) as schooladdress,
+   null as schoolcontactnumber,
+    cast(null as character varying) as schoolcity,
+    cast(null as character varying) as schoolstate,
+    cast(null as character varying) as schoolzipcode,
+   cast((select distinct up.lastname||', '||up.firstname  from userprofile up where securityusersid = i_secid) as character varying) as  proboff,
+   cast((select distinct cast(coalesce(phoneextension,'000')||'-'||phonenumber as character varying) from userprofilephonenumber where securityusersid = i_secid) as character varying) as proboffphone,
+            cast(sup.supename as character varying) as cmsname,
+    cast(sup.supphone as character varying) as cmsphone,
+    cast(cdo.cdoname  as character varying)  as cdo
+         FROM
+         intakedastaging ida 
+          left join placement pl on ida.intakenumber =pl.intakenumber and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1 
+    left join (select objectid,up.lastname||', '||up.firstname as supename,cast(coalesce(phoneextension,'000')||'-'||phonenumber as character varying)  as supphone from routing  join userprofile up
+                 on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP' 
+                   left join userprofilephonenumber upp on routing.tosecurityusersid=upp.securityusersid and upp.activeflag=1 and upp.userprofiletypekey='office'  ) sup
+                on ida.intakenumber=sup.objectid
+              left join (select distinct objectid,up.lastname||', '||up.firstname as cdoname from routing join userprofile up
+             on routing.fromsecurityusersid=up.securityusersid and up.activeflag=1 and routing.fromroleid='JSIW' and routing.toroleid='JSADU'  ) cdo
+             on ida.intakenumber=sup.objectid
+    left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing where activeflag = 1) ich on ich.intakenumber = ida.intakenumber and ich.activeflag = 1 and ich.recno = 1
+   left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+   left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+   left join (select *,row_number() over(partition by intakeservicerequestcourthearingid order by updatedon desc) as recno from intakeservicerequestcourtaction where activeflag = 1) isrca on isrca.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and isrca.recno = 1 
+   left join intakeservreqevalpetitionconfig isrpc on isrpc.intakeservicerequestpetitionid = isrp.intakeservicerequestpetitionid and isrpc.activeflag = 1,
+  jsonb_array_elements(ida.jsondata->'persons') obj 
+          where  ida.activeflag=1  and obj->>'Role' ='Youth'  and  obj->>'cjamspid' is not null and
+          (ida.intakenumber=NULL or ida.intakenumber=p_intakenumber) limit 1  )b  ) ;  
+END;
+$function$
+

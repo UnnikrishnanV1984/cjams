@@ -1,0 +1,86 @@
+CREATE OR REPLACE FUNCTION as_sendresidentialnotification()
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+declare 
+
+v_record record;
+v_subject character varying;
+v_body text;
+v_send_notification character varying;
+v_closedplacement   record;
+v_person uuid;
+v_intakeserviceid uuid;
+v_count bigint;
+
+begin
+
+FOR  v_closedplacement  in
+
+select max(pl.enddatetime) as enddatetime ,p.personid  as personid,isra.intakeserviceid as vintakeserviceid
+from  placement pl
+inner join intakeservicerequestactor isra on pl.intakeservicerequestactorid = isra.intakeservicerequestactorid and isra.activeflag=1
+inner join actor ac on ac.actorid = isra.actorid and ac.activeflag =1
+inner join person  p on ac.personid = p.personid and p.activeflag=1
+where  pl.enddatetime is not null and pl.placementadmissionclassificationkey = 'RES'
+and  pl.activeflag =1
+group by p.personid,isra.intakeserviceid
+order by max(pl.enddatetime) desc
+    
+ loop 
+select count(*) into v_count  from 
+(select *
+from placement pl
+inner join intakeservicerequestactor isra on pl.intakeservicerequestactorid = isra.intakeservicerequestactorid and isra.activeflag=1
+inner join actor ac on ac.actorid = isra.actorid and ac.activeflag =1
+inner join person  p on ac.personid = p.personid and p.activeflag=1
+where pl.activeflag=1 and pl.placementadmissionclassificationkey = 'RES'
+and  pl.enddatetime is null and p.personid =v_closedplacement.personid
+and  EXTRACT(epoch FROM  (((pl.addate::timestamp -v_closedplacement.enddatetime::timestamp):: interval)/3600)) ::int
+BETWEEN  '48'
+and  '72')a;
+
+ RAISE NOTICE 'v_count:%', v_count;
+
+   
+
+if v_count  = 0 then
+
+   v_intakeserviceid =v_closedplacement.vintakeserviceid;
+ RAISE NOTICE 'v_count111:%', v_count;
+    RAISE NOTICE 'v_intakeserviceid111:%', v_intakeserviceid;
+FOR  v_record  in
+
+select  mu.securityusersid
+from muser mu 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+join role r on r.id = rm.roleid :: int and r.activeflag =1
+where 
+    r.roletypekey ilike 'IVE%' and mu.activeflag =1
+  
+    
+ loop 
+RAISE NOTICE 'v_record.securityusersid %', v_record.securityusersid ;
+  v_subject =  'Residental placement has been closed and not open within 48 hours';
+  v_body = 'Residental placement has been closed and not open within 48 hours';
+ 
+ select send_notification into v_send_notification from as_send_notification(v_record.securityusersid,'Admin',v_record.securityusersid::character varying,'System'::character varying,'High'::character varying,v_subject::character varying,v_body::character varying,v_intakeserviceid::character varying,false);
+
+
+ END  LOOP;
+
+end if;
+
+
+ END  LOOP;
+
+RETURN
+'Success';
+end;
+ 
+
+$function$
+

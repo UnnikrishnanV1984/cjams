@@ -1,0 +1,102 @@
+CREATE OR REPLACE FUNCTION as_updateteamassignment(v_email character varying, v_teamnumber character varying, v_statecountycode character varying, v_teamname character varying, v_roletypekey character varying, v_assupervisoremail character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_teamid uuid;
+ v_countyid uuid;
+ v_positioncode character varying;
+ v_securityusersid character varying;
+ v_teammemberid uuid;
+ v_loadnumber character varying;
+ v_teammemberassignmentid uuid;
+ v_principalid character varying;
+ v_roleid integer;
+ v_assupervisorid uuid;
+
+BEGIN
+ v_teamid := null;
+ v_positioncode := v_statecountycode;
+ v_securityusersid := null;
+ v_teammemberid := null;
+ v_teammemberassignmentid := null;
+ v_principalid := null;
+ v_roleid := null;
+ v_assupervisorid := null;
+ 
+ SELECT securityusersid, 
+        lower(substring(firstname, 1, 1)) || lower(lastname)::character varying
+     INTO v_securityusersid, v_loadnumber
+   FROM userprofile 
+   WHERE email = v_email
+   AND activeflag = 1
+   LIMIT 1;
+   
+ IF (v_securityusersid IS NULL) THEN
+  RETURN 'New user.. Please go onboarding route';
+ ELSE
+ 
+    SELECT id INTO v_principalid FROM muser where securityusersid = v_securityusersid and activeflag=1 LIMIT 1;
+    SELECT id INTO v_roleid FROM role where roletypekey = v_roletypekey and activeflag=1 LIMIT 1;
+    SELECT securityusersid INTO v_assupervisorid FROM userprofile where email = v_assupervisoremail and activeflag = 1 LIMIT 1;
+    SELECT teamid  INTO v_teamid FROM team WHERE teamnumber = v_teamnumber AND activeflag = 1 LIMIT 1;
+    
+  
+  IF (v_teamid IS NULL) THEN
+   
+   SELECT countyid INTO v_countyid 
+    FROM county  WHERE statecountycode = v_statecountycode and activeflag = 1;
+    
+   INSERT INTO team(teamid,
+     activeflag, teamname, teamnumber, teamtypekey, description, 
+     officetimingfrom, officetimingto, insertedby, insertedon, updatedby, 
+     updatedon, effectivedate,  region, regionid, countyid, supervisorid)
+    VALUES (gen_random_uuid(),
+     1, v_teamname, v_teamnumber, 'AS', v_teamname, 
+     '08:00:00'::time without time zone, '16:00:00'::time without time zone, 'AS-ADMIN', now(), 'AS-ADMIN', 
+     now(), now(), 0, null, v_countyid::character varying, null) returning teamid into v_teamid;
+     
+  END IF;
+   
+  INSERT INTO teammember (teammemberid, activeflag, teamid, loadnumber, roletypekey, 
+    positioncode, description, isoncall, insertedby, insertedon, 
+    updatedby, updatedon, effectivedate, rtfdate, coadate, isdefaultroute)
+   VALUES (gen_random_uuid(), 1, v_teamid, v_loadnumber, v_roletypekey,
+    v_positioncode, '', true, '', now(), 
+    'AS-ADMIN',  now(),  now(), now(), now(), 1)  returning teammemberid into v_teammemberid; 
+     
+  SELECT teammemberassignmentid INTO v_teammemberassignmentid FROM as_teammemberassignment where securityusersid = v_securityusersid and activeflag=1;
+  
+       IF (v_teammemberassignmentid IS NOT NULL) THEN
+  
+   UPDATE as_teammemberassignment 
+   SET teammemberid = v_teammemberid
+   WHERE teammemberassignmentid = v_teammemberassignmentid;
+   
+    ELSE 
+  
+   INSERT INTO as_teammemberassignment(teammemberassignmentid, activeflag, teammemberid, securityusersid, insertedby, insertedon, updatedby, updatedon, effectivedate) 
+   VALUES (gen_random_uuid(), 1, v_teammemberid, v_securityusersid, 'AS-ADMIN', now(), 'AS-ADMIN', now(), now());
+
+          END IF; 
+
+          UPDATE rolemapping 
+    SET activeflag=0, updatedon = now(), updatedby = 'AS-ADMIN'
+    WHERE principalid = v_principalid AND teamtypekey = 'AS';
+    
+          INSERT INTO rolemapping (principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, old_id, teamtypekey) 
+    values ('USER', v_principalid, v_roleid, 1, 'AS ADMIN','AS ADMIN', now(), now(),'','AS'); 
+    
+    UPDATE userprofile
+          SET assupervisorid = v_assupervisorid, updatedon = now(), updatedby = 'AS-ADMIN'
+          WHERE securityusersid = v_securityusersid and activeflag=1;    
+
+    
+  RETURN 'Success';
+ END IF;
+
+END;
+
+$function$
+

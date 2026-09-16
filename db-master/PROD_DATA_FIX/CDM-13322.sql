@@ -1,0 +1,1 @@
+update cjams.contactparticipant set activeflag =0, updatedby ='CDM-13322', updatedon =now() where contactparticipantid in('1715eada-979d-43f7-aab4-fd95f22d03ba','a63e6003-53b5-47b2-b2af-2e55a7ab6115','ed2a5f0e-7dfa-4127-9662-280b5fbd07db','e268f2d4-5fb4-4b57-b7f1-424ee7f434d5','f715b9ed-1067-4b72-bb75-95e41ebc59c9' );

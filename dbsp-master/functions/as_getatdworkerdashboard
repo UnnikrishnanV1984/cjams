@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION as_getatdworkerdashboard(v_role character varying, v_status character varying, v_intakenumber character varying, assignedid character varying, pageno integer, pagesize integer)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, youthname character varying, cjamspid bigint, insertedon timestamp without time zone, personid uuid, jsondata jsonb, securityusersid character varying, assigneduser character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+
+ v_pageoffset int;
+  v_pagenumber int;
+ placementcount int;
+  
+
+BEGIN 
+ v_pagenumber := pageno-1;
+ v_pageoffset = v_pagenumber * pagesize;
+
+
+                  
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+ RETURN Query
+  SELECT COUNT(1) OVER() totalCOUNT, 
+ IDAS.intakenumber,  
+  cast(p.lastname  ||',  '||p.firstname  as  character  varying) youthname,
+  p.cjamspid,  
+  R.insertedon,p.personid,IDAS.jsondata,
+  up.securityusersid,
+  cast(up.lastname  ||',  '||up.firstname  as  character  varying) assigneduser
+  
+  from routing R
+  join IntakeDAStaging  IDAS    on IDAS.intakenumber  =  R.objectid and IDAS.activeflag=1
+        INNER JOIN intakeDAStatus ITDS on ITDS.intakenumber  =  IDAS.intakenumber    and ITDS.activeflag=1
+  inner join person P on p.personid=IDAS.focuspersonid and p.activeflag=1
+  left join userprofile up on up.securityusersid=R.tosecurityusersid and up.activeflag=1
+  left join placement pl on pl.intakenumber=IDAS.intakenumber and pl.activeflag=1
+  where R.activeflag=1 
+  and    IDAS.intakenumber  LIKE  v_intakenumber  ||'%'
+  
+  and
+  case 
+  when v_status='pending' then R.toroleid=v_role and R.routingstatustypeid =97
+  when v_status = 'assigned'  then 
+  R.routingstatustypeid =98 and pl.enddatetime is null 
+  when v_status = 'closed' then 
+  R.routingstatustypeid =98 AND ITDS.intakenumber in (select PM.intakenumber from placement as PM where  lower(PM.lrstatus)='closed') end
+   AND CASE WHEN assignedid is NOT NULL THEN (R.tosecurityusersid=assignedid ) ELSE true end
+
+      
+order by R.insertedon desc
+
+ limit pagesize  offset v_pageoffset ;
+END;
+
+$function$
+

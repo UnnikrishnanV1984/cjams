@@ -1,0 +1,173 @@
+CREATE OR REPLACE FUNCTION prov_getvendorclosurechecklist(v_vendorid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+  v_closurechecklist json;
+  
+-- v_provapproval number;
+-- v_provapprovalmsg character varying;
+-- v_adoptionsubsidy number;
+-- v_adoptionsubsidymsg character varying;
+-- v_provlicenses number;
+-- v_provlicensesmsg character varying;
+-- v_provguardsubsidy number;
+-- v_provguardsubsidymsg character varying;
+-- v_contract number;
+-- v_contractmsg character varying;
+
+-- v_provplacement number;
+-- v_provplacementmsg character varying;
+-- v_provcpaplacement number;
+-- v_provcpaplacementmsg character varying;
+
+ v_paymentheaders number;
+ v_paymentheadersmsg character varying;
+
+ v_acctreceivable number;
+ v_acctreceivablemsg character varying;
+
+ v_purchaseauth number;
+ v_purchaseauthmsg character varying;
+
+ v_services number;
+ v_servicesmsg character varying;
+ v_placementvalidation number;
+ v_placementvalidationmsg character varying;
+ v_contractprograms number;
+ v_contractprogramsmsg character varying;
+ v_categorycd int8;
+    isPublic character varying;
+    isPrivate character varying;
+   current_date date;
+ begin   
+  isPublic=false;
+ isPrivate=false;
+ select now()::date into current_date;
+ raise notice '%',current_date;
+
+
+ -- Payments   BOTH
+ -- # 828 - This provider cannot be closed.  There are payments and/or placement validations pending for this provider.
+ v_paymentheaders:=-1;
+  select count(*) into v_paymentheaders
+  from tb_payment_header ph,   
+   tb_payment_status ps
+  where ph.payment_id = ps.payment_id  
+   and ( ps.payment_status_cd not in ('1636', '1639') or
+      ps.payment_status_cd is null or
+      rtrim(ltrim(ps.payment_status_cd)) = ''
+    ) 
+   and ph.delete_sw = 'N' 
+   and ps.delete_sw = 'N' 
+   and ph.payment_type_cd <> '6' 
+   and ph.provider_id =v_vendorid;
+   if (v_paymentheaders<>0) then 
+     v_paymentheadersmsg:='This provider cannot be closed.  There are payments validations pending for this provider.';
+   else
+    v_paymentheadersmsg:='No payments validations pending for this provider.';
+   end if;
+  v_placementvalidation:=-1;
+  select count(*)  into v_placementvalidation
+  from tb_placement_validation
+  where placement_id in
+   (  select placement_id
+     from tb_placement
+    where provider_id  = v_vendorid
+     AND coalesce(void_sw, 'N') <> 'Y'
+     and entry_dt is not null
+     and delete_sw = 'N'
+   )
+  and delete_sw = 'N'
+  and ( validation_status_cd <> '1750' or validation_status_cd is null ) ;
+  if (v_placementvalidation<>0) then 
+   v_placementvalidationmsg:='This provider validation cannot be closed.  There are placement validations pending for this provider.';
+  else
+  v_placementvalidationmsg:='No placement validations pending for this provider.';
+  end if;
+  -- Account Receivables  BOTH
+  -- # 829 - provider cannot be closed.  Receivables exist for this provider.
+  v_acctreceivable:=-1;
+  select count(*) into v_acctreceivable
+  from tb_receivable_header rh,  
+      tb_receivable_detail rd, 
+      tb_receivable_collection_status rs
+  where rh.receivable_id = rd.receivable_id  
+   and rd.receivable_detail_id = rs.receivable_detail_id  
+   and rd.delete_sw = 'N'  
+   and rh.delete_sw = 'N'  
+   and rs.delete_sw = 'N' 
+   and rs.active_sw = 'Y' 
+   and rs.collection_status_cd = '779' 
+   and rd.receivable_balance_no > 0 
+   and rh.provider_id = v_vendorid;
+  if (v_acctreceivable<>0) then 
+   v_acctreceivablemsg:='This provider cannot be closed.  Receivables exist for this provider.';
+  else
+   v_acctreceivablemsg:='Account Receivables should not exist for this provider.';
+  end if;
+-- Purchase Authorization  BOTH
+-- # 816 - This provider cannot be closed until all outstanding purchase authorizations have received payment approval.
+v_purchaseauth:=-1;
+select count(*) into v_purchaseauth
+from tb_service_log sl,   
+ tb_service_purchase_authorization sp,   
+ tb_provider_services  ps
+where sp.service_log_id = sl.service_log_id 
+ and ps.provider_service_id = sl.provider_service_id 
+ and (  sp.funding_approval_status_cd is null 
+   or sp.funding_approval_status_cd = '3045' 
+   or sp.payment_approval_status_cd is null 
+   or sp.payment_approval_status_cd = '3045' 
+  ) 
+ and coalesce(sp.sprvsr_approval_status_cd, '') <> '3281'
+ and coalesce(sp.ads_approval_status_cd, '') <> '3281' 
+ and coalesce(sp.funding_approval_status_cd, '') <> '3281' 
+ and coalesce(sp.payment_approval_status_cd, '') <> '3281' 
+ and ps.provider_id = v_vendorid
+ and sl.delete_sw = 'N' 
+ and sp.delete_sw = 'N'  
+ and ps.delete_sw = 'N' ;
+ if (v_purchaseauth<>0) then 
+   v_purchaseauthmsg:='This provider cannot be closed until all outstanding purchase authorizations have received payment approval.';
+  else
+   v_purchaseauthmsg:='All outstanding purchase authorizations should have received payment approval.';
+ end if;
+-- Service Logs BOTH
+-- # 849 - This provider cannot be closed until all associated service log records have been end-dated.
+v_services:=-1;
+ select count(*) into v_services
+ from tb_service_log sl,   
+     tb_provider_services ps 
+ where ps.provider_service_id = sl.provider_service_id 
+  and sl.start_dt is not null 
+  and sl.end_dt is null
+  and ps.provider_id = v_vendorid
+  and sl.delete_sw = 'N'  
+  and ps.delete_sw = 'N' ;
+ if (v_services<>0) then 
+   v_servicesmsg:='This provider cannot be closed until all associated service log records have been end-dated.';
+  else
+   v_servicesmsg:='All outstanding purchase authorizations should have received payment approval.';
+ end if;
+
+
+return json_build_object(--'home_approval',json_build_object('name','Home Approvals','cnt',v_provapproval ,'message',v_provapprovalmsg),
+     --'licenses',json_build_object('name','Licenses','cnt',v_provlicenses ,'message',v_provlicensesmsg),
+     --'contracts',json_build_object('name','Contracts','cnt',v_contract ,'message',v_contractmsg),
+     --'programs',json_build_object('name','Programs','cnt',v_contractprograms ,'message',v_contractprogramsmsg),
+     --'placements',json_build_object('name','Placements','cnt',v_provplacement ,'message',v_provplacementmsg),
+    -- 'cpa_placements',json_build_object('name','Home Placements','cnt',v_provcpaplacement ,'message',v_provcpaplacementmsg),
+    -- 'guardian_subsidies',json_build_object('name','Guardian Subsidies','cnt',v_provguardsubsidy ,'message',v_provguardsubsidymsg),
+    -- 'adoption_subsidies',json_build_object('name','Adoption Subsidies','cnt',v_adoptionsubsidy ,'message',v_adoptionsubsidymsg),
+     'outstanding_payments',json_build_object('name','Outstanding Payments','cnt',v_paymentheaders ,'message',v_paymentheadersmsg),
+     'account_receivables',json_build_object('name','Account Receivables','cnt',v_acctreceivable ,'message',v_acctreceivablemsg),
+     'purchase_authorizations',json_build_object('name','Purchase Authorizations','cnt',v_purchaseauth ,'message',v_purchaseauthmsg),
+     'service_logs',json_build_object('name','Service Logs','cnt',v_services ,'message',v_servicesmsg)
+     --'placement_validations',json_build_object('name','Placement Validations','cnt',v_placementvalidation ,'message',v_placementvalidationmsg)                                                                                                                                                                                                                      
+                     ) as chklist;          
+ --v_closurechecklist;
+ end;                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                 
+ $function$
+

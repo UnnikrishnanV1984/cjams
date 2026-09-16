@@ -1,0 +1,202 @@
+CREATE OR REPLACE FUNCTION sp_cares_outbound_interface_gen_data_50(vl_client_id integer, vl_other_id character varying, vs_transaction_type_cd character varying, vl_transaction_sequence integer, vd_transaction_ts timestamp without time zone, OUT vs_message character varying, OUT vl_output_sqlcode character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Sudhin
+-- Date Created :08/01/2005
+-- generates Cares Interface Outbound Data
+------------------------------------------------------------------------
+
+    DECLARE VS_RECORD_TYPE VARCHAR(2);--
+    VL_RECORD_SEQUENCE INTEGER DEFAULT 000;--
+    VS_TRANSACTION_SEQUENCE VARCHAR(5);--
+    VS_RECORD_SEQUENCE VARCHAR(3);--
+    -- Client Variables
+     VS_CIS_CLIENT_ID VARCHAR(10);      --  CARES_OUT_COL6
+
+     CARES_OUT_INCOME_COL1 CHAR(5);--
+     CARES_OUT_INCOME_COL2 CHAR(5);--
+     CARES_OUT_INCOME_COL3 CHAR(5);--
+     CARES_OUT_INCOME_COL4 DECIMAL(10,2);--
+     CARES_OUT_INCOME_COL4_CONV VARCHAR(15);--
+     CARES_OUT_INCOME_COL5 INTEGER;--
+
+    DECLARE CURSOR_INCOME CURSOR FOR
+          SELECT CASE WHEN personincome.incomesourcetypekey = 'CS' THEN '1317'
+                     WHEN personincome.incomesourcetypekey = 'GLFE' THEN '1318'
+         WHEN personincome.incomesourcetypekey = 'IFSP' THEN '1319'
+         WHEN personincome.incomesourcetypekey = 'NRI' THEN '1320'
+         WHEN personincome.incomesourcetypekey = 'NO' THEN '1321'
+         WHEN personincome.incomesourcetypekey = 'PEN' THEN '1322'
+         WHEN personincome.incomesourcetypekey = 'RRB' THEN '1323'
+         WHEN personincome.incomesourcetypekey = 'RCC' THEN '1324'
+         WHEN personincome.incomesourcetypekey = 'SEE' THEN '1325'
+         WHEN personincome.incomesourcetypekey = 'SLB' THEN '1326'
+         WHEN personincome.incomesourcetypekey = 'SSB' THEN '1327'
+         WHEN personincome.incomesourcetypekey = 'TANF' THEN '1328'
+         WHEN personincome.incomesourcetypekey = 'TIPS' THEN '1329'
+         WHEN personincome.incomesourcetypekey = 'UC' THEN '1330'
+         WHEN personincome.incomesourcetypekey = 'VB' THEN '1331'
+         WHEN personincome.incomesourcetypekey = 'WS' THEN '1332'
+         WHEN personincome.incomesourcetypekey = '' THEN '    '
+         ELSE personincome.incomesourcetypekey
+         END,
+             CASE WHEN personincome.incomefrequencytypekey = 'TM' THEN '1241'
+                     WHEN personincome.incomefrequencytypekey = 'ETW' THEN '1237'
+         WHEN personincome.incomefrequencytypekey = 'MON' THEN '1238'
+         WHEN personincome.incomefrequencytypekey = 'WKLY' THEN '1243'
+         WHEN personincome.incomefrequencytypekey = 'DAI' THEN '1236'
+         WHEN personincome.incomefrequencytypekey = 'ANN' THEN '1235'
+         WHEN personincome.incomefrequencytypekey = 'OT' THEN '1239'
+         WHEN personincome.incomefrequencytypekey = 'QRTY' THEN '1240'
+         WHEN personincome.incomefrequencytypekey = 'TY' THEN '1242'
+         WHEN personincome.incomefrequencytypekey = '' THEN '    '
+       ELSE personincome.incomefrequencytypekey
+         END,
+          CASE WHEN personincome.verificationtypekey = 'BS' THEN '2846'
+                     WHEN personincome.verificationtypekey = 'CR' THEN '2847'
+         WHEN personincome.verificationtypekey = 'CSEA' THEN '2848'
+         WHEN personincome.verificationtypekey = 'SVES' THEN '2849'
+         WHEN personincome.verificationtypekey = '' THEN '    '
+         ELSE personincome.verificationtypekey 
+         END,
+                  personincome.amount,
+      to_char(personincome.enddate, 'yyyymmdd'):: integer
+                      FROM personincome, person 
+          WHERE personincome.personid = person.personid
+    and person.cjamspid = VL_CLIENT_ID
+          AND personincome.activeflag = 1
+          AND caresincome IS NULL
+          AND amount > 0
+          UNION ALL
+          SELECT TR.TRANSACTION_SOURCE_CD,
+             '',
+             '',
+             SUM(TR.TRANSACTION_AMOUNT_NO),
+    to_char(TR.BENEFIT_END_DT, 'yyyymmdd'):: integer
+                 FROM TB_CLIENT_ACCOUNT CA, TB_ACCOUNT_TRANSACTION TR
+           WHERE CA.CLIENT_ID = VL_CLIENT_ID
+           AND TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID
+           AND TR.CREDIT_DEBIT_SW = 'C'
+           AND CA.DELETE_SW = 'N'
+           AND TR.DELETE_SW = 'N'
+           AND TR.TRANSACTION_AMOUNT_NO > 0  
+     AND TR.CREATE_TS = (SELECT MAX(CREATE_TS) FROM TB_ACCOUNT_TRANSACTION A
+       WHERE A.CLIENT_ACCOUNT_ID = TR.CLIENT_ACCOUNT_ID
+       AND A.CREDIT_DEBIT_SW = 'C'
+       AND A.DELETE_SW = 'N')
+           GROUP BY TR.TRANSACTION_SOURCE_CD, TR.BENEFIT_END_DT;--
+
+    BEGIN    
+   VL_OUTPUT_SQLCODE:='00000';   
+ 
+
+    -- SET transaction sequence
+     VS_TRANSACTION_SEQUENCE := LTRIM(RTRIM(VL_TRANSACTION_SEQUENCE::VARCHAR)) ;--
+
+    -- Get CIS_CLIENT_ID
+BEGIN
+  SELECT  person.cisclientid
+   INTO    VS_CIS_CLIENT_ID
+    FROM    person   
+    WHERE   person.cjamspid = VL_CLIENT_ID
+    AND     person.activeflag  = 1;  
+ 
+   EXCEPTION WHEN OTHERS THEN 
+      VL_OUTPUT_SQLCODE  :=  SQLSTATE;--
+    VS_MESSAGE :=  'SELECT CIS_CLIENT_ID FAILED FOR TB_CLIENT'  ;--
+       RETURN;
+    END ;--
+
+    -- Generate records for record type 50
+  
+     VS_RECORD_TYPE := '50';--
+  
+     VL_RECORD_SEQUENCE := 000 ;--
+
+     VS_RECORD_SEQUENCE := '';--
+
+    IF  VS_RECORD_TYPE = '50' THEN
+
+       OPEN CURSOR_INCOME;--
+       <<CURS_INCOME>>
+       WHILE VL_OUTPUT_SQLCODE = '00000'  LOOP
+             FETCH CURSOR_INCOME INTO CARES_OUT_INCOME_COL1, CARES_OUT_INCOME_COL2, CARES_OUT_INCOME_COL3,
+                                        CARES_OUT_INCOME_COL4, CARES_OUT_INCOME_COL5 ;--
+
+            EXIT CURS_INCOME WHEN NOT FOUND;--
+    
+ 
+      VL_RECORD_SEQUENCE := VL_RECORD_SEQUENCE + 1 ;--
+ 
+      VS_RECORD_SEQUENCE := LTRIM(RTRIM(VL_RECORD_SEQUENCE::VARCHAR));--
+ 
+       CARES_OUT_INCOME_COL4_CONV := LTRIM(RTRIM(CARES_OUT_INCOME_COL4::VARCHAR)) ;--
+ 
+       CARES_OUT_INCOME_COL4_CONV = SUBSTRING('00000000000',1,11 - LENGTH(CARES_OUT_INCOME_COL4_CONV)) || CARES_OUT_INCOME_COL4_CONV ;  --
+ 
+ 
+      -- Set Interface Data
+      INSERT INTO TB_CARES_OUTBOUND_INTERFACE
+         (CARES_RECORD_ID,
+          STATUS_CD,
+          BATCH_SEQ_NO,
+          TRANSACTION_SEQ_NO,
+   TRANSACTION_TYPE_CD,
+       CIS_CLIENT_ID,
+   RECORD_TYPE_CD,
+   TRANSACTION_TS,
+          RECORD_SEQ_NO,
+   CARES_OUT_COL1,
+   CARES_OUT_COL2,
+   CARES_OUT_COL3,
+   CARES_OUT_COL4,
+   CARES_OUT_COL5
+   ) 
+             SELECT
+  NEXTVAL('SQ_CARES_OUTBOUND_INTERFACE'),
+  '000',
+  '',
+  CASE WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 1 THEN '0000'||VS_TRANSACTION_SEQUENCE
+       WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 2 THEN '000'||VS_TRANSACTION_SEQUENCE
+       WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 3 THEN '00'||VS_TRANSACTION_SEQUENCE
+       WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 4 THEN '0'||VS_TRANSACTION_SEQUENCE
+       WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 5 THEN VS_TRANSACTION_SEQUENCE
+       END,
+  VS_TRANSACTION_TYPE_CD,
+  COALESCE(SUBSTR('000000000',1,9 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)),'000000000'),
+  '50',
+  VD_TRANSACTION_TS,
+  CASE WHEN LENGTH(VS_RECORD_SEQUENCE) = 1 THEN '00'||VS_RECORD_SEQUENCE
+       WHEN LENGTH(VS_RECORD_SEQUENCE) = 2 THEN '0'||VS_RECORD_SEQUENCE
+       WHEN LENGTH(VS_RECORD_SEQUENCE) = 3 THEN VS_RECORD_SEQUENCE
+       END,
+  CARES_OUT_INCOME_COL1,
+  CARES_OUT_INCOME_COL2,
+  CARES_OUT_INCOME_COL3,
+                CASE WHEN CARES_OUT_INCOME_COL4_CONV = '' THEN '00000000.00'
+                     WHEN LENGTH(CARES_OUT_INCOME_COL4_CONV) <= 0 THEN '00000000.00'
+                     ELSE COALESCE(CARES_OUT_INCOME_COL4_CONV::VARCHAR,'00000000.00')
+                END,  
+  COALESCE(CARES_OUT_INCOME_COL5::VARCHAR,'00000000')
+      ;--
+ 
+ 
+       END LOOP;--
+       CLOSE CURSOR_INCOME;--
+
+     
+    END IF;--
+
+  RETURN ;--
+    EXCEPTION WHEN OTHERS THEN 
+      VL_OUTPUT_SQLCODE  :=  SQLSTATE;--
+    VS_MESSAGE :='INSERT INTO TB_CARES_OUTBOUND_INTERFACE FAILED'||SQLERRM  ;--
+     RETURN;
+    
+END 
+;
+$function$
+

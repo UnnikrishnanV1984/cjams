@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION prov_approveaddresschange(v_reqobj json)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+declare 
+v_provider_id character varying;
+v_securityuserid character varying;
+v_applicant_id character varying;
+v_adr_end_dt timestamp without time zone;
+v_minageno int;
+v_maxageno int;
+v_gender_cd character varying;
+v_childrenno int;
+v_minagemonthno int;
+v_maxagemonthno int;
+v_effectivedate date;
+v_enddate date;
+v_parentproviderid int;
+v_prgram text;
+v_programtype text;
+v_licencetypecd text;
+v_licappid int;
+v_licno text;
+v_licenseprefix text;
+v_execsignature json;
+i record;
+v_program_type_id character varying;
+v_text_program_type CHARACTER VARYING;
+v_license_status_cd character varying;
+v_appstatus character varying;
+v_site_id character varying;
+l_license_application_id bigint;
+
+begin
+
+
+v_securityuserid := (v_reqobj->>'securityuserid')::character VARYING;
+v_applicant_id := (v_reqobj->>'objectid')::character VARYING;
+v_license_status_cd := (v_reqobj->>'license_status_cd')::character VARYING;
+v_execsignature:= (v_reqobj->>'execsignature')::json;
+v_appstatus:= (v_reqobj->>'status')::character VARYING;
+
+
+SELECT pl.license_no, pl.provider_id, pl.site_id, pa.requested_license_end_date  into v_licno, v_provider_id , v_site_id, v_adr_end_dt
+from tb_provider_licensing pl 
+join tb_provider_applicant pa 
+on pl.site_id = pa.site_id 
+where pa.applicant_id = v_applicant_id 
+order by pl.update_ts::timestamp desc limit 1;
+ 
+UPDATE tb_prov_applicant_accomodation SET 
+ license_no = v_licno 
+ WHERE provider_applicant_id = v_applicant_id; 
+
+SELECT requested_license_effective_date, requested_license_end_date, paa.minimum_age_no ,paa.maximum_age_no, paa.gender_cd, paa.children_no, paa.min_age_months_no , paa.max_age_months_no , paa.program_type_id::character VARYING, license_no
+into v_effectivedate, v_enddate, v_minageno, v_maxageno, v_gender_cd, v_childrenno, v_minagemonthno, v_maxagemonthno, v_program_type_id, v_licno
+FROM tb_prov_applicant_accomodation paa where provider_applicant_id = v_applicant_id;
+
+IF v_appstatus = 'Approved' THEN
+
+UPDATE tb_provider_licensing 
+SET active_sw = 'N' 
+WHERE license_no = v_licno;
+
+
+
+INSERT INTO tb_provider_licensing(
+  provider_id, license_type_cd, license_status_cd, application_type_cd, license_decision_cd, license_issue_dt, license_expiry_dt, license_modification_dt, license_no, licensing_agency_cd, licensing_corodinator_id, licensed_beds_no, requirement_sw, midterm_issue_dt, active_sw, comments_tx, program_id, site_id, revoke_dt, revoke_approval_status_cd, midterm_rqrmnt_sw, create_ts, create_user_id, update_ts, update_user_id, delete_sw, ref_license_application_id, lic_entry_dt, request_revoke_sw, pre_revoke_status_cd, license_level, license_type, etl_userid, etl_load_date)
+  (SELECT provider_id, license_type_cd, v_license_status_cd, '3069', v_license_status_cd, v_effectivedate, v_enddate, null, license_no, licensing_agency_cd, licensing_corodinator_id, licensed_beds_no, requirement_sw, midterm_issue_dt, 'Y', comments_tx, program_id, site_id, null, null, midterm_rqrmnt_sw, now(), v_securityuserid, now(), v_securityuserid, 'N', null, lic_entry_dt, request_revoke_sw, pre_revoke_status_cd, license_level, license_type, etl_userid, etl_load_date
+  FROM tb_provider_licensing where license_no = v_licno limit 1) returning license_application_id into l_license_application_id; 
+
+update tb_prov_accomodation set delete_sw = 'Y'
+  where license_no = v_licno ;
+
+INSERT INTO tb_prov_accomodation(
+  prov_accomodation_id,license_application_id,minimum_age_no, maximum_age_no, gender_cd, children_no, create_ts, create_user_id, update_ts, update_user_id, delete_sw, min_age_months_no, max_age_months_no, execsignature,  license_no, requested_license_end_date, requested_license_effective_date)
+  values (gen_random_uuid(),l_license_application_id, v_minageno, v_maxageno, v_gender_cd, v_childrenno, now(), v_securityuserid, now(), v_securityuserid, 'N', v_minagemonthno, v_maxagemonthno, v_execsignature,  v_licno, v_enddate, v_effectivedate);  
+
+
+update tb_provider_addresses 
+set 
+adr_end_dt = v_adr_end_dt,
+update_ts = now(),
+update_user_id = v_securityuserid
+where parent_key_id = v_site_id
+and adr_type_cd = 3357 
+and adr_default_sw = 'Y';
+
+update tb_provider_addresses 
+set adr_default_sw = 'N',
+update_ts = now(),
+update_user_id = v_securityuserid
+where parent_key_id = v_site_id
+and adr_type_cd = 3357;
+
+insert into tb_provider_addresses(parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, 
+adr_default_sw, adr_start_dt, adr_end_dt, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx)
+select v_site_id, tpaa.adr_type_cd, tpaa.adr_format_cd, tpaa.adr_street_no, tpaa.adr_box_no, tpaa.adr_pre_dir_cd, tpaa.adr_street_nm, tpaa.adr_street_suffix_cd, tpaa.adr_post_dir_cd, tpaa.adr_unit_type_cd, tpaa.adr_unit_no_tx, tpaa.adr_city_nm, tpaa.adr_county_cd, tpaa.adr_state_cd, tpaa.adr_zip5_no, tpaa.adr_zip4_no, tpaa.adr_direction_tx, tpaa.adr_foreign_tx, tpaa.adr_foreign_state_tx, tpaa.adr_country_tx, tpaa.adr_postal_code_tx, 
+tpaa.adr_default_sw, tpaa.adr_start_dt, tpaa.adr_end_dt, now(), v_securityuserid, now() ,v_securityuserid, 'N', adr_street_tx
+from tb_provider_applicant_addresses tpaa 
+where tpaa.parent_key_id = v_applicant_id and tpaa.delete_sw = 'N';
+
+
+return (v_applicant_id||' '||v_site_id)::character VARYING;
+
+ELSE 
+return 'lol'::character VARYING;
+
+END IF;
+  
+
+end
+$function$
+

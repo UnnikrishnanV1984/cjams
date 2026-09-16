@@ -1,0 +1,90 @@
+/*
+   Issue Description: CDM-40322
+   Category/ Module  : Screenout referral
+   Root cause: user wants to screenout
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+*/
+
+
+
+UPDATE intakesnapshot
+SET
+updatedby = 'CDM-40322', updatedon = now(), jsondata = jsonb_set(jsondata, '{DAType}',
+jsonb_set(jsondata->'DAType', '{DATypeDetail}',
+jsonb_set(jsondata->'DAType'->'DATypeDetail', '{0}',
+jsonb_set(jsondata->'DAType'->'DATypeDetail'->0, '{supDisposition}', '"ScreenOUT"'))))
+WHERE intakenumber = 'I241012757600' AND activeflag=1;
+
+UPDATE intakedastaging
+SET status = 'Closed',
+updatedby = 'CDM-40322', updatedon = now(), jsondata = jsonb_set(jsondata, '{DAType}',
+jsonb_set(jsondata->'DAType', '{DATypeDetail}',
+jsonb_set(jsondata->'DAType'->'DATypeDetail', '{0}',
+jsonb_set(jsondata->'DAType'->'DATypeDetail'->0, '{supDisposition}', '"ScreenOUT"'))))
+WHERE intakenumber = 'I241012757600' AND activeflag=1;
+
+UPDATE intakeservicerequest  
+SET   
+    actiontype = null, intakeservicerequestclassid = '00000000-0000-0000-0000-000000000000', activeflag = 0, 
+    updatedby = 'CDM-40322', updatedon = now() 
+WHERE 
+    
+intakeserviceid = '540c6b97-d2e6-405a-b198-a0274e68ee97' 
+AND activeflag = 1;
+
+
+
+UPDATE personprogramarea
+SET activeflag = 0,
+updatedon = now(),
+updatedby = 'CDM-40322'
+WHERE objectid = '540c6b97-d2e6-405a-b198-a0274e68ee97' AND activeflag =1;
+
+update 
+   caseassignment
+set
+  activeflag = 0,  
+  updatedby = 'CDM-40322',
+  updatedon = now() 
+where objectid = '540c6b97-d2e6-405a-b198-a0274e68ee97';
+
+update 
+  routing
+set
+  activeflag = 0,  
+  updatedby = 'CDM-40322',
+  updatedon = now() 
+where objectid = '540c6b97-d2e6-405a-b198-a0274e68ee97' and activeflag = 1;
+
+
+INSERT INTO cjams.routing
+(routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes, intakerecommendation, supervisordecision, approveddate)
+VALUES(gen_random_uuid(), 'INTR', 'd803c8b4-c5f6-4e42-b945-6af888cbe1db', 'd803c8b4-c5f6-4e42-b945-6af888cbe1db', '02f1f1a8-b46a-42e2-afbf-6b83fe1ad5cd', 'CWSP', 'CWSP', 'I241012757600', 8, 0, 'CDM-40322', now(), 'd803c8b4-c5f6-4e42-b945-6af888cbe1db', now(), false, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'scrnin', 'screenout', now());
+
+
+update intakesnapshot
+set 
+	jsondata = jsonb_set(jsondata, '{DAType}', 
+	jsonb_set(jsondata->'DAType', '{DATypeDetail}',
+	jsonb_set(jsondata->'DAType'->'DATypeDetail', '{0}', 
+	jsonb_set(jsondata->'DAType'->'DATypeDetail'->0, '{comments}', '"Screen out, Worker 0. Ibikunle met with child and the alleged maltreator (child`s father) The allegations appear to be false. Child spoke with worker and stated he was not abused, he wants to stay with his father as his mother always takes him to sleep in abandoned buildings before his father rescued him. Worker did not observe any concerning bruises on the child.."')))),
+	updatedby = 'CDM-40322',
+	updatedon = now()
+	where intakenumber = 'I241012757600'
+	and activeflag = 1;
+	
+
+update intakedastaging
+set 
+	jsondata = jsonb_set(jsondata, '{DAType}', 
+	jsonb_set(jsondata->'DAType', '{DATypeDetail}',
+	jsonb_set(jsondata->'DAType'->'DATypeDetail', '{0}', 
+	jsonb_set(jsondata->'DAType'->'DATypeDetail'->0, '{comments}', '"Screen out, Worker 0. Ibikunle met with child and the alleged maltreator (child`s father) The allegations appear to be false. Child spoke with worker and stated he was not abused, he wants to stay with his father as his mother always takes him to sleep in abandoned buildings before his father rescued him. Worker did not observe any concerning bruises on the child.."')))),
+	updatedby = 'CDM-40322',
+	updatedon = now()
+	where intakenumber = 'I241012757600'
+	and activeflag = 1;
+
+

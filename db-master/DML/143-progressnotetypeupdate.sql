@@ -1,0 +1,2 @@
+update ProgressNoteType set progressnotetypekey='Face To Face' where progressnotetypekey='Face to Face';
+update progressnotetypeconfig set progressnotetypekey='Face To Face' where progressnotetypekey='Face to Face';

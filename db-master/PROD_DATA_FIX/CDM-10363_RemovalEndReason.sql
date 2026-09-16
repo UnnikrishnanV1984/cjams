@@ -1,0 +1,1 @@
+update intakeservreqchildremoval set removalexitreason ='CORHADR',exitdate = '2021-01-22 00:00:00', updatedby = 'CDM-10363', updatedon = now() where intakeservreqchildremovalid ='9ed3862c-a34a-4a85-8806-a5d5d037ddd1' and activeflag =1;

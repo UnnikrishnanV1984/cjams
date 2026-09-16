@@ -1,0 +1,56 @@
+CREATE OR REPLACE FUNCTION prov_sendreferralasssignmentalert(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+currentRow record;
+v_fromsecurityuserid character varying;
+v_tocurityuserid  character varying;
+v_applicant_id   character varying;
+v_subject character VARYING;
+v_success character VARYING;
+v_eventcode character varying;
+response CHARACTER varying;
+v_tousers json;
+v_assigned_by  character varying;
+begin
+v_tocurityuserid := objectls->>'tosecurityusersid';
+v_fromsecurityuserid  := objectls->>'fromsecurityusersid';
+v_applicant_id := objectls->>'applicant_id';
+v_eventcode := objectls->>'eventcode';
+
+select mu.username into v_assigned_by 
+from muser mu 
+where mu.securityusersid = v_fromsecurityuserid 
+and mu.activeflag =1;
+
+v_subject := 'Application has been assigned to you by ' || v_assigned_by || ' - ' || v_applicant_id;
+
+
+for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+        from muser mu 
+        where securityusersid = v_tocurityuserid
+        and mu.activeflag =1
+loop
+    BEGIN
+        SELECT prov_send_notification into v_success
+        FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid,  currentRow.toworkeridno, 'System', 'High',  v_subject, v_subject, v_applicant_id,  false);
+    END;
+END LOOP;    
+
+
+select json_agg(a) into v_tousers from ( 
+    SELECT distinct mu.securityusersid as toworkeridno 
+    , mu.email 
+        from muser mu 
+        where securityusersid = v_tocurityuserid
+        and mu.activeflag =1
+
+)a;
+RETURN json_build_object('response',v_success, 'ROLE_WORKERS', v_tousers,
+    'workersubject', v_subject, 
+    'workerbody', v_subject);
+end;
+$function$
+

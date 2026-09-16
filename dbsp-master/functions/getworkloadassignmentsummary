@@ -1,0 +1,163 @@
+CREATE OR REPLACE FUNCTION getworkloadassignmentsummary(v_securityuserid character varying, v_servicecasenumber character varying, v_teamid uuid, v_toworkerid character varying, v_countycode character varying, v_isclosed integer, v_startdate date, v_enddate date, pagenumber integer, pagesize integer, v_isfilter character varying)
+ RETURNS TABLE(details json, summary json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+v_teamdetails json;
+v_summary json;
+v_pageoffset int;
+v_pagenumber int;
+
+BEGIN  
+
+v_pagenumber := pagenumber-1;
+v_pageoffset = v_pagenumber * pagesize;  
+
+IF(v_isfilter = 'user') THEN
+
+ SELECT json_agg(teamdetails) INTO v_teamdetails FROM 
+ (
+  SELECT  
+   SUM(1) totalcnt,
+   SUM (CASE WHEN A.enddate IS NULL THEN 1 ELSE 0 END ) opencnt,
+   SUM (CASE WHEN A.enddate IS NOT NULL THEN 1 ELSE 0 END )  closedcnt,
+   A.toworkeridno,
+   up.displayname
+   
+  FROM  userprofile up 
+  inner join 
+  (
+  select ca.startdate,CA.enddate,null insertedon,ca.toteamid,CA.toworkeridno,ca.activeflag from  caseassignment CA where CA.activeflag=1
+   --UNION ALL 
+  -- select null startdate,null enddate,R.insertedon,r.teamid toteamid,r.tosecurityusersid toworkeridno,r.activeflag from  routing R 
+  -- WHERE r.activeflag = 1 
+   ) A ON A.toworkeridno=UP.securityusersid AND up.activeflag=1
+   inner join teammemberassignment ta on ta.securityusersid=up.securityusersid
+        inner join teammember tm on ta.teammemberid=tm.teammemberid
+        inner join team t on t.teamid=tm.teamid
+  WHERE A.activeflag=1 AND t.teamid= v_teamid
+  GROUP BY up.displayname,A.toworkeridno
+  ORDER BY up.displayname
+ ) teamdetails;
+  
+
+ SELECT  
+   jsonb_build_object(
+   'totalcnt',count(*),
+   'opencnt',SUM (CASE WHEN A.enddate IS null  THEN 1 ELSE 0 END ) ,
+   'closedcnt',SUM (CASE WHEN A.enddate IS NOT NULL THEN 1 ELSE 0 END )  
+  ) INTO v_summary FROM 
+  (
+  select null insertedon,ca.startdate,ca.enddate 
+  from ( 
+  select ca.startdate,CA.enddate,null insertedon,ca.toteamid,CA.toworkeridno,ca.activeflag from  caseassignment CA
+   UNION ALL 
+   select null startdate,null enddate,R.insertedon,r.teamid toteamid,r.tosecurityusersid toworkeridno,r.activeflag from  routing R 
+   WHERE r.routingstatustypeid = 1 and r.eventcode = 'INTR'
+   ) CA   
+  WHERE CA.activeflag=1 AND CA.toteamid= v_teamid 
+ ) A;
+
+ELSIF(v_isfilter = 'ldss') THEN
+drop table  if exists getworkloadassgmts_temp;
+create temporary table getworkloadassgmts_temp as
+select * from  mv_getworkloadassignmentsummary; 
+
+ SELECT json_agg(teamdetails) INTO v_teamdetails  FROM 
+ (
+  SELECT t.teamname ,t.teamid,  COALESCE(summary.totalcnt,0) totalcnt,
+   COALESCE(summary.opencnt,0) opencnt,
+   COALESCE(summary.closedcnt,0) closedcnt,
+   COALESCE(summary.ytscnt,0) ytscnt ,
+   COALESCE((select count(1) from team tc WHERE tc.parentteamid= t.teamid AND tc.activeflag =1 ),0) teamcnt  
+  FROM team t 
+  LEFT JOIN  (
+    select totalcnt,opencnt,closedcnt,ytscnt,teamid,teamname from getworkloadassgmts_temp
+   ) summary on summary.teamid = t.teamid 
+   WHERE t.teamtypekey ='LDSS' ORDER BY t.teamname
+  --LIMIT pagesize OFFSET v_pageoffset
+ ) teamdetails; 
+ 
+ 
+ SELECT  
+ jsonb_build_object(
+   'totalcnt',SUM(totalcnt),
+   'opencnt',SUM(vsumopencnt),
+   'closedcnt',SUM(vsumclosedcnt),
+      'ytscnt',SUM(ytscnt)
+  ) INTO v_summary  from getworkloadassgmts_temp; 
+  
+ 
+ELSE 
+
+ SELECT json_agg(teamdetails) INTO v_teamdetails FROM 
+ (
+  SELECT t.teamname ,t.teamid toteamid,  COALESCE(summary.totalcnt,0) totalcnt,
+   COALESCE(summary.opencnt,0) opencnt,
+   COALESCE(summary.closedcnt,0) closedcnt,
+   COALESCE(summary.ytscnt,0) ytscnt ,
+   COALESCE((select count(1) from teammember tc WHERE tc.teamid= t.teamid AND tc.activeflag =1 ),0) workercnt  
+  FROM team t 
+  LEFT JOIN  (
+   SELECT  
+   SUM(1) totalcnt,
+   SUM (CASE WHEN CA.enddate IS NULL AND COALESCE(issupervisor,0) =0 THEN 1 ELSE 0 END ) opencnt,
+   SUM (CASE WHEN CA.enddate IS NOT NULL AND COALESCE(issupervisor,0) =0  THEN 1 ELSE 0 END ) closedcnt,
+            SUM(CASE COALESCE(tma.issupervisor,0) WHEN 1 THEN 1 ELSE 0 END ) ytscnt,
+   CA.toteamid teamid,
+   T.teamname,
+           count (distinct ca.toworkeridno ) workercnt
+  FROM ( 
+   select ca.startdate,CA.enddate,null insertedon,ca.toteamid,CA.toworkeridno,ca.activeflag from  caseassignment CA
+   UNION ALL 
+   select null startdate,null enddate,R.insertedon,r.teamid toteamid,r.tosecurityusersid toworkeridno,r.activeflag from  routing R 
+   WHERE r.routingstatustypeid = 1 and r.eventcode = 'INTR'
+  ) CA  
+  INNER JOIN team T ON T.teamid = CA.toteamid AND T.activeflag =1
+  LEFT  JOIN 
+  (SELECT tma.securityusersid, 1 issupervisor
+   FROM teammemberassignment tma 
+   INNER join teammember tm ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+   INNER join teammemberroletype  tmrt ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1 
+   and tmrt.isupervisor   = true  and tma.activeflag =1  
+  )tma ON tma.securityusersid = ca.toworkeridno
+  WHERE CA.activeflag=1 AND T.parentteamid =v_teamid 
+   GROUP BY CA.toteamid,T.teamname ) summary on summary.teamid = t.teamid 
+   WHERE t.parentteamid =v_teamid 
+   ORDER BY t.teamname 
+  
+ ) teamdetails;
+ 
+ SELECT  
+  jsonb_build_object(
+   'totalcnt',SUM(1),
+   'opencnt',SUM (CASE WHEN CA.enddate IS NULL AND COALESCE(issupervisor,0) =0  THEN 1 ELSE 0 END),
+   'closedcnt',SUM (CASE WHEN CA.enddate IS NOT NULL AND COALESCE(issupervisor,0) =0  THEN 1 ELSE 0 END) ,
+   'ytscnt', SUM(CASE COALESCE(tma.issupervisor,0) WHEN 1 THEN 1 ELSE 0 END )
+ ) INTO v_summary 
+ FROM 
+ (   SELECT ca.startdate,CA.enddate,null insertedon,ca.toteamid,CA.toworkeridno,ca.activeflag from  caseassignment CA
+   UNION ALL 
+   select null startdate,null enddate,R.insertedon,r.teamid toteamid,r.tosecurityusersid toworkeridno,r.activeflag from  routing R 
+   WHERE r.routingstatustypeid = 1 and r.eventcode = 'INTR'
+   )  CA
+    INNER JOIN team T ON T.teamid = CA.toteamid AND T.activeflag =1
+ LEFT  JOIN 
+  (SELECT tma.securityusersid, 1 issupervisor
+   FROM teammemberassignment tma 
+   INNER join teammember tm ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+   INNER join teammemberroletype  tmrt ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1 
+   and tmrt.isupervisor   = true  and tma.activeflag =1  
+  )tma ON tma.securityusersid = ca.toworkeridno
+ WHERE CA.activeflag=1  AND t.parentteamid =v_teamid ; 
+  
+END IF;
+
+ RETURN QUERY
+ SELECT v_teamdetails,v_summary;
+ 
+END;
+
+$function$
+

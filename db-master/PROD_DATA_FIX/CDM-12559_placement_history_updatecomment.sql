@@ -1,0 +1,1 @@
+update placementrevision set exittypekey = 'PLCC', remarks = 'Custody and Guardianship was granted.' where placementrevisionid = 'fea5e678-a0cb-4cba-be7f-de7ef5b38b30';

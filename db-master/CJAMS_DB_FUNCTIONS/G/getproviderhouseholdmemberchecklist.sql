@@ -1,0 +1,25 @@
+drop function IF EXISTS getproviderhouseholdmemberchecklist(character varying,uuid);
+
+CREATE OR REPLACE FUNCTION getproviderhouseholdmemberchecklist(v_applicationid character varying, v_personid uuid)
+ RETURNS TABLE(applicant_id character varying, checklist_task character varying, comment character varying, review_date timestamp without time zone, date_type character varying, status character varying, personid uuid, personname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+RETURN Query
+		
+	select PPHM.applicant_id,PPHM.checklist_task,PPHM.comment,PPHM.review_date,
+	PPHM.date_type,PPHM.status ,PPHM.personid,
+	(trim( p.firstname ) || ' ' || trim( p.lastname ))::CHARACTER VARYING  personname
+	
+	FROM publicproviderhouseholdmember  PPHM	
+	left join person P on P.personid=PPHM.personid
+
+	WHERE PPHM.applicant_id = v_applicationid  and PPHM.personid=v_personid
+	order by PPHM.checklist_task asc;
+	
+    
+END;
+
+$function$;

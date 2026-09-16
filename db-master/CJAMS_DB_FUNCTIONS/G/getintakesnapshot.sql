@@ -1,0 +1,33 @@
+ CREATE OR REPLACE FUNCTION public.getintakesnapshot(v_servicerequestid uuid)                                                      
+  RETURNS TABLE(intakenumber character varying, lastupdatedate timestamp without time zone, jsondata json, routinginfo json)       
+  LANGUAGE plpgsql                                                                                                                 
+ AS $function$                                                                                                                   
+                                                                                                                                 
+ declare                                                                                                                         
+                                                                                                                                 
+ Begin                                                                                                                           
+                                                                                                                                 
+  return query                                                                                                                   
+                                                                                                                                 
+                                 select IDSS.intakenumber,IDSS.insertedon,IDSS.jsondata::json,(SELECT json_agg(e) as routinginfo 
+                                 from (select  UP.lastname ||','|| up.firstname as fromusername,                                 
+                 upto.lastname ||','|| upto.firstname as tousername,                                                             
+                  RT.roletypename as fromrole,  RT1.roletypename as torole,case R.routingstatustypeid when 4 then 'Assigned'     
+                  else  RST.routingstatustypekey  end routingstatustypekey,R.insertedon as routedon from  routing R              
+                 inner join routingstatustype RST on RST.sequencenumber = R.routingstatustypeid                                  
+                 inner join  userprofile UP on UP.securityusersid = R.fromsecurityusersid                                        
+                 inner join userprofile upto on upto.securityusersid = r.tosecurityusersid                                       
+                 inner join (select rt.*, rtt.roletypename from role  RT                                                         
+                 inner join roletype rtt on rtt.shortname = rt.name ) RT on R.fromroleid = RT.roletypekey                        
+                 inner join (select rt.*, rtt.roletypename from role  RT                                                         
+                 inner join roletype rtt on rtt.shortname = rt.name ) RT1 on R.toroleid = RT1.roletypekey                        
+                 where R.objectid in (IDSS.intakenumber,ISR.intakeserviceid::character varying)                                  
+                 order by r.updatedon asc  )e)::json   from intakesnapshot IDSS inner join intakeservicerequest ISR              
+                 on ISR.intakenumber = IDSS.intakenumber                                                                         
+         and IDSS.activeflag =2                                                                                                  
+                 where ISR.intakeserviceid = v_servicerequestid                                                                  
+                 order by IDSS.insertedon desc ;                                                                                 
+ end;                                                                                                                            
+                                                                                                                                 
+ $function$                                                                                                                        
+

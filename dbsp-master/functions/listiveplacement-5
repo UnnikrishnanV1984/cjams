@@ -1,0 +1,290 @@
+CREATE OR REPLACE FUNCTION listiveplacement(userid character varying, v_status text[], v_roleid character varying, v_placementtype character varying, pagenumber bigint, pagesize bigint, fname character varying, lname character varying, clientiddata character varying, eligiblestatus character varying, rdate timestamp without time zone)
+ RETURNS TABLE(countdata bigint, gapagreementid uuid, adoptionbreakthelinkid uuid, placementid uuid, assignedtouser character varying, clientid bigint, lastname character varying, firstname character varying, removaldate timestamp without time zone, removalid bigint, childname character varying, casenumber bigint, childagency character varying, childjurisdiction character varying, placementdate date, dateofbirth date, removalage character varying, caseid uuid, sqnm_sw text, fostercareeligibilitystatus text, startdate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+ 
+DECLARE
+    v_pageoffset int;
+    v_pagenumber int;
+DECLARE 
+    totalcount integer;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+ 
+    if(v_placementtype = 'Fostercare') then
+        if(v_roleid = 'IVESP' and v_status:: character varying = '{70}' :: character varying) then --return resp for non-assigned user 
+            raise notice 'test %',v_status;
+            RETURN QUERY 
+                SELECT count(1) over(),
+                    null :: uuid,null :: uuid,pl.placementid, null::varchar,                   
+                    p.cjamspid,p.lastname,p.firstname,isrcr.removaldate, isrcr.removalid ,
+                    CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname,
+                    sc.servicecasenumber::BIGINT as casenumber,
+                    'DHS'::character varying  as childagency,
+                     (select c.countyname from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = sc.servicecaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                    pl.startdatetime::date as placementdate,
+                    p.dob::date as dateofbirth,
+                    (EXTRACT(year FROM age(isrcr.removaldate::date,p.dob::date)) :: character varying || ' Years'::varchar || ' ' ||
+                 EXTRACT(month FROM age(isrcr.removaldate::date,p.dob::date)) :: character varying  || ' Months'::varchar)::varchar as removalage,
+                    sc.servicecaseid as caseid,
+                    (select tep.sqnm_sw::text from tb_eligibility_period tep where tep.eligibility_id = tce.eligibility_id and tep.delete_sw = 'N' and tep.approvalstatus = 'APPROVED' order by tep.sqnm_sw limit 1),
+                    (select tpv.description_tx::text from tb_picklist_values tpv where trim(tpv.picklist_value_cd) = trim(tce.eligibility_status_cd) and tpv.picklist_type_id = 262), null :: timestamp
+                FROM ( SELECT plc.personid,  MIN(plc.alternateid) AS alternateid
+                        FROM tb_client_eligibility tce
+                        INNER JOIN person per on per.cjamspid = tce.client_id                            
+                        INNER JOIN placement plc on per.personid = plc.personid
+                        INNER JOIN intakeservreqchildremoval isrcr ON isrcr.removalid=tce.removal_id AND isrcr.activeflag=1 AND isrcr.exitdate is null
+                        INNER JOIN servicecase sc ON (sc.servicecaseid = isrcr.servicecaseid or sc.servicecaseid = plc.servicecaseid) AND sc.activeflag = 1
+                        INNER JOIN routing r ON plc.placementid :: character varying = r.objectid:: character varying and r.activeflag=1 AND r.eventcode='PLTR'
+                    WHERE tce.eligibility_type_cd = '2931' and r.tosecurityusersid::character varying=userid AND r.routingstatustypeid::text = any (v_status)                            
+                        AND plc.activeflag=1 and plc.startdatetime >= isrcr.removaldate                           
+                    GROUP BY plc.personid
+                    ) AS PLC
+                INNER JOIN placement pl on pl.alternateid = PLC.alternateid
+                INNER JOIN person p ON p.personid=pl.personid AND p.activeflag=1 
+                INNER JOIN tb_client_eligibility tce on tce.client_id = p.cjamspid
+                INNER JOIN intakeservreqchildremoval isrcr ON isrcr.removalid = tce.removal_id AND isrcr.activeflag=1 AND isrcr.exitdate is null
+                INNER JOIN servicecase sc ON (sc.servicecaseid = isrcr.servicecaseid or sc.servicecaseid = pl.servicecaseid) AND sc.activeflag = 1
+                WHERE tce.eligibility_type_cd = '2931' AND pl.activeflag=1 AND               
+                    (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+                    AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+                    AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END) 
+                    AND (CASE WHEN rdate IS NOT NULL THEN  isrcr.removaldate::character varying = rdate ELSE TRUE END)
+                    order by isrcr.insertedon desc
+                    LIMIT pagesize OFFSET v_pageoffset;
+        else
+            RETURN QUERY 
+                SELECT count(1) over(),
+                    null :: uuid,null :: uuid,pl.placementid,
+--                  (select up.fullname::varchar from routing r join userprofile up on up.securityusersid = r.tosecurityusersid
+--                     join placement plt on plt.placementid = pl.placementid join placement plt1 on plt.personid = plt1.personid
+--                     where r.activeflag=1 AND r.eventcode='PLTR' AND r.routingstatustypeid::text = '70' and r.toroleid = 'IVESP'
+--                     and plt1.activeflag=1 and plt1.startdatetime >= isrcr.removaldate
+--                     and r.objectid :: character varying = plt1.placementid:: character varying order by r.insertedon desc limit 1
+--                    ),
+                    (select up.fullname::varchar from routing r join userprofile up on up.securityusersid = r.tosecurityusersid
+                     where r.activeflag=1 AND r.eventcode='PLTR' AND r.routingstatustypeid::text = '70' and r.toroleid = 'IVESP'
+                     and r.objectid :: character varying = pl.placementid:: character varying order by r.insertedon desc limit 1
+                    ),
+                    p.cjamspid,p.lastname,p.firstname,isrcr.removaldate,isrcr.removalid,
+                    CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname,
+                    sc.servicecasenumber::BIGINT as casenumber,
+                    'DHS' ::character varying  as childagency,
+                    (select c.countyname from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = sc.servicecaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                    pl.startdatetime::date as placementdate,
+                    p.dob::date as dateofbirth,
+                    (EXTRACT(year FROM age(isrcr.removaldate::date,p.dob::date)) :: character varying || ' Years'::varchar || ' ' ||
+                 EXTRACT(month FROM age(isrcr.removaldate::date,p.dob::date)) :: character varying  || ' Months'::varchar)::varchar as removalage,
+                    sc.servicecaseid as caseid,
+                    (select tep.sqnm_sw::text from tb_eligibility_period tep where tep.eligibility_id = tce.eligibility_id and tep.delete_sw = 'N' and tep.approvalstatus = 'APPROVED' order by tep.sqnm_sw limit 1),
+                    (select tpv.description_tx::text from tb_picklist_values tpv where trim(tpv.picklist_value_cd) = trim(tce.eligibility_status_cd) and tpv.picklist_type_id = 262), null :: timestamp
+                FROM 
+                    (  SELECT plc.personid,  MIN(plc.alternateid) AS alternateid
+                            FROM tb_client_eligibility tce
+                            INNER JOIN person per on per.cjamspid = tce.client_id                            
+                            INNER JOIN placement plc on per.personid = plc.personid
+                            INNER JOIN intakeservreqchildremoval isrcr ON isrcr.removalid=tce.removal_id AND isrcr.activeflag=1 AND isrcr.exitdate is null
+                            INNER JOIN servicecase sc ON (sc.servicecaseid = isrcr.servicecaseid or sc.servicecaseid = plc.servicecaseid) AND sc.activeflag = 1
+                        WHERE tce.eligibility_type_cd = '2931' and
+                             plc.placementid :: character varying in (
+                                select routing.objectid:: character varying from routing where routing.activeflag=1 AND routing.eventcode='PLTR' AND routing.routingstatustypeid::text = any (v_status)
+                                ) 
+                            AND plc.activeflag=1 and plc.startdatetime >= isrcr.removaldate                          
+                        GROUP BY plc.personid
+                    ) AS PLC
+                INNER JOIN placement pl on pl.alternateid = PLC.alternateid
+                INNER JOIN person p on p.personid = pl.personid AND p.activeflag=1 
+                INNER JOIN tb_client_eligibility tce on tce.client_id = p.cjamspid  
+                INNER JOIN intakeservreqchildremoval isrcr ON isrcr.removalid = tce.removal_id AND isrcr.activeflag=1 AND isrcr.exitdate is null
+                INNER JOIN servicecase sc ON (sc.servicecaseid = isrcr.servicecaseid or sc.servicecaseid = pl.servicecaseid) AND sc.activeflag = 1
+                WHERE tce.eligibility_type_cd = '2931' and
+                (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+                AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+                AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END)
+                AND (CASE WHEN rdate IS NOT NULL THEN  isrcr.removaldate::character varying = rdate ELSE TRUE END)
+                order by isrcr.insertedon desc
+                LIMIT pagesize OFFSET v_pageoffset;
+        end if;
+    elsif (v_placementtype = 'Adoption') then
+        IF(v_roleid = 'IVESP' and v_status:: character varying = '{67}' :: character varying) THEN 
+            RETURN QUERY 
+                select count(1) over(), 
+                    null :: uuid,adbl.adoptionbreakthelinkid, null::uuid, null::varchar,
+                    p.cjamspid,p.lastname,p.firstname,null::timestamp,isrcr.removalid, CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname,
+                    sc.servicecasenumber::BIGINT as casenumber, 'DHS' ::character varying as childagency,
+                    (select c.countyname  from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = ac.adoptioncaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                    null::date as placementdate, p.dob::date as dateofbirth, null::varchar as removalage, sc.servicecaseid as caseid,
+                    (select tep.sqnm_sw::text from tb_eligibility_period tep where tep.eligibility_id = tce.eligibility_id and tep.delete_sw = 'N' and tep.approvalstatus = 'APPROVED' order by tep.sqnm_sw limit 1),
+                    (select tpv.description_tx::text from tb_picklist_values tpv where trim(tpv.picklist_value_cd) = trim(tce.eligibility_status_cd) and tpv.picklist_type_id = 262), 
+                    aca.startdate
+                FROM tb_client_eligibility tce 
+                INNER JOIN person p ON p.cjamspid=tce.client_id AND p.activeflag=1 
+                INNER JOIN adoptionplanning apl on apl.alternateid = tce.adoption_id and apl.activeflag = 1
+                INNER JOIN adoptionbreakthelink adbl on apl.adoptionplanningid = adbl.adoptionplanningid and adbl.activeflag = 1
+                INNER JOIN adoptioncase ac on ac.adoptioncasenumber = tce.case_id and ac.activeflag = 1 
+                INNER JOIN adoptioncaseagreement aca on aca.adoptioncaseid = ac.adoptioncaseid and aca.activeflag = 1
+                INNER JOIN servicecase sc on sc.servicecaseid = apl.servicecaseid and sc.activeflag = 1
+                INNER JOIN intakeservreqchildremoval isrcr on isrcr.intakeservicerequestactorid = apl.intakeservicerequestactorid
+                inner join placement plt on plt.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid and plt.activeflag = 1
+                inner join (
+                            SELECT MAX(plc.alternateid) AS alternateid
+                                FROM tb_client_eligibility tce 
+                                INNER JOIN adoptionplanning apl on apl.alternateid = tce.adoption_id and apl.activeflag = 1                            
+                                INNER JOIN intakeservreqchildremoval isrcr on isrcr.intakeservicerequestactorid = apl.intakeservicerequestactorid
+                                INNER JOIN placement plc on plc.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid                            
+                            WHERE tce.eligibility_type_cd = '2934' AND plc.activeflag=1                            
+                            GROUP BY plc.personid
+                        ) AS PLC on PLC.alternateid = plt.alternateid
+                -- INNER JOIN adoptionapplicabilityinfo aa ON aa.clientid = p.cjamspid and aa.removalid = isrcr.removalid
+                WHERE tce.eligibility_type_cd = '2934' and ac.enddate::date >= now()::date and 
+                (tce.eligibility_status_cd = '2909' or (EXTRACT(year FROM age(now()::date,p.dob::date)) between 18 and 21)) and 
+                adbl.adoptionbreakthelinkid :: character varying in 
+                (
+                    select routing.objectid:: character varying from routing where routing.activeflag=1 AND routing.eventcode='ABLR' AND routing.routingstatustypeid::text = any (v_status)
+                    AND routing.tosecurityusersid::character varying=userid
+                ) 
+                AND (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+                AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+                AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END)
+                order by ac.updatedon desc
+                LIMIT pagesize OFFSET v_pageoffset;
+            ELSE
+                RETURN QUERY 
+                select count(1) over(), 
+                    null :: uuid, adbl.adoptionbreakthelinkid, null::uuid, 
+                    (select up.fullname::varchar from routing r join userprofile up on up.securityusersid = r.tosecurityusersid
+                    where r.activeflag=1 AND r.eventcode='ABLR' and r.toroleid = 'IVESP' AND 
+                    r.routingstatustypeid::text = '67' and r.objectid :: character varying = adbl.adoptionbreakthelinkid :: character varying order by r.insertedon desc limit 1),
+                    p.cjamspid,p.lastname,p.firstname,null::timestamp,isrcr.removalid, CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname,
+                    sc.servicecasenumber::BIGINT as casenumber, 'DHS' ::character varying as childagency,
+                   (select c.countyname  from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = ac.adoptioncaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                    null::date as placementdate, p.dob::date as dateofbirth, null::varchar as removalage, sc.servicecaseid as caseid,
+                    (select tep.sqnm_sw::text from tb_eligibility_period tep where tep.eligibility_id = tce.eligibility_id and tep.delete_sw = 'N' and tep.approvalstatus = 'APPROVED' order by tep.sqnm_sw limit 1),
+                    (select tpv.description_tx::text from tb_picklist_values tpv where trim(tpv.picklist_value_cd) = trim(tce.eligibility_status_cd) and tpv.picklist_type_id = 262), 
+                    aca.startdate
+                FROM tb_client_eligibility tce 
+                INNER JOIN person p ON p.cjamspid=tce.client_id AND p.activeflag=1 
+                INNER JOIN adoptionplanning apl on apl.alternateid = tce.adoption_id and apl.activeflag = 1
+                INNER JOIN adoptionbreakthelink adbl on apl.adoptionplanningid = adbl.adoptionplanningid and adbl.activeflag = 1
+                INNER JOIN adoptioncase ac on ac.adoptioncasenumber = tce.case_id and ac.activeflag = 1
+                INNER JOIN adoptioncaseagreement aca on aca.adoptioncaseid = ac.adoptioncaseid and aca.activeflag = 1
+                INNER JOIN servicecase sc on sc.servicecaseid = apl.servicecaseid and sc.activeflag = 1
+                INNER JOIN intakeservreqchildremoval isrcr on isrcr.intakeservicerequestactorid = apl.intakeservicerequestactorid
+                inner join placement plt on plt.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid and plt.activeflag = 1
+                inner join (
+                            SELECT MAX(plc.alternateid) AS alternateid
+                                FROM tb_client_eligibility tce 
+                                INNER JOIN adoptionplanning apl on apl.alternateid = tce.adoption_id and apl.activeflag = 1                            
+                                INNER JOIN intakeservreqchildremoval isrcr on isrcr.intakeservicerequestactorid = apl.intakeservicerequestactorid
+                                INNER JOIN placement plc on plc.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid                            
+                            WHERE tce.eligibility_type_cd = '2934' AND plc.activeflag=1                            
+                            GROUP BY plc.personid
+                        ) AS PLC on PLC.alternateid = plt.alternateid
+                -- INNER JOIN adoptionapplicabilityinfo aa ON aa.clientid = p.cjamspid and aa.removalid = isrcr.removalid
+                WHERE tce.eligibility_type_cd = '2934' and ac.enddate::date >= now()::date and 
+                (tce.eligibility_status_cd = '2909' or (EXTRACT(year FROM age(now()::date,p.dob::date)) between 18 and 21))
+                AND (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+                AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+                AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END)
+                order by ac.updatedon desc
+                LIMIT pagesize OFFSET v_pageoffset;
+            END IF;
+    elsif (v_placementtype = 'ACA') then
+        RETURN QUERY 
+              select count(1) over(), null :: uuid,aa.adoptionapplicabilityid :: uuid,null :: uuid,
+                (select up.fullname::varchar from routing r join userprofile up on up.securityusersid = r.tosecurityusersid
+                where r.activeflag=1 AND r.eventcode='ADAP' and r.toroleid = 'IVESP' AND 
+                r.routingstatustypeid::text = '67' and r.objectid:: character varying = aa.adoptionapplicabilityid:: character varying order by r.insertedon desc limit 1),
+                p.cjamspid,p.lastname,p.firstname,null::timestamp,aa.removalid,
+                CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname, sc.servicecasenumber::BIGINT as casenumber, 'DHS' ::character varying as childagency,
+    (select c.countyname from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = sc.servicecaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                null::date as placementdate, p.dob::date as dateofbirth, null::varchar as removalage, sc.servicecaseid as caseid, '' :: text, '' :: text,
+                (select case when aa.resubmissiondate IS NOT NULL then aa.resubmissiondate else aa.submissiondate end)
+                FROM person p
+                INNER JOIN adoptionapplicabilityinfo aa ON aa.clientid = p.cjamspid
+                INNER JOIN intakeservreqchildremoval isrcr ON isrcr.removalid=aa.removalid AND isrcr.activeflag=1
+                INNER JOIN intakeservicerequestactor isra on isra.personid = p.personid and isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid
+                INNER JOIN servicecase sc ON sc.servicecaseid = isra.servicecaseid AND sc.activeflag = 1
+   where     
+            (
+      (SELECT case when tm.roletypekey = 'IVESV' then true else false end FROM teammemberassignment tma  INNER JOIN  teammember tm  ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1 WHERE tma.SecurityUsersId = userid AND tma.activeflag =1  )
+     OR 
+      aa.adoptionapplicabilityid :: character varying in 
+      (
+     select routing.objectid:: character varying from routing where ( routing.tosecurityusersid::character varying=userid or routing.tosecurityusersid is null ) AND routing.activeflag=1  AND routing.eventcode='ADAP'  AND routing.routingstatustypeid::text = any (v_status)
+      ) 
+   ) 
+            AND aa.ivestatus in ('REVIEW','COMPLETED','DETERMINE')
+            AND (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+            AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+            AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END)
+            order by aa.submissiondate desc
+            LIMIT pagesize OFFSET v_pageoffset;
+    elsif (v_placementtype = 'Gap') then
+         IF(v_roleid = 'IVESP' and v_status:: character varying = '{73}' :: character varying) THEN 
+            RETURN QUERY 
+                select count(1) over(), ga.gapagreementid,null::uuid, null::uuid,null::varchar, p.cjamspid,p.lastname,p.firstname,null::timestamp,null::bigint,
+                        CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname, sc.servicecasenumber::BIGINT as casenumber,'DHS' ::character varying as childagency,
+                        (select c.countyname from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = sc.servicecaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                        null::date as placementdate, p.dob::date as dateofbirth, null::varchar as removalage, sc.servicecaseid as caseid, 
+                        (select tep.sqnm_sw::text from tb_eligibility_period tep where tep.eligibility_id = tce.eligibility_id and tep.delete_sw = 'N' and tep.approvalstatus = 'APPROVED' order by tep.sqnm_sw limit 1),
+                        (select tpv.description_tx::text from tb_picklist_values tpv where trim(tpv.picklist_value_cd) = trim(tce.eligibility_status_cd) and tpv.picklist_type_id = 262),
+                        ga.startdate
+                from  tb_client_eligibility tce   
+                INNER JOIN person p ON p.cjamspid=tce.client_id AND p.activeflag=1 
+                INNER JOIN guardianship g on g.alternateid = tce.guardian_subsidy_id
+                INNER JOIN gapagreement ga on ga.gapid = g.gapid AND ga.activeflag = 1
+                INNER JOIN servicecase sc ON sc.servicecaseid = g.servicecaseid AND sc.activeflag = 1
+                WHERE tce.eligibility_type_cd = '2935' and ga.enddate >= now() and 
+                (tce.eligibility_status_cd = '2909' or (EXTRACT(year FROM age(now()::date,p.dob::date)) between 18 and 21)) and
+                ga.gapagreementid :: character varying in 
+                (
+                    select routing.objectid:: character varying from routing where routing.tosecurityusersid::character varying=userid AND routing.activeflag=1 AND routing.eventcode='GAAR' AND routing.routingstatustypeid::text = any (v_status)
+                ) 
+                AND (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+                AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+                AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END)
+                order by ga.updatedon desc
+                LIMIT pagesize OFFSET v_pageoffset;
+            ELSE 
+                RETURN QUERY 
+                select count(1) over(),ga.gapagreementid,null::uuid, null::uuid,
+                        (select up.fullname::varchar from routing r join userprofile up on up.securityusersid = r.tosecurityusersid
+                        where r.activeflag=1 AND r.eventcode='GAAR' AND r.routingstatustypeid::text = '73' and r.toroleid = 'IVESP'
+                        and r.objectid :: character varying = ga.gapagreementid :: character varying order by r.insertedon desc limit 1), p.cjamspid,p.lastname,p.firstname,null::timestamp,null::bigint,
+                        CONCAT(p.firstname, ' ', p.middlename, ' ', p.lastname)::VARCHAR as childname, sc.servicecasenumber::BIGINT as casenumber,'DHS' ::character varying as childagency,
+                        (select c.countyname from caseassignment ca join county c on c.countyid = ca.toldssid and c.activeflag =1
+                        where ca.objectid = sc.servicecaseid and ca.enddate is null order by ca.insertedon desc limit 1) ::character varying as childjurisdiction,
+                        null::date as placementdate, p.dob::date as dateofbirth, null::varchar as removalage, sc.servicecaseid as caseid, 
+                        (select tep.sqnm_sw::text from tb_eligibility_period tep where tep.eligibility_id = tce.eligibility_id and tep.delete_sw = 'N' and tep.approvalstatus = 'APPROVED' order by tep.sqnm_sw limit 1),
+                        (select tpv.description_tx::text from tb_picklist_values tpv where trim(tpv.picklist_value_cd) = trim(tce.eligibility_status_cd) and tpv.picklist_type_id = 262),
+                        ga.startdate
+                from  tb_client_eligibility tce   
+                INNER JOIN person p ON p.cjamspid=tce.client_id AND p.activeflag=1 
+                INNER JOIN guardianship g on g.alternateid = tce.guardian_subsidy_id
+                INNER JOIN gapagreement ga on ga.gapid = g.gapid AND ga.activeflag = 1
+                INNER JOIN servicecase sc ON sc.servicecaseid = g.servicecaseid AND sc.activeflag = 1
+                WHERE tce.eligibility_type_cd = '2935' and ga.enddate >= now() and 
+                (tce.eligibility_status_cd = '2909' or (EXTRACT(year FROM age(now()::date,p.dob::date)) between 18 and 21)) and
+                ga.gapagreementid :: character varying in 
+                (
+                    select routing.objectid:: character varying from routing where routing.activeflag=1 AND routing.eventcode='GAAR' AND routing.routingstatustypeid::text = any (v_status)
+                ) 
+                AND (CASE WHEN fname IS NOT NULL THEN  UPPER(p.firstname) like '%' || UPPER(fname) || '%' ELSE TRUE END)
+                AND (CASE WHEN lname IS NOT NULL THEN  UPPER(p.lastname) like '%' || UPPER(lname) || '%' ELSE TRUE END)
+                AND (CASE WHEN clientIddata IS NOT NULL THEN  p.cjamspid::character varying = clientIddata ELSE TRUE END)
+                order by ga.updatedon desc
+                LIMIT pagesize OFFSET v_pageoffset;
+            END IF;
+    end if;
+END;
+
+$function$
+

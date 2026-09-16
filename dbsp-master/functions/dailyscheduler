@@ -1,0 +1,50 @@
+CREATE OR REPLACE FUNCTION dailyscheduler()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_actorid uuid;
+
+BEGIN
+  CREATE  TEMP TABLE temp_investigationmaltreatmentactor(
+       investigationmaltreatmentactorid uuid,
+                         intakeservicerequestactorid uuid
+);
+
+---MALTREATMENT UPDATE      
+INSERT INTO temp_investigationmaltreatmentactor 
+ SELECT DISTINCT  ia.investigationmaltreatmentactorid FROM intakeservicerequest isr
+        INNER JOIN intakeserreqstatustype isrst ON isr.intakeserreqstatustypeid = isrst.intakeserreqstatustypeid AND isrst.intakeserreqstatustypekey = 'Closed'
+        INNER JOIN  investigation i ON i.intakeserviceid = isr.intakeserviceid
+        INNER JOIN Investigationallegation ia ON i.investigationid = ia.investigationid
+        INNER JOIN investigationfinding inf ON inf.investigationallegationid = ia.investigationallegationid AND inf.investigationfindingtypekey = 'ID'
+        INNER JOIN Investigationallegationmaltreators iamt  ON iamt.investigationallegationid = ia.investigationallegationid 
+        INNER JOIN intakeservicerequestactor isra   ON isra.intakeservicerequestactorid =  iamt.intakeservicerequestactorid
+        WHERE isra.intakeservicerequestpersontypekey in ('AV','AM')  
+        AND COALESCE(isra.isvictim,0) = 0 
+        AND isr.activeflag =1;
+  
+   UPDATE Investigationmaltreatmentactor SET ismaltreator = 1 
+      WHERE investigationmaltreatmentactorid in (SELECT investigationmaltreatmentactorid FROM temp_investigationmaltreatmentactor);
+ 
+---VICTIM UPDATE
+INSERT INTO temp_investigationmaltreatmentactor
+  SELECT imat.intakeservicerequestactorid FROM investigationmaltreatmentactor imat
+  INNER JOIN temp_investigationmaltreatmentactor timat ON timat.investigationmaltreatmentactorid = imat.investigationmaltreatmentactorid 
+        INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = imat.intakeservicerequestactorid AND imat.activeflag =1 AND isra.activeflag =1
+        WHERE isra.intakeservicerequestpersontypekey = 'AV' ;
+
+ 
+    UPDATE Investigationallegationmaltreators SET isvictim = 1 
+    WHERE intakeservicerequestactorid = (SELECT intakeservicerequestactorid FROM temp_investigationmaltreatmentactor);
+
+ DROP TABLE temp_investigationmaltreatmentactor;
+ 
+    
+    RETURN    'SUCCESS';    
+END;    
+
+$function$
+

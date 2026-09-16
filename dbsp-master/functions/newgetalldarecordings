@@ -1,0 +1,265 @@
+CREATE OR REPLACE FUNCTION newgetalldarecordings(searchjson json)
+ RETURNS TABLE(progressnoteid uuid, author character varying, recordingtype character varying, recordingsubtype character varying, title character varying, team character varying, draft boolean, attemptind boolean, contactdate timestamp without time zone, contactname character varying, contactrole character varying, contactphone character varying, contactemail character varying, archivedon timestamp without time zone, archivedby character varying, detail text, recordingdate timestamp without time zone, insertedby character varying, documentpropertiesid uuid, doctitle character varying, docdescription character varying, filename character varying, mime character varying, s3bucketpathname character varying)
+ LANGUAGE plpgsql
+AS $function$                               
+ -- SET NOCOUNT ON added to prevent extra result sets from                                  
+ -- interfering with SELECT statements.                                  
+--SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED                                                                 
+                                                                                    
+ DECLARE v_GroupId CHAR(36);                                                                           
+ v_IntakeServiceID uuid;                        
+ v_RecordingStatusType  character varying(50);                        
+ v_DateFrom TIMESTAMP;                        
+ v_DateTo TIMESTAMP;                        
+ v_Draft BOOLEAN;                        
+ v_ContactFrom TIMESTAMP;                        
+ v_ContactTo TIMESTAMP;   
+ v_GroupActiveFlag INT;  
+ v_GroupExpirationDate TIMESTAMP;
+ v_liPageNumber  INT;                              
+ v_liPageSize   INT;
+ v_pageoffset int;
+ v_pagenumber int;  
+
+BEGIN
+
+                   
+                                                                          
+ -- Populate the variables from the temp table.  
+                                                                   
+ v_liPageNumber        := searchjson ->> 'pagenumber' ;
+ v_liPageSize          := searchjson ->> 'pagesize' ;                                                 
+ v_Draft               := searchjson ->>'draft';                           
+ v_IntakeServiceID     := searchjson ->>'servicerequestid';                        
+ v_DateFrom            := searchjson ->>'datefrom';                                                              
+ v_DateTo              := searchjson ->>'dateto';                       
+ v_ContactFrom         := searchjson ->>'contactdatefrom';                                                              
+ v_ContactTo           := searchjson ->>'contactdateto';                                                     
+ v_RecordingStatusType := searchjson ->>'type';  
+
+  v_pagenumber := v_liPageNumber-1;
+  v_pageoffset = v_pagenumber * v_liPageSize;
+
+
+ 
+ RETURN QUERY
+ 
+ SELECT  DISTINCT                  
+       PN.ProgressNoteId,                 
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN 'System'                
+            ELSE COALESCE(UP.DisplayName, '')                        
+        END AS Author,                
+       COALESCE(PNT.progressnotetypekey, '') AS RecordingType,                 
+       COALESCE((select progressnotetypekey from progressnotetype  where progressnotetypeid = PN.progressnotesubtypeid), '') AS RecordingSubType,                   
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+    THEN ''                
+            ELSE COALESCE(TM.RoleTypeKey, '')                        
+       END AS Title,                 
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN ''                 
+            ELSE COALESCE(TE.TeamName, '')                           
+       END AS Team, 
+                       
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN 0::boolean                
+            ELSE COALESCE(PN.SaveMode,0::boolean)                 
+       END AS Draft, 
+       
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN 0::boolean                 
+            ELSE COALESCE(PN.AttemptIndicator, 0::boolean)                 
+       END AS AttemptInd,                 
+       CAST(COALESCE ( PN.ContactDate, PN.insertedon) AS TIMESTAMP(3)) AS ContactDate,                 
+       COALESCE (PN.ContactName, '') AS ContactName,                 
+       COALESCE(PN.ContactRoleTypeKey, '') AS ContactRole,                 
+    COALESCE(PN.ContactPhone, '') AS ContactPhone,                 
+       COALESCE(PN.ContactEmail, '') AS ContactEmail,       
+       COALESCE (PN.ArchivedOn, NULL) AS ArchivedOn,    
+       COALESCE (PN.ArchivedBy, '') AS ArchivedBy, 
+                     
+
+(SELECT string_agg(' '  ||   A.DisplayName || ' ' || TO_CHAR( A.insertedon,'MON DD YYYY') || '  ' || COALESCE( A.Description,''  || 'rn' ) ,'|')  
+FROM (select UPF.DisplayName ,PND.insertedon,pnd.Description FROM ProgressNoteDetail pnd       
+JOIN UserProfile UPF ON PND.insertedby = UPF.SecurityUsersId       
+WHERE pnd.ProgressNoteId = PN.ProgressNoteId
+ORDER by PND.insertedon) as A) AS Detail, 
+
+                               
+     CAST(COALESCE (PN.insertedon , PN.insertedon) AS TIMESTAMP(3)) AS RecordingDate ,                 
+       PN.insertedby AS Insertedby            
+       , DP.DocumentPropertiesId, DP.title as doctitle, DP.description as docdescription, DP.filename, DP.mime, DP.s3bucketpathname
+ FROM IntakeServiceRequest AS ISR                           
+       join ProgressNote AS PN ON CAST(ISR.IntakeServiceId AS VARCHAR(50)) = PN.EntityTypeId   
+       Left Outer Join DocumentProperties DP On DP.DocumentPropertiesId = PN.DocumentPropertiesId
+       join ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId AND PND.ActiveFlag = 1               
+       join ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId         
+       join UserProfile up on pn.insertedby = up.SecurityUsersId                       
+       left join AreaTeamMemberServiceRequest atmsr on isr.IntakeServiceId = atmsr.IntakeServiceId AND atmsr.ActiveFlag = 1                 
+       left join TeamMember tm on atmsr.TeamMemberId = tm.TeamMemberId                
+       left join Team te on tm.TeamId = te.TeamId   
+
+
+                    
+               
+WHERE (ISR.IntakeServiceId = v_IntakeServiceID)     
+ AND  lower(PNT.ProgressNoteClassificationTypeKey)  = 'user'  
+        AND  PNT.parentid is null  
+        AND  (v_DateFrom IS NULL OR  (CAST( PN.insertedon AS DATE)  between CAST( v_DateFrom AS DATE) and CAST( v_DateTo AS DATE)))                                                            
+        AND  (v_ContactFrom IS NULL OR  (CAST( PN.ContactDate AS DATE)   between CAST( v_ContactFrom AS DATE) and CAST( v_ContactTo  AS DATE)))                                                           
+        AND  (v_Draft IS NULL OR PN.SaveMode =  v_Draft )                        
+        AND   (lower(v_RecordingStatusType) IS NULL OR lower(COALESCE(PNT.ProgressNoteClassificationTypeKey,'User')) = lower(v_RecordingStatusType))
+        and   (ATMSR.IntakeServiceId IS NULL OR  TO_CHAR( PN.insertedon,'dd-mm-yyyy') between TO_CHAR( ATMSR.EffectiveDate,'dd-mm-yyyy') and coalesce(TO_CHAR( ATMSR.ExpirationDate,'dd-mm-yyyy'),cast(NOW()::Date +integer '1' as text) ) )
+  
+ UNION
+                
+select  distinct                  
+       PN.ProgressNoteId,                 
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN 'System'                
+            ELSE COALESCE(UP.DisplayName, '')        --  need UserProfile                
+        END AS Author,
+                        
+       COALESCE(PNT.progressnotetypekey, '') AS RecordingType,
+                        
+       COALESCE((select progressnotetypekey from progressnotetype  where progressnotetypeid = PN.progressnotesubtypeid), '') AS RecordingSubType,                  
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN ''                
+            ELSE COALESCE(TM.RoleTypeKey, '')        --  need TeamMember                
+       END AS Title,                 
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN ''                 
+          ELSE COALESCE(TE.TeamName, '')           --  need Team                
+       END AS Team,                 
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+            THEN 0::BOOLEAN                
+            ELSE COALESCE(PN.SaveMode, 0::BOOLEAN)                 
+       END AS Draft,                 
+       CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')                 
+ THEN 0::BOOLEAN                 
+            ELSE COALESCE(PN.AttemptIndicator, 0::BOOLEAN)                 
+       END AS AttemptInd,                 
+       CAST(COALESCE ( PN.ContactDate, PN.insertedon) AS TIMESTAMP(3)) AS ContactDate,                 
+       COALESCE (PN.ContactName, '') AS ContactName,                 
+       COALESCE(PN.ContactRoleTypeKey, '') AS ContactRole,                 
+       COALESCE(PN.ContactPhone, '') AS ContactPhone,                 
+       COALESCE(PN.ContactEmail, '') AS ContactEmail,      
+       COALESCE (PN.ArchivedOn, NULL) AS ArchivedOn,    
+       COALESCE (PN.ArchivedBy, '') AS ArchivedBy,     
+
+     (SELECT string_agg(' '  ||   A.DisplayName || ' ' || TO_CHAR( A.insertedon,'MON DD YYYY') || '  ' || COALESCE(A.Description,''  || 'rn' ) ,'|')
+FROM (select UPF.DisplayName ,PND.insertedon,pnd.Description FROM ProgressNoteDetail pnd       
+JOIN UserProfile UPF ON PND.insertedby = UPF.SecurityUsersId       
+WHERE pnd.ProgressNoteId = PN.ProgressNoteId
+ORDER by PND.insertedon) as A) AS Detail, 
+
+                       
+        CAST(COALESCE (PN.insertedon , PN.insertedon) AS TIMESTAMP(3)) AS RecordingDate ,                 
+       PN.insertedby AS Insertedby
+       ,DP.DocumentPropertiesId, DP.title as doctitle, DP.description as docdescription, DP.filename, DP.mime, DP.s3bucketpathname
+ FROM IntakeServiceRequest AS ISR                           
+       join ProgressNote AS PN ON CAST(ISR.IntakeServiceId AS VARCHAR(50)) = PN.EntityTypeId
+   and  pn.ArchivedOn is null --****                             
+     --  join ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId                
+     Left Outer Join DocumentProperties DP On DP.DocumentPropertiesId = PN.DocumentPropertiesId
+       join ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId                
+       join UserProfile up on pn.insertedby = up.SecurityUsersId                
+       left join AreaTeamMemberServiceRequest atmsr on isr.IntakeServiceId = atmsr.IntakeServiceId AND atmsr.ActiveFlag = 1                 
+       left join TeamMember tm on atmsr.TeamMemberId = tm.TeamMemberId                
+       left join Team te on tm.TeamId = te.TeamId                
+               
+WHERE (ISR.IntakeServiceId = v_IntakeServiceID )  
+ AND  lower(PNT.ProgressNoteClassificationTypeKey)  = 'user'  
+ AND  PNT.parentid is null                          
+        AND  (v_DateFrom IS NULL OR  (CAST( PN.insertedon AS DATE)  between CAST( v_DateFrom AS DATE) and CAST( v_DateTo AS DATE)))                                                            
+        AND  (v_ContactFrom IS NULL OR  (CAST( PN.ContactDate AS DATE)   between CAST( v_ContactFrom AS DATE) and CAST( v_ContactTo  AS DATE)))                                        
+        AND  (v_Draft IS NULL OR PN.SaveMode =  v_Draft )                        
+        AND   (lower(v_RecordingStatusType) IS NULL OR lower(COALESCE(PNT.ProgressNoteClassificationTypeKey,'User')) = lower(v_RecordingStatusType))                 
+         and pn.ProgressNoteId not in                 
+             (select pn.ProgressNoteId FROM IntakeServiceRequest AS ISR                           
+       JOIN ProgressNote AS PN ON CAST(ISR.IntakeServiceId AS VARCHAR(50)) = PN.EntityTypeId                           
+       JOIN ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId                           
+       JOIN ProgressNoteType AS PNT ON PN.ProgressNoteTypeId = PNT.ProgressNoteTypeId                           
+       JOIN  AreaTeamMemberServiceRequest atmsr on isr.IntakeServiceId = atmsr.IntakeServiceId AND atmsr.ActiveFlag = 1                 
+       where isr.IntakeServiceId  = v_IntakeServiceID                
+       and  (ATMSR.IntakeServiceId IS NULL OR  TO_CHAR( PN.insertedon,'dd-mm-yyyy') between TO_CHAR( ATMSR.EffectiveDate,'dd-mm-yyyy') and coalesce(TO_CHAR( ATMSR.ExpirationDate,'dd-mm-yyyy'),cast(NOW()::Date+ integer'1' as text))  ) )
+UNION
+
+  
+select  distinct                  
+       pn.progressnoteid,                 
+       case when (pnt.progressnoteclassificationtypekey = 'system')                 
+            then 'system'                
+            else coalesce(   (select  up.displayname               
+            from  areateammemberservicerequest atmsr                  
+       join teammember tm on atmsr.teammemberid = tm.teammemberid                
+       join team te on tm.teamid = te.teamid                
+       join userprofile up on pn.insertedby = up.securityusersid              
+       where  v_IntakeServiceID = atmsr.intakeserviceid limit 1                 
+                         ), '')        --  need userprofile                
+        end as author,                
+       coalesce(pnt.progressnotetypekey, '') as recordingtype,                 
+       coalesce((select progressnotetypekey from progressnotetype  where progressnotetypeid = pn.progressnotesubtypeid), '') as recordingsubtype,                 
+       case when (pnt.progressnoteclassificationtypekey = 'system')                 
+            then ''                
+            else coalesce((select tm.roletypekey               
+            from  areateammemberservicerequest atmsr                  
+       join teammember tm on atmsr.teammemberid = tm.teammemberid                
+      join team te on tm.teamid = te.teamid                
+       join userprofile up on pn.insertedby = up.securityusersid              
+       where v_IntakeServiceID = atmsr.intakeserviceid limit 1                 
+ ), '')        --  need teammember                
+       end as title,                 
+       case when (pnt.progressnoteclassificationtypekey = 'system')                 
+            then ''                 
+            else coalesce((select te.teamname               
+            from  areateammemberservicerequest atmsr                  
+       join teammember tm on atmsr.teammemberid = tm.teammemberid                
+      join team te on tm.teamid = te.teamid                
+       join userprofile up on pn.insertedby = up.securityusersid              
+       where  v_IntakeServiceID = atmsr.intakeserviceid limit 1                 
+                         ), '')           --  need team                
+       end as team,                 
+       case when (pnt.progressnoteclassificationtypekey = 'system')                 
+            then 0::boolean                
+            else coalesce(pn.savemode, 0::boolean)                 
+       end as draft,                 
+       case when (pnt.progressnoteclassificationtypekey = 'system')                 
+            then 0::boolean                
+            else coalesce(pn.attemptindicator, 0::boolean)                 
+       end as attemptind,                 
+       cast(coalesce (pn.contactdate, pn.insertedon) as timestamp(3)) as contactdate,                 
+       coalesce (pn.contactname, '') as contactname,                 
+       coalesce(pn.contactroletypekey, '') as contactrole,                 
+       coalesce(pn.contactphone, '') as contactphone,                 
+       coalesce(pn.contactemail, '') as contactemail,     
+       coalesce (pn.archivedon, null) as archivedon,    
+       coalesce (pn.archivedby, '') as archivedby,                 
+    (select string_agg(' '  ||   a.displayname || ' ' || to_char(a.insertedon,'mon dd yyyy') || '  ' || coalesce(a.description,''  || 'rn' ) ,'|')  
+    
+from (select upf.displayname ,pnd.insertedon,pnd.description from progressnotedetail pnd       
+join userprofile upf on pnd.insertedby = upf.securityusersid       
+where pnd.progressnoteid = pn.progressnoteid
+order by pnd.insertedon) as a) as detail,    
+                           
+    cast(coalesce (pn.insertedon , pn.insertedon) as timestamp(3)) as recordingdate ,                 
+       pn.insertedby as insertedby    
+       ,dp.documentpropertiesid, dp.title as doctitle, dp.description as docdescription, dp.filename, dp.mime, dp.s3bucketpathname
+ from  progressnote as pn                            
+      -- join progressnotedetail as pnd on pn.progressnoteid = pnd.progressnoteid                
+      left outer join documentproperties dp on dp.documentpropertiesid = pn.documentpropertiesid
+       join progressnotetype as pnt on pnt.progressnotetypeid = pn.progressnotetypeid    
+       --join recordinggroup_getallrecordings  rg  on   pn.entitytypeid =   cast(rg.groupid as varchar(50))      
+where   pn.archivedon is null --****
+ and  lower(pnt.progressnoteclassificationtypekey)  = 'user'  
+ and  pnt.parentid is null 
+        --and (rg.expirationdate is null or   pn.insertedon <=    rg.expirationdate) 
+          AND  (v_DateFrom IS NULL OR  (CAST( PN.insertedon AS DATE)  between CAST( v_DateFrom AS DATE) and CAST( v_DateTo AS DATE)))                                                            
+        AND  (v_ContactFrom IS NULL OR  (CAST( PN.ContactDate AS DATE)   between CAST( v_ContactFrom AS DATE) and CAST( v_ContactTo  AS DATE)))                                                   
+        and  (v_Draft is null or pn.savemode = v_Draft )                        
+        and   (lower(v_RecordingStatusType) is null or lower(coalesce(pnt.progressnoteclassificationtypekey,'user')) = lower(v_RecordingStatusType))
+  ORDER BY RecordingDate DESC LIMIT v_liPageSize OFFSET v_pageoffset;     
+ 
+ END
+$function$
+

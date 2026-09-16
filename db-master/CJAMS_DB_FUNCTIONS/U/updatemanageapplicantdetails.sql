@@ -1,0 +1,99 @@
+CREATE OR REPLACE FUNCTION cjams.updatemanageapplicantdetails(searchobj json)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  v_timestamp timestamp;
+  v_returnstatus character varying;
+ v_vendorid character varying;
+v_vendorapplicantid uuid;
+v_newvendorapplicantid uuid;
+
+v_newvendorid character varying;
+v_services record;
+v_address record;
+v_phone record;
+v_email record;
+
+   
+
+BEGIN 
+v_vendorapplicantid := searchobj ->> 'vendorapplicantid';
+v_timestamp := now()::timestamp with time zone;
+v_vendorid := searchobj ->> 'vendorid';
+v_newvendorid := searchobj ->> 'newvendorid';
+
+
+
+IF (v_vendorid is not null) then 
+v_newvendorapplicantid := gen_random_uuid();
+update tb_vendor_applicant set status='Re-Opened' where vendorapplicantid=v_vendorapplicantid;
+
+INSERT INTO cjams.tb_vendor_applicant
+(vendorapplicantid, org_nm, primary_prefix_cd, primary_first_nm, primary_middle_nm, primary_last_nm, primary_suffix_cd, isprimaryadmin, admin_prefix_cd,
+ admin_first_nm, admin_middle_nm, admin_last_nm, admin_suffix_cd, taxidtype, taxid, is1099indicator, ismedicalaidprov, status, create_ts, create_user_id, update_ts, update_user_id, delete_sw,regularfrom,regularto,vendorid,providerid,medlicense,speciality,issamepaymentaddress,
+ jurisdiction)
+(select v_newvendorapplicantid, org_nm, primary_prefix_cd, primary_first_nm, primary_middle_nm, primary_last_nm, primary_suffix_cd, isprimaryadmin, admin_prefix_cd,
+admin_first_nm, admin_middle_nm, admin_last_nm, admin_suffix_cd, taxidtype, taxid, is1099indicator, ismedicalaidprov, 'Draft', create_ts, create_user_id, update_ts, update_user_id, delete_sw,regularfrom,regularto,v_newvendorid,providerid,medlicense,speciality,issamepaymentaddress,
+jurisdiction
+from tb_vendor_applicant where vendorapplicantid=v_vendorapplicantid);
+
+for v_services in select   service_id, v_newvendorapplicantid, startdate, enddate, create_ts, create_user_id, update_ts, update_user_id, delete_sw 
+from tb_vendor_applicant_services   where vendorapplicantid=v_vendorapplicantid
+
+loop
+ --raise notice 'v_services%',v_services;
+INSERT INTO cjams.tb_vendor_applicant_services
+( service_id, vendorapplicantid, startdate, enddate, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+values (v_services.service_id, v_newvendorapplicantid, v_services.startdate, v_services.enddate, v_services.create_ts, v_services.create_user_id, v_services.update_ts, v_services.update_user_id, 'N');
+end loop;
+
+
+for v_address in select   vendoraddressid, vendorapplicantid, adr_1, adr_2, adr_city_nm, adr_county_cd, adr_state_cd, adr_type_key, adr_zip_no, adr_start_dt, adr_end_dt, ispaymentaddress, create_ts, create_user_id, update_ts, update_user_id, delete_sw, isaddress 
+from tb_vendor_addresses   where vendorapplicantid=v_vendorapplicantid
+
+loop
+ 
+INSERT INTO cjams.tb_vendor_addresses
+(  vendorapplicantid, adr_1, adr_2, adr_city_nm, adr_county_cd, adr_state_cd, adr_type_key, adr_zip_no, adr_start_dt, adr_end_dt, ispaymentaddress, create_ts, create_user_id, update_ts, update_user_id, delete_sw, isaddress)
+values (    v_newvendorapplicantid, v_address.adr_1, v_address.adr_2,v_address.adr_city_nm, v_address.adr_county_cd, v_address.adr_state_cd, v_address.adr_type_key, v_address.adr_zip_no, v_address.adr_start_dt, v_address.adr_end_dt, v_address.ispaymentaddress, v_address.create_ts, v_address.create_user_id, v_address.update_ts, v_address.update_user_id, v_address.delete_sw, v_address.isaddress );
+end loop;
+
+for v_phone in select  phonetypekey, phonenumber, phoneextension, create_ts, create_user_id, update_ts, update_user_id, delete_sw 
+from tb_vendor_phone   where vendorapplicantid=v_vendorapplicantid
+
+loop
+ 
+INSERT INTO cjams.tb_vendor_phone
+(  vendorapplicantid,phonetypekey, phonenumber, phoneextension, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+values (    v_newvendorapplicantid,v_phone.phonetypekey,v_phone.phonenumber, v_phone.phoneextension, v_phone.create_ts, v_phone.create_user_id, v_phone.update_ts, v_phone.update_user_id, v_phone.delete_sw );
+end loop;
+
+for v_email in select  emailtypekey, email, create_ts, create_user_id, update_ts, update_user_id, delete_sw 
+from tb_vendor_email   where vendorapplicantid=v_vendorapplicantid
+
+loop
+ 
+INSERT INTO cjams.tb_vendor_email
+(  vendorapplicantid,emailtypekey, email, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+values (    v_newvendorapplicantid,v_email.emailtypekey, v_email.email, v_email.create_ts, v_email.create_user_id, v_email.update_ts, v_email.update_user_id, v_email.delete_sw );
+end loop;
+  INSERT INTO cjams.documentproperties
+( objecttypekey, objectid, documenttypekey, documentdate, clientid, servicerequestid, thirdpartysourceid, filename, tag, title, description, mime, meta, "encoding", numberofbytes, updatedby, updatedon, insertedby, insertedon, activeflag, expirationdate, old_id, "timestamp", voidedby, voidedon, voidreasonid, rootobjectid, rootobjecttypekey, s3bucketpathname, intakenumber, originalfilename, ecmsdocumentid, servicecaseid)
+( select  objecttypekey, objectid, documenttypekey, documentdate, clientid, servicerequestid, thirdpartysourceid, filename, tag, title, description, mime, meta, "encoding", numberofbytes, updatedby, updatedon, insertedby, insertedon, activeflag, expirationdate, old_id, "timestamp", voidedby, voidedon, voidreasonid, rootobjectid, rootobjecttypekey, s3bucketpathname, v_newvendorapplicantid, originalfilename, ecmsdocumentid, servicecaseid 
+from documentproperties where intakenumber=v_vendorid);
+
+v_returnstatus:='success';
+else
+
+v_returnstatus:='Failure';
+end if;
+	
+
+return v_returnstatus;
+
+END;
+
+$function$;

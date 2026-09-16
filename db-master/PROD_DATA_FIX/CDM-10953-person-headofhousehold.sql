@@ -1,0 +1,1 @@
+update Intakeservicerequestactor set isprimary = true, updatedby = 'CDM-10953', updatedon = now() where Intakeservicerequestactorid = '48aef2ed-6777-480e-8d9e-9162b155c14b';

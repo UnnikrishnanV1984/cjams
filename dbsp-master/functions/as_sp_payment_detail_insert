@@ -1,0 +1,128 @@
+CREATE OR REPLACE FUNCTION as_sp_payment_detail_insert(al_service_plan_id bigint, al_payment_header_id bigint, al_service_id bigint, ad_start_dt date, ad_end_dt date, adc_gross_amount numeric, al_unit_no integer, as_unit_type character varying, adc_per_diem_rate numeric, as_type_cd character varying, as_rate_type character varying, al_linked_pymnt_hdr_id bigint, al_reference_payment_detail_id bigint, as_change_type character varying, as_county_cd character varying, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 09/17/2020 
+-- Adult Services Monthly Service Plan 
+-- To create Adult Services Monthly Service Plan Payment Detail Records
+
+-- Arguments:  1) IN al_service_plan_id - PK of Monthy Service Plan 
+--    2) al_payment_header_id - Payment ID
+--    3) al_service_id - Service ID
+--    4) ad_start_dt - Service Start date
+--    5) ad_end_dt - Srevice End date
+--    6) adc_gross_amount - Gross Payment Amount
+--    7) al_unit_no - Total unit of srevice 
+--    8) as_unit_type - Unit Type (Hours) ??
+--    9) adc_per_diem_rate - Unit Rate
+--    10) as_type_cd - Payment Type (Final)
+--    11) as_rate_type - Payment Fequency Type (Monthly)
+--    12) al_linked_pymnt_hdr_id -- Link Payment ID (N/A)
+--    13) al_reference_payment_detail_id -- Link Payment Detail ID (N/A)
+--    14) as_change_type - For Fiscal Aufdit Trail (N/A)
+--    15) as_county_cd - Case County
+--    16) OUT al_sqlcode - SQLCode for error handling
+--    17) OUT as_error - Error text
+------------------------------------------------------------------------
+-- Log Error
+DECLARE vs_pay_detail_id VARCHAR(50) DEFAULT 'SQ_PAYMENT_DETAIL';
+DECLARE vs_fiscalCat VARCHAR(5) DEFAULT NULL;
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'AS_SP_PAYMENT_DETAIL_INSERT';
+
+DECLARE vl_sqlcode INT DEFAULT 0;
+DECLARE SQLCODE INTEGER DEFAULT 0;
+
+DECLARE vl_pay_detail_id BIGINT DEFAULT 0;
+DECLARE vl_client_id BIGINT DEFAULT 0;
+DECLARE vl_case_id BIGINT DEFAULT 0;
+
+BEGIN
+ --DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+ BEGIN
+  EXCEPTION WHEN OTHERS THEN
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+  vl_sqlcode := -1 ;--
+  as_error := COALESCE(as_error ,'') || ( CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+  as_error := COALESCE(as_error ,'') || '::RO ' || 'Service Plan ID/ Payment ID' || ' :: ' || COALESCE(to_char(al_service_plan_id),'') || '/' || COALESCE(to_char(al_payment_header_id),'');--
+  as_error := as_error || COALESCE(vs_message_text ,'');--
+ END;--
+
+ -- Get Client ID & Case ID
+ -- Get the fiscal category code
+ -- vs_fiscalCat := ???? ; -- Insert logic here or pass as a new input parameter to this SP ????
+ select cs.servicerequestnumber as case_id,
+  cl.cjamspid as client_id,
+  mrpt.pca
+ into vl_case_id,
+  vl_client_id,
+  vs_fiscalCat
+ from serviceplanlog svlg,
+  ihasprovidermonthlyreport mrpt,
+  intakeservicerequest cs,
+  serviceplanactivity spac,
+  person cl
+ where mrpt.serviceplanlogid = svlg.serviceplanlogid
+  and mrpt.intakeserviceid = cs.intakeserviceid
+  and spac.serviceplanactivityid = svlg.serviceplanactivityid
+  and spac.personsinvolvedid = cl.personid
+  and svlg.alternateid = al_service_plan_id
+  and svlg.activeflag = 1
+  and cs.activeflag = 1
+  and spac.activeflag = 1
+  and cl.activeflag = 1 ;
+
+ SELECT NEXTVAL('SQ_PAYMENT_DETAIL') into vl_pay_detail_id; 
+ RAISE NOTICE '%  final payment details temp insert', vl_pay_detail_id;
+   
+     
+ INSERT INTO
+  TB_PAYMENT_DETAIL
+  (
+     PAYMENT_DETAIL_ID,              PAYMENT_ID,
+     COUNTY_CD,                      FINAL_AMOUNT_NO,
+     CLIENT_ID,                      FINAL_SERVICE_ID,
+     FINAL_SERVICE_START_DT,         FINAL_SERVICE_END_DT,
+     FINAL_UNITS_NO,                 FINAL_UNIT_TYPE,
+     FINAL_RATE_TYPE_CD,
+     as_serviceplan_id,                FINAL_UNIT_RATE_AMT,
+     CREATE_TS,                      CREATE_USER_ID,
+     UPDATE_TS,                      UPDATE_USER_ID,
+     DELETE_SW,                      FINAL_FISCAL_CATEGORY_CD,
+     CASE_ID,
+     REFERENCE_PAYMENT_DETAIL_ID,    
+     LINKED_PYMNT_HDR_ID
+  )
+   VALUES
+  (
+     vl_pay_detail_id,            al_payment_header_id,
+     as_county_cd,      
+     adc_gross_amount,
+     vl_client_id,                al_service_id,
+     ad_start_dt,                 ad_end_dt,
+     al_unit_no,                  as_unit_type,
+     as_rate_type,
+     al_service_plan_id,          adc_per_diem_rate,
+     current_timestamp,           'asfinance',
+     current_timestamp,           'asfinance',
+     'N',                         vs_fiscalCat,
+     vl_case_id,
+     al_reference_payment_detail_id, 
+     al_linked_pymnt_hdr_id    
+  )  ;
+
+ al_sqlcode := SQLCODE;
+ IF al_sqlcode <> 0  THEN
+  as_error := 'Payment Detail: Error in inserting AS Monthly Service Plan Payment Detail record';
+ END IF;
+ 
+ al_sqlcode := vl_sqlcode;
+
+END 
+;
+
+$function$
+

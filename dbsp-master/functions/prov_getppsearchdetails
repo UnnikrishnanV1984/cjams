@@ -1,0 +1,153 @@
+CREATE OR REPLACE FUNCTION prov_getppsearchdetails(v_searchtype character varying DEFAULT NULL::character varying, v_searchobjectobj json, v_searchworker character varying DEFAULT NULL::character varying, pagenumber integer DEFAULT 0, pagesize integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE
+  v_pageoffset  int;
+ v_pagenumber  int;
+    v_result json;
+ v_searchobjectid character VARYING;
+ v_agency character VARYING;
+ v_searchname character VARYING;
+ v_searchconame character VARYING;
+ v_searchssn character VARYING;
+     
+BEGIN
+ v_searchobjectid := v_searchobjectobj->>'searchid';
+ v_agency := v_searchobjectobj->>'agency';
+ v_searchname := v_searchobjectobj->>'searchname';
+ v_searchconame := v_searchobjectobj->>'searchconame';
+ v_searchssn := v_searchobjectobj->>'searchssn';
+ v_searchname = '%'||trim(v_searchname)||'%';
+ v_searchconame = '%'||trim(v_searchconame)||'%';
+
+
+    v_pageoffset  =  (pagenumber -1)  *  pagesize; 
+RAISE NOTICE '%v_searchobjectid',v_searchobjectid;
+
+SELECT JSON_AGG(agg1) into v_result from (
+select case(v_searchtype)  
+    when 'INQ' then (SELECT JSON_AGG(mon) from (
+     select count(*) over(),'INQ' as objtype,referral_id as objectid,prgram,referral_status as objstatus,provider_program_type as prgmtype , tppr.co_applicant_first_nm as co_first_nm ,tppr.co_applicant_last_nm as co_last_nm
+  , tppr.individual_applicant_first_nm as applicant_first_name, tppr.individual_applicant_last_nm as applicant_last_name, tppr.individual_applicant_ssn as ssn_no
+     from tb_public_provider_referral tppr 
+     where 
+     (tppr.delete_sw = 'N' or tppr.delete_sw is NULL) and 
+     (case when v_searchobjectid IS NOT NULL THEN tppr.referral_id::character varying ilike '%'||trim(v_searchobjectid)||'%' ELSE true END )
+     and (case when v_agency = 'Adult Services' THEN 
+         prgram in ('Adult Services')
+      ELSE prgram not in ('Adult Services')
+      END )
+     and (case when v_searchname is not null then 
+         (tppr.individual_applicant_first_nm||' '||tppr.individual_applicant_last_nm) ilike v_searchname 
+     or (tppr.individual_applicant_first_nm) ilike v_searchname
+     or (tppr.individual_applicant_middle_nm) ilike v_searchname
+     or (tppr.individual_applicant_last_nm) ilike v_searchname
+     or (tppr.individual_applicant_last_nm||', '||tppr.individual_applicant_first_nm) ilike v_searchname
+     else true end
+     )
+     and (case when v_searchconame is not null then 
+         (tppr.co_applicant_first_nm||' '||tppr.co_applicant_last_nm) ilike v_searchconame 
+     or (tppr.co_applicant_first_nm) ilike v_searchconame
+     or (tppr.co_applicant_middle_nm) ilike v_searchconame
+     or (tppr.co_applicant_last_nm) ilike v_searchconame
+     or (tppr.co_applicant_last_nm||', '||tppr.co_applicant_first_nm) ilike v_searchconame
+     else true end
+     )
+   and (case when v_searchssn is not null then 
+     tppr.individual_applicant_ssn||''||tppr.co_applicant_ssn like '%'||v_searchssn||'%'
+    else true end
+    )
+    
+     order by update_ts desc
+      LIMIT  pagesize  OFFSET  v_pageoffset
+     )mon)
+    when 'APP' then 
+       (SELECT JSON_AGG(com) from(
+       select count(*) over(),applicant_id as objectid,'APP' as objtype,prgram,application_status as objstatus,provider_program_type as prgmtype,
+       applicantion_decision as appdecision,application_typedesc as apptypedesc ,tppa.co_applicant_first_nm as co_first_nm ,tppa.co_applicant_last_nm as co_last_nm
+    , tppa.individual_applicant_first_nm as applicant_first_name, tppa.individual_applicant_last_nm as applicant_last_name, tppa.individual_applicant_ssn as ssn_no
+       from tb_public_provider_applicant tppa 
+       where 
+    (tppa.delete_sw = 'N' or tppa.delete_sw is NULL) and 
+    case when v_searchobjectid IS NOT NULL THEN tppa.applicant_id::character varying ilike '%'||trim(v_searchobjectid)||'%' ELSE true END 
+     and (case when v_agency = 'Adult Services' THEN 
+         prgram in ('Adult Services')
+      ELSE prgram not in ('Adult Services')
+      END )
+    and (case when v_searchname is not null then 
+         (tppa.individual_applicant_first_nm||' '||tppa.individual_applicant_last_nm) ilike v_searchname 
+     or (tppa.individual_applicant_first_nm) ilike v_searchname
+     or (tppa.individual_applicant_middle_nm) ilike v_searchname
+     or (tppa.individual_applicant_last_nm) ilike v_searchname
+     or (tppa.individual_applicant_last_nm||', '||tppa.individual_applicant_first_nm) ilike v_searchname
+     else true end
+     )
+    and (case when v_searchconame is not null then 
+         (tppa.co_applicant_first_nm||' '||tppa.co_applicant_last_nm) ilike v_searchconame 
+     or (tppa.co_applicant_first_nm) ilike v_searchconame
+     or (tppa.co_applicant_middle_nm) ilike v_searchconame
+     or (tppa.co_applicant_last_nm) ilike v_searchconame
+     or (tppa.co_applicant_last_nm||', '||tppa.co_applicant_first_nm) ilike v_searchconame
+     else true end
+     )
+    and (case when v_searchssn is not null then 
+         tppa.individual_applicant_ssn||''||tppa.co_applicant_ssn like '%'||v_searchssn||'%'
+     else true end
+     )
+       order by update_ts desc
+       LIMIT  pagesize  OFFSET  v_pageoffset
+             )com)
+    when 'PRV' then 
+       (SELECT JSON_AGG(prov) from
+       (select  count(*) over(), 
+    tprv.provider_id as objectid,
+    'PRV' as objtype,
+    provider_status_cd  as objstatus,
+    provider_nm ,
+    tax_id_no as ssn_no,
+    concat( provider_first_nm, ' ', provider_last_nm) as provider_name,
+    co_first_nm, co_last_nm
+    from tb_provider tprv 
+    inner join tb_provider_picklist tpp 
+    on tpp.provider_id = tprv.provider_id
+    where (tpp.delete_sw='N' or tpp.delete_sw is NULL) and  (tprv.delete_sw='N' or tprv.delete_sw is NULL) and 
+        case when v_searchobjectid IS NOT NULL THEN tprv.provider_id::character varying ilike '%'||trim(v_searchobjectid)||'%' ELSE true END 
+    and (case when v_agency = 'Adult Services' THEN 
+      tpp.picklist_value_cd = '1786'
+      ELSE 
+         tpp.picklist_value_cd = '1783' or tpp.picklist_value_cd = '1785'
+      END )
+    and (case when v_searchname is not null then 
+         (tprv.provider_first_nm||' '||tprv.provider_last_nm) ilike v_searchname 
+     or (tprv.provider_first_nm) ilike v_searchname
+     or (tprv.provider_middle_nm) ilike v_searchname
+     or (tprv.provider_last_nm) ilike v_searchname
+     or (tprv.provider_last_nm||', '||tprv.provider_first_nm) ilike v_searchname
+     else true end
+     )
+    and (case when v_searchconame is not null then 
+         (tprv.co_first_nm||' '||tprv.co_last_nm) ilike v_searchconame 
+     or (tprv.co_first_nm) ilike v_searchconame
+     or (tprv.co_middle_nm) ilike v_searchconame
+     or (tprv.co_last_nm) ilike v_searchconame
+     or (tprv.co_last_nm||', '||tprv.co_first_nm) ilike v_searchconame
+     else true end
+     )
+    and (case when v_searchssn is not null then 
+         tprv.tax_id_no||''||tprv.co_ssn_no like '%'||v_searchssn||'%'
+     else true end
+     )
+        order by tprv.update_ts desc
+        LIMIT  pagesize  OFFSET  v_pageoffset
+    )prov)
+end  as searchresults
+) agg1;
+return v_result;
+END;   
+
+ 
+$function$
+

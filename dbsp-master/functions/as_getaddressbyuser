@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION as_getaddressbyuser(address character varying, countyid uuid, v_intakerviceid uuid)
+ RETURNS TABLE(userid character varying, username text, workloads integer, cjamspid bigint, juridiction character varying, agencykey character varying, available character varying, teamname character varying, userrole character varying, email character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+        
+  v_countyid uuid;
+ v_address text;
+v_tosecurityusersid character varying ;
+ v_toroleid character varying;
+begin
+ v_address:=address;
+ v_countyid:=countyid;
+ 
+ select R.tosecurityusersid,R.toroleid into v_tosecurityusersid,v_toroleid from routing R where R.objectid=v_intakerviceid::character varying and R.activeflag=1 and R.routingstatustypeid=4;
+RETURN QUERY
+SELECT distinct  up.securityusersid,
+  up.firstname||', '||up.lastname as caseworkername,cast (coalesce(rt.workload,0) as int),up.cjamspid,upa.county as juridiction,cast(tty.teamtypekey as character varying) as agency,
+   cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable,
+   t.teamname, cast(replace(tmrt.description ,','||tmrt.teamtypekey,'') as character varying ) as rolename,up.email
+        FROM as_teammemberassignment tma
+        INNER join teammember tm
+          ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+        inner join team t on t.teamid=tm.teamid and t.activeflag=1
+        INNER join teammemberroletype  tmrt 
+          ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+         
+        left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey 
+          AND tty.activeflag= 1
+          left join userprofile up on up.securityusersid=tma.securityusersid
+          left join (
+        select sr.routedusersid securityusersid, sum (workload) workload  from intakeservicerequest sr  
+        inner join servicerequesttypeconfig src on src.intakeservreqtypeid = sr.intakeservreqtypeid
+        and  src.servicerequestsubtypeid = sr.intakeservicerequestclassid
+        and src.activeflag =1
+        group by sr.routedusersid ) rt on rt.securityusersid = up.securityusersid 
+        left JOIN UserProfileAddress upa 
+          ON upa.securityusersid = up.securityusersid  AND upa.activeflag= 1 and upa.userprofileaddresstypekey='O'
+  left Join county cou on cou.countyid=upa.countyid and cou.activeflag=1
+        
+        WHERE   tm.roletypekey =v_toroleid and up.securityusersid not in(v_tosecurityusersid) 
+       -- and upa.countyid='7665ca54-5374-4174-be07-a687b811a82c'
+       --and upa.userprofileaddressid='0e777ccc-5001-40bc-bbca-501b8b141dd1'
+       -- and up.securityusersid not in(v_tosecurityusersid)
+       AND (v_address IS NULL OR upa.address||','||upa.city||','||upa.state||','||upa.zipcode||','||cou.countyname = v_address)
+  AND (v_countyid IS NULL OR upa.countyid = v_countyid)
+        AND tma.activeflag =1;
+END;
+
+$function$
+

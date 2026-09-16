@@ -1,0 +1,31 @@
+CREATE OR REPLACE FUNCTION as_getassessmentdashboard(v_securityusersid character varying, v_status character varying, _page integer, _limit integer, v_roletypecode character varying DEFAULT ''::character varying)
+ RETURNS TABLE(totalcount bigint, assessmenttemplateid uuid, external_templateid character varying, intakeserviceid uuid, name text, titleheadertext text, status character varying, casenumber character varying, duedays integer, personid uuid, displayname text, dob timestamp without time zone, assignedon timestamp without time zone, completedon timestamp without time zone, intakeassessment json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE          
+_offset  integer;
+BEGIN
+_offset := (_page - 1) * _limit;  
+
+RETURN QUERY 
+select count(1) OVER() totalcount,* from (
+   select aas.assessmenttemplateid,ast.external_templateid,aas.intakeserviceid as objectid,ast.name, ast.titleheadertext, aas.status,aas.casenumber,ast.duedays,p.personid,p.firstname||' '|| p.lastname as displayname,
+  p.dob,  (select min(a2.insertedon) from assignedassessment a2 where a2.assessmenttemplateid =aas.assessmenttemplateid  
+ and a2.intakeserviceid = aas.intakeserviceid and a2.securityusersid = v_securityusersid) as assignedon, case when aas.status = 'Completed' then aas.insertedon else null end as completedon,(select * from as_getassessmentdetails(aas.intakeserviceid :: character varying,Ast.assessmenttemplateid,true,v_roletypecode)) as intakassessment 
+  from assignedassessment aas 
+ join assessmenttemplate ast on ast.assessmenttemplateid= aas.assessmenttemplateid and ast.activeflag=1 and aas.activeflag=1
+ join (select ir.intakeserviceid,ir.personid FROM intakeservicerequestactor ir
+     WHERE intakeservicerequestpersontypekey ='RA' 
+        AND activeflag =1 group by ir.personid, ir.intakeserviceid) as ISRA  on ISRA.intakeserviceid = aas.intakeserviceid 
+ join person p on ISRA.personid = p.personid and p.activeflag =1
+where aas.securityusersid=v_securityusersid 
+AND case when coalesce(v_roletypecode,'') != '' then ast.targetroletypekey =  v_roletypecode else ast.targetroletypekey in ('ASMHCP','ASPHCP','ASRNC') end
+AND case when v_status = 'Pending' then aas.status in ('open','Reopen') else aas.status ='Completed' end)as ast
+  
+LIMIT _limit OFFSET _offset;
+
+ END;
+ 
+$function$
+

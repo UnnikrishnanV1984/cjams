@@ -1,0 +1,1 @@
+ALTER TABLE cjams.ProgressNote drop column witsid, add column witsid bigserial;

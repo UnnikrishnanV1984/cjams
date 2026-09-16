@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION getplacementsummary(v_personid uuid, pagenumber bigint, pagesize bigint, v_status character varying, i_searchtext character varying)
+ RETURNS TABLE(totalcount bigint, placementid uuid, startdatetime timestamp without time zone, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, fieldworkerid bigint, fieldworkeruuid character varying, fieldworkername text, cop boolean, placingfolder character varying, providername character varying, placementunit character varying, addate timestamp without time zone, adtime time without time zone, releasedate timestamp without time zone, statustypekey character varying, projectedrelease timestamp without time zone, placementadmissionclassificationkey character varying, placementadmissionclassificationdesc character varying, placementadmissiontypekey character varying, placementadmissiontypedesc character varying, placementadmissionauthorizationtypekey character varying, placementadmissionauthorizationtypedesc character varying, placementprimaryadmissionreasontypekey character varying, placementprimaryadmissionreasontypedesc character varying, countyname character varying, jcounty character varying, placementprimaryapprovedalttypekey character varying, placementprimaryapprovedalttypedesc character varying, exitreasontypekey character varying, exitreasontypekeydesc character varying, releasereason character varying, releasecomments character varying, leavetype character varying, whereabouts character varying, releasetonames character varying, releasetocategory character varying, detentionalternative character varying, status text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset int;
+ v_pagenumber int;
+DECLARE totalcount integer;
+declare querytxt text;
+declare youthstatussearch character varying;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+  
+if(i_searchtext != '' and i_searchtext is not null)
+ then 
+youthstatussearch := ' AND fp.focuspersonstatustypekey = ''' || i_searchtext || '''';    
+ else
+ youthstatussearch='';
+ end if;
+ querytxt='
+SELECT distinct count(1)   over() as totalcount,pl.placementid,pl.startdatetime,isr.intakeserviceid,isr.servicerequestnumber,isr.intakenumber, up.cjamspid as fieldworkerid,up.securityusersid as fieldworkeruuid,CONCAT(up.firstname,'' '',up.lastname) as fieldworkername,pl.cop,ft.description as placingfolder,pr.providername,pr.providerunit as placementunit,
+pl.addate,pl.adtime,pl.releasedate,pl.statustypekey,pl.releasedate as projectedrelease,
+pl.placementadmissionclassificationkey,pac.description as placementadmissionclassificationdesc,
+pl.placementadmissiontypekey,pat.description as placementadmissiontypedesc,
+pl.placementadmissionauthorizationtypekey,ppaa.description as placementadmissionauthorizationtypedesc,
+pl.placementprimaryadmissionreasontypekey, ppar.description as placementprimaryadmissionreasontypedesc,cnt.countyname,pl.jcounty,
+pl.placementprimaryapprovedalttypekey,ppaat.description as placementprimaryapprovedalttypedesc,pl.exitreasontypekey,rfv.description as exitreasontypekeydesc,
+rf.description as releasereason,pre.releasecomments,
+plr.leavetypekey as leavetype,pre.whereabouts,pre.releasetoname as releasetonames,pre.releasecategory as releasetocategory,pl.detainer as detentionalternative,
+(case when pl.enddatetime is null then ''open'' when pl.enddatetime is not null then ''Closed'' end) as status
+from placement pl 
+left join provider pr on 
+pr.providerid = pl.providerid 
+left join intakeservicerequest isr  on 
+ isr.intakeserviceid = pl.intakeserviceid 
+left join foldertype ft on 
+  ft.foldertypekey = isr.foldertypekey
+--left join person p on
+--p.personid = v_personid and p.activeflag=1
+--left join actor a on 
+--a.personid = p.personid  and a.activeflag =1 
+--join focuspersoncasestatus fp on 
+--fp.personid=p.personid and fp.activeflag=1 
+--left join intakeservicerequestactor isra on 
+--isra.actorid = a.actorid and isra.activeflag =1 and isra.intakeservicerequestpersontypekey =''Youth''
+left join placementadmissiontype pat 
+    on pat.placementadmissiontypekey = pl.placementadmissiontypekey
+left join placementadmissionclassificationtype pac
+    on pac.placementadmissionclassificationkey = pl.placementadmissionclassificationkey
+left join placementadmissionauthorizationtype ppaa
+    on ppaa.placementadmissionauthorizationtypekey = pl.placementadmissionauthorizationtypekey
+left join placementprimaryadmissionreasontype ppar
+    on ppar.placementprimaryadmissionreasontypekey = pl.placementprimaryadmissionreasontypekey
+left join placementprimaryapprovedalttype ppaat
+    on ppaat.placementprimaryapprovedalttypekey = pl.placementprimaryapprovedalttypekey
+left join exitreasontype ert
+    on ert.exitreasontypekey = pl.exitreasontypekey
+left join userprofile up
+     on  up.securityusersid =pl.updatedby 
+left join county cnt 
+     on cnt.countyid = pl.county
+left join referencevalues rfv on 
+     rfv.value_text = pl.exitreasontypekey 
+left join placementrelease pre on 
+     pre.placementid = pl.placementid 
+left join placementleavereturn plr on 
+     plr.placementid = pl.placementid 
+left join referencevalues rf on 
+     rf.value_text = pre.releasereason 
+where pl.intakeserviceid in 
+(
+select distinct INTSR.intakeserviceid from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype=''Youth''
+   join person p on Acc.personid=p.personid and p.activeflag=1
+   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+   where ACC.personid ='''||v_personid||''''||youthstatussearch||'
+)
+
+and 
+
+case when '''||v_status||''' =''open'' then pl.enddatetime is null 
+     when '''||v_status||'''=''closed'' then pl.enddatetime is not null 
+     when '''||v_status||'''=''all'' then pl.enddatetime is null or pl.enddatetime is not null
+     end
+ORDER BY pl.startdatetime NULLS first
+LIMIT '||pagesize||'  offset '||v_pageoffset;
+
+return query execute querytxt;
+  END;
+
+$function$
+

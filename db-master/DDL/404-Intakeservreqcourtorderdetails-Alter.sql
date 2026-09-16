@@ -1,0 +1,1 @@
+alter table cjams.intakeservreqcourtorderdetails alter column remarks type character varying; 

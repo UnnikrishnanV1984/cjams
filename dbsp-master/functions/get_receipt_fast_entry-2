@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION get_receipt_fast_entry(v_account_type character varying, v_transaction_source_cd character varying, v_lipagenumber bigint, v_lipagesize bigint, v_client_id bigint, v_client_name character varying)
+ RETURNS TABLE(totalcount bigint, transaction_id bigint, client_account_id bigint, account_type character varying, transaction_type_cd character varying, transaction_type character varying, transaction_source_cd character varying, transaction_source character varying, benefit_start_dt date, benefit_end_dt date, transaction_amount_no numeric, transaction_dt date, credit_debit_sw character, notes_tx character varying, account_no_tx character varying, client_id bigint, client_name character varying, ssn character varying, total_balance_no numeric, post_sw character, received_cd character, fast_entry_id integer, current_mon_start_day timestamp without time zone, current_mon_end_day timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+    v_pagenumber int;
+ v_pageoffset int;
+BEGIN 
+ 
+--IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+-- v_liPageSize := 10;
+--END IF;
+--
+--IF COALESCE(v_liPageNumber, 0) < 1 
+--THEN
+-- v_liPageNumber := 1; 
+--end if;
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query 
+select count(1) over(),
+ tat.transaction_id,
+ tca.client_account_id
+ ,((SELECT value_tx FROM tb_picklist_values where picklist_type_id=40 and delete_sw='N' and TRIM(picklist_value_cd)=tca.account_type_cd :: text)) as account_type
+ ,tat.transaction_type_cd
+ ,(SELECT value_tx FROM tb_picklist_values where picklist_type_id=39 and delete_sw='N' and TRIM(picklist_value_cd)=tat.transaction_type_cd::text) as transaction_type
+ ,tat.transaction_source_cd
+ ,((SELECT value_tx FROM tb_picklist_values where picklist_type_id=38 and delete_sw='N' and TRIM(picklist_value_cd)=tat.transaction_source_cd::text)) as transaction_source
+ ,tat.benefit_start_dt,
+ tat.benefit_end_dt,
+ case when  (select count(1) from tb_account_fast_entry  tattf where tattf.transaction_id= tat.transaction_id) >0  then
+  tafe.transaction_amount_no :: numeric(10,2) else tat.transaction_amount_no:: numeric(10,2)  end ,
+ tat.transaction_dt,
+ tat.credit_debit_sw,
+ tat.notes_tx,
+ tca.account_no_tx,
+tca.client_id , concat(p.firstname , ' ', p.middlename , ' ', p.lastname) :: character varying,
+--p.ssnno,
+(select pid.personidentifiervalue from personidentifier pid 
+  where pid.personidentifiertypekey = 'SSN' and pid.personid = p.personid and pid.activeflag = 1 limit 1) :: character varying as ssn,
+tca.total_balance_no,tafe.post_sw,'' :: bpchar,tafe.fast_entry_id,
+date_trunc('month', current_date )  ::timestamp without time zone as current_start_day,
+(date_trunc('month', now()::date) + interval '1 month' - interval '1 day') ::timestamp without time zone as current_end_day
+from tb_account_transaction tat
+join tb_client_account tca on tca.client_account_id = tat.client_account_id and tca.delete_sw = 'N'
+join person p on p.cjamspid = tca.client_id and p.activeflag=1
+left join tb_account_fast_entry tafe on  tafe.transaction_id = tat.transaction_id and tafe.delete_sw ='N'
+where -- transaction_source_cd in ('585','586','587') and
+tca.status_cd = '592' and
+ tat.transaction_type_cd ='589' and frequency_cd = 'Y' and 
+EXTRACT(month FROM date_trunc('month', tat.benefit_start_dt)) = 
+EXTRACT(month FROM date_trunc('month', current_date - interval '1' month))
+--and (select count(1) from tb_account_fast_entry tafe where  tafe.transaction_id = tat.transaction_id and tafe.delete_sw ='N') =0
+AND (v_account_type is null or tca.account_type_cd = v_account_type)
+AND (v_transaction_source_cd is null or tat.transaction_source_cd = v_transaction_source_cd)
+AND (v_client_id is null or p.cjamspid = v_client_id)
+AND (v_client_name IS NULL OR 
+ (LOWER(CAST(INITCAP(TRIM(P.firstname)||' ' ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ELSE '' END
+       || ' '||TRIM(P.lastname) ) AS CHARACTER VARYING)
+ ) like LOWER('%' || v_client_name || '%'))
+ OR CASE WHEN LOWER(TRIM(v_client_name)) IS NOT NULL THEN ( soundex(LOWER(TRIM(p.firstname))) = soundex(LOWER(TRIM(v_client_name)))) END 
+ OR CASE WHEN LOWER(TRIM(v_client_name)) IS NOT NULL THEN ( soundex(LOWER(TRIM( p.lastname))) = soundex(LOWER(TRIM(v_client_name)))) END
+    OR CASE WHEN LOWER(TRIM(v_client_name)) IS NOT NULL THEN ( soundex(LOWER(TRIM( p.middlename))) = soundex(LOWER(TRIM(v_client_name)))) END  
+)
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

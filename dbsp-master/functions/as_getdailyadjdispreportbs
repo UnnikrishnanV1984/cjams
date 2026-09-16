@@ -1,0 +1,45 @@
+CREATE OR REPLACE FUNCTION as_getdailyadjdispreportbs(p_intakenumber character varying, i_secid character varying)
+ RETURNS TABLE(persons text, admission character varying, released character varying, continued character varying, placed character varying, detorviop character varying, awol boolean, courtdate character varying, level character varying, cdo character varying, area character varying, officeworkername character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+     RETURN QUERY 
+  select inr.* from ( select distinct 
+   da.jsondata ->> 'persons' as persons,
+   cast(to_char(pl.addate, 'MM/DD/YYYY') as character varying) as admission,
+   cast(to_char(pl.releasedate, 'MM/DD/YYYY') as character varying) as released,
+   cast(null as character varying) as continued,
+   pr.providername as placed,
+   cast(null as character varying) as detorviop,
+   (case when pa.personid is not null then true else false end) as awol,
+   cast(to_char(isrca.courtorderdatetime, 'MM/DD/YYYY') as character varying) as courtdate,
+   rv.description  as "level",
+   cast(up.lastname||', '||up.firstname as character varying) as cdo,
+   jc.countyname as area,
+   (select distinct cast(concat(lastname,',',' ',firstname) as character varying) from userprofile up where securityusersid = i_secid) as officeworkername
+  from intakedastaging da 
+   left join (select *,row_number() over(partition by intakenumber order by startdatetime desc) as recno from placement) pl on da.intakenumber = pl.intakenumber and pl.activeflag = 1 and pl.recno = 1
+  left join provider pr on pl.providerid = pr.providerid
+  --join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+  --join actor a on a.actorid = isra.actorid and a.activeflag =1 
+  --join person p on p.personid = a.personid and p.activeflag =1
+  left join personalert pa on pa.intakenumber = da.intakenumber and pa.alerttype = 'AWOL'
+  left join ( select r.description,r.ref_key 
+       from referencetype rt 
+       join referencevalues r on rt.referencetypeid = r.referencetypeid and r.activeflag = 1
+       where rt.tablename = 'providerunittype' and rt.activeflag = 1 ) rv on rv.ref_key = pr.providerunit 
+  left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing) ich on ich.intakenumber = da.intakenumber and ich.activeflag = 1 and ich.recno = 1
+  left join intakeservicerequestcourtaction isrca on isrca.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid  and isrca.activeflag = 1
+  left join userprofile up on up.securityusersid = pl.updatedby and up.activeflag = 1
+  left join as_teammemberassignment tma on tma.securityusersid = up.securityusersid and tma.activeflag = 1
+  left join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+  left join team t on t.teamid = tm.teamid and t.activeflag = 1
+  left join county jc on jc.countyid = cast(t.countyid as uuid)
+  where da.activeflag = 1 
+  and  da.intakenumber = p_intakenumber )inr;
+  
+END;
+$function$
+

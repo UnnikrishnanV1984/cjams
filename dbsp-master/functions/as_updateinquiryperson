@@ -1,0 +1,140 @@
+CREATE OR REPLACE FUNCTION as_updateinquiryperson(v_objectid character varying, v_type character varying, v_securityuserid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+
+v_intakerecord record;
+v_actorrecord record;
+v_personrecord record;
+v_contactrecord record;
+v_narrativerecord record;
+v_documentrecord record;
+v_actorid uuid;
+v_applicantentry int;
+v_persontypekey character varying;
+v_applicant int;
+v_coapplicant int;
+v_personid uuid;
+v_ssno int;
+v_randomuuid uuid;
+v_applicantid character varying;
+v_addressid uuid;
+v_returnstatus character varying;
+v_apppersonid uuid;
+v_coapppersonid uuid;
+
+
+begin
+ 
+  IF (v_type = 'inquiry') then
+  v_apppersonid := null;
+  select personid into v_apppersonid from intakeservicerequestactor where intakenumber in (v_objectid) and intakeservicerequestpersontypekey='APLCNT' and activeflag=1 order by insertedon desc limit 1;
+  
+
+  if v_apppersonid is not  null then
+    raise notice 'v_apppersonid%',v_apppersonid;
+    for v_actorrecord in 
+    select ppn.phonenumber as homephonenumber,ppc.phonenumber as cellphonenumber,p.firstname,p.middlename,p.lastname,p.prefx,p.suffix,p.ssnno,p.dob,(case p.citizenalenageflag when 1 then true else false end )as uscitizen,pe.email,
+    pa.address,pa.address2,pa.city,pa.state,pa.zipcode,pep.employername,pep.workphone from person p  --where eventcode like '%PRWS%'
+  left join personphonenumber ppn on ppn.personid= p.personid and ppn.activeflag=1 and ppn.personphonetypekey in ('HM')
+  left join personphonenumber ppc on ppc.personid= p.personid and ppc.activeflag=1 and ppc.personphonetypekey in ('CL')
+  left join personemail pe on pe.personid=p.personid and pe.activeflag=1
+   left join personaddress pa on pa.personid = p.personid and pa.activeflag=1 and pa.currentlocationflag=1
+   left join personemployment pep on pep.personid=p.personid and pep.activeflag=1
+  where p.activeflag=1  and p.personid =v_apppersonid
+  loop 
+   if (v_actorrecord.ssnno = '' )  then 
+ v_ssno = null;
+else 
+ v_ssno := v_actorrecord.ssnno;
+ end if;
+  update tb_public_provider_referral  set individual_applicant_hm_phone=COALESCE(v_actorrecord.homephonenumber,individual_applicant_hm_phone),
+              individual_applicant_cell_nm=COALESCE(v_actorrecord.cellphonenumber,individual_applicant_cell_nm),
+              individual_applicant_email=COALESCE(v_actorrecord.email,individual_applicant_email),
+              individual_applicant_first_nm=COALESCE(v_actorrecord.firstname,individual_applicant_first_nm),
+              individual_applicant_last_nm=COALESCE(v_actorrecord.lastname,individual_applicant_last_nm),
+              individual_applicant_middle_nm=COALESCE(v_actorrecord.middlename,individual_applicant_middle_nm),
+              individual_applicant_prefix=COALESCE(v_actorrecord.prefx,individual_applicant_prefix),
+              individual_applicant_suffix=COALESCE(v_actorrecord.suffix,individual_applicant_suffix),
+              individual_applicant_dob=COALESCE(v_actorrecord.dob,individual_applicant_dob),
+              individual_applicant_ssn=COALESCE(v_ssno,individual_applicant_ssn),
+              individual_applicant_employer_nm=COALESCE(v_actorrecord.employername,individual_applicant_employer_nm),
+              individual_applicant_us_citizen=COALESCE(v_actorrecord.uscitizen,individual_applicant_us_citizen) where referral_id in (v_objectid);
+            
+
+  v_addressid := null;
+  select address_id into v_addressid from tb_provider_address_mapping where object_id=v_objectid and address_type='Individual Applicant Address';
+  if (v_addressid != null) then
+  update tb_provider_applicant_addresses set adr_street_nm= coalesce(v_actorrecord.address,adr_street_nm),
+                                             adr_city_nm = coalesce(v_actorrecord.city,adr_city_nm),
+                                             adr_state_cd = coalesce(v_actorrecord.state,adr_state_cd),
+                                             adr_zip5_no = coalesce(v_actorrecord.zipcode,adr_zip5_no) where address_id=v_addressid;
+  end if;
+
+ 
+ 
+  end loop;
+   end if;
+  
+   select personid into v_coapppersonid from intakeservicerequestactor where intakenumber in (v_objectid) and intakeservicerequestpersontypekey='COAPLCNT' and activeflag=1 order by insertedon desc limit 1;
+  
+
+  if v_coapppersonid is not  null then
+    raise notice 'v_apppersonid%',v_apppersonid;
+    for v_actorrecord in 
+    select ppn.phonenumber as homephonenumber,ppc.phonenumber as cellphonenumber,p.firstname,p.middlename,p.lastname,p.prefx,p.suffix,p.ssnno,p.dob,(case p.citizenalenageflag when 1 then true else false end )as uscitizen,pe.email,
+    pa.address,pa.address2,pa.city,pa.state,pa.zipcode,pep.employername,pep.workphone from person p  --where eventcode like '%PRWS%'
+  left join personphonenumber ppn on ppn.personid= p.personid and ppn.activeflag=1 and ppn.personphonetypekey in ('HM')
+  left join personphonenumber ppc on ppc.personid= p.personid and ppn.activeflag=1 and ppc.personphonetypekey in ('CL')
+  left join personemail pe on pe.personid=p.personid and pe.activeflag=1
+   left join personaddress pa on pa.personid = p.personid and pa.activeflag=1 and pa.currentlocationflag=1
+   left join personemployment pep on pep.personid=p.personid and pep.activeflag=1
+  where p.activeflag=1  and p.personid =v_coapppersonid
+  loop 
+   if (v_actorrecord.ssnno = '' )  then 
+ v_ssno = null;
+else 
+ v_ssno := v_actorrecord.ssnno;
+ end if;
+  update tb_public_provider_referral  set co_applicant_hm_phone=COALESCE(v_actorrecord.homephonenumber,individual_applicant_hm_phone),
+              co_applicant_cell_nm=COALESCE(v_actorrecord.cellphonenumber,individual_applicant_cell_nm),
+              co_applicant_email=COALESCE(v_actorrecord.email,individual_applicant_email),
+              co_applicant_first_nm=COALESCE(v_actorrecord.firstname,individual_applicant_first_nm),
+              co_applicant_last_nm=COALESCE(v_actorrecord.lastname,individual_applicant_last_nm),
+              co_applicant_middle_nm=COALESCE(v_actorrecord.middlename,individual_applicant_middle_nm),
+              co_applicant_prefix=COALESCE(v_actorrecord.prefx,individual_applicant_prefix),
+              co_applicant_suffix=COALESCE(v_actorrecord.suffix,individual_applicant_suffix),
+              co_applicant_dob=COALESCE(v_actorrecord.dob,individual_applicant_dob),
+              co_applicant_ssn=COALESCE(v_ssno,individual_applicant_ssn),
+              co_applicant_employer_nm=COALESCE(v_actorrecord.employername,individual_applicant_employer_nm),
+              co_applicant_us_citizen=COALESCE(v_actorrecord.uscitizen,individual_applicant_us_citizen) where referral_id in (v_objectid);
+            
+
+  v_addressid := null;
+  select address_id into v_addressid from tb_provider_address_mapping where object_id=v_objectid and address_type='Co-Applicant Address';
+  if (v_addressid != null) then
+  update tb_provider_applicant_addresses set adr_street_nm= coalesce(v_actorrecord.address,adr_street_nm),
+                                             adr_city_nm = coalesce(v_actorrecord.city,adr_city_nm),
+                                             adr_state_cd = coalesce(v_actorrecord.state,adr_state_cd),
+                                             adr_zip5_no = coalesce(v_actorrecord.zipcode,adr_zip5_no) where address_id=v_addressid;
+  end if;
+
+ 
+ 
+  end loop;
+   end if;
+   
+  v_returnstatus := 'Inquiry updated';
+ else 
+  v_returnstatus := 'Failure';
+  END IF;
+
+
+RETURN v_returnstatus;
+                                                      
+END;
+
+$function$
+

@@ -1,0 +1,1 @@
+update routing set activeflag = 0 , updatedby = 'CDM-12019' , updatedon = now() where routingid = 'fe4383a9-fd00-477b-a76e-6e1219828ace' and servicerequestnumber = '3142364' and objectid = '595c0123-7391-4e45-8830-7fce814f7605' and activeflag = 1

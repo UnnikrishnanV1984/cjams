@@ -1,0 +1,733 @@
+CREATE OR REPLACE FUNCTION cjams.sp_under_over_pvt(ad_run_dt date)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- 07/25/2007 Vineet Tirodkar
+--
+--Check for all placement validation happen today.
+--	Check if this is late placement validation
+--	Final batch is already run.
+--	For this placement for the previous month there is a draft payment exist and no final payment exist.
+--      And provider payment status is not hold.(???)
+--Create a system adjustment
+--	Create a new system payment adjustment for the provider (create a header record)
+--	Create details for that record (Attached original payment id to this payment).
+-- In all the above type of payments, if over paid then create receivables
+-- 08/30/2007 Vineet Tirodkar - Change in Logic to get Payment Detail ID for reference in Receivables
+-- 11/19/2007 Vineet Tirodkar - Call New Stored Procedure SP_AR_TICKLER
+-- 01/03/2008 Vineet Tirodkar - For changes in existing contract rates or for new rates,
+-- 				re-calculate the payments and create either Adjustments or Receivables.
+-- 03/18/2008 Vineet Tirodkar - Changes for Provider Checklist (CIS-16755)
+--	      Change in Cursor CUR_VALIDATED_PLACEMENT to add Provider checklist table,DOB and Age conditions
+-- 05/29/2008 Vineet Tirodkar - Changes in logic for Provider Checklist,
+--            In case of missing information generate payment with status as 'Hold'.
+-- 05/30/2008 Vineet Tirodkar - New logic to get LINKED_PYMNT_HDR_ID and REFERENCE_PAYMENT_DETAIL_ID
+--            New arguments Original Payment ID and Pay Detl ID for SP_PAYMENT_DETAIL_INSERT
+-- 08/18/2008 Vineet Tirodkar - Change in Cursor CUR_VALIDATED_PLACEMENTfor Age conditions (< 21). CIS-17754
+-- 09/22/2008 Vineet Tirodkar - CIS-17815
+--            1) To Add Commit at end of this SP
+--	      2) New Argument 'ad_run_dt', use of this argument instead of CURRENT DATE. So CHESSIE can run this SP on any day for any day.
+--	      3) To pass new argument to SP_GET_CURRENT_BALANCE, Rate Structure ID as NULL
+-- 12/23/2008 Vineet Tirodkar - To pass New Argument for SP_PAYMENT_PLAN_INSERT CIS-18124
+-- 03/18/2009 Vineet Tirodkar - Change in Placement Cursor for Age conditions.
+--            CHESSIE will pay to all clients up to DOB for the client turning 21 in that service month  - CIS-18524
+-- 08/18/2009 Vineet Tirodkar - Changes to Implement Per Diem Rates for Private Provider Payments -- CIS-19002
+-- 07/13/2012 Vineet Tirodkar PRJ-02667 - MD CHESSIE Batch Process Redesign - To change Return 0 on success
+-- 10/17/2012 Vineet Tirodkar PRJ-03018 - To fix Link payment header id issue.
+-- 05/19/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+-- Modifications to SP_OVER_PAYMENT and SP_PAYMENT_DETAIL_INSERT calls for Fiscal Audit Trail(BDSD Req # 36)
+-- 09/19/2015 Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+--			  Modifications to Differentiate system adjustments for Foster Care payments & Subsidy Payments (BDSD Req # 77)
+--			  To pass new input parameter for SP_GET_CURRENT_BALANCE
+-- 08/02/2020 Vineet Tirodkar - CJAMS - To fix vs_DO_RECALC logic for vs_TRAN_TYPE = 'CONTRACT_RATE' 
+-- 07/12/2021 Vineet Tirodkar - To exclude placements with entry date beyond client's 21st bday (CIDM-3049) 
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+------------------------------------------------------------------------
+
+DECLARE vl_placement_id BIGINT DEFAULT 0;--
+DECLARE vl_adjust_payment_id BIGINT DEFAULT 0;--
+DECLARE vl_private_org BIGINT DEFAULT 0;--
+DECLARE vl_provider_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_id BIGINT DEFAULT 0;--
+DECLARE vl_orig_payment_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_detail_id BIGINT DEFAULT 0;--
+DECLARE vl_contract_program_id BIGINT DEFAULT 0;--
+DECLARE vl_client_id BIGINT DEFAULT 0;--
+DECLARE vl_receivable_provider_id BIGINT DEFAULT 0;--
+
+DECLARE vl_final_pay_count INT DEFAULT 0;--
+DECLARE vl_placement_structure_id BIGINT DEFAULT 0;--
+DECLARE vl_age_of_child INT DEFAULT 0;--
+DECLARE vd_placement_validation_start DATE;--
+DECLARE vd_placement_validation_end DATE;--
+DECLARE vd_place_entry_dt DATE;--
+DECLARE vd_place_exit_dt DATE;--
+DECLARE vd_service_start_dt DATE;--
+DECLARE vd_service_end_dt DATE;--
+DECLARE vl_unit_no INT;--
+DECLARE vs_unit_type varchar(5);--
+DECLARE vs_room_board VARCHAR(5) DEFAULT '1232';--
+DECLARE vs_rate_type_cd CHAR(1);--
+DECLARE vs_placement_type CHAR(1);--
+DECLARE vs_draft_final_type CHAR(1);--
+DECLARE vdc_monthly_rate DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_perdiem_rate DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_gross_amount DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vs_county_cd VARCHAR(5) DEFAULT NULL;	--
+DECLARE vs_TRAN_TYPE VARCHAR(20) DEFAULT NULL;	--
+DECLARE vdt_rate_change_dt DATE;--
+DECLARE vs_DO_RECALC CHAR(1);--
+
+DECLARE vdc_receivable_amount decimal(10,2);  -- INTIAL VALUE
+DECLARE vdc_current_balance decimal(10,2);  -- INTIAL VALUE
+
+
+DECLARE vl_final_payment_run INT DEFAULT 0;--
+DECLARE vs_payment_type VARCHAR(5) DEFAULT '3294';  -- SYSTEM ADJUSTMENTS
+DECLARE vl_sql_code INT DEFAULT 0;--
+
+DECLARE vd_dob DATE;--
+
+DECLARE vl_linked_pymnt_hdr_id BIGINT DEFAULT NULL;--
+DECLARE vl_reference_payment_detail_id BIGINT DEFAULT NULL;--
+DECLARE vl_null BIGINT DEFAULT NULL;--
+
+--	Log Error
+
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_UNDER_OVER_PVT';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+
+DECLARE vs_pay_to_affiliate_cd VARCHAR(5);--
+DECLARE vl_payment_to_provider_id BIGINT DEFAULT 0;--
+
+DECLARE vs_change_type VARCHAR(5);--
+ CUR_VALIDATED_PLACEMENT record;
+ CUR_VALIDATED_PLACEMENT_refcur REFCURSOR;
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+begin
+	EXCEPTION WHEN OTHERS THEN
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+--    SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_UNDER_OVER_PVT' ,
+									  NULL::bigint,
+				        NULL::bigint,
+                		NULL::character varying,
+				        NULL::INTEGER,
+						NULL::character varying,
+				        SQLSTATE::character varying,
+                		as_error::character varying,
+				        'finance'::character varying) INTO
+                		vl_ret_status;
+
+     as_error := '';--
+ RETURN 0;
+ END;
+--Log error
+
+-- CURRENT DATE to ad_run_dt
+-- ALL PLACEMENT VALIDATION VALIDATED TODAY ALSO PLACMENT NOT VOIDED OR DELETED (VALID PLACEMENT)
+--FOR CUR_VALIDATED_PLACEMENT AS
+--cur1 CURSOR WITH HOLD FOR
+
+ RAISE NOTICE '>>>>>>>>before cursor: CUR_VALIDATED_PLACEMENT_refcur';
+OPEN CUR_VALIDATED_PLACEMENT_refcur FOR
+SELECT PV.PLACEMENT_ID,
+       PV.VALIDATION_START_DT,
+       PV.VALIDATION_END_DT,
+       P.PROVIDER_ORGANIZATION_ID,
+       P.PROVIDER_ID,
+       P.PLACEMENT_STRUCTURE_ID,
+       P.ENTRY_DT,
+       (CASE WHEN f_age(C.dob::DATE,PV.VALIDATION_END_DT) = 21 AND ( (C.dob::DATE + INTERVAL '21 year') < P.EXIT_DT OR P.EXIT_DT is NULL)  THEN
+          C.dob::DATE + INTERVAL '21 year'
+        ELSE
+          P.EXIT_DT
+        END ) AS EXIT_DT,
+       P.CONTRACT_PROGRAM_ID,
+       C.dob::DATE,
+       P.CLIENT_ID,
+       PR.PAY_TO_AFFILIATE_CD,
+       f_prim_county (P.CASE_ID,'NULL',P.CLIENT_ID,'CLIENT') AS COUNTY_CD,
+       'PLACEMENT_VALIDATION' AS TRAN_TYPE,
+       ad_run_dt AS RATE_CHANGE_DT,
+       (CASE WHEN  f_age(C.dob::DATE, PV.VALIDATION_END_DT) = 21 THEN
+            20
+        ELSE
+             f_age(C.dob::DATE, PV.VALIDATION_END_DT )
+  	END ) AS CHILD_AGE
+FROM tb_PLACEMENT_VALIDATION PV,
+     tb_PLACEMENT P,
+     tb_PROVIDER PR,
+     person C
+WHERE P.CLIENT_ID = C.cjamspid
+	AND P.PROVIDER_ID = PR.PROVIDER_ID
+	AND C.activeflag = 1
+	AND PR.DELETE_SW = 'N'
+	AND P.PLACEMENT_ID = PV.PLACEMENT_ID
+	AND PV.VALIDATION_STATUS_CD = '1750'
+	AND PV.DELETE_SW = 'N'
+	AND P.DELETE_SW = 'N'
+	AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))
+	AND DATE(PV.UPDATE_TS) = ad_run_dt
+	AND P.CONVERSION_SW IS NULL
+	AND P.PROVIDER_ORGANIZATION_ID IS NOT NULL
+	AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)
+	AND C.dob::DATE IS NOT NULL
+	AND (  f_age(C.dob::DATE, PV.VALIDATION_END_DT ) < 21
+		/*OR ( month(C.DOB_DT + INTERVAL '21 year') = month(PV.VALIDATION_END_DT)
+		     AND YEAR(C.DOB_DT + INTERVAL '21 year') = YEAR(PV.VALIDATION_END_DT)
+		     AND DAY(C.DOB_DT + INTERVAL '21 year') <> 1
+		   )*/
+		 OR ( date_part('month',C.dob::DATE + INTERVAL '21 year')   =date_part('month',PV.VALIDATION_END_DT)
+		     AND date_part('year',C.dob::DATE + INTERVAL '21 year') = date_part('year',PV.VALIDATION_END_DT)
+		     AND date_part('day',C.dob::DATE + INTERVAL '21 year') <> 1
+		   )
+            )
+	and P.ENTRY_DT::date < (C.dob::DATE + INTERVAL '21 year')::date -- CIDM-3049		
+UNION
+SELECT PV.PLACEMENT_ID,
+       PV.VALIDATION_START_DT,
+       PV.VALIDATION_END_DT,
+       P.PROVIDER_ORGANIZATION_ID,
+       P.PROVIDER_ID,
+       P.PLACEMENT_STRUCTURE_ID,
+       P.ENTRY_DT,
+       (CASE WHEN f_age(C.dob::DATE,PV.VALIDATION_END_DT) = 21 AND ( (C.dob::DATE + INTERVAL '21 year') < P.EXIT_DT OR P.EXIT_DT is NULL)  THEN
+           C.dob::DATE + INTERVAL '21 year'
+        ELSE
+           P.EXIT_DT
+        END ) AS EXIT_DT,
+       P.CONTRACT_PROGRAM_ID,
+       C.dob::DATE,
+       P.CLIENT_ID,
+       PR.PAY_TO_AFFILIATE_CD,
+       f_prim_county (P.CASE_ID,'NULL',P.CLIENT_ID,'CLIENT') AS COUNTY_CD,
+       'CONTRACT_RATE' AS TRAN_TYPE,
+       (SELECT MIN(C.START_DT)
+       	   FROM tb_PROV_PROGRAM_RATES C
+       	 WHERE
+         --DATE(C.UPDATE_TS) = ad_run_dt
+         (case when position(':' IN C.UPDATE_TS) > 0 then
+             CONCAT(
+               split_part(split_part(C.UPDATE_TS,' ',1),'-',1),'-',
+               split_part(split_part(C.UPDATE_TS,' ',1),'-',2),'-',
+               split_part(split_part(C.UPDATE_TS,' ',1),'-',3)
+             )
+             else
+             CONCAT(
+               split_part(split_part(C.UPDATE_TS,' ',1),'-',3),'-',
+               split_part(split_part(C.UPDATE_TS,' ',1),'-',2),'-',
+               split_part(split_part(C.UPDATE_TS,' ',1),'-',1)
+             )
+             end)::date  = ad_run_dt
+       		AND C.PROGRAM_ID  IN
+       			( SELECT A.PROGRAM_ID
+       		    	    FROM tb_PROV_PROGRAM_SITES A
+       			  WHERE A.SITE_ID IN
+       			          ( SELECT SITE_ID
+       			              FROM tb_PROV_PROGRAM_SITES
+       			   	   WHERE DELETE_SW = 'N'
+       					 AND PROGRAM_ID IN
+       						( SELECT PROGRAM_ID
+       						     FROM tb_PROV_PROGRAM_RATES
+       						  WHERE DELETE_SW = 'N'
+							AND PROGRAM_ID =  P.CONTRACT_PROGRAM_ID )) ) ) AS RATE_CHANGE_DT,
+       (CASE WHEN  f_age(C.dob::DATE, PV.VALIDATION_END_DT) = 21 THEN
+           20
+        ELSE
+            f_age(C.dob::DATE, PV.VALIDATION_END_DT )
+  	END ) AS CHILD_AGE
+FROM tb_PLACEMENT_VALIDATION PV,
+     tb_PLACEMENT P,
+     tb_PROVIDER PR,
+     person C
+WHERE P.CLIENT_ID = C.cjamspid
+	AND P.PROVIDER_ID = PR.PROVIDER_ID
+	AND C.activeflag = 1
+	AND PR.DELETE_SW = 'N'
+	AND P.PLACEMENT_ID = PV.PLACEMENT_ID
+	AND PV.VALIDATION_STATUS_CD = '1750'
+	AND PV.DELETE_SW = 'N'
+	AND P.DELETE_SW = 'N'
+	AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))
+	AND DATE(PV.UPDATE_TS) <> ad_run_dt
+	AND P.CONVERSION_SW IS NULL
+	AND P.PROVIDER_ORGANIZATION_ID IS NOT NULL
+	AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)
+	AND P.CONTRACT_PROGRAM_ID IN ( SELECT A.PROGRAM_ID
+					FROM tb_PROV_PROGRAM_SITES A
+				       WHERE A.SITE_ID IN
+			        		 ( SELECT SITE_ID
+			   	    		     FROM tb_PROV_PROGRAM_SITES
+						   WHERE DELETE_SW = 'N'
+							 AND PROGRAM_ID IN
+							      ( SELECT PROGRAM_ID
+							   	  FROM tb_PROV_PROGRAM_RATES
+								WHERE DELETE_SW = 'N'
+								      -- AND CONCAT(
+								      -- split_part(UPDATE_TS,'-',3),'-',
+								      -- split_part(UPDATE_TS,'-',2),'-',
+								      -- split_part(UPDATE_TS,'-',1)
+								      -- )
+                  AND (case when position(':' IN UPDATE_TS) > 0 then
+                      CONCAT(
+                        split_part(split_part(UPDATE_TS,' ',1),'-',1),'-',
+                        split_part(split_part(UPDATE_TS,' ',1),'-',2),'-',
+                        split_part(split_part(UPDATE_TS,' ',1),'-',3)
+                      )
+                      else
+                      CONCAT(
+                        split_part(split_part(UPDATE_TS,' ',1),'-',3),'-',
+                        split_part(split_part(UPDATE_TS,' ',1),'-',2),'-',
+                        split_part(split_part(UPDATE_TS,' ',1),'-',1)
+                      )
+                      end)::date = ad_run_dt )))
+	AND C.dob::DATE IS NOT NULL
+	AND (  f_age(C.dob::DATE, PV.VALIDATION_END_DT ) < 21
+		/*OR ( month(C.DOB_DT + INTERVAL '21 year') = month(PV.VALIDATION_END_DT)
+	   	     AND YEAR(C.DOB_DT + INTERVAL '21 year') = YEAR(PV.VALIDATION_END_DT)
+	 	     AND DAY(C.DOB_DT + INTERVAL '21 year') <> 1
+	           )*/
+		  OR ( date_part('month',C.dob::DATE + INTERVAL '21 year')   =date_part('month',PV.VALIDATION_END_DT)
+		     AND date_part('year',C.dob::DATE + INTERVAL '21 year') = date_part('year',PV.VALIDATION_END_DT)
+		     AND date_part('day',C.dob::DATE + INTERVAL '21 year') <> 1
+		   )
+            )
+	and P.ENTRY_DT::date < (C.dob::DATE + INTERVAL '21 year')::date -- CIDM-3049		
+	;
+
+	-- AND F_AGE(C.DOB_DT, PV.VALIDATION_END_DT) < 21
+
+--DO
+loop
+	fetch CUR_VALIDATED_PLACEMENT_refcur into CUR_VALIDATED_PLACEMENT;
+										 exit when not found;
+RAISE NOTICE 'entered into loop >>>>>>>>> ';
+	 vl_placement_id := CUR_VALIDATED_PLACEMENT.PLACEMENT_ID;--
+	 vd_placement_validation_start := CUR_VALIDATED_PLACEMENT.VALIDATION_START_DT;--
+	 vd_placement_validation_end := CUR_VALIDATED_PLACEMENT.VALIDATION_END_DT;--
+	 vl_private_org := CUR_VALIDATED_PLACEMENT.PROVIDER_ORGANIZATION_ID;--
+	 vl_provider_id := CUR_VALIDATED_PLACEMENT.PROVIDER_ID;--
+	 vl_placement_structure_id := CUR_VALIDATED_PLACEMENT.PLACEMENT_STRUCTURE_ID;--
+	 vd_place_entry_dt := CUR_VALIDATED_PLACEMENT.ENTRY_DT;--
+	 vd_place_exit_dt := CUR_VALIDATED_PLACEMENT.EXIT_DT;--
+	 vl_age_of_child := CUR_VALIDATED_PLACEMENT.CHILD_AGE;--
+	 --vd_dob := CUR_VALIDATED_PLACEMENT.DOB_DT;--
+	 vd_dob := CUR_VALIDATED_PLACEMENT.dob::DATE;-- this is the dob from person table instead of tb_client
+	 vl_contract_program_id :=  CUR_VALIDATED_PLACEMENT.CONTRACT_PROGRAM_ID;--
+	 vd_service_start_dt := NULL;   -- INITIAL VALUE
+	 vd_service_end_dt := NULL;   -- INITIAL VALUE
+	 vl_unit_no := 0;   -- INITIAL VALUE
+	 vs_unit_type := NULL;   -- INITIAL VALUE
+	 vs_pay_to_affiliate_cd := CUR_VALIDATED_PLACEMENT.PAY_TO_AFFILIATE_CD;--
+	 vl_client_id := CUR_VALIDATED_PLACEMENT.CLIENT_ID;--
+	 vs_county_cd := CUR_VALIDATED_PLACEMENT.COUNTY_CD;--
+	 vs_TRAN_TYPE := CUR_VALIDATED_PLACEMENT.TRAN_TYPE;--
+	 vdt_rate_change_dt := CUR_VALIDATED_PLACEMENT.RATE_CHANGE_DT;--
+
+	-- To Exclude Placement Validation records out of range of changed or new contract rate Dates - START
+	 vs_DO_RECALC := 'Y'; -- INITIAL VALUE
+
+	 RAISE NOTICE '% vl_placement_id>>>>>>>>> ',vl_placement_id;
+	 RAISE NOTICE 'vd_placement_validation_start>>>>>>>>> %',vd_placement_validation_start;
+	 RAISE NOTICE 'vd_placement_validation_end>>>>>>>>> %',vd_placement_validation_end;
+	 RAISE NOTICE 'vl_private_org>>>>>>>>> %',vl_private_org;
+	 RAISE NOTICE 'vl_provider_id>>>>>>>>> %',vl_provider_id;
+	 RAISE NOTICE 'vl_placement_structure_id>>>>>>>>> %',vl_placement_structure_id;
+	 RAISE NOTICE 'vl_client_id>>>>>>>>> %',vl_client_id;
+
+    RAISE NOTICE 'vs_TRAN_TYPE>>>>>>>>> %',vs_TRAN_TYPE;
+	RAISE NOTICE 'vdt_rate_change_dt>>>>>>>>> %',vdt_rate_change_dt;
+
+	-- MD CHESSIE logic
+	-- IF vs_TRAN_TYPE = 'CONTRACT_RATE' THEN
+	-- 	IF vd_placement_validation_start < vdt_rate_change_dt THEN
+	-- 		 vs_DO_RECALC := 'N';--
+	-- 	END IF;--
+	-- END IF;	--
+	
+	-- CJAMS Old logic - commented on 08/05/2020
+	/*
+	IF vs_TRAN_TYPE = 'CONTRACT_RATE' THEN
+		IF vd_placement_validation_start < vdt_rate_change_dt
+            and date_part('month',vd_placement_validation_start) <> date_part('month', vdt_rate_change_dt)
+            and date_part('year',vd_placement_validation_start) <> date_part('year', vdt_rate_change_dt) then
+			vs_DO_RECALC := 'N';--
+		END IF;--
+	END IF;   
+	*/
+	-- CJAMS New logic (08/05/2020)
+	IF vs_TRAN_TYPE = 'CONTRACT_RATE' THEN
+		IF date_part('month',vd_placement_validation_start) = date_part('month', vdt_rate_change_dt)
+			and date_part('year',vd_placement_validation_start) = date_part('year', vdt_rate_change_dt) THEN
+			-- Do nothing (vs_DO_RECALC = 'Y')
+		ELSE
+			IF vd_placement_validation_start < vdt_rate_change_dt THEN
+				vs_DO_RECALC := 'N';
+			END IF;
+		END IF;  
+	END IF; 
+	-- To Exclude Placement Validation records out of range of changed or new contract rate Dates - END
+
+	IF vs_DO_RECALC = 'Y' THEN
+		-- PRJ-04753 - Set Change Type for Fiscal Audit Trail
+		IF vs_TRAN_TYPE = 'CONTRACT_RATE' THEN
+			 vs_change_type := '1009'; -- Contract Rate Changes
+		ELSE
+			 vs_change_type := '1001'; -- Placement Changes
+		END IF;--
+
+		-- To Exclude Placement Validation records out of range of Placement Dates - START
+		-- These cases are handled in SP_VOIDPLACEMENT_RECEIVABLE
+		IF (vd_place_exit_dt is NULL OR (vd_place_exit_dt IS NOT NULL AND vd_place_exit_dt >= vd_placement_validation_start))
+				AND vd_place_entry_dt <= vd_placement_validation_end THEN
+
+			--  PRIVATE PROVIDER - PLACEMENT CHECK FOR THE VALIDATION MONTH IF PRIVATE FINAL PAYEMENT BATCH IS ALREADY RUN
+			 vs_placement_type := 'P'; -- private provider placement
+			 vs_rate_type_cd := 'P';  -- FOR PRIVATE PROVIDER
+
+			-- CHECK FOR FINAL RUN tb_PAYMENT_RUNTIMES_LOG - START
+			 vl_final_payment_run := 0; -- INITIAL VALUE
+			SELECT COUNT(*)
+			 INTO  vl_final_payment_run
+			   FROM tb_PAYMENT_RUNTIMES_LOG
+			WHERE PAYMENT_TX = 'FC_PRIVATE_FINAL'
+				  AND DELETE_SW = 'N'
+				  AND date_part('month',PAYMENT_CURRENT_RUN_TS::DATE) = date_part('month',vd_placement_validation_start + INTERVAL '1 month')
+				  AND date_part('year',PAYMENT_CURRENT_RUN_TS::DATE) = date_part('year',vd_placement_validation_start + INTERVAL '1 month');--
+			-- CHECK FOR FINAL RUN tb_PAYMENT_RUNTIMES_LOG - END
+
+			-- CHECK FOR FINAL RUN - STRAT
+			IF vl_final_payment_run > 0 THEN
+			RAISE NOTICE '>>>>>>>>>>IF vl_final_payment_run > 0 ---inside';
+				--- HOW MUCH WE WERE SUPPOSE TO PAY - START
+				 vl_unit_no := 0;--
+				 vs_unit_type := NULL;--
+				RAISE NOTICE '>>>>>>>>before SP_FOSTERCARE_CALCULATION  vd_placement_validation_start>>>> %',vd_placement_validation_start;
+				RAISE NOTICE '>>>>>>>>before SP_FOSTERCARE_CALCULATION  vd_placement_validation_end>>>> %',vd_placement_validation_end;
+
+				SELECT a.ad_service_start_dt,
+								a.ad_service_end_dt,
+								a.al_unit_no,
+								a.as_unit_type FROM SP_FOSTERCARE_CALCULATION('P',
+							'R',
+							vl_placement_structure_id,
+							vd_place_entry_dt,
+							vd_place_exit_dt,
+							vd_placement_validation_start,
+							vd_placement_validation_end) a into
+							vd_service_start_dt,
+							vd_service_end_dt,
+							vl_unit_no,
+							vs_unit_type;--
+				RAISE NOTICE '>>>>>>>>after SP_FOSTERCARE_CALCULATION  vl_unit_no>>>> %',vl_unit_no;
+				RAISE NOTICE '>>>>>>>>after SP_FOSTERCARE_CALCULATION  vs_unit_type>>>> %',vs_unit_type;
+
+				 vdc_monthly_rate := 0.00; -- INTIAL VALUE
+				 vdc_perdiem_rate := 0.00; -- INTIAL VALUE
+				 vdc_gross_amount := 0.00; -- Initial Value
+				 vs_draft_final_type := 'F'; -- only final amount will be entered
+
+				SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_contract_program_id,
+					vl_age_of_child,vd_service_start_dt,vd_service_end_dt,vs_rate_type_cd) a INTO
+					vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+				RAISE NOTICE '>>>>>>>>after SP_GET_PLACEMENT_RATE  vdc_monthly_rate>>>> %',vdc_monthly_rate;
+				RAISE NOTICE '>>>>>>>>after SP_GET_PLACEMENT_RATE  vdc_perdiem_rate>>>> %',vdc_perdiem_rate;
+
+				IF al_sqlcode <> 0 THEN
+				    as_error := as_error  ;--
+				   IF as_error is NULL OR as_error = '' THEN
+					   as_error := 'SP_GET_PLACEMENT_RATE failed - DRAFT NOT CREATED'  ;--
+				   END IF;--
+				  -- SIGNAL p_sp_error  ;--
+				END IF ;--
+
+				IF vl_unit_no = 1 and vs_unit_type = '5611' THEN  -- monthly rate
+				    vdc_gross_amount := vdc_monthly_rate;--
+				    vdc_perdiem_rate := vdc_monthly_rate;--
+				    vdc_monthly_rate :=  COALESCE(vdc_monthly_rate,0);--
+				ELSE
+				    vdc_gross_amount := vdc_perdiem_rate * vl_unit_no;--
+				END IF;--
+				--- HOW MUCH WE WERE SUPPOSE TO PAY - END
+
+				--- CHECK CURRENT BALANCE - START
+				 vdc_current_balance := 0;--
+				 vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+				 vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+
+				SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_current_balance,a.al_sqlcode,a.as_error FROM SP_GET_CURRENT_BALANCE(vl_placement_id,
+									vd_service_start_dt,
+									vd_service_end_dt,
+									vs_room_board,
+									vd_placement_validation_start,
+									vl_null) a into
+									vl_linked_pymnt_hdr_id,
+									vl_reference_payment_detail_id,
+									vdc_current_balance,
+									al_sqlcode,
+									as_error;--
+
+				IF al_sqlcode <> 0 THEN
+				    as_error := as_error  ;--
+				   IF as_error is NULL OR as_error = '' THEN
+					   as_error := 'SP_GET_CURRENT_BALANCE failed - DRAFT NOT CREATED'  ;--
+				   END IF;--
+				  -- SIGNAL p_sp_error  ;--
+				END IF ;--
+
+				IF vl_linked_pymnt_hdr_id = 0 THEN
+				    vl_linked_pymnt_hdr_id := NULL;--
+				    vl_reference_payment_detail_id := NULL;--
+				END IF;--
+				--- CHECK CURRENT BALANCE - END
+
+				-- SET ORIGINAL PAYMENT ID - ALREADY GENERATED FOR THIS PLACEMENT- START
+				 vl_orig_payment_id := 0; -- INITIAL VALUE
+
+				IF vl_linked_pymnt_hdr_id is NOT NULL AND vl_linked_pymnt_hdr_id > 0 THEN
+				    vl_orig_payment_id := vl_linked_pymnt_hdr_id;--
+				END IF;--
+
+				IF vl_orig_payment_id IS NULL THEN
+				    vl_orig_payment_id := 0;--
+				END IF;--
+				-- SET ORIGINAL PAYMENT ID - ALREADY GENERATED FOR THIS PLACEMENT- END
+
+				-- CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - START
+				 vl_final_pay_count := 0; -- INITIAL VALUE
+
+				IF vl_orig_payment_id > 0 THEN
+					SELECT COUNT(*)
+						INTO vl_final_pay_count
+					FROM tb_PAYMENT_DETAIL
+					WHERE PAYMENT_ID = vl_orig_payment_id
+						AND PLACEMENT_ID = vl_placement_id
+						AND FINAL_RATE_TYPE_CD = vs_room_board
+						AND FINAL_SERVICE_ID IS NOT NULL;--
+				END IF;	--
+				-- CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - END
+
+				-- TAKE FIRST ADJUSTMENT ID - START
+				-- This or Original Payment ID will be always there in case of current status is Receivable
+				 vl_adjust_payment_id := 0; -- INITIAL VALUE
+
+				IF vs_pay_to_affiliate_cd = '3368' THEN -- send payment to affiliate org
+				    vl_payment_to_provider_id := vl_private_org;--
+				ELSE
+				    vl_payment_to_provider_id := vl_provider_id;--
+				END IF;--
+
+				SELECT MIN(PH.PAYMENT_ID)
+					INTO vl_adjust_payment_id
+				FROM tb_PAYMENT_HEADER PH,
+					 tb_PAYMENT_DETAIL PD
+				WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+					AND PH.PROVIDER_ID = vl_payment_to_provider_id
+					AND PH.PAYMENT_DT = CURRENT_DATE
+					AND PH.PAYMENT_TYPE_CD = '3294'
+					AND PD.PLACEMENT_ID IS NOT NULL
+					AND PH.MANUAL_SW = 'N'
+					AND PH.DELETE_SW = 'N'
+					AND PD.DELETE_SW = 'N'
+					AND date_part('MONTH',PH.PAYMENT_START_DT) = date_part('MONTH',vd_placement_validation_start)
+					AND date_part('YEAR',PH.PAYMENT_START_DT) = date_part('YEAR',vd_placement_validation_start)
+					AND PD.COUNTY_CD =  vs_county_cd
+					AND PD.CLIENT_ID = vl_client_id ;--
+
+				IF vl_adjust_payment_id IS NULL THEN
+					 vl_adjust_payment_id := 0;	--
+				END IF;--
+				-- TAKE FIRST ADJUSTMENT ID - END
+
+				-- PRJ-03018 - Commented
+				-- SET REFERNCE PAYMENT ID FOR RECEIVABLE - START
+				--		SET vl_payment_id = 0; -- INITIAL VALUE
+				--		IF vl_final_pay_count > 0 THEN
+				--		   SET vl_payment_id = vl_orig_payment_id; 	--
+				--		ELSE
+				--		   SET vl_payment_id = vl_adjust_payment_id; 	--
+				--		END IF;--
+				-- SET REFERNCE PAYMENT ID FOR RECEIVABLE - END
+
+				-- PRJ-03018 - New code
+				-- SET REFERNCE PAYMENT ID FOR PAYABLE - START
+				 vl_payment_id := 0; -- INITIAL VALUE
+				IF vl_adjust_payment_id > 0 THEN
+				    vl_payment_id := vl_adjust_payment_id; --
+				END IF;--
+				-- SET REFERNCE PAYMENT ID FOR PAYABLE - END
+
+				-- PAYABLE / RECEIVABLE - START
+
+				-- IF To Pay and Current Balance are same, DO NOTHING
+				RAISE NOTICE '>>>>>>>>>vdc_gross_amount = vdc_current_balance>>>vdc_gross_amount %',vdc_gross_amount;
+				RAISE NOTICE '>>>>>>>>>vdc_gross_amount = vdc_current_balance>>>vdc_current_balance %',vdc_current_balance;
+
+				IF vdc_gross_amount = vdc_current_balance THEN
+					-- DO NOTHING
+				ELSEIF vdc_gross_amount > vdc_current_balance THEN -- Payable
+				RAISE NOTICE 'ELSEIF vdc_gross_amount > vdc_current_balance THEN -- Payable';
+					-- CHECK ADJUSTMENT CREATED ON THAT DAY - START
+					RAISE NOTICE '>>>>>>>before SP_PAYMENT_HEADER_INSERT if %',vl_adjust_payment_id;
+					IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+					RAISE NOTICE '>>>>>>> SP_PAYMENT_HEADER_INSERT if inside %',vl_adjust_payment_id;
+					  SELECT a.al_header_id,a.al_sqlcode,a.as_error from SP_PAYMENT_HEADER_INSERT(vl_payment_to_provider_id,vs_payment_type,
+								   vd_placement_validation_start,vd_placement_validation_end) a INTO
+								   vl_payment_id, al_sqlcode, as_error;--
+					  IF al_sqlcode <> 0 THEN
+						  as_error := as_error  ;--
+						 IF as_error is NULL OR as_error = '' THEN
+							 as_error := 'SP_PAYMENT_HEADER_INSERT failed - DRAFT NOT CREATED'  ;--
+							 END IF;--
+						-- SIGNAL p_sp_error  ;--
+					  END IF ;--
+					END IF;--
+					-- CHECK ADJUSTMENT CREATED ON THAT DAY - END
+
+					-- CREATE SYSTEM ADJUSTMENT FOR PLACEMENT
+					 vdc_gross_amount := vdc_gross_amount - vdc_current_balance;--
+
+					-- create payment detail id and insert record in payment detail
+					SELECT  a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+									vl_payment_id,
+									vl_placement_structure_id,
+									vd_service_start_dt,
+									vd_service_end_dt,
+									vdc_gross_amount,
+									vl_unit_no,
+									vs_unit_type,
+									vdc_perdiem_rate,
+									vs_draft_final_type,
+									vs_room_board,
+									vl_linked_pymnt_hdr_id,
+									vl_reference_payment_detail_id,
+									vs_change_type) a into
+									al_sqlcode,
+									as_error;--
+
+					IF al_sqlcode <> 0 THEN
+						 as_error := as_error  ;--
+						IF as_error is NULL OR as_error = '' THEN
+							 as_error := 'SP_PAYMENT_DETAIL_INSERT failed - DRAFT NOT CREATED'  ;--
+						END IF;--
+						--SIGNAL p_sp_error  ;--
+					END IF ;--
+
+					-- UPDATE tb_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - START
+					IF vl_final_pay_count = 0 THEN
+					 /*   UPDATE tb_PLACEMENT
+							SET PAYMENT_HEADER_ID = vl_payment_id,
+								UPDATE_TS = CURRENT_TIMESTAMP
+						WHERE PLACEMENT_ID = vl_placement_id;--*/
+
+					UPDATE placement
+				SET paymentheaderid = vl_payment_id,
+					updatedon= current_timestamp
+				WHERE alternateid = vl_placement_id;--
+
+						 al_sqlcode := SQLCODE;--
+					    IF al_sqlcode <> 0 THEN
+							 as_error := 'Error in Updating PLACEMENT - PAYMENT HEADER ID'  ;--
+							 vs_identity_column := 'Placement ID';--
+							 vs_identity_val := (vl_placement_id)::character varying;--
+							--SIGNAL p_sp_error  ;--
+						END IF;--
+					END IF;--
+					-- UPDATE tb_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - END
+
+					-- UPDATING HEADER TABLE - START
+					UPDATE tb_PAYMENT_HEADER
+						SET GROSS_AMOUNT_NO = (SELECT SUM(FINAL_AMOUNT_NO) FROM tb_PAYMENT_DETAIL
+												WHERE PAYMENT_ID = vl_payment_id and DELETE_SW = 'N' )
+					WHERE PAYMENT_ID = vl_payment_id;--
+
+					 al_sqlcode := SQLCODE;--
+					IF al_sqlcode <> 0 THEN
+						 as_error := 'Error in Updating PAYMENT HEADER - Gross Amount'  ;--
+						 vs_identity_column := 'Payment ID';--
+						 vs_identity_val := (vl_payment_id)::character varying;--
+						--SIGNAL p_sp_error  ;--
+					END IF ;--
+					-- UPDATING HEADER TABLE - END
+				ELSE -- Receivable
+					RAISE NOTICE 'ELSE -- Receivable';
+					 vl_receivable_provider_id :=  vl_payment_to_provider_id;--
+					 vdc_receivable_amount := vdc_current_balance - vdc_gross_amount ;--
+					 vl_payment_detail_id := 0; -- INITIAL VALUE
+
+					IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+					    vl_payment_detail_id := vl_reference_payment_detail_id;--
+					END IF;--
+
+					IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+						--SET as_error = 'Error in Selecting PAYMENT_DETAIL_ID for Receivable'  ;--
+						 as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (Room & Board)'  ;--
+						-- PRJ-03018 Commented
+						--IF vl_payment_id > 0 THEN
+						--   SET vs_identity_column = 'Placement ID / Payment ID';--
+						--   SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+						--ELSE
+						    vs_identity_column := 'Placement ID';--
+						    vs_identity_val := (vl_placement_id::bigint);--
+						--END IF;--
+						--SIGNAL p_sp_error  ;--
+					END IF ;--
+
+				   SELECT a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+												 vl_client_id,
+												 vl_receivable_provider_id,
+												 vd_service_start_dt,
+												 vd_service_end_dt,
+												 vdc_receivable_amount,
+												 vs_change_type) a into
+												 al_sqlcode,
+												 as_error;--
+
+					IF al_sqlcode <> 0 THEN
+					   as_error := as_error  ;--
+					  IF as_error is NULL OR as_error = '' THEN
+						  as_error := 'SP_OVER_PAYMENT failed - DRAFT PAYMENT'  ;--
+					  END IF;--
+					  --SIGNAL p_sp_error ;--
+					END IF ;--
+
+				END IF; -- PAYABLE / RECEIVABLE - END
+				--COMMIT;--
+			END IF; -- CHECK FOR FINAL RUN - END
+		END IF; -- To Exclude Placement Validation records out of range of Placement Dates - END
+   END IF;	--
+--END FOR;--
+END LOOP;
+	close CUR_VALIDATED_PLACEMENT_refcur;
+RAISE NOTICE '>>>>>>>>>>>>>>close CUR_VALIDATED_PLACEMENT_refcur';
+PERFORM SP_VOIDPLACEMENT_RECEIVABLE();--
+SELECT  SP_PAYMENT_PLAN_INSERT (0) INTO vl_sql_code;--
+PERFORM SP_AR_TICKLER('PVT', 42 );--
+
+--COMMIT;--
+RETURN 1;--
+
+END;
+
+$function$
+;

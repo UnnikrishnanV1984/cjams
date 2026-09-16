@@ -1,0 +1,2 @@
+update cjams.TB_ACCOUNT_TRANSACTION set create_ts=transaction_dt,  update_ts = transaction_dt  where create_ts is null and update_ts is null;
+update cjams.TB_ACCOUNT_TRANSACTION set update_ts = create_ts  where update_ts is null;

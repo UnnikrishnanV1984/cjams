@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION prov_listsanctiondocuments(v_provider_id integer, v_sanction_no character varying, v_license_type character varying, v_documentid character varying)
+ RETURNS TABLE(sanctiondata json, prgmdetails json, licenseadmin json, executivedirector json, v_qualityassurance json)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+v_sanctiondata json;
+v_prgmdetails json;
+v_licenseadmin json;
+v_executivedirector json;
+v_qualityassurance json;
+
+
+BEGIN  
+
+
+
+if (v_license_type = 'RCC')then
+select  jsonb_agg(x) as sanctiondata into v_sanctiondata from
+(select tprs.* ,(case when (tp.provider_nm is null or tp.provider_nm = '') then  concat_ws(' ',tp.provider_first_nm, tp.provider_last_nm)
+else tp.provider_nm end ) as provider_nms,tp.agency,tpa.prgram , tpa.program_name , tpa.contact_first_nm,tpa.mailing_address,tpa.contact_phonenumber,
+tpa.contact_email,tpa.contact_fax,tpa.program_type,
+tpra.hearingdate,tpra.ishearinghappened,tpra.hearingstatus,tpra.narrative,tpra.nexthearingdate,tpra.status,tpra.ismemogenerated,tpra.memodate ,
+(select mu.username -- ,mu.securityusersid,mu.email,upn.phonenumber
+from muser mu join userprofilephonenumber upn on  mu.securityusersid = upn.securityusersid
+where mu.securityusersid = tprs.create_user_id  limit 1) as qa_name,
+concat_ws(' ',ps.first_nm,ps.last_nm) as staff_name ,ps.staff_email,ps.staff_phone_no,
+(select json_agg(x) from (select tpcd.deficiency_violationname,tpcd.citation,tpcd."comments",tpcd.frequencyofdeficiency,tpcd.impactofdeficiency,tpcd.scopeofdeficiency,
+tpcd.findings from tb_provider_complaint tpc join tb_provider_complaint_deficiency tpcd 
+on tpc.provider_complaintid = tpcd.provider_complaintid where tpc.provider_id = tprs.provider_id )x ) as violationlist
+from tb_provider_rcc_sanctions tprs inner join tb_provider tp on tp.provider_id = tprs.provider_id 
+left join tb_provider_rcc_appeal tpra on tprs.rcc_sanction_id = tpra.rcc_sanction_id
+join tb_provider_applicant tpa on tpa.provider_id::int4 = tp.provider_id
+join providerstaff ps on ps.object_id = tprs.provider_id::varchar and ps.employee_type = 'Program Administrator'
+where tprs.rcc_sanction_no =  v_sanction_no)x;
+
+elseif (v_license_type = 'CPA') then
+select  jsonb_agg(x) as sanctiondata into v_sanctiondata from
+(select tpcs.* , (case when (tp.provider_nm is null or tp.provider_nm = '') then  concat_ws(' ',tp.provider_first_nm, tp.provider_last_nm)
+else tp.provider_nm end ) as provider_nms,tp.agency, tpa.prgram , tpa.program_name , tpa.contact_first_nm,tpa.mailing_address,tpa.contact_phonenumber,
+tpa.contact_email,tpa.contact_fax,tpa.program_type,
+tpca.hearingdate,tpca.ishearinghappened,tpca.hearingstatus,tpca.narrative,tpca.nexthearingdate,tpca.status,tpca.ismemogenerated,tpca.memodate ,
+(select mu.username  -- ,mu.securityusersid,mu.email,upn.phonenumber
+from muser mu join userprofilephonenumber upn on  mu.securityusersid = upn.securityusersid
+where mu.securityusersid = tpcs.create_user_id limit 1) as qa_name,
+concat_ws(' ',ps.first_nm,ps.last_nm) as staff_name ,ps.staff_email,ps.staff_phone_no,
+(select json_agg(x) from (select tpcd.deficiency_violationname,tpcd.citation,tpcd."comments",tpcd.frequencyofdeficiency,tpcd.impactofdeficiency,tpcd.scopeofdeficiency,
+tpcd.findings from tb_provider_complaint tpc join tb_provider_complaint_deficiency tpcd 
+on tpc.provider_complaintid = tpcd.provider_complaintid where tpc.provider_id = tpcs.provider_id )x ) as violationlist
+from tb_provider_cpa_sanctions tpcs  
+left join tb_provider_cpa_appeal tpca on tpcs.cpa_sanction_id = tpca.cpa_sanction_id
+join tb_provider tp on tpcs.provider_id = tp.provider_id::int8
+join tb_provider_applicant tpa on tpa.provider_id::int4 = tp.provider_id
+join providerstaff ps on ps.object_id = tpcs.provider_id::varchar  and ps.employee_type = 'Program Administrator'
+where  tpcs.cpa_sanction_no =  v_sanction_no)x;
+end if ;
+
+select json_agg(x) into v_prgmdetails from (select mu.username,mu.securityusersid,mu.email,upn.phonenumber
+from muser mu join userprofilephonenumber upn on  mu.securityusersid = upn.securityusersid
+where mu.securityusersid = (select fromsecurityusersid from tb_provider_decision tpd
+join tb_provider_applicant tpa on  tpa.applicant_id = tpd.objectid 
+where fromroleid = 'Program Manager' and status = 'Approved' and tpa.provider_id = v_provider_id::character varying  limit 1))x ;
+
+select json_agg(x) into v_licenseadmin from (select mu.username,mu.securityusersid,mu.email,upn.phonenumber
+from muser mu join userprofilephonenumber upn on  mu.securityusersid = upn.securityusersid
+where mu.securityusersid = (select fromsecurityusersid from tb_provider_decision tpd
+join tb_provider_applicant tpa on  tpa.applicant_id = tpd.objectid 
+where fromroleid = 'Licensing Administrator' and status = 'Approved' and tpa.provider_id = v_provider_id::character varying  limit 1))x ;
+
+select json_agg(x) into v_executivedirector from (select mu.username,mu.securityusersid,mu.email,upn.phonenumber
+from muser mu join userprofilephonenumber upn on  mu.securityusersid = upn.securityusersid 
+where mu.securityusersid = (select fromsecurityusersid from tb_provider_decision tpd
+join tb_provider_applicant tpa on  tpa.applicant_id = tpd.objectid 
+where fromroleid = 'Executive Director' and status = 'Approved' and tpa.provider_id = v_provider_id::character varying  limit 1))x ;
+
+select json_agg(x) into v_qualityassurance from (select mu.username,mu.securityusersid,mu.email,upn.phonenumber
+from muser mu join userprofilephonenumber upn on  mu.securityusersid = upn.securityusersid
+where mu.securityusersid = (select fromsecurityusersid from tb_provider_decision tpd
+join tb_provider_applicant tpa on  tpa.applicant_id = tpd.objectid 
+where fromroleid = 'Quality Assurance' and status = 'Approved' and tpa.provider_id = v_provider_id::character varying  limit 1))x ;
+
+return query 
+select v_sanctiondata, v_prgmdetails,v_licenseadmin,v_executivedirector,v_qualityassurance ;
+END;
+$function$
+

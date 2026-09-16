@@ -1,0 +1,141 @@
+CREATE OR REPLACE FUNCTION as_reviewsummary(i_personid uuid, pagenumber bigint, pagesize bigint, i_searchtext character varying, sortorder character varying, sortcolumn character varying, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, intakeserviceid uuid, servicerequestnumber character varying, workername character varying, workerid bigint, createddate timestamp without time zone, reviewtype text, submissiondata jsonb, narrative text, nextreviewdate text, assessmentid uuid, submissionid character varying, external_templateid character varying, reviewid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+ declare v_pageoffset int;
+
+v_pagenumber int;
+
+begin
+ v_pagenumber := pagenumber-1;
+
+    v_pageoffset = v_pagenumber * pagesize;
+ 
+   IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+  pagenumber := 1; 
+ END IF;
+ 
+Return query 
+
+select count(1) over() as totalcount, x.* from (
+
+(select INS.intakenumber,  ASM.objectid as intakeserviceid ,INS.servicerequestnumber ,UP.displayname as workername
+,UP.cjamspid as workerid,ASM.insertedon as createddate, ASMT.titleheadertext as reviewtype,ASM.submissiondata,
+null :: text as narrative, 
+(select ASU.datavalue from assessmentsubmission ASU 
+where ASU.assessmentid=ASM.assessmentid and ASU.datakey in ('nextreviewdate1','SupervisorReviewDue') and ASU.activeflag=1 limit 1  ):: text  as nextreviewdate,
+ASM.assessmentid ,ASM.submissionid,ASMT.external_templateid, null :: uuid as reviewid
+ from assessment ASM 
+ join assessmenttemplate ASMT on ASMT.assessmenttemplateid=ASM.assessmenttemplateid 
+ and  (case when i_searchtext='initialscr' then ASMT.name in ('initialScr') 
+ when i_searchtext='subsequentscr' then ASMT.name in ('subsequentScrs') 
+ when  i_searchtext is null then ASMT.name in ('initialScr','subsequentScrs') 
+  end)
+  and ASMT.activeflag=1   
+join intakeservicerequest INS on INS.intakeserviceid=ASM.objectid and INS.activeflag=1
+join userprofile UP on UP.securityusersid=ASM.securityusersid and UP.activeflag=1
+where ASM.activeflag=1 and ASM.objectname='servicerequest' and 
+ ASM.objectid in (
+select distinct fp.intakeserviceid from focuspersoncasestatus fp 
+where fp.personid=i_personid
+           
+--and case when (i_searchtext = 'Assessment') then true else false end
+
+))
+
+union all
+
+(select ASM.intakenumber, ASM.objectid as intakeserviceid ,'''' as servicerequestnumber ,UP.displayname as workername
+,UP.cjamspid as workerid,ASM.insertedon as createddate, ASMT.titleheadertext as reviewtype,ASM.submissiondata,
+null :: text as narrative,   
+(select ASU.datavalue from assessmentsubmission ASU 
+ where ASU.assessmentid=ASM.assessmentid and ASU.datakey in ('nextreviewdate1','SupervisorReviewDue')
+ and ASU.activeflag=1 limit 1  ) :: text  as nextreviewdate,
+ASM.assessmentid ,ASM.submissionid,ASMT.external_templateid,null ::uuid as reviewid
+ from assessment ASM 
+ join assessmenttemplate ASMT on ASMT.assessmenttemplateid=ASM.assessmenttemplateid 
+ and  (case when i_searchtext='initialscr' then ASMT.name in ('initialScr') 
+ when i_searchtext='subsequentscr' then ASMT.name in ('subsequentScrs') 
+ when  i_searchtext is null  then ASMT.name in ('initialScr','subsequentScrs') 
+  end)
+-- and ASMT.name in ('initialScr','subsequentScr') 
+and ASMT.activeflag=1
+ 
+join intakedastatus INS on INS.intakenumber=ASM.intakenumber and INS.activeflag=1
+join userprofile UP on UP.securityusersid=ASM.securityusersid and UP.activeflag=1
+where ASM.activeflag=1 and ( ASM.objectid ='00000000-0000-0000-0000-000000000000' or  ASM.objectid  is null)
+and  ASM.intakenumber in (
+select distinct fp.intakenumber from focuspersoncasestatus fp where fp.personid=i_personid
+
+)
+)
+
+union all
+
+(select  ISR.intakenumber,ISR.intakeserviceid, ISR.servicerequestnumber,RDR.workername,UP.cjamspid as workerid,
+RDR.dateofreview as createddate ,'Residential Discharge Review' as reviewtype, '{}'::jsonb as submissiondata,
+RDR.narrative :: text ,RDR.nextreviewdate ::text as nextreviewdate,
+null :: uuid as assessmentid,null  as submissionid,null  as external_templateid,
+RDR.residentialdischargereviewid as reviewid 
+  from actor AC 
+inner join intakeservicerequestactor ISA on AC.actorid=ISA.actorid and ISA.activeflag=1
+inner join intakeservicerequest ISR on ISR.intakeserviceid=ISA.intakeserviceid
+inner join residentialdischargereview RDR on RDR.intakeserviceid=ISR.intakeserviceid
+inner join userprofile UP on UP.securityusersid=RDR.insertedby
+where AC.personid =i_personid 
+
+and case when (coalesce(i_searchtext, 'DischargeReview') = 'DischargeReview') then true else false end
+--order by RDR.dateofreview asc
+)
+
+union all
+
+(
+
+select ISR.intakenumber,ISR.intakeserviceid, ISR.servicerequestnumber,UP.displayname as workername,
+UP.cjamspid as workerid,
+IRCR."date" as createddate ,'Resource Consult Review' as reviewtype, '{}'::jsonb as submissiondata,
+IRCR.notes as narrative ,IRCR.nextreviewdate ::text as nextreviewdate,
+null :: uuid as assessmentid,null   as submissionid,null as external_templateid,
+IRCR.intakeservicerequestconsultreviewid as reviewid
+  from actor AC 
+inner join intakeservicerequestactor ISA on AC.actorid=ISA.actorid
+inner join intakeservicerequest ISR on ISR.intakeserviceid=ISA.intakeserviceid
+inner join intakeservicerequestconsultreview IRCR on IRCR.intakeserviceid=ISR.intakeserviceid
+inner join userprofile UP on UP.securityusersid=IRCR.insertedby
+
+where AC.personid =i_personid 
+
+and case when  (coalesce(i_searchtext, 'ConsultReview') = 'ConsultReview')  then true else false end
+--order by IRCR."date" asc
+
+)
+
+) as x
+
+order by  
+ ( CASE sortorder when 'asc' then 
+  CASE sortcolumn 
+  when 'datereceived' then 
+          cast( x.createddate as character varying)          
+     else    cast( x.nextreviewdate as character varying)end end) asc,
+  
+ ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'datereceived' then 
+          cast( x.createddate as character varying) 
+          else   cast( x.nextreviewdate as character varying)end end) desc
+  
+   
+
+LIMIT   CASE WHEN v_nolimit = false  THEN pagesize END offset 
+        CASE WHEN v_nolimit = false  THEN v_pageoffset END;       
+  END;
+
+$function$
+

@@ -1,0 +1,1 @@
+update tb_ive_adoption_audit set adoptionfinalizationdate = '08/18/2020 00:00:00' where cjamspid = 4149683 and adoptionauditid = 1673;

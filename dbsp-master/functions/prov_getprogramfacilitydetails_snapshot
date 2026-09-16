@@ -1,0 +1,64 @@
+CREATE OR REPLACE FUNCTION prov_getprogramfacilitydetails_snapshot(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_provider_nm character VARYING;
+v_status character VARYING;
+v_program_id character VARYING;
+v_provider_status character varying;
+jsondata  json;
+
+
+BEGIN
+
+v_provider_nm := reqobj->>'provider_nm';
+v_provider_nm = lower(trim(v_provider_nm)); 
+
+v_program_id := reqobj->>'program_id';
+v_status := reqobj->>'status';
+v_provider_status := reqobj->>'provider_status';
+
+
+SELECT  Json_agg(a)  INTO      jsondata  FROM      (  
+
+SELECT 
+ --DISTINCT 
+ PF.*, 
+ p.provider_status_cd,
+ COALESCE(provider_nm, concat(P.provider_first_nm, ' ', P.provider_last_nm)) AS providername,
+    P.provider_nm, p.provider_first_nm, p.provider_last_nm
+ , (select * from prov_get_formatted_addresses(p.provider_id)) as provider_address
+ -- (select provider_adr::text as paymentaddress from get_provider_address(P.provider_id,trim('{3357}') )) as provideraddress
+
+FROM 
+ tb_prov_program_facility_snapshot PF
+ LEFT JOIN tb_provider P ON P.provider_id = PF.provider_id
+WHERE
+ PF.program_id::text = v_program_id
+ AND PF.delete_sw = 'N'
+
+ and (v_provider_nm = '' or v_provider_nm is null or (
+       lower(P.provider_nm) like '%'||v_provider_nm||'%' or
+       lower(P.provider_first_nm) like '%'||v_provider_nm||'%' or
+       lower(P.provider_last_nm) like '%'||v_provider_nm||'%' 
+       ) )
+ and (case when v_provider_status is null or v_provider_status = '' or v_provider_status = 'All' then true 
+    when v_provider_status = 'Open' then P.provider_status_cd = 1791
+    when v_provider_status = 'Closed' then P.provider_status_cd = 1792
+  end )
+ and (case when v_status is null or v_status = '' or v_status = 'All' then true 
+    when v_status = 'Enddated' then PF.end_dt::date is not null
+    when v_status = 'Notenddated' then PF.end_dt is null
+    when v_status = 'Active' then PF.end_dt is null or pf.end_dt::date > now()::date
+    when v_status = 'Inactive' then pf.end_dt::date <= now()::date
+  end )
+order by LOWER(trim(provider_first_nm)),LOWER(trim(provider_last_nm)),LOWER(trim(provider_nm)) ASC NULLS last 
+)  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

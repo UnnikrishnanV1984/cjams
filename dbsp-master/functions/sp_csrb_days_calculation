@@ -1,0 +1,306 @@
+CREATE OR REPLACE FUNCTION sp_csrb_days_calculation(as_rate_flag character, al_provider_id bigint, al_placement_structure_id bigint, ad_placement_start_dt date, ad_placement_end_dt date, ad_payment_start_dt date, ad_payment_end_dt date, OUT ad_rfc_service_st_dt date, OUT ad_rfc_service_end_dt date, OUT al_rfc_unit_no integer, OUT as_rfc_unit_type character varying, OUT ad_rfcd_service_st_dt date, OUT ad_rfcd_service_end_dt date, OUT al_rfcd_unit_no integer, OUT as_rfcd_unit_type character varying, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author      : Vineet Tirodkar\r
+-- Description : Procedure to calculate service days based on Provider Location Address county\r
+--      For Address County is 1443 (Prince George's) or 1435 (Charles)\r
+--         Room & Board/Clothing/Differential (Higher Rate)\r
+--      For Others\r
+--         Room & Board/Clothing \r
+\r
+\r
+-- Revision(s)\r
+-- 06/24/2020 Vineet Tirodkar - Modifications to fix one night less payment issue (CDM-1539)\r
+------------------------------------------------------------------------\r
+DECLARE  \r
+DECLARE vs_cursor_sql VARCHAR(12000) ;\r
+DECLARE vd_previous_month_start_dt DATE;\r
+DECLARE vd_previous_month_end_dt DATE;\r
+DECLARE ad_service_start_dt DATE;\r
+DECLARE ad_service_end_dt DATE;\r
+DECLARE vl_no_of_nights INT;\r
+DECLARE al_unit_no INT;\r
+DECLARE as_unit_type VARCHAR(5);\r
+DECLARE vl_adr_count INT;\r
+DECLARE vl_rfc_unit_no INT;\r
+DECLARE vl_rfcd_unit_no INT;\r
+DECLARE vl_row_cnt INT DEFAULT 0;\r
+DECLARE vd_adr_start_dt DATE;\r
+DECLARE vd_adr_end_dt DATE;\r
+DECLARE vs_higher_fc_rate_sw CHAR(1)DEFAULT NULL;\r
+DECLARE vl_rfc_unit_no_temp INT DEFAULT 0;\r
+DECLARE vl_rfcd_unit_no_temp INT DEFAULT 0;\r
+DECLARE vs_last_add_slab_sw CHAR(1) DEFAULT NULL;\r
+DECLARE vl_calc_total_unit_no INT DEFAULT 0;\r
+DECLARE vl_diff_unit_no INT DEFAULT 0;\r
+DECLARE vl_tot_rows INT DEFAULT 0;\r
+\r
+DECLARE vl_sqlcode int default 0;\r
+DECLARE SQLCODE INT DEFAULT 0;\r
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';\r
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';\r
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_CSRB_DAYS_CALCULATION';\r
+VS_L            CHAR(1) DEFAULT  'L';\r
+VS_R            CHAR(1) DEFAULT  'R';\r
+--DECLARE CUR_PROVIDER_ADD CURSOR WITH HOLD FOR s1;\r
+DECLARE CUR_PROVIDER_ADD REFCURSOR;\r
+\r
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION\r
+\r
+BEGIN              \r
+ BEGIN\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;\r
+  EXCEPTION WHEN OTHERS THEN\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;\r
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;\r
+  vl_sqlcode := -1 ;\r
+  as_error := COALESCE(as_error ,'') || (current_timestamp) ||'::' || vs_Procedure_nm || '.' ;\r
+  -- as_error := COALESCE(as_error ,'') || '::RO ' || 'Provider id' || ' :: ' || COALESCE((al_provider_id),'');\r
+  as_error := as_error || COALESCE(vs_message_text ,'');\r
+ END; \r
+ \r
+ vd_previous_month_start_dt := ad_payment_start_dt;\r
+ vd_previous_month_end_dt := ad_payment_end_dt;  \r
+ \r
+ CASE as_rate_flag\r
+ WHEN 'R' THEN  -- Room and Board\r
+  IF ad_placement_end_dt IS NULL OR ad_placement_end_dt >= vd_previous_month_end_dt THEN\r
+   ad_service_end_dt :=  vd_previous_month_end_dt;\r
+  ELSE\r
+   ad_service_end_dt := ad_placement_end_dt;\r
+  END IF;\r
+\r
+  IF ad_placement_start_dt <= vd_previous_month_start_dt THEN  --child is staying in this placment before the previous month\r
+   ad_service_start_dt :=  vd_previous_month_start_dt;\r
+  ELSE\r
+   ad_service_start_dt := ad_placement_start_dt;\r
+  END IF;\r
+\r
+  -- Check Location Address County for Higher FC Rate\r
+  -- 3357  Provider Location\r
+  -- 1435 (Charles) and 1443 (Prince George's)\r
+\r
+  SELECT COUNT(*)\r
+    INTO vl_adr_count \r
+   FROM tb_PROVIDER_ADDRESSES\r
+  WHERE DELETE_SW = 'N'\r
+   AND PARENT_KEY_ID = al_provider_id::character varying\r
+   AND ADR_TYPE_CD = '3357'\r
+   AND RTRIM(LTRIM(ADR_COUNTY_CD)) in ( '1435', '1443' )\r
+   AND ADR_START_DT <= ad_service_end_dt\r
+   AND ( ADR_END_DT is NULL OR ADR_END_DT >= ad_service_start_dt ) ;\r
+\r
+\r
+  al_sqlcode = SQLCODE;\r
+  IF al_sqlcode < 0  THEN\r
+   SET as_error = 'Error in getting count of Provider Addresses for Higher FC Rate.';\r
+  END IF ; \r
+\r
+  IF ad_service_end_dt <= DATE('2010-03-31') OR vl_adr_count = 0 THEN -- Call Old SP\r
+     \r
+   /* SELECT f_sp_fostercare_calculation('L',\r
+            'R',\r
+      al_placement_structure_id,\r
+      ad_placement_start_dt,\r
+      ad_placement_end_dt,\r
+      ad_payment_start_dt,\r
+      ad_payment_end_dt,\r
+      ad_rfc_service_st_dt,\r
+      ad_rfc_service_end_dt,\r
+      al_rfc_unit_no,\r
+      as_rfc_unit_type);-- */\r
+        \r
+   SELECT  a.ad_service_start_dt,\r
+    a.ad_service_end_dt,\r
+    a.al_unit_no,\r
+    a.as_unit_type \r
+   FROM F_SP_FOSTERCARE_CALCULATION(VS_L,\r
+     VS_R,\r
+     al_placement_structure_id,\r
+     ad_placement_start_dt,\r
+     ad_placement_end_dt,\r
+     ad_payment_start_dt,\r
+     ad_payment_end_dt) a into \r
+     ad_rfc_service_st_dt,\r
+     ad_rfc_service_end_dt,\r
+     al_rfc_unit_no,\r
+     as_rfc_unit_type;\r
+\r
+   ad_rfcd_service_st_dt := NULL;\r
+   ad_rfcd_service_end_dt := NULL;\r
+   al_rfcd_unit_no := NULL;\r
+   as_rfcd_unit_type := NULL;\r
+\r
+  ELSE\r
+   -- vl_no_of_nights := DAY(ad_service_end_dt) - DAY(ad_service_start_dt);\r
+   vl_no_of_nights := date_part('DAY',ad_service_end_dt) - date_part('DAY',ad_service_start_dt); -- CDM-1539 \r
+   al_unit_no := vl_no_of_nights;\r
+\r
+   IF ad_service_start_dt = vd_previous_month_end_dt AND (ad_placement_end_dt IS NULL\r
+     OR ad_placement_end_dt > vd_previous_month_end_dt) THEN\r
+    al_unit_no := 1;\r
+   ELSEIF ad_service_end_dt = vd_previous_month_end_dt \r
+     and (ad_service_end_dt <> ad_placement_end_dt or ad_placement_end_dt is null) THEN\r
+    al_unit_no := al_unit_no + 1;\r
+   END IF;\r
+\r
+   as_unit_type := '5610'; --nightly\r
+\r
+   vl_rfc_unit_no := 0; -- INITIAL VALUE\r
+   vl_rfcd_unit_no := 0; -- INITIAL VALUE\r
+ \r
+   /* -- SQL for Cursor (Location Addresses) - START \r
+     vs_cursor_sql :=\r
+      ' SELECT ADR_START_DT, '||\r
+      '        ADR_END_DT,  '||\r
+      '        (CASE WHEN RTRIM(LTRIM(ADR_COUNTY_CD)) =  ''1435'' OR RTRIM(LTRIM(ADR_COUNTY_CD)) =  ''1443'' THEN '||\r
+      '     ''Y'' '||\r
+      '  ELSE '||\r
+      '    ''N'' '||\r
+      '  END) AS HIGHER_FC_RATE '||\r
+      '     FROM tb_PROVIDER_ADDRESSES '||\r
+      ' WHERE DELETE_SW = ''N'' '||\r
+      '       AND PARENT_KEY_ID = '|| (al_provider_id) ||' '||\r
+      '       AND ADR_TYPE_CD = ''3357'' '||\r
+      '       AND ADR_START_DT <= '''|| (ad_service_end_dt, USA) ||''' '||\r
+      '       AND ( ADR_END_DT is NULL OR ADR_END_DT >= '''|| (ad_service_start_dt, USA) ||''' ) '||\r
+      ' ORDER BY ADR_START_DT  ' ;--\r
+   \r
+   -- SQL for Cursor (Location Addresses) - END */\r
+   \r
+   -- Take count to run a loop for cursor (Location Addresses) - START \r
+   SELECT COUNT(*)\r
+    INTO vl_row_cnt\r
+    FROM tb_PROVIDER_ADDRESSES\r
+   WHERE DELETE_SW = 'N'\r
+    AND PARENT_KEY_ID = al_provider_id::character varying\r
+    AND ADR_TYPE_CD = '3357'\r
+    AND ADR_START_DT <= ad_service_end_dt\r
+    AND ( ADR_END_DT is NULL OR ADR_END_DT >= ad_service_start_dt ) ;\r
+  \r
+   vl_tot_rows := vl_row_cnt;\r
+   -- Take count to run a loop for cursor (Location Addresses) - END \r
+  \r
+   --PREPARE s1 FROM vs_cursor_sql ;\r
+   OPEN CUR_PROVIDER_ADD FOR \r
+    SELECT ADR_START_DT,ADR_END_DT,(CASE WHEN RTRIM(LTRIM(ADR_COUNTY_CD)) =  '1435' \r
+      OR RTRIM(LTRIM(ADR_COUNTY_CD)) =  '1443' THEN \r
+      'Y' \r
+     ELSE \r
+      'N'\r
+     END) AS HIGHER_FC_RATE \r
+    FROM tb_PROVIDER_ADDRESSES \r
+    WHERE DELETE_SW = 'N'\r
+     AND PARENT_KEY_ID =  (al_provider_id)\r
+     AND ADR_TYPE_CD = '3357' \r
+     --AND ADR_START_DT <= (ad_service_end_dt, USA)\r
+     -- AND ( ADR_END_DT is NULL OR ADR_END_DT >=  (ad_service_start_dt, USA) ) \r
+     AND ADR_START_DT <= (ad_service_end_dt)\r
+     AND ( ADR_END_DT is NULL OR ADR_END_DT >=  (ad_service_start_dt) ) \r
+    ORDER BY ADR_START_DT ;\r
+    \r
+   --PROVIDER_LOCN_ADD:\r
+   WHILE vl_row_cnt > 0  LOOP\r
+    vd_adr_start_dt := null; \r
+    vd_adr_end_dt := NULL; -- INITIAL VALUE\r
+    vs_higher_fc_rate_sw :=NULL; -- INITIAL VALUE\r
+    vl_rfc_unit_no_temp := 0; -- INITIAL VALUE \r
+    vl_rfcd_unit_no_temp := 0; -- INITIAL VALUE \r
+    -- IF 'Y' Higher Rate County ELSE 'N' Other County\r
+    vs_last_add_slab_sw := NULL; -- INITIAL VALUE \r
+ \r
+    FETCH CUR_PROVIDER_ADD INTO vd_adr_start_dt, vd_adr_end_dt, vs_higher_fc_rate_sw;\r
+ \r
+    IF vl_row_cnt = 0 THEN\r
+     --  LEAVE PROVIDER_LOCN_ADD;\r
+    END IF;\r
+ \r
+    IF vs_higher_fc_rate_sw = 'N' THEN\r
+     IF vd_adr_end_dt is NULL THEN \r
+      IF vd_adr_start_dt < ad_service_start_dt THEN\r
+       vl_rfc_unit_no_temp := date_part('DAY',ad_service_end_dt) - date_part('DAY',ad_service_start_dt); \r
+      ELSE\r
+       vl_rfc_unit_no_temp := date_part('DAY',ad_service_end_dt) - date_part('DAY',vd_adr_start_dt); \r
+      END IF;\r
+     ELSE\r
+      IF vd_adr_start_dt < ad_service_start_dt THEN\r
+       vl_rfc_unit_no_temp := date_part('DAY',vd_adr_end_dt) - date_part('DAY',ad_service_start_dt); \r
+      ELSE\r
+       vl_rfc_unit_no_temp := date_part('DAY',vd_adr_end_dt) - date_part('DAY',vd_adr_start_dt); \r
+      END IF;\r
+     END IF;\r
+     vl_rfc_unit_no := vl_rfc_unit_no + vl_rfc_unit_no_temp;  \r
+    ELSE\r
+     IF vd_adr_end_dt is NULL THEN\r
+      IF vd_adr_start_dt < ad_service_start_dt THEN\r
+       vl_rfcd_unit_no_temp := date_part('DAY',ad_service_end_dt) - date_part('DAY',ad_service_start_dt); \r
+      ELSE\r
+       vl_rfcd_unit_no_temp := date_part('DAY',ad_service_end_dt) - date_part('DAY',vd_adr_start_dt); \r
+      END IF;\r
+     ELSE\r
+      IF vd_adr_start_dt < ad_service_start_dt THEN\r
+       vl_rfcd_unit_no_temp := date_part('DAY',vd_adr_end_dt) - date_part('DAY',ad_service_start_dt); \r
+      ELSE\r
+       vl_rfcd_unit_no_temp := date_part('DAY',vd_adr_end_dt) - date_part('DAY',vd_adr_start_dt); \r
+      END IF;\r
+     END IF;\r
+     vl_rfcd_unit_no := vl_rfcd_unit_no + vl_rfcd_unit_no_temp;  \r
+    END IF;\r
+ \r
+    IF vl_row_cnt <> 1 AND vl_row_cnt <> vl_tot_rows THEN\r
+     IF vs_higher_fc_rate_sw = 'N' THEN\r
+      vl_rfc_unit_no := vl_rfc_unit_no  + 1;\r
+     ELSE\r
+      vl_rfcd_unit_no := vl_rfcd_unit_no + 1;\r
+     END IF;\r
+    END IF;\r
+ \r
+    vs_last_add_slab_sw := vs_higher_fc_rate_sw;\r
+    vl_row_cnt := vl_row_cnt  - 1; \r
+   END LOOP ;\r
+   CLOSE CUR_PROVIDER_ADD ;\r
+\r
+   -- Verify the split total of days should match with al_unit_no\r
+   vl_calc_total_unit_no := vl_rfc_unit_no + vl_rfcd_unit_no;\r
+   IF al_unit_no <> vl_calc_total_unit_no THEN\r
+    vl_diff_unit_no := al_unit_no - vl_calc_total_unit_no;\r
+    IF vs_last_add_slab_sw = 'N' THEN\r
+     vl_rfc_unit_no := vl_rfc_unit_no + vl_diff_unit_no;\r
+    ELSE\r
+     vl_rfcd_unit_no := vl_rfcd_unit_no + vl_diff_unit_no;\r
+    END IF;\r
+   END IF;\r
+\r
+   IF vl_rfc_unit_no > 0 THEN\r
+    ad_rfc_service_st_dt := ad_service_start_dt;\r
+    ad_rfc_service_end_dt := ad_service_end_dt;\r
+    al_rfc_unit_no := vl_rfc_unit_no;\r
+    as_rfc_unit_type := '5610'; --nightly\r
+   ELSE\r
+    ad_rfc_service_st_dt := NULL;\r
+    ad_rfc_service_end_dt := NULL;\r
+    al_rfc_unit_no := NULL;\r
+    as_rfc_unit_type := NULL;\r
+   END IF;\r
+ \r
+   IF vl_rfcd_unit_no > 0 THEN\r
+    ad_rfcd_service_st_dt := ad_service_start_dt;\r
+    ad_rfcd_service_end_dt := ad_service_end_dt;\r
+    al_rfcd_unit_no := vl_rfcd_unit_no;\r
+    as_rfcd_unit_type := '5610'; --nightly\r
+   ELSE\r
+    ad_rfcd_service_st_dt := NULL;\r
+    ad_rfcd_service_end_dt := NULL;\r
+    al_rfcd_unit_no := NULL;\r
+    as_rfcd_unit_type := NULL;\r
+   END IF;\r
+ \r
+  END IF; -- Call Old SP\r
+ END CASE; \r
+END;\r
+\r
+$function$
+

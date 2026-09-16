@@ -1,0 +1,1 @@
+Create index Xie1_personasset on personasset (personid,activeflag);

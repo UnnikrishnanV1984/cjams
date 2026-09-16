@@ -1,0 +1,28 @@
+ CREATE OR REPLACE FUNCTION public.getresidentialstatus(v_personid uuid)                                                          
+  RETURNS TABLE(residentialexists boolean, detainerflag boolean)                                                                  
+  LANGUAGE plpgsql                                                                                                                
+ AS $function$                                                                                                                    
+                                                                                                                                  
+ begin                                                                                                                            
+         RETURN query                                                                                                             
+ select                                                                                                                           
+   (case when exists (select pl.placementadmissionclassificationkey from intakeservicerequestactor isr                            
+ inner join  placement pl                                                                                                         
+ on pl.intakeserviceid = isr.intakeserviceid and pl.enddatetime  is null  and pl.placementadmissionclassificationkey='RES'        
+ where isr.personid=v_personid                                                                                                    
+ and intakeservicerequestpersontypekey='Youth' and isr.activeflag=1 )                                                             
+     then true                                                                                                                    
+     else false                                                                                                                   
+   end) as residentialexists, (case when exists (select pl.placementadmissionclassificationkey from intakeservicerequestactor isr 
+ inner join  placement pl                                                                                                         
+ on pl.intakeserviceid = isr.intakeserviceid and pl.enddatetime  is null  and pl.detainer='Yes'                                   
+ where isr.personid=v_personid                                                                                                    
+ and intakeservicerequestpersontypekey='Youth' and isr.activeflag=1 )                                                             
+     then true                                                                                                                    
+     else false                                                                                                                   
+   end) as detainerflag;                                                                                                          
+                                                                                                                                  
+ end;                                                                                                                             
+                                                                                                                                  
+ $function$                                                                                                                       
+

@@ -1,0 +1,47 @@
+CREATE OR REPLACE FUNCTION as_getdischargedashboard(v_securityusersid uuid, v_type character varying, search_youth character varying, search_cjamspid bigint, search_fromdate date, search_todate date, search_county character varying, search_region character varying, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, firstname character varying, lastname character varying, middlename character varying, suffix character varying, cjamspid bigint, dob timestamp without time zone, countyname character varying, regionname character varying, casenumber character varying, providername character varying, admissiondate date, projectedreleasedate timestamp without time zone, duedate timestamp without time zone, completeddate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_pagenumber int;
+v_pageoffset int;
+
+BEGIN
+
+v_pagenumber := pagenumber-1;
+
+v_pageoffset = v_pagenumber * pagesize;
+
+RAISE NOTICE '%',search_youth;
+RETURN QUERY
+ 
+
+ select  count(*) over() totalcount,p.firstname,p.lastname,p.middlename,p.suffix,p.cjamspid,p.dob,c.countyname,r.regionname,ISR.servicerequestnumber,
+ pro.providername,pla.addate,case when v_type = 'preDischargeReEntryTransitionPlan' then pla.releasedate::timestamp without time zone else pla.enddatetime end,asmtpla.duedate,asmtpla.completeddate
+ from intakeservicerequestactor ISA 
+ inner join person p on p.personid = ISA.personid and ISA.activeflag = 1 and p.activeflag = 1
+ inner join  (select * from placement where activeflag = 1 order by enddatetime desc) pla 
+ on pla.intakeserviceid = ISA.intakeserviceid
+ inner join intakeservicerequest ISR on ISR.intakeserviceid = pla.intakeserviceid and ISR.activeflag = 1
+ inner join provider pro on pro.providerid = pla.providerid and pro.activeflag = 1
+ inner join assessmentplacementconfig asmtpla on asmtpla.placementid = pla.placementid and asmtpla.activeflag = 1
+ inner join assessment asmt on asmt.assessmentid = asmtpla.assessmentid and asmt.activeflag = 1
+ left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1
+ left join county c on c.countyname = pa.county and c.activeflag = 1
+ left join region r on r.regionid = c.regionid and r.activeflag = 1
+ where asmt.securityusersid = v_securityusersid::character varying and asmtpla.name = v_type and ISA.intakeservicerequestpersontypekey = 'Youth' and
+ case when search_youth  is  not null then (p.firstname ilike concat('%',search_youth ,'%')
+ or p.lastname ilike concat('%',search_youth,'%') or p.middlename ilike concat('%',search_youth,'%')) 
+ else true end
+ and case when search_cjamspid is not null then p.cjamspid = search_cjamspid else true end
+ and case when search_fromdate is not null then asmtpla.completeddate::date between search_fromdate and search_todate else true end
+ and case when search_county is not null then c.countyname = search_county else true end
+ and case when search_region is not null then r.regionname = search_region else true end
+ 
+  
+ order by asmtpla.completeddate desc limit pagesize offset v_pageoffset;
+ 
+END;
+$function$
+

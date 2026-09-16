@@ -1,0 +1,7 @@
+INSERT INTO cjams.assessmenttemplate
+(assessmenttemplateid, "name", description, "version", titleheadertext, assessmenttextpositiontypekey, instructions, activeflag, insertedby, insertedon, updatedby, updatedon, effectivedate,  "timestamp", helptext, datamappingenabled, enableassessmentscore,external_templateid, isvisible,  notifywhencomplete, isrequired)
+VALUES('b48a1024-bfca-41f7-a60e-dd8c63359c40', 'caseyLifeSkillsAssessment', 'desc', 1.00, 'Casey Life Skills Assessment', 'Center', 'instructions', 1, now(), 'now()', 'B-95210', now(), now(), decode('20','hex'), 'helptext', true, true, '606b4bd8a4bf68001a52a9d6', true, false, false);
+
+INSERT INTO cjams.assessmenttemplatecategoryfiltermap
+(assessmenttemplatecategoryfiltermapid, assessmenttemplateid,activeflag, insertedby, insertedon, updatedby, updatedon, effectivedate, "repeatable", intakeservicerequesttypeid, intakeservicerequestsubtypeid, assessmenttemplatetargetid, teamtypekey)
+VALUES(gen_random_uuid(), 'b48a1024-bfca-41f7-a60e-dd8c63359c40', 1, 'admin', now(), 'B-95210', now(), now(), true, '13be391c-de90-4ab1-bf07-515a431c3e9c'::uuid, '00000000-0000-0000-0000-000000000000'::uuid, '30c89758-0cc4-4b4a-92b6-df57819a178b'::uuid, 'CW');

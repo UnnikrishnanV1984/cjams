@@ -1,0 +1,23 @@
+-- FUNCTION: cjams.getpersonnarrative(uuid)
+
+-- DROP FUNCTION cjams.getpersonnarrative(uuid);
+
+CREATE OR REPLACE FUNCTION cjams.getpersonnarrative(v_personid uuid)
+RETURNS TABLE(
+		personid uuid,
+		personemploymentid uuid,
+		promotedemploymentprogramname character varying,
+		promotedemploymentprogramstartdate timestamp without time zone,
+		promotedemploymentprogramenddate timestamp without time zone,
+		promotedemploymentnarrative character varying,
+		updatedon timestamp without time zone
+		)
+LANGUAGE plpgsql
+AS $function$
+declare 
+details json;
+begin
+	return QUERY select pe.personid,pe.personemploymentid,pe.promotedemploymentprogramname,pe.promotedemploymentprogramstartdate,pe.promotedemploymentprogramenddate
+	,pe.promotedemploymentnarrative,pe.updatedon from personemployment pe where pe.activeflag = 1 and pe.personid = v_personid and pe.promotedemploymentflag = 1;
+end;
+$function$

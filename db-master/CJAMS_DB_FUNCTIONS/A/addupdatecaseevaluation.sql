@@ -1,0 +1,210 @@
+ CREATE OR REPLACE FUNCTION public.addupdatecaseevaluation(caseevaluation json)                                                                                                                    
+  RETURNS text                                                                                                                                                                                     
+  LANGUAGE plpgsql                                                                                                                                                                                 
+ AS $function$                                                                                                                                                                                   
+                                                                                                                                                                                                 
+         DECLARE                                                                                                                                                                                 
+         v_caseevaluation json;                                                                                                                                                                  
+         v_date timestamp without time zone;                                                                                                                                                     
+     v_evaluationdate timestamp without time zone;                                                                                                                                               
+                                                                                                                                                                                                 
+         BEGIN                                                                                                                                                                                   
+                                                                                                                                                                                                 
+                 v_caseevaluation := caseevaluation;                                                                                                                                             
+                 v_date:= now() at time zone 'utc';                                                                                                                                              
+             IF (LENGTH(v_caseevaluation->>'caseevaluationid')>1 ) THEN                                                                                                                          
+                  UPDATE caseevaluation                                                                                                                                                          
+                                   SET                                                                                                                                                           
+                                                                     caseid=v_caseevaluation->>'caseid',                                                                                         
+                                                                                 evaluationdate= (v_caseevaluation->>'evaluationdate')::  DATE,                                                  
+                                                                                 nextrecondate=  (v_caseevaluation->>'nextrecondate')::  DATE,                                                   
+                                                                                 timeframetypekey=       v_caseevaluation->>'timeframetypekey',                                                  
+                                                                                 presentprogramtypekey=  v_caseevaluation->>'presentprogramtypekey',                                             
+                                                                                 presentprogramopendate= (v_caseevaluation->>'presentprogramopendate')::  DATE,                                  
+                                                                                 presentprogramcloseddate=       (v_caseevaluation->>'presentprogramcloseddate'):: DATE,                         
+                                                                                 exttilldate=    (v_caseevaluation->>'exttilldate'):: DATE,                                                      
+                                                                                 riskassessmentid=       (v_caseevaluation->>'riskassessmentid')::int,                                           
+                                                                                 safetyassessmentid=     v_caseevaluation->>'safetyassessmentid',                                                
+                                                                                 newreferraltext=        v_caseevaluation->>'newreferraltext',                                                   
+                                                                                 familyperception=       v_caseevaluation->>'familyperception',                                                  
+                                                                                 familyserviceneeds=     v_caseevaluation->>'familyserviceneeds',                                                
+                                                                                 positiveresponsetypekey=        v_caseevaluation->>'positiveresponsetypekey',                                   
+                                                                                 treatmentissues=        v_caseevaluation->>'treatmentissues',                                                   
+                                                                                 courtinvolvement=       v_caseevaluation->>'courtinvolvement',                                                  
+                                                                                 ofhplacement=   v_caseevaluation->>'ofhplacement',                                                              
+                                                                                 totalfund=      (v_caseevaluation->>'totalfund')::int,                                                          
+                                                                                 fianotificationtypekey= v_caseevaluation->>'fianotificationtypekey',                                            
+                                                                                 fianotification=        v_caseevaluation->>'fianotification',                                                   
+                                                                                 workerdiscusstypekey=   v_caseevaluation->>'workerdiscusstypekey',                                              
+                                                                                 workerdiscuss=  v_caseevaluation->>'workerdiscuss',                                                             
+                                                                                 familystrength= v_caseevaluation->>'familystrength',                                                            
+                                                                                 requestextn=    v_caseevaluation->>'requestextn',                                                               
+                                                                                 extntime=       v_caseevaluation->>'extntime',                                                                  
+                                                                                 approvalstatustypekey=  v_caseevaluation->>'approvalstatustypekey',                                             
+                                                                                 extnapprovalstatustypekey=      v_caseevaluation->>'extnapprovalstatustypekey',                                 
+                                                                                 extnrequired=   (v_caseevaluation->>'extnrequired')::int,                                                       
+                                                                                 servicesprovided=       v_caseevaluation->>'servicesprovided',                                                  
+                                                                                 serviceoutcome= v_caseevaluation->>'serviceoutcome',                                                            
+                                                                                 serviceplanprogress=    v_caseevaluation->>'serviceplanprogress',                                               
+                                                                                 serviceplanobjectives=  v_caseevaluation->>'serviceplanobjectives',                                             
+                                                                                 serviceplandisagreement=        v_caseevaluation->>'serviceplandisagreement',                                   
+                                                                                 serviceemployed=        v_caseevaluation->>'serviceemployed',                                                   
+                                                                                 familyclosingreason=    v_caseevaluation->>'familyclosingreason',                                               
+                                                                                 providedclosingplantypekey=     v_caseevaluation->>'providedclosingplantypekey',                                
+                                                                                 providedclosingplan=    v_caseevaluation->>'providedclosingplan',                                               
+                                                                                 closinglettercopytypekey=       v_caseevaluation->>'closinglettercopytypekey',                                  
+                                                                                 closinglettercopy=      v_caseevaluation->>'closinglettercopy',                                                 
+                                                                                 futureservicetypekey=   v_caseevaluation->>'futureservicetypekey',                                              
+                                                                                 futureservice=  v_caseevaluation->>'futureservice',                                                             
+                                                                                 serviceneededflag=      (v_caseevaluation->>'serviceneededflag')::int,                                          
+                                                                                 casetransferflag=       (v_caseevaluation->>'casetransferflag')::int,                                           
+                                                                                                                                                                                                 
+                                                                                 transfertotypekey=      v_caseevaluation->>'transfertotypekey',                                                 
+                                                                                 transferserviceintensitytypekey=        v_caseevaluation->>'transferserviceintensitytypekey',                   
+                                                                                 caseopenflag=   (v_caseevaluation->>'caseopenflag')::int,                                                       
+                                                                                 aodflag=        (v_caseevaluation->>'aodflag')::int,                                                            
+                                                                                 consentformcompleted=   (v_caseevaluation->>'consentformcompleted')::int,                                       
+                                                                                 referralformcompleted=  (v_caseevaluation->>'referralformcompleted')::int,                                      
+                                                                                 providerrefflag=        (v_caseevaluation->>'providerrefflag')::int,                                            
+                                                                                 noserviceneededflag=    (v_caseevaluation->>'noserviceneededflag')::int,                                        
+                                                                                 objectivesachievedflag= (v_caseevaluation->>'objectivesachievedflag')::int,                                     
+                                                                                 familyrefusedserviceflag=       (v_caseevaluation->>'familyrefusedserviceflag')::int,                           
+                                                                                 supportservicecomments= v_caseevaluation->>'supportservicecomments',                                            
+                                                                                 servivceagreementflag=  (v_caseevaluation->>'servivceagreementflag')::int,                                      
+                                                                                                                                                                                                 
+                                                                                 serviceintensitylevel=  v_caseevaluation->>'serviceintensitylevel',                                             
+                                                                                 insertedby=     v_caseevaluation->>'insertedby',                                                                
+                                                                                 insertedon=     (v_caseevaluation->>'insertedon')::  DATE,                                                      
+                                                                                 updatedby=      v_caseevaluation->>'updatedby',                                                                 
+                                                                                 updatedon=      (v_caseevaluation->>'updatedon')::  DATE,                                                       
+                                                                                 activeflag=     (v_caseevaluation->>'activeflag')::int,                                                         
+                                                                                                                                                                                                 
+                                                                                 fmlyclosingreasontypekey=       v_caseevaluation->>'fmlyclosingreasontypekey',                                  
+                                                                                 fmlyclosingreason=      v_caseevaluation->>'fmlyclosingreason',                                                 
+                                                                                 concurtypekey=  v_caseevaluation->>'concurtypekey',                                                             
+                                                                                 safedate=       (v_caseevaluation->>'safedate')::  DATE,                                                        
+                                                                                                                                                                                                 
+                                                                                 safetydecisiontypekey=  v_caseevaluation->>'safetydecisiontypekey',                                             
+                                                                                 safetyplaninitiatedflag=        (v_caseevaluation->>'safetyplaninitiatedflag')::int,                            
+                                                                                                                                                                                                 
+                                                                                 riskassessmentdate=     (v_caseevaluation->>'riskassessmentdate'):: DATE,                                       
+                                                                                 overallriskrating=      v_caseevaluation->>'overallriskrating',                                                 
+                                                                                 summary=        v_caseevaluation->>'summary',                                                                   
+                                                                                 approvalagencyflag=     (v_caseevaluation->>'approvalagencyflag')::int,                                         
+                                                                                 adminextnsinfsflag=     (v_caseevaluation->>'adminextnsinfsflag')::int,                                         
+                                                                                 ssapolicyflag=  (v_caseevaluation->>'ssapolicyflag')::int,                                                      
+                                                                                 referalmadeagencyflag=  (v_caseevaluation->>'referalmadeagencyflag')::int,                                      
+                                                                                 serviceplanid=  (v_caseevaluation->>'serviceplanid')::  uuid                                                    
+                                   WHERE  caseevaluationid = (v_caseevaluation->>'caseevaluationid')::uuid;                                                                                      
+             ELSE                                                                                                                                                                                
+                                                                                                                                                                                                 
+                 INSERT INTO caseevaluation                                                                                                                                                      
+                    (caseid, evaluationdate, nextrecondate, timeframetypekey, presentprogramtypekey, presentprogramopendate,                                                                     
+                     presentprogramcloseddate, exttilldate, riskassessmentid, safetyassessmentid, newreferraltext, familyperception,                                                             
+                     familyserviceneeds, positiveresponsetypekey, treatmentissues, courtinvolvement, ofhplacement, totalfund,                                                                    
+                     fianotificationtypekey, fianotification, workerdiscusstypekey, workerdiscuss, familystrength,                                                                               
+                     requestextn, extntime, approvalstatustypekey, extnapprovalstatustypekey, extnrequired,                                                                                      
+                     servicesprovided, serviceoutcome, serviceplanprogress, serviceplanobjectives, serviceplandisagreement,                                                                      
+                     serviceemployed, familyclosingreason, providedclosingplantypekey, providedclosingplan, closinglettercopytypekey,                                                            
+                     closinglettercopy, futureservicetypekey, futureservice, serviceneededflag, casetransferflag,                                                                                
+                     transfertotypekey, transferserviceintensitytypekey, caseopenflag, aodflag, consentformcompleted,                                                                            
+                     referralformcompleted, providerrefflag, noserviceneededflag, objectivesachievedflag, familyrefusedserviceflag,                                                              
+                     supportservicecomments, servivceagreementflag, serviceintensitylevel, insertedby,                                                                                           
+                     insertedon, updatedby, updatedon, activeflag, fmlyclosingreasontypekey, fmlyclosingreason,                                                                                  
+                     concurtypekey,  safedate, safetydecisiontypekey, safetyplaninitiatedflag,                                                                                                   
+                     riskassessmentdate, overallriskrating, summary,approvalagencyflag,                                                                                                          
+                                         adminextnsinfsflag, ssapolicyflag, referalmadeagencyflag, serviceplanid                                                                                 
+                     )                                                                                                                                                                           
+                     VALUES(                                                                                                                                                                     
+                                             v_caseevaluation->>'caseid',                                                                                                                        
+                                                                                         (v_caseevaluation->>'evaluationdate')::  DATE,                                                          
+                                                                                         (v_caseevaluation->>'nextrecondate')::  DATE,                                                           
+                                                                                         v_caseevaluation->>'timeframetypekey',                                                                  
+                                                                                         v_caseevaluation->>'presentprogramtypekey',                                                             
+                                                                                         (v_caseevaluation->>'presentprogramopendate')::  DATE,                                                  
+                                                                                         (v_caseevaluation->>'presentprogramcloseddate'):: DATE,                                                 
+                                                                                         (v_caseevaluation->>'exttilldate'):: DATE,                                                              
+                                                                                         (v_caseevaluation->>'riskassessmentid')::int,                                                           
+                                                                                         v_caseevaluation->>'safetyassessmentid',                                                                
+                                                                                         v_caseevaluation->>'newreferraltext',                                                                   
+                                                                                         v_caseevaluation->>'familyperception',                                                                  
+                                                                                         v_caseevaluation->>'familyserviceneeds',                                                                
+                                                                                         v_caseevaluation->>'positiveresponsetypekey',                                                           
+                                                                                         v_caseevaluation->>'treatmentissues',                                                                   
+                                                                                         v_caseevaluation->>'courtinvolvement',                                                                  
+                                                                                         v_caseevaluation->>'ofhplacement',                                                                      
+                                                                                         (v_caseevaluation->>'totalfund')::int,                                                                  
+                                                                                         v_caseevaluation->>'fianotificationtypekey',                                                            
+                                                                                         v_caseevaluation->>'fianotification',                                                                   
+                                                                                         v_caseevaluation->>'workerdiscusstypekey',                                                              
+                                                                                         v_caseevaluation->>'workerdiscuss',                                                                     
+                                                                                         v_caseevaluation->>'familystrength',                                                                    
+                                                                                         v_caseevaluation->>'requestextn',                                                                       
+                                                                                         v_caseevaluation->>'extntime',                                                                          
+                                                                                         v_caseevaluation->>'approvalstatustypekey',                                                             
+                                                                                         v_caseevaluation->>'extnapprovalstatustypekey',                                                         
+                                                                                         (v_caseevaluation->>'extnrequired')::int,                                                               
+                                                                                         v_caseevaluation->>'servicesprovided',                                                                  
+                                                                                         v_caseevaluation->>'serviceoutcome',                                                                    
+                                                                                         v_caseevaluation->>'serviceplanprogress',                                                               
+                                                                                         v_caseevaluation->>'serviceplanobjectives',                                                             
+                                                                                         v_caseevaluation->>'serviceplandisagreement',                                                           
+                                                                                         v_caseevaluation->>'serviceemployed',                                                                   
+                                                                                         v_caseevaluation->>'familyclosingreason',                                                               
+                                                                                         v_caseevaluation->>'providedclosingplantypekey',                                                        
+                                                                                         v_caseevaluation->>'providedclosingplan',                                                               
+                                                                                         v_caseevaluation->>'closinglettercopytypekey',                                                          
+                                                                                         v_caseevaluation->>'closinglettercopy',                                                                 
+                                                                                         v_caseevaluation->>'futureservicetypekey',                                                              
+                                                                                         v_caseevaluation->>'futureservice',                                                                     
+                                                                                         (v_caseevaluation->>'serviceneededflag')::int,                                                          
+                                                                                         (v_caseevaluation->>'casetransferflag')::int,                                                           
+                                                                                                                                                                                                 
+                                                                                         v_caseevaluation->>'transfertotypekey',                                                                 
+                                                                                         v_caseevaluation->>'transferserviceintensitytypekey',                                                   
+                                                                                         (v_caseevaluation->>'caseopenflag')::int,                                                               
+                                                                                         (v_caseevaluation->>'aodflag')::int,                                                                    
+                                                                                         (v_caseevaluation->>'consentformcompleted')::int,                                                       
+                                                                                         (v_caseevaluation->>'referralformcompleted')::int,                                                      
+                                                                                         (v_caseevaluation->>'providerrefflag')::int,                                                            
+                                                                                         (v_caseevaluation->>'noserviceneededflag')::int,                                                        
+                                                                                         (v_caseevaluation->>'objectivesachievedflag')::int,                                                     
+                                                                                         (v_caseevaluation->>'familyrefusedserviceflag')::int,                                                   
+                                                                                         v_caseevaluation->>'supportservicecomments',                                                            
+                                                                                         (v_caseevaluation->>'servivceagreementflag')::int,                                                      
+                                                                                                                                                                                                 
+                                                                                         v_caseevaluation->>'serviceintensitylevel',                                                             
+                                                                                         v_caseevaluation->>'insertedby',                                                                        
+                                                                                         (v_caseevaluation->>'insertedon')::  DATE,                                                              
+                                                                                         v_caseevaluation->>'updatedby',                                                                         
+                                                                                         (v_caseevaluation->>'updatedon')::  DATE,                                                               
+                                                                                         (v_caseevaluation->>'activeflag')::int,                                                                 
+                                                                                                                                                                                                 
+                                                                                         v_caseevaluation->>'fmlyclosingreasontypekey',                                                          
+                                                                                         v_caseevaluation->>'fmlyclosingreason',                                                                 
+                                                                                         v_caseevaluation->>'concurtypekey',                                                                     
+                                                                                         (v_caseevaluation->>'safedate')::  DATE,                                                                
+                                                                                                                                                                                                 
+                                                                                         v_caseevaluation->>'safetydecisiontypekey',                                                             
+                                                                                         (v_caseevaluation->>'safetyplaninitiatedflag')::int,                                                    
+                                                                                                                                                                                                 
+                                                                                         (v_caseevaluation->>'riskassessmentdate'):: DATE,                                                       
+                                                                                         v_caseevaluation->>'overallriskrating',                                                                 
+                                                                                         v_caseevaluation->>'summary',                                                                           
+                                                                                         (v_caseevaluation->>'approvalagencyflag')::int,                                                         
+                                                                                         (v_caseevaluation->>'adminextnsinfsflag')::int,                                                         
+                                                                                         (v_caseevaluation->>'ssapolicyflag')::int,                                                              
+                                                                                         (v_caseevaluation->>'referalmadeagencyflag')::int,                                                      
+                                                                                         (v_caseevaluation->>'serviceplanid')::  uuid                                                            
+                                                                                         );                                                                                                      
+                                                                                                                                                                                                 
+                                                                                                                                                                                                 
+                 END IF;                                                                                                                                                                         
+                                                                                                                                                                                                 
+                                                                                                                                                                                                 
+                                                                                                                                                                                                 
+     return 'Success';                                                                                                                                                                           
+         END;                                                                                                                                                                                    
+                                                                                                                                                                                                 
+ $function$                                                                                                                                                                                        
+

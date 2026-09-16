@@ -1,0 +1,45 @@
+CREATE OR REPLACE FUNCTION as_uniformdischargeplanlist(v_intakeserviceid uuid, v_securityusersid character varying)
+ RETURNS TABLE(currentdate date, firstname character varying, lastname character varying, middlename character varying, suffix character varying, dob timestamp without time zone, cjamspid bigint, assistpid character varying, county character varying, address character varying, phonenumber character varying, facility json, casemanager character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+
+casemanager character varying;
+
+begin
+ 
+ select up.displayname INTO casemanager from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+ join teammember tm2 on tm2.teamid = tm.teamid and tm2.activeflag = 1
+ join as_teammemberassignment tma2 on tm2.teammemberid = tma2.teammemberid and tma2.activeflag = 1
+ join userprofile up on up.securityusersid = tma2.securityusersid and up.activeflag = 1
+ where tma.activeflag = 1 and tma.securityusersid = v_securityusersid and tm2.roletypekey = 'JSCSP';
+ 
+
+RETURN QUERY
+
+select now()::date as date,p.firstname,p.lastname,p.middlename,p.suffix,p.dob,p.cjamspid,p.old_id,pa.county,pa.address,pp.phonenumber, 
+(select json_agg(place) from (select pro.providername,pla1.projectedreleasedate,pla1.addate as admissiondate from placement pla1
+inner join provider pro on pro.providerid = pla1.providerid and pro.activeflag = 1
+where pla1.intakeservicerequestactorid = ISA.intakeservicerequestactorid and pla1.placementadmissionclassificationkey = 'RES'
+and pla1.activeflag = 1 order by pla1.enddatetime desc limit 1)as place) as facility,casemanager
+from intakeservicerequestactor ISA 
+inner join person p on p.personid = ISA.personid and ISA.activeflag = 1
+left join (
+(SELECT pa1.address,pa1.personid,pa1.county, 1 as disporder FROM personaddress pa1 WHERE personaddresstypekey = 'CUR' and activeflag = 1 order by effectivedate desc limit 1)
+union
+(SELECT  pa2.address,pa2.personid,pa2.county, 2 as disporder FROM personaddress pa2 WHERE personaddresstypekey != 'CUR' and activeflag = 1 order by effectivedate desc limit 1)
+order by disporder limit 1
+) pa 
+on pa.personid = p.personid and p.activeflag = 1 
+left join county c on c.countyname = pa.county and c.activeflag = 1
+left join (select pn.phonenumber,pn.personid from personphonenumber pn where activeflag = 1 order by effectivedate desc limit 1) pp 
+on pp.personid = p.personid
+where ISA.intakeserviceid = v_intakeserviceid;
+
+
+end;
+
+$function$
+

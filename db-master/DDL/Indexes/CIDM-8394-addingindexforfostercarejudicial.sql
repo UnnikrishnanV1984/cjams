@@ -1,0 +1,1 @@
+create index Xie1_tb_foster_care_judicial on tb_foster_care_judicial (client_id,removal_id,dateofcurrentjudicialfindingofbestinterest nulls last)  ;

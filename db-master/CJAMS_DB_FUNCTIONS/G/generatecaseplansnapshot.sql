@@ -1,0 +1,616 @@
+DROP FUNCTION IF EXISTS cjams.generatecaseplansnapshot(json);
+
+CREATE OR REPLACE FUNCTION cjams.generatecaseplansnapshot(objectjson json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+-------------------------------------------------------------------------------------------
+--Revision(s)
+--09/12/2022 -  Vijaya Laxmi Devunoori - CDM-24835
+--              Root Cause: multiple referencevalues returned in the subquery.
+--              Fix: added additional condition to check for teamtypekey
+-- Aurora Fixes
+-- 10/23/2023 - Manasa Kasula Fix has been done to consider only approved permanency plans for case plan
+-- 11/6/2025  - Vinesh Puthan Fix to populate the correct permanency plan data which are open in the case plan  
+-- 07/06/2026 - Sushma Bade - CIDM-11349 Corrected Parent information in Parent information Sheet for new Case plan
+-------------------------------------------------------------------------------------------
+DECLARE
+v_personid uuid;
+v_servicecaseid character varying;
+v_periodstartdate timestamp without time zone;
+v_periodenddate timestamp without time zone;
+v_snapshotjson json;
+v_securityuserid character varying;
+v_intakeservrequestactorid character varying;
+v_intakeservrequestactorids json;
+v_cplanquestions json;
+v_regeneratecaseplan boolean;
+v_id character varying;
+
+BEGIN
+    v_personid := objectjson ->> 'personid';
+    v_servicecaseid := objectjson ->> 'servicecaseid';
+    v_periodstartdate := objectjson ->> 'periodstartdate';
+    v_periodenddate := objectjson ->> 'periodenddate';
+    v_cplanquestions := objectjson ->> 'cplanquestions';
+    v_securityuserid := objectjson ->> 'securityuserid';
+    v_intakeservrequestactorid := objectjson ->> 'intakeservicerequestactorid';
+    v_intakeservrequestactorids := objectjson ->> 'intakeservicerequestactorids';
+    v_regeneratecaseplan := objectjson ->> 'regeneratecaseplan';
+    v_id := objectjson ->> 'id';
+--   	v_intakeservrequestactorids := string_to_array((objectjson ->> 'intakeservicerequestactorids') , ',');
+
+SELECT array_to_json(array_agg(row_to_json(t)))
+    FROM (
+	    SELECT sc.servicecasenumber,
+        -- Questions answer data
+        v_cplanquestions AS cplanquestions,
+        
+        -- Removal Information
+        (
+            SELECT isrcr.removaldate
+            FROM intakeservreqchildremoval isrcr
+            WHERE isrcr.servicecaseid = v_servicecaseid::uuid and isrcr.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid )
+            LIMIT 1
+--			 WHERE isrcr.servicecaseid = v_servicecaseid::uuid and isrcr.intakeservicerequestactorid = v_intakeservrequestactorid::uuid
+        )  AS childremovaldate,
+        (
+            SELECT array_to_string(array_agg(er), ',')
+            FROM 
+            (
+                SELECT rt.description
+                    FROM Intakeservreqchildremovalreason irr 
+                    INNER JOIN removalreasontype rt ON irr.removalreasontypekey = rt.removalreasontypekey AND rt.activeflag =1
+                    INNER JOIN intakeservreqchildremoval isrcr ON  irr.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid
+                WHERE 
+                    isrcr.servicecaseid = v_servicecaseid::uuid and
+                    isrcr.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid ) and 
+                    irr.inputtypekey = 'CHFE' and irr.activeflag = 1
+            )   er
+        ) AS childremovalreason,
+        
+        -- header section
+        (
+        SELECT row_to_json(d)
+            FROM (
+                SELECT concat(per.firstname , ' ', per.lastname) as childname, 
+                    per.dob as dob , 
+                    per.cjamspid as clientId, 
+                    coalesce((select pii.personidentifiervalue from personidentifier pii where pii.personidentifiertypekey = 'IRN' and pii.personid = per.personid and pii.activeflag = 1 limit 1), per.cisclientid) as cisId,
+                    ( SELECT  i.personidentifiervalue
+                        FROM  personidentifier  AS  i 
+                        WHERE  i.personid  =  v_personid::uuid
+                        AND  i.activeflag  =  1
+                        AND  i.personidentifiertypekey  =  'MDM_ID'  LIMIT  1
+                    )  AS mdm_id,
+                    v_periodstartdate as startdate,
+                    v_periodenddate as enddate 
+                from person per where per.personid = v_personid::uuid
+            ) d
+        ) AS headersection,      
+        --case worker name and details
+        (		
+    		SELECT concat(up.firstname, ' ' , up.lastname)
+    		FROM caseassignment ca
+	        INNER JOIN userprofile up on up.securityusersid = ca.toworkeridno  AND up.activeflag = 1
+	      	WHERE  ca.objectid = v_servicecaseid::uuid AND ca.enddate IS NULL  AND LOWER(responsibilitytypekey) = 'family'
+            ORDER BY ca.insertedon DESC LIMIT 1
+        ) as caseworker,
+
+        --Jurisdiction , application shows this based on the case worker county!!!
+        (		
+    		select county
+    		FROM caseassignment ca
+	        INNER JOIN userprofileaddress upa on upa.securityusersid = ca.toworkeridno  AND upa.activeflag = 1
+	      	WHERE  ca.objectid = v_servicecaseid::uuid AND ca.enddate IS NULL  AND LOWER(responsibilitytypekey) = 'family'
+            ORDER BY ca.insertedon DESC LIMIT 1
+        ) as jurisdiction,
+        
+        -- Placement Information
+        (
+            SELECT array_to_json(array_agg(row_to_json(d)))
+            FROM (
+                SELECT 
+                    plc.startdatetime, 
+                    plc.enddatetime, 
+                    (
+                        CASE WHEN plc.placementtypekey = 'PRPL' THEN 'Placement' WHEN plc.placementtypekey = 'LA' THEN 'Living Arrangement' ELSE '' END
+                    ) AS placementtype,
+                    (
+                        select value_text from referencevalues where ref_key = (select livingarrangementtypekey from livingarrangement where placementid = plc.placementid limit 1) and referencetypeid = 76
+                    ) AS livingarrangementtype,
+                    (
+                        SELECT tbs.service_nm
+                        FROM tb_services tbs
+                        WHERE tbs.service_id = plc.service_id
+                    ) AS servicename,
+                    (
+                        SELECT tbs.service_id
+                        FROM tb_services tbs
+                        WHERE tbs.service_id = plc.service_id
+                    ) AS serviceid,
+                    (
+                        SELECT (
+                            CASE COALESCE(provider_nm,'') 
+                                WHEN '' THEN 
+                                    concat(
+                                    'Name:', ' ', COALESCE(provider_first_nm ,'') , ' ', COALESCE(provider_last_nm,'') ,' ', 
+                                    'Address:', ' ', (CAST(INITCAP(TRIM(TBPA1.adr_street_tx)||' '||TRIM(TBPA1.adr_street_nm)||' '||TRIM(TBPA1.adr_city_nm) ||' '||TRIM(TBPA1.adr_state_cd) ||' '||TRIM(TBPA1.adr_zip5_no::character varying)) AS character varying)), ' ', 
+                                    'Phone Number:', ' ', p.adr_work_phone_tx)
+								 ELSE 
+                                    concat(
+                                    'Name:', ' ',provider_nm ,' ', 
+                                    'Address:', ' ', (CAST(INITCAP(TRIM(TBPA1.adr_street_tx)||' '||TRIM(TBPA1.adr_street_nm)||' '||TRIM(TBPA1.adr_city_nm) ||' '||TRIM(TBPA1.adr_state_cd) ||' '||TRIM(TBPA1.adr_zip5_no::character varying)) AS character varying)), ' ', 
+                                    'Phone Number:',' ', p.adr_work_phone_tx)
+                                END
+                            )							 
+                        FROM tb_provider AS p
+                        INNER JOIN tb_provider_addresses TBPA1  ON TBPA1.parent_key_id = p.provider_id::character varying  AND TBPA1.delete_sw = 'N' 
+                        WHERE p.provider_id = plc.altproviderid AND p.delete_sw = 'N' LIMIT 1
+                    ) AS address,
+                    (
+                        SELECT (
+                            concat(
+                            'Name:', ' ',COALESCE(LA.livingfirstname ,' '), 
+                            'Address:', ' ', (CAST(INITCAP(TRIM(COALESCE(LA.streetname, ''))||' '||TRIM(COALESCE(LA.streettext, ''))||' '||TRIM(COALESCE(LA.cityname, '')) ||' '||TRIM(COALESCE(LA.statetypekey, '')) ||' '||TRIM(COALESCE(LA.zip5no::character varying, ''))) AS character varying)), ' ', 
+                            'Phone Number:', ' ', COALESCE(LA.homephone, ''))
+                        )				 
+                        FROM livingarrangement AS LA
+                        WHERE LA.placementid = plc.placementid AND LA.activeflag=1 LIMIT 1
+                    ) AS livingarrangementaddress,
+                    (
+                        SELECT RV.value_text					 
+                        FROM livingarrangement AS LA
+                        JOIN referencevalues RV ON RV.ref_key=LA.livingarrangementtypekey
+                        WHERE LA.placementid = plc.placementid AND LA.activeflag=1 AND
+                        RV.referencetypeid=76
+                        LIMIT 1
+                    ) AS livingarrangementtype,
+                    (SELECT array_to_json(array_agg(row_to_json(cpa)))
+                                FROM(
+                    SELECT tpch.placement_id, tpch.provider_id, tpch.entry_dt,tpch.entry_tm, tpch.exit_dt, tpch.exit_tm,
+                                                (CASE COALESCE(cpap.provider_nm,'') 
+                                                    WHEN '' THEN 
+                                                        concat(COALESCE(cpap.provider_first_nm ,'') , ' ', COALESCE(cpap.provider_last_nm,''))
+                                                    ELSE cpap.provider_nm
+                                                    END) cpaprovidername, 
+                                                    (SELECT CAST(INITCAP(TRIM(cpapa.adr_street_tx)||' '||TRIM(cpapa.adr_street_nm)||' '||TRIM(cpapa.adr_city_nm) ||' '||TRIM(cpapa.adr_state_cd) ||' '||TRIM(cpapa.adr_zip5_no::character varying)) AS character varying)
+                                                    FROM tb_provider_addresses cpapa  WHERE cpapa.parent_key_id = cpap.provider_id::character varying  AND cpapa.delete_sw = 'N' 
+                                                    ORDER BY cpapa.address_id DESC LIMIT 1
+                                                    ) cpaaddress 
+                                                FROM tb_placement_cpa_homes tpch
+                    JOIN tb_provider cpap ON cpap.provider_id = tpch.provider_id AND cpap.delete_sw = 'N'
+                    WHERE tpch.placement_id = plc.alternateid) cpa
+                    ) AS cpahomes
+                FROM placement plc 
+                WHERE ((plc.personid = v_personid::uuid AND plc.servicecaseid = v_servicecaseid::uuid)
+                    OR (plc.personid = v_personid::uuid AND plc.placementtypekey = 'LA'))
+                -- placement should have started before the current period end date
+                AND plc.startdatetime <= date(COALESCE(v_periodenddate,now()))
+                -- placement should either be continuing in this period or have ended after the period start date
+                AND (plc.enddatetime is null or plc.enddatetime >= v_periodstartdate)
+                AND (plc.isvoided is null or  plc.isvoided = 0)         
+                -- AND plc.startdatetime <= v_periodenddate
+                -- AND (plc.enddatetime is null or plc.enddatetime <= v_periodenddate)
+            ) d
+        ) AS placementinformation,
+
+        -- Section II
+        -- Assessment Information
+        (
+        SELECT array_to_json(array_agg(row_to_json(d)))
+            FROM (
+              SELECT distinct on (amnt.assessmentid) ast.titleheadertext as assessmentname ,
+                (CASE
+                   WHEN aa.issafe = 1 THEN 'Safe'
+                   WHEN aa.issafe = 0 THEN 'Unsafe'
+                   ELSE
+                     (CASE
+                        WHEN amnt.submissiondata->>'panel45537735365179954RadioField' = 'safetydecision1' THEN 'Safe'
+                        -- WHEN amnt.submissiondata->>'panel45537735365179954RadioField' IS NULL 
+                        -- this condition is only specific for safeCOhp template with migratedsubmissiondata, submission data is null and ismigrated = 1
+                        --   OR amnt.submissiondata->>'panel45537735365179954RadioField' = '' THEN
+                        --     (
+                        --     SELECT
+                        --       (CASE
+                        --          WHEN datavalue = 'safetydecision1' THEN 'Safe'
+                        --          ELSE 'Unsafe'
+                        --       END)
+                        --     FROM
+                        --       (
+                        --       SELECT
+                        --         aas.datavalue
+                        --       FROM
+                        --         assessmentsubmission aas
+                        --       WHERE
+                        --         aas.assessmentid = aa.assessmentid
+                        --         AND aas.activeflag = 1
+                        --         AND aas.datakey = 'panel45537735365179954RadioField') a) 
+                        ELSE 'Unsafe'
+                        END)
+                    END)
+                  AS outcome, amnt.updatedon as assessmentcompletiondate
+                FROM assessment as amnt
+                INNER JOIN assessmentactor aa ON aa.assessmentid = amnt.assessmentid AND aa.activeflag = 1 AND amnt.activeflag = 1
+                INNER JOIN assessmenttemplate ast ON amnt.assessmenttemplateid = ast.assessmenttemplateid AND ast.activeflag = 1
+                WHERE amnt.servicecaseid = v_servicecaseid::uuid 
+                AND (aa.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid )
+                      and ast.assessmenttemplateid in ('0f01e16c-73db-42d8-ad84-04eeb5e26418','f6e4c466-72ae-4453-9997-a2a12fcf8035')
+                    OR ast.assessmenttemplateid not in ('0f01e16c-73db-42d8-ad84-04eeb5e26418','f6e4c466-72ae-4453-9997-a2a12fcf8035'))
+                AND amnt.updatedon BETWEEN v_periodstartdate AND v_periodenddate
+            ) d
+        ) AS assessmentinformation,
+
+        -- Section  III
+        -- IIIa. Caseworker's services and plan
+        -- IIIb. Services to provider
+        (
+        SELECT row_to_json(d)
+            FROM (
+                select 
+                    pp.permplanquestdata as permanancyplandata,
+                    (select description from permanencyplantype where permanencyplantypekey = pp.primarypermanencytype)::character varying primarypermanencytype,
+                    -- pp.primarypermanencytype,
+                    (select description from permanencyplantype where permanencyplantypekey = pp.concurrentpermanencytype)::character varying concurrentpermanencytype,
+                    -- pp.concurrentpermanencytype, 
+                    pp.establisheddate, 
+                (  
+                    select tbs.service_nm from placement plc join tb_services tbs on plc.service_id = tbs.service_id where plc.personid = v_personid::uuid AND plc.servicecaseid = v_servicecaseid::uuid and plc.enddatetime is null order by plc.startdatetime desc limit 1
+                ) as cuurentplacetolive,
+                (SELECT array_to_json(array_agg(row_to_json(x)))
+                	FROM (
+                    select pn.contactdate, pn.insertedon from progressnote pn 
+                    join progressnotetype pnt on pnt.progressnotetypeid = pn.progressnotetypeid and pnt.activeflag = 1 and pnt.progressnotetypeid = '786495b2-c779-4cc4-b812-6a8439bfa96e'
+                    join contactparticipant cp on cp.progressnoteid = pn.progressnoteid 
+                    where pn.entitytypeid = v_servicecaseid and cp.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid ) and pn.contactdate BETWEEN v_periodstartdate AND COALESCE(v_periodenddate, now())  order by pn.contactdate
+                ) x) as facetofacecontactdate,
+                (  
+                    select pn.contactdate from progressnote pn
+                    join contactparticipant cp on cp.progressnoteid = pn.progressnoteid 
+                    where pn.entitytypeid = v_servicecaseid and cp.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid ) and pn.progressnotetypekey = 'TTM'
+                ) as treatmentteameetingdate
+                from 
+                    permanencyplan pp 
+                where 
+                    pp.permanencyplanid::varchar in (select objectid from routing r where r.routingstatustypeid = 16 and r.activeflag = 1 and r.objectid = pp.permanencyplanid::varchar and eventcode = 'PPLR')
+                    and pp.servicecaseid = v_servicecaseid::uuid 
+                    and pp.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid ) 
+                    --and pp.enddate is NULL  CDM-1363 contact information not population
+					and pp.establisheddate::date <= COALESCE(v_periodenddate, now())::date
+					and coalesce(pp.achieveddate, now())::date >= v_periodstartdate::date and pp.activeflag = 1
+                    ORDER BY
+                    pp.establisheddate DESC,
+                    pp.achieveddate DESC NULLS first
+					LIMIT 1
+            ) d
+        ) AS caseworkerservicesandplan,      
+        
+        -- Section IV
+        -- IVa. Child's legal information
+        (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+                SELECT DISTINCT ON (courtdocketnum)
+                	isrp.petitionid AS courtdocketnum,
+                    ( SELECT row_to_json(d) FROM ( 
+                        SELECT 
+                            concat(p.firstname, p.lastname) AS childattorneyname,
+                            concat(padd.address, ' ', padd.address2, ' ',padd.city, ' ' ,padd.state, ' ' , padd.zipcode) as childattorneyaddress,
+                            perpn.phonenumber as childattorneyphone
+                        FROM intakeservicerequestactor i 
+                        LEFT JOIN person p ON i.personid = p.personid
+                        LEFT JOIN personaddress padd on padd.personid = p.personid and padd.activeflag = 1 
+                        LEFT JOIN personphonenumber perpn on perpn.personid = p.personid and perpn.activeflag = 1 and perpn.personphonetypekey = 'P'
+                        WHERE i.intakeservicerequestactorid = isrp.clientactorsid) d LIMIT 1
+                    ) as childattorneyinfo,
+					-- ht.description as hearingtype, 
+                    -- ch.hearingdatetime hearingdate,  
+                    -- hst.description as hearingstatus,
+                -- Get the desired stuff
+                -- Also need the hearing details of each case
+                    (
+                        SELECT array_agg(row_to_json(d))
+                            FROM (
+                                SELECT
+                                    ch.hearingdatetime hearingdate,
+                                    ht.description as hearingtype,
+                                    hst.description as hearingstatus
+                                FROM intakeservicerequestcourthearing ch 
+                                LEFT join hearingtype ht on ht.hearingtypekey = trim('"' from (SELECT jsonb_array_elements(ch.hearingtype):: character varying limit 1))
+                                LEFT join hearingstatustype hst on hst.hearingstatustypekey = ch.hearingstatustypekey
+                                WHERE isrp.intakeservicerequestpetitionid=ch.intakeservicerequestpetitionid  and date(ch.hearingdatetime) between date(v_periodstartdate) and date(v_periodenddate)
+                            ) d
+                    ) as hearingdetails
+                FROM intakeservicerequestpetition  isrp
+                INNER JOIN intakeservicerequestpetitionactor isrpa ON isrp.intakeservicerequestpetitionid = isrpa.intakeservicerequestpetitionid AND isrp.activeflag = 1 AND isrpa.activeflag = 1
+                INNER JOIN intakeservicerequestactor isra ON isrpa.intakeservicerequestactorid = isra.intakeservicerequestactorid AND isra.activeflag = 1
+                INNER JOIN person p ON isra.personid = p.personid
+                INNER JOIN intakeservicerequestcourthearing ch ON isrp.intakeservicerequestpetitionid=ch.intakeservicerequestpetitionid AND ch.activeflag = 1
+                WHERE 
+                isrp.servicecaseid = v_servicecaseid::uuid 
+                AND p.personid = v_personid::uuid
+                AND date(ch.hearingdatetime) between date(v_periodstartdate) and date(v_periodenddate)
+            ) d
+        ) AS childlegalinformation,
+          
+        (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+                SELECT  
+                    ( p.firstname || ' '||p.lastname):: character varying parentname,
+                    td.serveddate tpr_filed,
+                    CAST(case when td.isgranted=TRUE then to_char(td.decisiondate,'MM/DD/YYYY') end as character varying) tpr_grant_date,
+                    CAST(case when td.isdenied=TRUE then to_char(td.decisiondate,'MM/DD/YYYY') end as character varying) tpr_denied_date,
+                    CAST(to_char(td.appealdate,'MM/DD/YYYY')  as character varying) trp_appeal_date,
+                    (select value_text from referencevalues where referencetypeid=29 and ref_key=td.appealdecisiontypekey)::character varying trp_appeal_decision,
+                    td.decisiondate
+                FROM 	tprdetails td
+                    INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = td.intakeservicerequestactorid 
+                    INNER JOIN intakeservicerequest isr ON isr.intakenumber = isra.intakenumber
+                    INNER JOIN person p ON p.personid=isra.personid AND p.activeflag=1
+                    LEFT JOIN servicetype st ON st.servicetypekey=td.servicetypekey AND st.activeflag=1
+                    LEFT JOIN actortype at on at.actortype = isra.intakeservicerequestpersontypekey
+	            WHERE isr.servicecaseid=v_servicecaseid::uuid 
+                ORDER BY td.insertedon desc limit 1
+            ) d
+        ) AS childtprlegalinformation,
+        
+        -- Section V
+        -- Child's education
+		(
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+                SELECT
+                distinct 
+                    CAST(pe.educationname as character varying)  school_nm,
+                    pe.sasidno, --Currently application is capturing SASIDNO for each school/education info
+                    CAST(COALESCE(pe.educationname,'')||','||COALESCE((select distinct countyname from county where countyid=pe.countyid),'')||','||COALESCE((select distinct statename from state where  stateabbr=pe.statecode),'') as character varying)  school_address,
+                    CAST(pe.adrworkphone as character varying) tel_num,
+                    CAST((select value_text from referencevalues where referencetypeid=185 and ref_key=pe.currentgradetypekey) as character varying) grade_current,
+                    cast(to_char(pe.startdate,'MM/DD/YYYY') as character varying) start_dt,
+                    cast(to_char(pe.enddate,'MM/DD/YYYY') as character varying) end_dt,
+                    CAST(pe.schoolexitcomments as character varying) exit_reason,
+                    (select value_text from referencevalues where   referencetypeid=178 and ref_key=pe.educationtypekey)::character varying edu_program,
+                    (select value_text from referencevalues where   referencetypeid=142 and ref_key=pe.schoolsettingtypekey )::character varying setting,
+                    (select value_text from referencevalues where   referencetypeid=186 and ref_key=pe.classtypetypekey )::character varying type_class,
+                    (select value_text from referencevalues where   referencetypeid=183 and ref_key=pe.transportmodetypekey )::character varying mode_trans,
+                    CAST((select value_text from referencevalues where referencetypeid=185 and ref_key=pe.lastgradetypekey) as character varying) grade_last ,
+                    (select value_text from referencevalues where referencetypeid=187 and ref_key=pe.firstqtrperformancetypekey)::character varying quarterly_grade1,
+                    (select value_text from referencevalues where referencetypeid=187 and ref_key=pe.secondqtrperformancetypekey)::character varying quarterly_grade2,
+                    (select value_text from referencevalues where referencetypeid=187 and ref_key=pe.thirdqtrperformancetypekey)::character varying quarterly_grade3,
+                    (select value_text from referencevalues where referencetypeid=187 and ref_key=pe.fourthqtrperformancetypekey)::character varying quarterly_grade4,
+                    (select value_text from referencevalues where referencetypeid=144 and ref_key=pe.speacialeducationrestrictivekey)::character varying special_ed_code,
+                    (select value_text from referencevalues where referencetypeid=185 and ref_key=pe.functioninggradelevel)::character varying fungrade_level
+                FROM personeducation pe
+                WHERE personid = v_personid::uuid AND (date(pe.startdate) BETWEEN date(v_periodstartdate) AND date(COALESCE(v_periodenddate,now())) OR date(COALESCE(pe.enddate,now())) BETWEEN date(v_periodstartdate) AND date(COALESCE(v_periodenddate,now()))
+                OR date(v_periodstartdate) BETWEEN date(pe.startdate) AND date(COALESCE(pe.enddate,now()))) AND pe.activeflag = 1) d
+        ) AS childeducationinformation,
+        
+        -- Section VIIb
+        -- Initial exams
+        (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+		    select distinct 
+		        -- cast(pex.specialityexamtypekey||' '||pex.labtesttypekey as character varying) initialentry,
+                --@Simar - not sure how this filed is supposed to decide Entry/Replacement.
+                cast('Entry' as character varying) initialentry,
+                -- pex.examinationtypekey::character varying initialtype,
+                (select value_tx from tb_picklist_values where picklist_type_id=320 and trim(picklist_value_cd)=trim(pex.examinationtypekey))::character varying initialtype,
+                pex.physicianname::character varying initialprovider,
+                pex.appoinmentdate initialdate
+		    from person pe
+                left join personexamination pex  on pex.personid=pe.personid --and pex.activeflag=1
+            where
+                trim(pex.examinationtypekey)='3255' and pe.personid=v_personid::uuid --and pex.activeflag=1 
+                -- appointment date should be in the current period
+                AND date(pex.appoinmentdate) <= date(COALESCE(v_periodenddate,now()))
+                AND date(pex.appoinmentdate) >= date(v_periodstartdate) ) d
+        ) AS childinitialexam,
+     
+        -- Section VIIc
+        -- Annual exams
+        (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+		    select distinct 
+                -- pex.examinationtypekey::character varying annualtype,
+                (select value_tx from tb_picklist_values where picklist_type_id=320 and trim(picklist_value_cd)=trim(pex.examinationtypekey))::character varying annualtype,
+                pex.physicianname::character varying annualprovider,
+                pex.appoinmentdate annualdate
+		    from person pe
+	            left join personexamination pex  on pex.personid=pe.personid --and pex.activeflag=1
+            where
+                trim(pex.examinationtypekey)='3257' and pe.personid=v_personid::uuid -- and pex.activeflag=1 
+                -- appointment date should be in the current period
+                AND date(pex.appoinmentdate) <= date(COALESCE(v_periodenddate,now()))
+                AND date(pex.appoinmentdate) >= date(v_periodstartdate) ) d
+        ) AS childannualexam,
+        
+        -- Section VIId
+        -- Follow-up exams
+        (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+		    select distinct 
+                -- pex.examinationtypekey::character varying followuptype,
+                (select value_tx from tb_picklist_values where picklist_type_id=320 and trim(picklist_value_cd)=trim(pex.examinationtypekey))::character varying followuptype,
+                CAST(to_char(pex.appoinmentdate,'MM/DD/YYYY') as character varying) appt_date,
+                cast(pex.physicianname||', '|| pex.address1||' '||pex.address2||' '||pex.cityname||' '||pex.statetypekey||', '||pex.workphone  as character varying) provider_details ,
+                pex.nextappointmentreason::character varying followupreason,
+			    CAST(to_char(pex.nextappointmentdate,'MM/DD/YYYY') as character varying) nextappt_dt
+		    from person pe
+	            left join personexamination pex  on pex.personid=pe.personid and pex.activeflag=1
+            where
+                trim(pex.examinationtypekey)='7069' and pe.personid=v_personid::uuid and pex.activeflag=1
+				AND date(pex.appoinmentdate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)) d
+		  ) AS childfollowupexam,
+     
+        -- Section VIId
+        -- Medications
+        (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+            select 
+            distinct
+                CAST(pmi.isprescribedmedication as character varying) medication,
+                CAST(pmi.medicationname as character varying) medication_nm,
+                CAST((select distinct value_text from referencevalues where   referencetypeid=311  and ref_key=pmi.frequency) as character varying) dose_frq,
+                CAST(to_char(pmi.medicationeffectivedate,'MM/DD/YYYY') as character varying) date_start,
+                CAST(to_char(pmi.medicationexpirationdate,'MM/DD/YYYY') as character varying) date_stop,
+                CAST(pmi.prescribingdoctor as character varying) order_physician,
+                CAST(pmi.reportedby as character varying) pharmacy_nm,
+                CAST(pmi.prescribedreason as character varying) reason_medic
+            from 
+	         person pe left join personmedicpshychotropic pmi on pmi.personid=pe.personid and pmi.activeflag=1
+          where pe.personid =  v_personid::uuid AND ((date(pmi.medicationeffectivedate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)) OR (date(pmi.medicationexpirationdate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)))) d
+		  ) AS childmedicationinformation,
+		  
+	    (
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+		    select distinct
+                (CASE WHEN pd.disabilityflag=1 THEN 'Yes' ELSE 'No' END)::CHARACTER VARYING AS permanent,
+                -- CAST(pd.disabilityconditiontypekey as character varying) permanent ,
+                CAST((select distinct value_text from referencevalues where   referencetypeid=97  and ref_key=pd.disabilitytypekey and teamtypekey = 'CW') as character varying) distype,
+                CAST(to_char(pd.startdate,'MM/DD/YYYY') as character varying) start_dt,
+                CAST(to_char(pd.enddate,'MM/DD/YYYY') as character varying) end_dt 
+            from 
+	         person pe left join persondisability pd on pd.personid=pe.personid and pd.activeflag=1
+	         where pe.personid =  v_personid::uuid  
+            --  AND ((date(pd.startdate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)) OR (date(pd.enddate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)))
+            AND date(pd.startdate) <= date(v_periodenddate)
+            AND (date(pd.enddate) IS NULL OR date(pd.enddate) >= date(v_periodstartdate))
+            ) d 
+        ) AS childdisabilityinformation,
+        ( 
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM ( 
+            select 
+                (case when pbe.isbehavioralhealth=true then 'Yes' else 'No' end)::character varying  evaluationflag,
+                pbe.evaluationby::character varying evaluationdoneby,
+                CAST(to_char(pbe.dateofevaluation,'MM/DD/YYYY')  as character varying) evaluationdate
+            from personbehavioralhealth pbe where pbe.personid= v_personid::uuid AND pbe.activeflag=1 AND date(pbe.dateofevaluation) BETWEEN date(v_periodstartdate) AND date(v_periodenddate) order by date(pbe.dateofevaluation) desc) d 
+        ) AS childdbehaviourhealth,
+		(
+        SELECT array_to_json(array_agg(row_to_json(d))) 
+            FROM (
+                select 
+                distinct
+                'Yes'::character varying employed,
+                CAST(pemp.employername  as character varying) cur_employer,
+                CAST(date_part('days',age(pemp.enddate,  pemp.startdate))::integer||' '||'days'  as character varying) cur_employment,
+                CAST(income as character varying) earnings
+                from personemployment pemp
+                where pemp.personid =  v_personid::uuid  AND ((date(pemp.startdate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)) OR (date(pemp.enddate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)))) d
+        ) AS childemploymentinformation,
+		(
+		SELECT row_to_json(d)
+           FROM (
+			select per.cjamspid as clientid, concat(per.firstname, ' ', per.lastname) as parentname, per.dob, peri.personidentifiervalue as ssnvalue , 
+			concat(padd.address, ' ', padd.address2, ' ',padd.city, ' ' ,padd.state, ' ' , padd.zipcode) as parentaddress , perpn.phonenumber , concat(al.firstname , ' ', al.lastname) as akaname
+			from actorrelationship ar join person per on per.personid = ar.person1id 
+			left join personidentifier peri on peri.personid = per.personid and peri.personidentifiertypekey = 'SSN' and peri.activeflag = 1 
+			left join personaddress padd on padd.personid = per.personid and padd.activeflag = 1 
+			left join personphonenumber perpn on perpn.personid = per.personid and perpn.activeflag = 1 and perpn.personphonetypekey = 'P'
+			left join alias al on al.personid = per.personid and al.activeflag = 1
+			where ar.person2id = v_personid::uuid  and CASE WHEN padd.currentlocationflag IS NOT NULL THEN padd.currentlocationflag = 1 ELSE true END and ar.activeflag = 1 and ar.relationshiptypekey in ('BGFTHR') 
+            order by ar.effectivedate desc limit 1
+			)d
+		) as fatherdetails,
+		(
+		SELECT row_to_json(d)
+           FROM (
+			select per.cjamspid as clientid, concat(per.firstname, ' ', per.lastname) as parentname, per.dob, peri.personidentifiervalue as ssnvalue , 
+			concat(padd.address, ' ', padd.address2, ' ',padd.city, ' ' ,padd.state, ' ' , padd.zipcode) as parentaddress , perpn.phonenumber , concat(al.firstname , ' ', al.lastname) as akaname
+			from actorrelationship ar join person per on per.personid = ar.person1id 
+			left join personidentifier peri on peri.personid = per.personid and peri.personidentifiertypekey = 'SSN' and peri.activeflag = 1 
+			left join personaddress padd on padd.personid = per.personid and padd.activeflag = 1 
+			left join personphonenumber perpn on perpn.personid = per.personid and perpn.activeflag = 1 and perpn.personphonetypekey = 'P'
+			left join alias al on al.personid = per.personid and al.activeflag = 1
+			where ar.person2id = v_personid::uuid  and CASE WHEN padd.currentlocationflag IS NOT NULL THEN padd.currentlocationflag = 1 ELSE true END and ar.activeflag = 1 and ar.relationshiptypekey in ('BGMTHR') 
+            order by ar.effectivedate desc limit 1
+			)d
+		) as motherdetails,
+
+        -- Child's Income 
+        (
+		SELECT array_to_json(array_agg(row_to_json(d)))
+           FROM (
+			SELECT i.amount, 
+                i.incomesourcetypekey,
+                (select income_source_tx from tb_client_income_source where income_source_id:: character varying = i.incomesourcetypekey and delete_sw = 'N')::character varying detailtype,
+                i.startdate, 
+                i.enddate 
+            FROM personincome i 
+            WHERE i.personid = v_personid and i.activeflag = 1
+            --AND ((date(i.startdate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)) OR (date(i.enddate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)))
+            AND date(i.startdate) <= date(v_periodenddate)
+            AND (date(i.enddate) IS NULL OR date(i.enddate) >= date(v_periodstartdate))
+			) d
+		) AS incomedetails,
+		
+        (
+		SELECT array_to_json(array_agg(row_to_json(d)))
+           FROM (
+			SELECT 
+                pa.assettypekey,
+                (select value_text from referencevalues where   referencetypeid=194 and ref_key=pa.assettypekey)::character varying detailtype,
+                pa.facevalue, 
+                pa.disposaldate, 
+                pa.purchasedate 
+            FROM personasset pa 
+            WHERE pa.personid = v_personid and pa.activeflag = 1
+            --AND ((date(pa.purchasedate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)) OR (date(pa.disposaldate) BETWEEN date(v_periodstartdate) AND date(v_periodenddate)))
+            AND date(pa.purchasedate) <= date(v_periodenddate)
+            AND (date(pa.disposaldate) IS NULL OR date(pa.disposaldate) >= date(v_periodstartdate))
+			)d
+		) as assetsdetails,
+		(
+		SELECT row_to_json(d)
+           FROM (
+			select so.sodate  from csesclientsupportorder so where so.personid = v_personid and so.activeflag = 1 and date(so.sodate) between date(v_periodstartdate) AND date(v_periodenddate) limit 1
+			)d
+		) as supportdetails,
+		(
+		SELECT row_to_json(d)
+           FROM (
+			select isrcod.remarks as courtorderdetails  from intakeservreqcourtorder isrco join intakeservreqcourtorderdetails isrcod on isrcod.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+			where isrco.servicecaseid = v_servicecaseid::uuid and isrco.activeflag = 1 and isrcod.checklistid in ('90a27815-730d-40d8-a6c1-126d6c4c2487')
+			and isrco.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid ) and isrcod.isselected = 1 and isrcod.remarks != '' limit 1
+			)d
+		) as visitationcourtdetails,
+		(
+		SELECT row_to_json(d)
+           FROM (
+			select isrcod.remarks as courtorderdetails  from intakeservreqcourtorder isrco join intakeservreqcourtorderdetails isrcod on isrcod.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+			where isrco.servicecaseid = v_servicecaseid::uuid and isrco.activeflag = 1 and isrcod.checklistid in ('f394d308-1149-4ab9-b68e-b5d2d3f2e8fc')
+			and isrco.intakeservicerequestactorid in (select intakeservicerequestactorid from intakeservicerequestactor isra where isra.personid = v_personid ) and isrcod.isselected = 1 and isrcod.remarks != '' limit 1
+			)d
+		) as servicecourtdetails
+		        
+        
+    
+  FROM servicecase sc WHERE servicecaseid = v_servicecaseid::uuid
+) t INTO v_snapshotjson;
+
+
+-- Insert the compiled json dump into the snapshot history table
+IF v_regeneratecaseplan = TRUE THEN
+    UPDATE cjams.snapshothist
+        SET snapshotdata = v_snapshotjson, updatedby = v_securityuserid, updatedon = now()
+    WHERE id=v_id::uuid;
+ELSE
+	INSERT INTO cjams.snapshothist
+        (id, objectid, objecttype, insertedby, insertedon, updatedby, updatedon, activeflag, snapshotdata, fromdate, todate, personid, approvalstatus)
+    VALUES(gen_random_uuid(), v_servicecaseid, 'CPLAN2', v_securityuserid, now(), v_securityuserid, now(), 1, v_snapshotjson, v_periodstartdate, v_periodenddate, v_personid, 'Draft');
+END IF;
+
+
+RETURN 'success';
+
+
+END
+$function$
+;
+

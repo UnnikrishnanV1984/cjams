@@ -1,0 +1,172 @@
+CREATE OR REPLACE FUNCTION sp_maltreatment_search(vl_cjamspid character varying)
+ RETURNS TABLE(infojson json)
+ LANGUAGE plpgsql
+AS $function$
+Declare 
+
+Vl_rowcount  integer;--
+
+BEGIN 
+
+RETURN QUERY 
+(select json_agg(b) as infojson from 
+ (
+ SELECT DISTINCT  
+  isr.servicerequestnumber,
+  CURRENT_TIMESTAMP ResultDateTime,
+  0 ResultCode,
+  'No Errors' ErrorDetails,
+  ( SELECT
+   CASE
+   WHEN coalesce(inf.finalfinding,coalesce(invm.overridefindingtypekey,coalesce(invm.scdecisiontypekey, coalesce( invm.csahearingdecisiontypekey,coalesce(invm.cchearingdecisiontypekey, coalesce(invm.oahearingdecision, coalesce(inf.investigationfindingtypekey,'') )))))) = 'ID' THEN 'Y'
+   ELSE 'N'
+   END
+   FROM intakeservicerequestactor israc
+   INNER JOIN investigationallegationmaltreators invm  ON invm.intakeservicerequestactorid = israc.intakeservicerequestactorid AND invm.activeflag = 1
+   INNER JOIN investigationallegation inva ON inva.investigationallegationid=invm.investigationallegationid AND inva.activeflag=1
+   INNER JOIN investigationfinding inf ON inf.activeflag = 1 AND inva.investigationallegationid=inf.investigationallegationid
+   INNER JOIN investigation inv  ON inva.investigationid=inv.investigationid AND inv.activeflag=1 and inv.intakeserviceid=israc.intakeserviceid
+   WHERE israc.intakeservicerequestpersontypekey IN ('ALVI', 'AV', 'ALMA', 'AM', 'Victim')
+   AND israc.personid=isra.personid AND israc.intakeserviceid=isra.intakeserviceid
+   order by invm.updatedon desc LIMIT 1         
+  ) MaltreatorIndicator, 
+  isrt.description type_,
+  isr.servicerequestnumber cpsID,
+  ( SELECT firstname || ' ' || lastname
+   FROM person WHERE personid= (SELECT personid FROM intakeservicerequestactor WHERE intakeserviceid=isr.intakeserviceid AND isheadofhousehold=true  LIMIT 1) 
+  ) caseheadname,
+  --co.countyname LocalDeptOfIntake,
+  (select co.countyname from county co where isr.countyid is not null and isr.countyid = co.countyid limit 1) LocalDeptOfIntake,
+  isr.insertedon CPSStartDate,
+  MAX (coalesce( 
+  (select max(finalizeddate) from investigationallegationmaltreators z where z.investigationallegationid = inva.investigationallegationid))) as Decisiondate,
+  isrt.description ReferralType,
+  --up.fullname WorkerName,
+  null as WorkerName,
+  --up.countyname LocalDepartment,
+  ( 
+   SELECT u.countyname FROM v_userprofile u
+   INNER JOIN caseassignment ca ON ca.toldssid = u.countyid 
+   WHERE ca.activeflag = 1 AND lower(ca.responsibilitytypekey) IN ('family', 'child') 
+   AND ca.objectid = isra.intakeserviceid ORDER BY ca.responsibilitytypekey DESC, ca.enddate DESC NULLS FIRST LIMIT 1  
+  ) LocalDepartment,
+  null as PhoneNumber,
+  'Family' Responsibility,
+  pr.cjamspid PersonID,
+  pr.cjamspid ClientID,
+  pr.cisclientid CISClientID,
+  pr.firstname || ' ' || pr.lastname PersonClientName,
+  pr.dob DOB,
+  pr.gendertypekey Gender,
+  pr.ssnno ssn,
+  NULL ConrirmPerson, 
+  ( SELECT DISTINCT 
+    CASE
+    WHEN persontype.ptype='AM'
+     AND coalesce(inf.finalfinding,coalesce(invm.overridefindingtypekey,coalesce(invm.scdecisiontypekey, coalesce( invm.csahearingdecisiontypekey,coalesce(invm.cchearingdecisiontypekey, coalesce(invm.oahearingdecision, coalesce(inf.investigationfindingtypekey,'') )))))) = 'ID' --inf.investigationfindingtypekey = 'ID' 
+     AND ( (select max(finalizeddate) from investigationallegationmaltreators z where z.investigationallegationid = inva.investigationallegationid) is not null 
+        or inv.intinvfinaldate is not null)
+     THEN 'M'
+    WHEN persontype.ptype='AM'
+     AND coalesce(inf.finalfinding,coalesce(invm.overridefindingtypekey,coalesce(invm.scdecisiontypekey, coalesce( invm.csahearingdecisiontypekey,coalesce(invm.cchearingdecisiontypekey, coalesce(invm.oahearingdecision, coalesce(inf.investigationfindingtypekey,'') )))))) = 'RO' --inf.investigationfindingtypekey = 'ID' 
+     AND ( (select max(finalizeddate) from investigationallegationmaltreators z where z.investigationallegationid = inva.investigationallegationid) is not null 
+        or inv.intinvfinaldate is not null)
+     THEN ''
+    WHEN persontype.ptype='AV'
+     --AND coalesce(inf.finalfinding, coalesce(inf.investigationfindingtypekey,'') ) = 'ID' --inf.investigationfindingtypekey 
+     AND coalesce(inf.finalfinding,coalesce(invm.overridefindingtypekey,coalesce(invm.scdecisiontypekey, coalesce( invm.csahearingdecisiontypekey,coalesce(invm.cchearingdecisiontypekey, coalesce(invm.oahearingdecision, coalesce(inf.investigationfindingtypekey,'') )))))) = 'ID' --inf.investigationfindingtypekey = 'ID' 
+     AND ( (select max(finalizeddate) from investigationallegationmaltreators z where z.investigationallegationid = inva.investigationallegationid) is not null 
+        or inv.intinvfinaldate is not null)
+     THEN 'V'
+    ELSE persontype.ptype
+    END as ptype
+   FROM intakeservicerequestactor israc
+    JOIN
+     (SELECT DISTINCT isra.intakeservicerequestpersontypekey ptype, isra.intakeserviceid intakeserviceid, isra.personid personid
+     FROM  intakeservicerequestactor isra
+     WHERE isra.personid=isra.personid AND isra.intakeserviceid=isra.intakeserviceid
+     AND isra.intakeservicerequestpersontypekey IN ('ALVI', 'AV', 'ALMA', 'AM', 'Victim')
+     ) persontype ON persontype.personid=israc.personid AND persontype.intakeserviceid=israc.intakeserviceid
+    JOIN investigation inv ON inv.intakeserviceid=israc.intakeserviceid AND israc.activeflag=1
+    LEFT JOIN investigationallegation inva ON inva.investigationid=inv.investigationid AND inva.activeflag=1
+    LEFT OUTER JOIN investigationfinding inf ON inf.activeflag = 1 AND inva.investigationallegationid=inf.investigationallegationid
+    LEFT JOIN investigationallegationmaltreators invm  ON invm.investigationallegationid=inva.investigationallegationid 
+     AND invm.intakeservicerequestactorid = israc.intakeservicerequestactorid AND invm.activeflag=1   
+    LEFT join investigationmaltreatmentactor ima ON ima.intakeservicerequestactorid = israc.intakeservicerequestactorid and ima.activeflag = 1
+   WHERE israc.intakeservicerequestpersontypekey IN ('ALVI', 'AV', 'ALMA', 'AM', 'Victim')
+    AND israc.personid=isra.personid AND israc.intakeserviceid=isra.intakeserviceid order by ptype desc  LIMIT 1
+    ) RoleInIntake 
+ FROM intakeservicerequestactor isra
+ JOIN person pr ON pr.personid = isra.personid AND pr.activeflag = 1
+ LEFT JOIN IntakeServiceRequestDispositionCode isdc ON isdc.intakeserviceid = isra.intakeserviceid
+ --JOIN routing ru ON ru.objectid=isra.intakeserviceid::CHARACTER varying AND ru.eventcode='INVT'
+ --JOIN userprofile up ON up.securityusersid = ru.tosecurityusersid
+ --LEFT OUTER JOIN userprofileaddress upa ON upa.securityusersid = up.securityusersid
+ --LEFT OUTER JOIN userprofilephonenumber upp ON upp.securityusersid = up.securityusersid
+ JOIN intakeservicerequest isr ON isr.intakeserviceid = isra.intakeserviceid AND (isr.isscreening IS NULL OR isr.isscreening=0)  AND actiontype = 'IR'
+ JOIN intakeservicerequesttype isrt ON isrt.intakeservreqtypeid = isr.intakeservreqtypeid
+ --JOIN county co ON isr.countyid = co.countyid
+ JOIN IntakeSerReqStatusType ist ON ist.intakeserreqstatustypeid=isr.intakeserreqstatustypeid
+ JOIN investigation inv ON inv.intakeserviceid=isra.intakeserviceid AND inv.activeflag=1
+ LEFT JOIN investigationallegation inva ON inva.investigationid=inv.investigationid AND inva.activeflag=1
+ LEFT OUTER  JOIN investigationfinding inf ON inf.personid=pr.personid AND inf.activeflag = 1 AND inva.investigationallegationid=inf.investigationallegationid
+ LEFT JOIN investigationallegationmaltreators invm ON invm.investigationallegationid=inva.investigationallegationid AND invm.intakeservicerequestactorid = isra.intakeservicerequestactorid AND invm.activeflag=1  
+ WHERE isra.intakeserviceid IN
+  (SELECT DISTINCT isr.intakeserviceid
+   FROM person pr, intakeservicerequestactor isra, intakeservicerequest isr
+   join investigation i on isr.intakeserviceid = i.intakeserviceid
+   LEFT join investigationallegation ia on i.investigationid = ia.investigationid and ia.activeflag = 1
+   LEFT join investigationfinding inf on ia.investigationallegationid = inf.investigationallegationid and inf.activeflag = 1   
+   WHERE pr.personid = isra.personid
+   AND isr.intakeserviceid = isra.intakeserviceid
+   AND (isr.isscreening IS NULL OR isr.isscreening=0)
+   AND actiontype = 'IR'
+   AND pr.activeflag = 1 
+   AND pr.cjamspid::varchar = vl_cjamspid
+   AND
+    CASE 
+    WHEN inf.investigationfindingtypekey IS NOT NULL THEN
+      inf.investigationfindingtypekey = 'ID'
+     ELSE
+      isr.intakeserviceid NOT IN (SELECT intakeserviceid FROM IntakeServiceRequestDispositionCode WHERE intakeserviceid = isr.intakeserviceid )
+     END
+   ) 
+ GROUP BY pr.cjamspid,
+    isrt.description,
+    isr.intakenumber,
+    --co.countyname,
+    isr.insertedon,
+    isrt.description,
+    isra.intakeservicerequestpersontypekey,
+    isrt.description,
+    --up.fullname,
+    --up.countyname,
+    --upp.phonenumber,
+    pr.cisclientid,
+    pr.firstname,
+    pr.lastname,
+    pr.dob,
+    pr.gendertypekey,
+    pr.ssnno,
+    ist.intakeserreqstatustypekey,
+    inf.investigationfindingtypekey,
+    isra.isheadofhousehold,
+    isr.servicerequestnumber,
+    pr.personid,
+    isr.intakeserviceid,
+    isra.personid,
+    isra.intakeserviceid
+ order by personid
+ )b 
+) ;
+
+EXCEPTION WHEN NO_DATA_FOUND THEN 
+RETURN QUERY (
+ select json_agg(b) as infojson from
+ ( 
+  SELECT current_timestamp ResultDateTime, 2 ResultCode, null  row_count , 'No Error' ErrorDetails, 'N' MaltreatorIndicator
+ ) b );
+       
+END;
+$function$
+

@@ -1,0 +1,1 @@
+create index Xie2_tb_service_purchase_authorization on tb_service_purchase_authorization(to_char_int(authorization_id));

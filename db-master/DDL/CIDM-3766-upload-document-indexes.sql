@@ -1,0 +1,3 @@
+CREATE INDEX documentproperties_additionalobjectid_idx ON documentproperties (additionalobjectid);
+
+CREATE INDEX documentproperties_additionalobjecttype_idx ON documentproperties (additionalobjecttype);

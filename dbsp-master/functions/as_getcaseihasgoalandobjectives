@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION as_getcaseihasgoalandobjectives(v_intakeserviceid uuid)
+ RETURNS TABLE(countyname character varying, recondate timestamp without time zone, startdate timestamp without time zone, goaldescription character varying, objectives json, casemanagerdetails json, asservicesoncaseid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_countyname character varying;
+BEGIN
+
+RETURN QUERY
+
+select
+(select cn.countyname from intakeservicerequest i
+inner join county cn on cn.countyid =i.countyid where i.intakeserviceid =v_intakeserviceid  limit 1) as countyname,
+
+a.recon_due_dt, s.plannedstartdate ,
+(
+    select description from referencevalues where ref_key = sg.goal limit 1
+) as description,
+(select json_agg(objs) from (select (select description from referencevalues rf where
+rf.ref_key = o.objective limit 1) as description from goalobjectives o
+--inner join referencevalues r on r.ref_key =o.objective
+where o.serviceplangoaldetailsid=sg.serviceplangoaldetailsid and o.activeflag=1 and o.objective in
+(
+select ref_key from referencevalues r where description in ('Provide IHAS - Local/County Contractor',
+'Provide IHAS - State Contractor','Provide IHAS - Family Support Worker/Agency CNA') and r.activeflag = 1
+)
+and o.objective is not null) as objs),
+(select json_agg(uc) from
+(select u.displayname, u2.phonenumber  from caseassignment c
+ --inner join intakeserv iv on iv.description=c.servicetype
+ --inner join asservicesoncase ac on ac.caseservicetypeid = iv.intakeservid
+ inner join userprofile u on u.securityusersid = c.toworkeridno
+ left join userprofilephonenumber u2 on u2.securityusersid =u.securityusersid and u2.activeflag =1
+ where 
+ --ac.activeflag =1  and 
+ c.activeflag =1 and c.objectid =v_intakeserviceid  
+ --and ac.ascaseid  =v_intakeserviceid
+--and ac.caseservicetypeid = a.caseservicetypeid 
+and c.responsibilitytypekey='primary' order by c.insertedon desc limit 1) as uc ),
+a.asservicesoncaseid
+from serviceplangoal s
+inner join serviceplangoaldetails sg on sg.serviceplangoalid =s.serviceplangoalid
+--inner join goalobjectives o on o.serviceplangoaldetailsid =sg.serviceplangoaldetailsid
+--inner join referencevalues r1 on r1.ref_key =sg.goal
+inner join asservicesoncase a on a.asservicesoncaseid =s.asservicesoncaseid
+where objectid =v_intakeserviceid :: character varying
+and sg.activeflag =1 and s.activeflag =1 and sg.goal is not null;
+
+END;
+$function$
+

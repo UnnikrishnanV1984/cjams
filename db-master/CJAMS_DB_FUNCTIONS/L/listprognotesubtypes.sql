@@ -1,0 +1,12 @@
+ CREATE OR REPLACE FUNCTION public.listprognotesubtypes(prognotetypeid uuid, v_teamtypekey character varying)
+  RETURNS TABLE(progressnotetypeid uuid, progressnotetypekey character varying, description text)            
+  LANGUAGE plpgsql                                                                                           
+ AS $function$                                                                                             
+ BEGIN                                                                                                     
+ RETURN QUERY SELECT A.progressnotesubtypeid, A.progressnotesubtypekey,a.description                       
+ FROM ProgressNoteSubType AS A WHERE  A.progressnotetypeid is null and A.ActiveFlag=1                      
+ AND a.progressnotesubtypekey in(select progressnotesubtypekey from progressnotetypeconfig                 
+ where teamtypekey= v_teamtypekey) order by a.description asc;                                             
+ END;                                                                                                      
+ $function$                                                                                                  
+

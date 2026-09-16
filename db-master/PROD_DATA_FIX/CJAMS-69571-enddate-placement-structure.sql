@@ -1,0 +1,57 @@
+/*
+   Issue Description: CJAMS-69571
+   Category/ Module  : 
+   Root cause: User need to Remove the end date for OOH, child removal and placement
+   Fix Provided: Data fix has been provided by enddate the OOH, child removal and placement fro the case # 231030060655 
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+   Need to do data fix
+*/
+
+
+update personprogramarea
+set enddate=null, updatedby='CJAMS-69571', updatedon=now()
+where personprogramid='8955bf6e-9540-4c69-86c0-27906a8869b1' and activeflag=1;
+
+update intakeservreqchildremoval
+set exitdate=null, 
+   returntransts = null,
+	returndate = null,
+	returntime = null,
+	removalexitreason = null,
+   updatedby='CJAMS-69571', 
+   updatedon=now()
+where intakeservreqchildremovalid='fc6998ab-2649-4460-845e-a07e23d51422' and activeflag=1;
+
+update intakeservreqchildremoval_history
+set exitdate=null, updatedby='CJAMS-69571', updatedon=now()
+where intakeservreqchildremovalid='fc6998ab-2649-4460-845e-a07e23d51422' and activeflag=1;
+
+update placement
+set enddatetime=null,
+	endtime=null,
+	exittypekey=null,
+	exitreasontypekey=null,
+	updatedby='CJAMS-69571', 
+	updatedon=now()
+where placementid='6af408a0-0d07-4438-be17-aca715aed515' and activeflag=1;
+
+update placementrevision
+set exitdate=null, 
+	exittime=null,
+	enddate=null,
+	endtime=null,
+	exittypekey=null,
+	exitreasontypkey=null,
+	updatedby='CJAMS-69571', 
+	updatedon=now()
+where placementid='6af408a0-0d07-4438-be17-aca715aed515' and activeflag=1;
+
+update tb_client_eligibility
+set end_dt=null, update_user_id='CJAMS-69571', update_ts=now()
+where removal_id='318836' and delete_sw='N';
+
+INSERT INTO cjams.intakeservreqchildremoval_history
+(intakeservreqchildremovalhistoryid, modifieddata, rowtype, intakeservreqchildremovalid, intakeserviceid, fathername, mothername, rmvdfrmpersonname, removalreasontypeid, removaladd1, removaladd2, removalzip, removalstatecd, removalcity, activeflag, insertedby, insertedon, updatedby, updatedon, agencytypekey, old_id, intakeservicerequestactorid, rmvdfrmisractorid, removaldate, parent2signeddate, primarycaregiverid, vpaparentssigneddate, vpadsssigneddate, dateoffindingctwdecision, childphysicaladdressafterremoval, nameofsubjectctwfinding, clientidofsubjectctwfinding, courtorderdelaytimeframe, reasonableeffortsnotnecessaryduetoemergentcircumstances, whoisresponsibleforplacementandcare, ctwdecision, relationshipofsubjectctwfinding, specifiedrelativedatechildlastlivedwith, specifiedrelativephysicaladdress, specifiedrelativename, specifiedrelativeclientid, specifiedrelativerelationshipid, sheltergranted, courtorderdelayremoval, magistrateorjudgename, typeofvpa, eavpaagreementflag, vpabegindate, ctwsanctioningchildremoval, childphysicalremovaldate, petitionfiledate, dateofremovalcourthearing, judgesigned, hearingdate, physicalremovalafterdetermination, removalcourtorderdate, childphysicalremovaladdress, specifiedrelativephysicaladdressafterremoval, dateofreasonableeffortscourthearing, reasonableeffortsmade, issafehavenbaby, returndate, childremovedfromtypekey, familystructuretypekey, "comments", vpastartdate, vpaenddate, childrelativelastdate, approvalstatustypekey, caseid, nocaregivercustodyflag, origremovalid, datavalidflag, clientmergeid, removaltime, returntime, removaltransts, returntransts, afcarseditapplyflag, parentssigntypekey, parent2comments, fk1_id, agencysigneddate, isbothparentssigned, childfactorsentry, removaltypekey, primarycaregiveractorid, vpachildsigneddate, vpayouthsigneddate, vpaguardiansigneddate, removalreasontypekey, removalid, exitdate, seccaregiveractorid, seccaregiveradd, primarycaregiveradd, isverifiedreporteradd, isverifiedcaregiver1add, isverifiedcaregiver2add, relativeactorid, isdisability, servicecaseid, assessmentid, personid, ischildphysicalremovaladdressverified, isuploadedmanually, isshelterauthcompleted, ischildaddressasprimaryaddress, removalexitreason, parent1id, parent2id, guardianid, volrelinquishment, etl_userid, etl_load_date, actualdata, removalcircumstances, transferagency, otherpublicagency, locationofadoption, justification, environmentatremovalkey, childremovalluggage, luggageprovided, placementdisposableortrashbag, luggagecomments, luggageupdatedby, luggageupdatedon, showcontactpage)
+VALUES(gen_random_uuid(), '{"status":"Updated","data":[{"key":" justification","new_value":"The child removal was re-opened with the datafix ticket CJAMS-69571.","old_value":null,"display_name":"System Removal - Exit Date"}]}', 'HISTORY', 'fc6998ab-2649-4460-845e-a07e23d51422', NULL, NULL, NULL, NULL, NULL, '40 Commerce Ln, Prince Frederick, MD 20678', NULL, '65559999', NULL, NULL, 1, 'CJAMS-69571', '2026-07-20 16:18:57.823', 'CJAMS-69571', '2026-08-04 16:26:18.776', 'AFH', NULL, 'df4370ef-1524-4118-8c90-e507a99d4ecc', NULL, '2024-07-12 00:00:00.000', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '40 Commerce Ln, Prince Frederick, MD 20678', NULL, NULL, NULL, NULL, NULL, NULL, '291', 'The Department offered a pack and play to encourage safe sleep. The Department followed up with shelter referrals and requested the mother to reach out to family and friends that could potentially assist in caring for Colton. The mother agreed to a Family Team Decision Making meeting where she explored her options and despite the efforts of the Department, the mother agreed to sheltering the child. ', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '2024-07-12 14:00:00.000', '2026-07-20 09:30:00.000', '2024-07-15', '2026-07-20', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'JD', '6bc50f72-bff5-4cdf-a694-7873ece5340c', NULL, NULL, NULL, NULL, 318836, NULL, 'bb3f25c0-ea9b-4acc-96dd-56cfad609e55', '8011 Keech Rd, Charlotte Hall, MD', '3270 Southern Pine Ln, Port Republic, MD', 1, 1, 1, NULL, NULL, 'cde4257b-49f7-4a8f-94d2-17b174bae4ec', NULL, '4aeae5ca-99a1-4062-8096-f43b306d1534', 1, 1, 1, 2, 'ADNRE', NULL, NULL, NULL, NULL, NULL, NULL, '{"intakeservreqchildremovalid":"fc6998ab-2649-4460-845e-a07e23d51422","familystructuretypekey":"291","environmentatremovalkey":"OTHER","agencytypekey":"AFH","isdisability":null,"removaltypekey":"JD","removaldate":"2024-07-12T00:00:00","exitdate":null,"exittime":null,"removaltime":"2024-07-12T18:00:00.000Z","rmvdfrmpersonname":null,"primarycaregiveractorid":"6bc50f72-bff5-4cdf-a694-7873ece5340c","seccaregiveractorid":"bb3f25c0-ea9b-4acc-96dd-56cfad609e55","removaladd1":"40 Commerce Ln, Prince Frederick, MD 20678","vpabegindate":null,"vpaenddate":null,"vpaparentssigneddate":null,"parent2signeddate":null,"vpaguardiansigneddate":null,"parent1id":null,"parent2id":null,"guardianid":null,"vpa2parentssigneddate":null,"parent2sigmissreason":null,"primarycaregiveradd":"3270 Southern Pine Ln, Port Republic, MD","ischildaddressasprimaryaddress":2,"childhomeaddress":null,"childphysicalremovaladdress":"40 Commerce Ln, Prince Frederick, MD 20678","ischildphysicalremovaladdressverified":1,"seccaregiveradd":"8011 Keech Rd, Charlotte Hall, MD","isverifiedcaregiver1add":1,"isverifiedcaregiver2add":1,"vpayouthsigneddate":null,"isbothparentssigned":null,"volrelinquishment":null,"agencysigneddate":null,"removalreason":["HG"],"removalexitreason":null,"transferagency":null,"otherpublicagency":null,"locationofadoption":null,"caregiverreason":null,"reasonableefforts":["FCS","PEA","REPERCH"],"notmakingefforts":null,"specifiedrelativename":null,"returndate":null,"returntime":null,"specifiedrelativedatechildlastlivedwith":null,"exitreason":null,"parent2comments":null,"comments":"The Department offered a pack and play to encourage safe sleep. The Department followed up with shelter referrals and requested the mother to reach out to family and friends that could potentially assist in caring for Colton. The mother agreed to a Family Team Decision Making meeting where she explored her options and despite the efforts of the Department, the mother agreed to sheltering the child. ","reasonableeffortsmade":null,"isverifiedreporteradd":1,"placement":"","familyhistory":"","childdesc":null,"justification":"The mother was unable to come up with a safe plan to place the child and prevent the child from homelessness. The Department had concerns with the child not being able to self-protect and the mother''s past history with CPS. The Department helped to explore options presented by the mother, but she concluded by asking that the child be placed in shelter. ","removalcircumstances":{"abandonment":false,"caretakeralcoholuse":false,"caretakerdruguse":false,"caretakersignificantimpairment":false,"caretakerignificantimpphysical":false,"childalcoholuse":false,"childbehaviorproblem":false,"childdruguse":false,"childrequestedplacement":false,"deathofcaretaker":false,"diagnosedcondition":false,"domesticviolence":true,"failuretoreturn":false,"familyconflict":false,"homelessness":true,"inadequateaccesstomhs":false,"inadequateaccesstomedicalservices":false,"inadequatehousing":true,"incarcerationofcaretaker":false,"medicalneglect":false,"neglect":true,"parentalimmigration":false,"physicalabuse":false,"prenatalalcoholexposure":false,"prenataldrugexposure":false,"psychologicalemotionalabuse":false,"publicagencytitleive":null,"runaway":false,"sexualabuse":false,"sextrafficking":false,"tribaltitleive":false,"voluntaryrelinquishment":false,"whereaboutsunknown":false},"familystructuretypekeyref":"Separated Female","environmentAtRemovalkeyref":"Other","agencytypekeyref":"Agency Foster Home","removaltypekeyref":"Judicial Determination","primarycaregiveractoridref":"SERENITY L CHADWICK - 3962807","seccaregiveractoridref":"Kevin M Casey - 202797146","parent1idref":null,"parent2idref":null,"removalreasonref":"Neglect","removalexitreasonref":null,"reasonableeffortsref":", Food or Clothing Services, Parenting Education and Assistance, Reasonable efforts have been made but have been unsuccessful in preventing or eliminating the need for removal of child from childs home","notmakingeffortsref":null,"isuploadedmanually":1,"isshelterauthcompleted":1}', '{"abandonment":false,"caretakeralcoholuse":false,"caretakerdruguse":false,"caretakersignificantimpairment":false,"caretakerignificantimpphysical":false,"childalcoholuse":false,"childbehaviorproblem":false,"childdruguse":false,"childrequestedplacement":false,"deathofcaretaker":false,"diagnosedcondition":false,"domesticviolence":true,"failuretoreturn":false,"familyconflict":false,"homelessness":true,"inadequateaccesstomhs":false,"inadequateaccesstomedicalservices":false,"inadequatehousing":true,"incarcerationofcaretaker":false,"medicalneglect":false,"neglect":true,"parentalimmigration":false,"physicalabuse":false,"prenatalalcoholexposure":false,"prenataldrugexposure":false,"psychologicalemotionalabuse":false,"publicagencytitleive":null,"runaway":false,"sexualabuse":false,"sextrafficking":false,"tribaltitleive":false,"voluntaryrelinquishment":false,"whereaboutsunknown":false}', NULL, NULL, NULL, 'The mother was unable to come up with a safe plan to place the child and prevent the child from homelessness. The Department had concerns with the child not being able to self-protect and the mother''s past history with CPS. The Department helped to explore options presented by the mother, but she concluded by asking that the child be placed in shelter. ', 'OTHER', true, NULL, NULL, NULL, 'Samantha Stasen', '2026-07-20 16:09:47.290', NULL);

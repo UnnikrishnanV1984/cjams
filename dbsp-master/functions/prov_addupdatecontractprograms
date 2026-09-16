@@ -1,0 +1,106 @@
+CREATE OR REPLACE FUNCTION prov_addupdatecontractprograms(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+returnStatus text;
+
+v_contract_id numeric;
+v_site_list json;
+v_program_id numeric;
+currentRow numeric;
+v_program_site_id numeric;
+v_todo character varying;
+v_is_csa boolean;
+v_is_djs boolean;
+
+BEGIN
+
+v_is_csa = insertedtlsobj->>'is_csa';
+v_is_djs = insertedtlsobj->>'is_djs';
+v_contract_id = insertedtlsobj->>'contract_id';
+v_program_id = insertedtlsobj->>'program_id';
+v_site_list= insertedtlsobj->>'site_list';
+v_todo= insertedtlsobj->>'todo';
+
+IF(v_program_id is null) 
+THEN 
+INSERT INTO tb_contract_program
+    (contract_id,
+    program_nm,
+    is_csa,
+    is_djs,
+    contract_license_type_status,
+    create_ts,
+    create_user_id,
+    update_ts,
+    update_user_id,
+    delete_sw)                                                                                                                                               
+VALUES(v_contract_id,
+    insertedtlsobj->>'program_name',
+    v_is_csa,
+    v_is_djs,
+    'In Progress',
+    now(),
+    insertedtlsobj->>'create_user_id',
+    now(),
+    insertedtlsobj->>'update_user_id',
+    'N'::bpchar)      
+RETURNING program_id INTO v_program_id;
+
+ELSE IF(v_todo = 'DELETE') 
+then 
+
+UPDATE tb_contract_program 
+SET update_ts = now(),
+    update_user_id = insertedtlsobj->>'update_user_id',
+    delete_sw = 'Y' 
+WHERE contract_id = v_contract_id and 
+    program_id = v_program_id;
+
+ELSE 
+
+UPDATE tb_contract_program 
+SET program_nm = insertedtlsobj->>'program_name',
+    update_ts = now(),
+    contract_id = v_contract_id,
+    update_user_id = insertedtlsobj->>'update_user_id'
+WHERE contract_id = v_contract_id and 
+    program_id = v_program_id;
+
+END IF;
+END IF;
+
+
+UPDATE tb_prov_program_sites 
+SET delete_sw = 'Y',
+    update_ts = now(),
+    update_user_id = insertedtlsobj->>'update_user_id'
+WHERE 
+    program_id = v_program_id;
+
+
+IF(v_site_list is not null)
+THEN 
+    FOR currentRow IN SELECT * FROM json_array_elements(v_site_list)
+    LOOP
+
+    INSERT INTO tb_prov_program_sites
+    (program_id, site_id,             create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+    VALUES
+    (v_program_id,  currentRow, now(), insertedtlsobj->>'create_user_id',now(), insertedtlsobj->>'update_user_id','N')
+    RETURNING program_site_id INTO v_program_site_id;
+    
+    END LOOP;
+
+END IF;
+
+returnStatus:= 'Success';
+
+RETURN returnStatus;
+                                                      
+END;
+
+$function$
+

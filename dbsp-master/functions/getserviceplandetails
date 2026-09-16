@@ -1,0 +1,69 @@
+CREATE OR REPLACE FUNCTION getserviceplandetails(intakeserviceid uuid, _page integer, _limit integer)
+ RETURNS TABLE(totalcount bigint, servicerequestnumber character varying, intaserviceid uuid, services json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE          
+_offset  integer;
+v_intakeserviceid uuid;
+v_personid uuid;
+l_intakeserviceid uuid;
+
+BEGIN
+_offset := (_page - 1) * _limit; 
+
+l_intakeserviceid:=intakeserviceid;
+
+select ir.intakeserviceid,ir.personid into v_intakeserviceid,v_personid FROM intakeservicerequestactor ir
+join actor a on a.actorid=ir.actorid and a.activeflag=1
+join person p1 on p1.personid=a.personid and p1.activeflag=1
+     WHERE intakeservicerequestpersontypekey ='RA' 
+        AND ir.activeflag =1 and ir.intakeserviceid =l_intakeserviceid;
+ 
+ return Query
+select count(1) OVER() as totalcount,
+ isr.servicerequestnumber,isr.intakeserviceid,
+(SELECT json_agg(item)
+FROM (select distinct s.serviceplanlogid, s.objecttypekey, s.objectid, s.serviceplanactivityid,a.activity,a.personinvolved,a.activitysubtypekey,a.completiondate,a.serviceplanactivitystatustypekey,
+  s.startdate, s.enddate, s.isrepeats, s.noofoccurence, 
+  s.reason, s.serviceplanlogstatustypekey, s.familyworkername,sp.vendorname,stype.servicetypedescription,rv.description,
+  (select c.countyname from serviceplanlog spl
+    inner join serviceplanvendor sp on sp.serviceplanvendorid=spl.serviceplanvendorid and sp.activeflag=1
+    inner join serviceplanactivity sa on sa.serviceplanactivityid=spl.serviceplanactivityid and spl.activeflag=1
+    inner join serviceplanvendorsubtypeconfig ssp on ssp.serviceplanvendorid=sp.serviceplanvendorid and ssp.activeflag=1
+    inner join county c on c.countyid=ssp.countyid and c.activeflag=1 where spl.objectid::uuid =isr.intakeserviceid limit 1)  countyname
+  
+  FROM serviceplanlog s
+  left join serviceplanactivity a on a.serviceplanactivityid=s.serviceplanactivityid and a.activeflag=1
+  left join serviceplanvendor sp on sp.serviceplanvendorid=s.serviceplanvendorid and sp.activeflag=1
+  
+  left join servicetype stype on stype.servicetypekey = a.servicetypekey and stype.activeflag = 1
+  left join referencevalues rv on rv.ref_key=a.activitysubtypekey
+  
+  where  
+  a.objectid::uuid = isr.intakeserviceid) item
+) as services
+from serviceplanactivity spa
+join servicetype ste on ste.servicetypekey=spa.servicetypekey and ste.activeflag=1
+join referencevalues rv on rv.ref_key=spa.activitysubtypekey and rv.activeflag=1
+join serviceplanlog spl on spl.serviceplanactivityid=spa.serviceplanactivityid and spl.activeflag=1
+join serviceplanvendor spv on spv.serviceplanvendorid=spl.serviceplanvendorid and spv.activeflag=1
+
+join intakeservicerequest isr on isr.intakeserviceid=spa.objectid::uuid and isr.activeflag=1
+join intakeservicerequestactor isra on isra.intakeserviceid=isr.intakeserviceid
+
+        
+join person p on p.personid = isra.personid and p.activeflag =1 
+        
+   
+
+where  spa.activeflag=1 and spa.objectid::uuid !=l_intakeserviceid and p.personid=v_personid
+group by isr.servicerequestnumber,isr.intakeserviceid
+
+
+LIMIT _limit OFFSET _offset;
+
+END;
+
+$function$
+

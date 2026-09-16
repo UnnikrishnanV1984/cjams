@@ -1,0 +1,15 @@
+ CREATE OR REPLACE FUNCTION public.getcountydetails()                                                                                                                                                                            
+  RETURNS TABLE(countyid uuid, countyname character varying, countycode character varying, phonenumber character varying, address character varying, zipcode character varying, state character varying, email character varying)
+  LANGUAGE plpgsql                                                                                                                                                                                                               
+ AS $function$                                                                                                                                                                                                                 
+                                                                                                                                                                                                                               
+  BEGIN                                                                                                                                                                                                                        
+                                                                                                                                                                                                                               
+                                                                                                                                                                                                                               
+         RETURN QUERY                                                                                                                                                                                                          
+                 select c.countyid,c.countyname,sf.countycode,sf.phonenumber,sf.address,sf.zipcode,sf.state,sf.email from stateoffice sf                                                                                       
+ join county c on c.countycode=sf.countycode and c.activeflag=1                                                                                                                                                                
+ where sf.activeflag=1;                                                                                                                                                                                                        
+         END;                                                                                                                                                                                                                  
+ $function$                                                                                                                                                                                                                      
+

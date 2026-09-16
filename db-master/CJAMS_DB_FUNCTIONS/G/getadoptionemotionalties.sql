@@ -1,0 +1,25 @@
+DROP FUNCTION IF EXISTS cjams.getadoptionemotionalties(uuid);
+
+CREATE OR REPLACE FUNCTION cjams.getadoptionemotionalties(v_adoptionplanningid uuid)
+ RETURNS TABLE(emotionaltieid uuid, fmprefixtypekey character varying, fmfirstname character varying, fmmiddlename character varying, fmlastname character varying, fmsuffixtypekey character varying, relationshiptochildtx character varying, importancetochildtx text, insertedon timestamp without time zone, updatedon timestamp without time zone, adoptionplanningid uuid, providerid integer, provider_nm character varying, provider_first_nm character varying, provider_last_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+begin
+	return QUERY 
+	
+	SELECT ae.emotionaltieid, 
+	ae.fmprefixtypekey, ae.fmfirstname, ae.fmmiddlename, ae.fmlastname, ae.fmsuffixtypekey,
+	ae.relationshiptochildtx, 
+	ae.importancetochildtx::text,
+	ae.insertedon, ae.updatedon, ae.adoptionplanningid, 
+	ae.providerid,
+	tb.provider_nm,tb.provider_first_nm,tb.provider_last_nm
+FROM adoptionemotionalties  ae
+LEFT JOIN tb_provider tb ON tb.provider_id=ae.providerid 
+WHERE ae.adoptionplanningid=v_adoptionplanningid AND ae.activeflag=1;
+
+	
+end;
+$function$
+;

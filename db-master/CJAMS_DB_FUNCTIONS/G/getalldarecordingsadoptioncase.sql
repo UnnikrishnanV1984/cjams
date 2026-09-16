@@ -1,0 +1,242 @@
+DROP function if exists getalldarecordingsadoptioncase(json);
+CREATE OR REPLACE FUNCTION cjams.getalldarecordingsadoptioncase(searchjson json)
+ RETURNS TABLE(totalcount bigint, isintake character varying, others text, uploadedfile json, progressnoteid uuid, progressnotetypeid uuid, progressnotesubtypeid uuid, progressnotereasontypekey character varying, traveltime character varying, totaltime character varying, progressnotepurposetypekey character varying, description text, focusperson json, author character varying, recordingtype character varying, locationname character varying, recordingsubtype text, progressnotereasontypedescription character varying, title character varying, team character varying, draft boolean, attemptind boolean, contactdate timestamp without time zone, contactname character varying, progressroletype jsonb, contactparticipant jsonb, progressnotecontacttrialvisit jsonb, iseditable boolean, contactphone character varying, contactemail character varying, archivedon timestamp without time zone, archivedby character varying, detail text, recordingdate timestamp without time zone, insertedby character varying, documentpropertiesid uuid, doctitle character varying, docdescription character varying, filename character varying, mime character varying, s3bucketpathname character varying, starttime timestamp without time zone, endtime timestamp without time zone, stafftype character varying, instantresults integer, contactstatus boolean, drugscreen boolean, progressnotepurposetype character varying, progressnotereason jsonb, notedetails jsonb, initiationindicator boolean, witsid character varying, recordingtypedescription character varying, entitytypeid character varying, entitytype character varying, qualityofcaretochildtext character varying, screeningfortheservicetext character varying, adjustmentfostercaretext character varying, ischildgotoshool boolean, old_id character varying, updatedon timestamp without time zone, mioptions character varying, delayreasons character varying, hasdelay boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+--Revision(s)
+-- 07/17/2026 - Vinesh Puthan - CIDM-11321 - Fix to add motivational interview columns check as the part of expungement cases.
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                
+                                                                                    
+DECLARE v_GroupId CHAR(36);                                                                           
+v_IntakeServiceID character varying(50);                     
+v_RecordingStatusType  character varying(50);                        
+v_DateFrom TIMESTAMP;                        
+v_DateTo TIMESTAMP;                        
+v_Draft BOOLEAN;                        
+v_ContactFrom TIMESTAMP;                        
+v_ContactTo TIMESTAMP;   
+v_GroupActiveFlag INT;  
+v_GroupExpirationDate TIMESTAMP;
+v_liPageNumber  INT;                              
+v_liPageSize   INT;
+v_pageoffset int;
+v_pagenumber int;  
+v_progressnotereasontypekey  character varying; 
+v_caseworkername character varying;
+v_note character varying;
+v_sort_by  character varying;
+v_dir character varying;
+v_progresstype character varying;
+v_progresssubtype character varying;
+v_actor text;
+v_progressnoteInsertedby character varying;
+v_uuidornot character varying(50);
+BEGIN
+
+                   
+ -- Populate the variables from the temp table.  
+                                                                   
+v_liPageNumber        := searchjson ->> 'pagenumber' ;
+v_liPageSize          := searchjson ->> 'pagesize' ;                                                 
+v_Draft               := searchjson ->>'draft';                           
+v_IntakeServiceID     := searchjson ->>'servicerequestid';                       
+v_DateFrom            := searchjson ->>'datefrom';                                                              
+v_DateTo              := searchjson ->>'dateto';                       
+v_ContactFrom         := searchjson ->>'contactdatefrom';                                                              
+v_ContactTo           := searchjson ->>'contactdateto';                                                     
+v_RecordingStatusType := searchjson ->>'type';  
+v_progressnotereasontypekey := searchjson ->>'progressnotereasontypekey';
+v_caseworkername := searchjson ->>'workerName';
+v_note := searchjson ->>'note';
+v_sort_by := searchjson ->>'sortBy';
+v_dir := searchjson ->>'sortDir';
+v_pagenumber := v_liPageNumber-1;
+v_pageoffset = v_pagenumber * v_liPageSize;
+v_progresstype := searchjson ->> 'recordingtype'	;
+v_progresssubtype := searchjson ->> 'recordingsubtype';
+v_actor := (searchjson ->> 'intakeservicerequestactorids') :: text;
+v_progressnoteInsertedby := searchjson ->> 'insertedby';
+
+raise notice 'v_actor %',v_actor;
+SELECT * into v_uuidornot from uuid_or_null('v_IntakeServiceID');
+
+RETURN QUERY
+                  
+SELECT  
+        count(1) over() ,    
+        PN.isintake,PN.otherpersonName::text,
+		(case when PN.uploadedfile is null then jsonb(json_build_object ('data',(SELECT json_agg(docs) FROM  (
+		SELECT dp.documentpropertiesid, dp.objecttypekey, dp.title, dp.actualdocumentdate, dp.documenttypekey, dp.insertedon, dp.updatedon, dp.insertedby, dp.updatedby, dp.documentdate, dp.mime, dp.s3bucketpathname, dp.description, dp.other,dp.filename,dp.numberofbytes, dp.originalfilename,
+		(SELECT row_to_json(x) AS documentattachment FROM(                                                                               
+		SELECT dat.documentpropertiesid, dat.attachmenttypekey, dat.attachmentclassificationtypekey, dat.attachmentclassificationsubtypekey, dat.assessmenttemplateid,
+		(select up.fullname as updatedby from userprofile up where up.securityusersid = dat.updatedby) from documentattachment dat                                                                                   
+		WHERE dat.documentpropertiesid = dp.documentpropertiesid                                                  
+		) x),dp.uploadstatus, dp.finalstatus, dp.ecmsdocumentid
+		from documentproperties dp where dp.additionalobjectid = PN.progressnoteid::varchar and dp.additionalobjecttype = 'progressnote' and dp.activeflag in (1,3,4,5)
+		)docs)))::json else PN.uploadedfile::json end) as uploadedfile,
+		PN.ProgressNoteId,       
+		PN.progressnotetypeid,
+		PN.progressnotesubtypeid,
+		PN.Progressnotereasontypekey,
+		PN.traveltime,
+		PN.totaltime,
+		PN.progressnotepurposetypekey,
+		PN.description,
+		PN.focusperson,
+		CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN 'System' ELSE COALESCE(UP.DisplayName, '') END AS Author,                
+		COALESCE(PNT.progressnotetypekey, '') AS RecordingType,  		  
+		PN.locationname,
+		COALESCE((SELECT pns.description FROM progressnotesubtype pns  where pns.progressnotesubtypeid = PN.progressnotesubtypeid), '') AS RecordingSubType,
+		COALESCE((SELECT pnrt.typedescription FROM progressnotereasontype pnrt where pnrt.progressnotereasontypekey = PN.progressnotereasontypekey), '') AS Progressnotereasontypedescription,                    
+		CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN '' ELSE COALESCE(TM.RoleTypeKey, '') END AS Title,                 
+		CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN '' ELSE COALESCE(TE.TeamName, '') END AS Team,                        
+		CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN 0::boolean ELSE COALESCE(PN.SaveMode,0::boolean) END AS Draft,
+		CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN null ELSE PN.AttemptIndicator END AS AttemptInd,                 
+		CAST(COALESCE ( PN.ContactDate, PN.insertedon) AS TIMESTAMP(3)) AS ContactDate,                 
+		COALESCE (PN.ContactName, '') AS ContactName,     
+        (SELECT json_agg(roletype) FROM 
+         	(SELECT prt.contactroletypekey, prt.progressnoteroletypeid from progressnoteroletype prt 
+        	 where prt.progressnoteid=PN.progressnoteid  and prt.activeflag=1)roletype) :: jsonb  AS progressroletype,		
+		(SELECT Json_agg(actor) 
+			FROM (SELECT cp.contactparticipantid,cp.participanttypekey,cp.intakeservicerequestactorid,cp.address1,
+						cp.address2,cp.city,cp.state,cp.zipcode,cp.email,cp.phonenumber,
+						isra.personid,
+						CASE WHEN p.prefx is null THEN COALESCE(col.prefixtypekey, '') ELSE COALESCE(p.prefx, '') END AS prefx,
+						CASE WHEN p.firstname is null THEN COALESCE(col.firstname, '') ELSE COALESCE(p.firstname, '') END AS firstname,  
+						CASE WHEN p.middlename is null THEN COALESCE(col.middlename, '') ELSE COALESCE(p.middlename, '') END AS middlename,  
+						CASE WHEN p.lastname is null THEN COALESCE(col.lastname,'') ELSE COALESCE(p.lastname, '') END AS lastname,        
+						CASE WHEN p.suffix is null THEN COALESCE(col.suffixtypekey,'') ELSE COALESCE(p.suffix, '') END AS suffix,          
+						isra.adoptioncaseactorid,
+						at.actortype,
+						at.typedescription 
+			       FROM contactparticipant cp
+			       LEFT JOIN adoptioncaseactor isra on  isra.adoptioncaseactorid = cp.intakeservicerequestactorid
+			       LEFT JOIN person p on p.personid = isra.personid
+			       LEFT JOIN collateral col on col.collateralid = cp.participantid
+				   LEFT JOIN collateralroleconfig crg on col.collateralid = crg.collateralid and crg.activeflag = 1
+				   LEFT JOIN 
+				   (
+						SELECT distinct actortype, typedescription FROM actortype
+				   ) at on at.actortype = isra.actortypekey OR at.actortype = crg.actortypekey		   
+			       WHERE cp.progressnoteid = PN.progressnoteid AND cp.activeflag = 1)actor) :: jsonb AS contactparticipant, 
+		(SELECT Json_agg(contacttrialvisit) 
+			FROM (SELECT ctv.contacttrialvisitid,
+						ctv.progressnoteid,
+						ctv.issuedesc,
+						ctv.safetydesc,
+						ctv.services_childdesc,
+						ctv.services_parentdesc,
+						ctv.permanencystepdesc,
+						ctv.placementdesc,
+						ctv.educationdesc,
+						ctv.healthdesc,
+						ctv.socialareadesc,
+						ctv.financialliteracydesc,
+						ctv.familyplanningdesc,
+						ctv.skillissuedesc,
+						ctv.transitionplandesc 
+					FROM contacttrialvisit ctv
+					WHERE ctv.progressnoteid = PN.progressnoteid AND ctv.activeflag = 1)
+					contacttrialvisit) :: jsonb AS progressnotecontacttrialvisit, 
+		((extract (day FROM now() at time zone 'utc' -  PN.insertedon at time zone 'utc'))) <=7 as iseditable ,			                     
+		COALESCE(PN.ContactPhone, '') AS ContactPhone,                 
+		COALESCE(PN.ContactEmail, '') AS ContactEmail,       
+		COALESCE (PN.ArchivedOn, NULL) AS ArchivedOn,    
+		COALESCE (PN.ArchivedBy, '') AS ArchivedBy, 
+		(SELECT string_agg( COALESCE( A.Description,''  || 'rn' ) ,'|')  
+				FROM (SELECT UPF.DisplayName ,PND.insertedon,pnd.Description FROM ProgressNoteDetail pnd       
+				JOIN UserProfile UPF ON PND.insertedby = UPF.SecurityUsersId       
+				WHERE pnd.ProgressNoteId = PN.ProgressNoteId AND pnd.activeflag=1 AND pnd.isaddendum = 0
+				ORDER by PND.insertedon limit 1) as A) AS Detail, 
+					CAST(COALESCE (PN.insertedon , PN.insertedon) AS TIMESTAMP(3)) AS RecordingDate ,                 
+					PN.insertedby AS Insertedby, DP.DocumentPropertiesId, DP.title as doctitle, DP.description as docdescription, DP.filename, DP.mime, DP.s3bucketpathname,
+					PN.starttime ::timestamp  AS StartTime ,PN.endtime ::timestamp   AS EndTime ,PN.stafftypekey  AS StaffType,PN.instantresults  AS InstantResults,PN.contactstatus  AS ContactStatus,
+					PN.drugscreen  AS DrugScreen,COALESCE(PNPT.description, '')  AS ProgressNotePurposeType,
+					(SELECT Json_agg(progressnotereasons) 
+			FROM (SELECT prtc.progressnotereasontypeconfigid,
+			prtc.progressnoteid,
+			prtc.personid,
+			prtc.name,
+			prtc.primaryphoneno,
+			prtc.email,
+			prtc.relationship,
+			p.firstname||' '|| p.lastname as personname		
+					FROM progressnotereasontypeconfig prtc
+					left join person p on p.personid=prtc.personid
+					WHERE prtc.progressnoteid = PN.progressnoteid AND prtc.activeflag = 1)
+					progressnotereasons) :: jsonb AS progressnotereason,
+					(SELECT Json_agg(detailNote) 
+					FROM (SELECT UPF.DisplayName ,PND.insertedon,pnd.Description,pntin.progressnotetypekey FROM ProgressNoteDetail pnd       
+						JOIN UserProfile UPF ON PND.insertedby = UPF.SecurityUsersId   
+                        JOIN ProgressNoteType pntin on pntin.ProgressNoteTypeId = PN.ProgressNoteTypeId  						
+						WHERE pnd.ProgressNoteId = PN.ProgressNoteId AND pnd.activeflag=1 AND pnd.isaddendum = 1
+						ORDER by PND.insertedon )
+							detailNote) :: jsonb AS notedetails,
+					PN.initiationindicator,
+					PN.witsid:: character varying,
+					PNT.description::character varying as Recordingtypedescription,
+					PN.EntityTypeId,
+					PN.EntityType,
+					PN.qualityofcaretochildtext,
+					PN.screeningfortheservicetext,
+					PN.adjustmentfostercaretext,
+					PN.ischildgotoshool,
+					PN.old_id,
+					PN.updatedon,
+					PN.mioptions::character varying,
+					PN.delayreasons::character varying,
+					PN.hasdelay::boolean 
+					FROM  ProgressNote AS PN 
+					
+					INNER JOIN ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId         
+					LEFT JOIN UserProfile up on pn.insertedby = up.SecurityUsersId  
+					LEFT JOIN DocumentProperties DP On DP.DocumentPropertiesId = PN.DocumentPropertiesId                  
+					LEFT JOIN teammemberassignment tma on  tma.securityusersid = up.securityusersid AND tma.ActiveFlag = 1                 
+					LEFT JOIN TeamMember tm on tm.TeamMemberId = tma.TeamMemberId AND tm.ActiveFlag = 1                
+					LEFT JOIN Team te on te.TeamId = tm.TeamId AND te.ActiveFlag = 1 
+					LEFT JOIN Progressnoteroletype AS PNRT ON PN.ProgressNoteId = PNRT.ProgressNoteId AND PNRT.ActiveFlag = 1
+					LEFT JOIN progressnotepurposetype AS PNPT ON PNPT.progressnotepurposetypekey = PN.progressnotepurposetypekey AND PNRT.ActiveFlag = 1           
+					WHERE (PN.EntityTypeId in ( v_IntakeServiceID :: character varying) 
+	OR 
+	(CASE WHEN v_uuidornot IS NULL THEN null 
+		ELSE 
+	PN.EntityTypeId in (
+	(SELECT DISTINCT intakeserviceid:: character varying FROM intakeservicerequest 
+		WHERE servicecaseid =v_IntakeServiceID::uuid AND activeflag =1 and intakeserviceid is not null LIMIT 1),
+	(SELECT DISTINCT intakenumber:: character varying FROM intakeservicerequestactor 
+		WHERE (servicecaseid =v_IntakeServiceID::uuid OR intakeserviceid =v_IntakeServiceID::uuid ) and intakenumber is not null  LIMIT 1),
+	(SELECT DISTINCT servicecaseid:: character varying FROM intakeservicerequestactor 
+		WHERE (servicecaseid =v_IntakeServiceID::uuid OR intakeserviceid =v_IntakeServiceID::uuid ) and servicecaseid is not null LIMIT 1)
+	) END )) AND lower(PNT.ProgressNoteClassificationTypeKey) = 'user'   
+	AND PNT.parentid is null                        
+	AND (v_DateFrom IS NULL OR (CAST( PN.insertedon AS DATE) between CAST(v_DateFrom AS DATE) AND CAST(v_DateTo AS DATE)))                                                            
+	AND (v_ContactFrom IS NULL OR (CAST( PN.ContactDate AS DATE) between CAST(v_ContactFrom AS DATE) AND CAST(v_ContactTo AS DATE)))	                                                           
+	AND (v_Draft IS NULL OR PN.SaveMode = v_Draft )  
+	AND (v_caseworkername  IS NULL OR lower(UP.DisplayName) LIKE '%'|| lower(v_caseworkername) || '%' ) 
+	AND (v_note  IS NULL OR lower(PN.description) LIKE '%'|| lower(v_note) || '%' ) 
+	AND (v_progressnotereasontypekey IS NULL OR PN.Progressnotereasontypekey LIKE '%'|| v_progressnotereasontypekey || '%' )
+	AND (lower(v_RecordingStatusType) IS NULL OR lower(COALESCE(PNT.ProgressNoteClassificationTypeKey,'User')) = lower(v_RecordingStatusType))
+	AND (v_progresssubtype IS NULL OR PN.progressnotesubtypeid:: character varying = v_progresssubtype )
+	AND (v_progresstype IS NULL OR PNT.progressnotetypeid:: character varying = v_progresstype )
+	and (v_progressnoteInsertedby IS NULL OR PN.insertedby:: character varying = v_progressnoteInsertedby OR PN.updatedby:: character varying = v_progressnoteInsertedby)
+	and (v_actor IS NULL OR 
+	PN.progressnoteid in 
+	(select cp.progressnoteid
+	FROM contactparticipant cp
+	LEFT JOIN intakeservicerequestactor isra on  isra.intakeservicerequestactorid = cp.intakeservicerequestactorid
+	LEFT JOIN person p on p.personid = isra.personid
+	LEFT JOIN 
+	(
+		SELECT distinct actortype, typedescription FROM actortype
+	) at on at.actortype = isra.intakeservicerequestpersontypekey				   
+	WHERE cp.progressnoteid = PN.progressnoteid AND cp.activeflag = 1 
+	and cp.intakeservicerequestactorid :: character varying = ANY
+		(select * from jsonb_array_elements_text((v_actor):: jsonb))));
+                       
+END;
+
+$function$
+;

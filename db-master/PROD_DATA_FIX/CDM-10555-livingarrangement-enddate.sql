@@ -1,0 +1,2 @@
+update livingarrangement set livingenddate = '2021-02-24 08:11:18.050337', updatedon = now(), updatedby = 'CDM-10555' where placementid = 'a7fdd14f-7cf4-4573-91af-7d316a4623c2';
+update placement set enddatetime = '2021-02-24 08:11:18.050337', updatedon = now(), updatedby = 'CDM-10555' where placementid = 'a7fdd14f-7cf4-4573-91af-7d316a4623c2';

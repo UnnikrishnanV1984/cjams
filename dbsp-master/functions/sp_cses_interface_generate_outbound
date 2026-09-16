@@ -1,0 +1,1002 @@
+CREATE OR REPLACE FUNCTION sp_cses_interface_generate_outbound(OUT vs_message character varying, OUT vl_output_sqlcode character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Cenerates CSES Interface Outbound\r
+-- Revision(s)\r
+-- 06/22/2020 - Vineet Tirodkar \r
+-- Added VOID_SW flag condition in Placement queries to exclude voided placements\r
+------------------------------------------------------------------------\r
+-- VARIABLE DECLARATIONr u there\r
+DECLARE\r
+ result                             text;\r
+ VS_OUTPUINTEGERT_STATE             CHAR(5) DEFAULT '00000';\r
+ vts_previous_run_ts                timestamp  DEFAULT CURRENT_TIMESTAMP;\r
+ vts_current_run_ts                 timestamp DEFAULT CURRENT_TIMESTAMP;\r
+ VL_ROWCOUNT                        INTEGER DEFAULT 0;\r
+ VL_INTERFACE_ROWCOUNT              INTEGER DEFAULT 0;\r
+ VL_TRIGGER_ROWCOUNT                INTEGER DEFAULT 0 ;\r
+ VL_TRANSACTION_SEQUENCE            INTEGER DEFAULT 00000;\r
+ VL_RECORD_SEQUENCE                 INTEGER DEFAULT 000;\r
+ VL_CASE_ID                         BIGINT;            \r
+ vl_client_id                        INTEGER;\r
+ vl_case_client_id                   INTEGER;\r
+ VS_TRANSACTION_TYPE_CD             VARCHAR(2);\r
+ VS_BATCH_SEQ_NO                    VARCHAR(5);\r
+ VL_CIS_CLIENT_ROWCOUNT             INTEGER DEFAULT 0;\r
+ VL_CIS_CASE_CLIENT_ROWCOUNT        INTEGER DEFAULT 0;\r
+ VS_RECORD_TYPE_CD                  VARCHAR(2);\r
+ VD_TRANSACTION_TS                  TIMESTAMP;\r
+ VL_PARENT_EXISTS                   INTEGER DEFAULT 0;\r
+ VL_PAYMENT_MAINTENANCE             INTEGER DEFAULT 0;\r
+ VDEC_PAYMENT_AMOUNT                DECIMAL(10,2);\r
+ VDEC_PAYMENT_PREVIOUS_AMOUNT       DECIMAL(10,2);\r
+ --   VL_HEARING_ROWCOUNT                INTEGER DEFAULT 0;\r
+ VL_PLACEMENT_EXISTS                INTEGER DEFAULT 0;\r
+ VL_PLACEMENT_END_DATED_EXISTS      INTEGER DEFAULT 0;\r
+ VS_NULL                            VARCHAR(10);\r
+ VL_CASE_HEARING_PLACEMENT_EXISTS   INTEGER DEFAULT 0;\r
+ VS_INTERFACE_PROCESSED_FLAG        CHAR(1) DEFAULT 'N';\r
+ vl_case_client_count               integer default 0;\r
+ vl_hearing_clients_count           integer default 0;\r
+ vl_trigger_outbound_count          integer default 0;\r
+ VS_PROCESS_FLAG                    VARCHAR (1) DEFAULT 'N';\r
+ VL_CASE_PERSON_ID                  UUID;        \r
+\r
+BEGIN\r
+ --  MAIN CURSOR\r
+ DECLARE TRIGGER_OUTBOUND CURSOR FOR\r
+  SELECT old_id, fk_id :: INTEGER, transactiontypekey, transactionon\r
+   FROM csesoutboundtrigger\r
+  WHERE statusflag = 'N'\r
+   AND activeflag = 1\r
+    ORDER BY transactionon ASC\r
+  FOR UPDATE ;\r
+  \r
+ --  CASE_CLIENT CURSOR \r
+ DECLARE  CASE_CLIENT CURSOR FOR\r
+  SELECT DISTINCT PP.cjamspid, pp.personid \r
+  FROM intakeservicerequestactor ISA, person PP, intakeservicerequest ISR, \r
+    servicecase SC\r
+  WHERE ISA.personid = PP.personid\r
+  AND ISR.servicecaseid = ISA.servicecaseid\r
+  AND ISA.servicecaseid = SC.servicecaseid\r
+  AND SC.servicecasenumber:: BIGINT = VL_CASE_ID\r
+  AND ISA.intakeservicerequestpersontypekey = 'CHILD'\r
+  AND ISA.activeflag = 1\r
+  AND PP.activeflag = 1\r
+  AND ISR.activeflag = 1\r
+  AND SC.activeflag = 1\r
+  AND EXISTS (SELECT 1 FROM TB_PLACEMENT TBP,  person PR\r
+      WHERE TBP.CLIENT_ID = PR.cjamspid \r
+     AND TBP.EXIT_DT IS null \r
+     AND PP.personid = PR.personid \r
+     AND TBP.ENTRY_DT IS NOT NULL \r
+     AND TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+     AND COALESCE(TBP.VOID_SW, '') <> 'Y'\r
+     AND TBP.APPROVAL_STATUS_CD = '3047' \r
+     AND TBP.DELETE_SW = 'N');\r
+\r
+ --  CASE_HEARING CURSOR \r
+ DECLARE CASE_HEARING CURSOR FOR\r
+  SELECT pp.cjamspid, pp.personid\r
+   FROM hearingclients HC, intakeservicerequestcourthearing ich, person pp, intakeservicerequest ISR, intakeservicerequestactor ISA,servicecase SC\r
+  WHERE HC.courthearingid = ich.intakeservicerequestcourthearingid\r
+   AND pp.personid = HC.personid\r
+   AND ISR.servicecaseid = SC.servicecaseid\r
+   AND SC.servicecasenumber ::bigint = VL_CASE_ID\r
+   AND ISR.intakeserviceid = ICH.intakeserviceid \r
+   AND ISA.personid = pp.personid\r
+   AND EXISTS (SELECT 1 FROM intakeservicerequestactor TCC, actor TA\r
+       WHERE TCC.intakeserviceid = ICH.intakeserviceid  AND TCC.personid = HC.personid \r
+       AND TA.actortype = 'CHILD' AND TCC.activeflag = 1 and TA.activeflag = 1)\r
+   AND HC.activeflag = 1\r
+   AND ICH.activeflag = 1\r
+   AND SC.activeflag = 1\r
+   AND EXISTS (SELECT 1 FROM TB_PLACEMENT TBP,  person PP\r
+       WHERE TBP.CLIENT_ID = PP.cjamspid AND PP.personid = HC.personid AND TBP.EXIT_DT IS NULL\r
+        AND   TBP.ENTRY_DT IS NOT NULL\r
+        AND   TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+        AND   TBP.APPROVAL_STATUS_CD = '3047' \r
+        AND COALESCE(TBP.VOID_SW, '') <> 'Y'\r
+        AND TBP.DELETE_SW = 'N'); \r
+\r
+ -- IF 1ST RUN i.e. NO ROWS IN RUNTIMES_LOG, THEN LEAVE AS INITIALIZED \r
+ -- IF EXISTS (SELECT 1 FROM interfacesruntimeslog) THEN\r
+ -- SELECT MAX(currentruntimestamp) INTO vts_previous_run_ts FROM interfacesruntimeslog\r
+ -- WHERE interfaceid = 'CSES_OUTBOUND';\r
+ -- END IF;\r
+\r
+ BEGIN\r
+  -- CHECK FOR ROWS TO INTERFACE, IF NONE THEN QUIT.\r
+  -- IF 1ST RUN i.e. NO ROWS IN RUNTIMES_LOG, THEN LEAVE AS INITIALIZED \r
+  IF EXISTS (SELECT 1 FROM interfacesruntimeslog) THEN\r
+   BEGIN    \r
+    SELECT MAX(currentruntimestamp) \r
+     INTO vts_previous_run_ts \r
+    FROM interfacesruntimeslog\r
+    WHERE interfaceid = 'CSES_OUTBOUND';\r
+   \r
+    EXCEPTION WHEN OTHERS THEN             \r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    VS_MESSAGE := 'SELECT MAX(currentruntimestamp) FAILED'   || SQLERRM  ;\r
+    RETURN;\r
+   END;    \r
+  END IF;\r
+  \r
+  -- CHECK FOR ROWS TO INTERFACE, IF NONE THEN QUIT.\r
+  IF EXISTS (SELECT 1 FROM csesoutboundtrigger) THEN\r
+  ELSE\r
+   VS_MESSAGE := 'THERE ARE NO ROWS TO INTERFACE'   || SQLERRM  ;\r
+   RETURN ;\r
+  END IF;\r
+   \r
+  -- DELETE EXISTING RECORDS IN TEH INTERFACE TABLE \r
+  IF EXISTS(SELECT 1 FROM csesoutboundinterface ) THEN\r
+   BEGIN               \r
+    DELETE FROM csesoutboundinterface  ;\r
+  \r
+    EXCEPTION WHEN OTHERS THEN   \r
+    VL_OUTPUT_SQLCODE  :=  SQLCODE;\r
+    VS_MESSAGE := 'DELETE FROM csesoutboundinterface FAILED';\r
+    RETURN ;\r
+   END;              \r
+  END IF;\r
+  \r
+  -- COUNT RECORDS IN TRIGGER_OUTBOUND FOR CURSOR LOOP.\r
+  SELECT count(*) \r
+   INTO vl_trigger_outbound_count \r
+  FROM csesoutboundtrigger\r
+  WHERE statusflag = 'N' \r
+   AND activeflag = 1;\r
+\r
+  --OPEN MAIN CURSOR\r
+  OPEN TRIGGER_OUTBOUND;\r
+   <<TRIG_OUTBOUND>>\r
+   WHILE  vl_trigger_outbound_count >0 LOOP\r
+    \r
+   IF  VS_PROCESS_FLAG = 'Y' THEN                                 --12/07/2018  #12329\r
+    VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;\r
+    --  RAISE NOTICE 'V OUTBOUND BEFORE GEN DATA%', VL_CLIENT_ID;\r
+    BEGIN\r
+    \r
+     SELECT * \r
+      INTO VS_MESSAGE, VL_OUTPUT_SQLCODE\r
+     from sp_cses_outbound_interface_gen_data( VL_CLIENT_ID,\r
+                VL_CASE_ID,\r
+                VS_TRANSACTION_TYPE_CD,\r
+                VL_TRANSACTION_SEQUENCE,\r
+                VD_TRANSACTION_TS\r
+               );\r
+     \r
+     EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE :=  SQLSTATE;\r
+     VS_MESSAGE = 'FAILED BEGIN TO GENERATE INTERFACE DATA FOR TRANSACTION_TYPE_CD:'||VS_TRANSACTION_TYPE_CD || ' AND CLIENT_ID:'||VL_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+     RETURN ;\r
+    END;\r
+    \r
+    BEGIN \r
+     -- IF VL_OUTPUT_SQLCODE = '00000' -- and vs_message <> 'I' \r
+     --THEN\r
+     UPDATE csesoutboundtrigger SET statusflag = 'P'\r
+     WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+     -- 10/30/06\r
+     /* ELSIF VL_OUTPUT_SQLCODE <> '00000' -- and vs_message = 'I'  \r
+      THEN\r
+      UPDATE csesoutboundtrigger  SET statusflag = 'I'\r
+      WHERE CURRENT OF TRIGGER_OUTBOUND;    -- 10/30/06   #6037 */\r
+     --END IF;\r
+       \r
+     EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE = 'UPDATE1 OF STATUS FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+     RETURN ;\r
+    END;\r
+    VS_PROCESS_FLAG := 'N'; \r
+   END IF;\r
+   \r
+   FETCH TRIGGER_OUTBOUND \r
+   INTO VL_CASE_ID,\r
+    VL_CLIENT_ID,\r
+    VS_TRANSACTION_TYPE_CD, \r
+    VD_TRANSACTION_TS ;\r
+   /* \r
+   raise notice 'VL_CASE_ID%', VL_CASE_ID;\r
+   raise notice 'VL_CLIENT_ID%', VL_CLIENT_ID;\r
+   raise notice 'VS_TRANSACTION_TYPE_CD%', VS_TRANSACTION_TYPE_CD;\r
+   raise notice 'VD_TRANSACTION_TS%', VD_TRANSACTION_TS; */\r
+    \r
+   IF vl_trigger_outbound_count <=0 THEN\r
+    EXIT TRIG_OUTBOUND;\r
+   END IF;\r
+      \r
+   vl_trigger_outbound_count := vl_trigger_outbound_count  -1 ;\r
+  \r
+   IF VL_CLIENT_ID > 0 THEN\r
+       \r
+    VL_PLACEMENT_EXISTS := 0 ;\r
+    VL_CIS_CLIENT_ROWCOUNT := 0 ;\r
+    VL_PLACEMENT_END_DATED_EXISTS := 0 ;\r
+    \r
+    --- COUNT CIS_CLIENT\r
+     \r
+    BEGIN                 \r
+     SELECT COUNT(*) \r
+      INTO VL_CIS_CLIENT_ROWCOUNT \r
+     FROM person\r
+     WHERE cjamspid = VL_CLIENT_ID \r
+      AND LENGTH(cisclientid) > 0 \r
+      AND activeflag = 1;\r
+         \r
+     -- raise notice 'VL_CIS_CLIENT_ROWCOUNT%', VL_CIS_CLIENT_ROWCOUNT;\r
+     \r
+     EXCEPTION WHEN OTHERS THEN \r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT  COUNT(*) FROM person FAILED FOR CLIENT_ID:' || VL_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+     RETURN ;\r
+    END;\r
+  \r
+    -- COUNT OPEN PLACEMENTS\r
+     \r
+    BEGIN                    \r
+     SELECT COUNT(*) \r
+      INTO VL_PLACEMENT_EXISTS \r
+     FROM TB_PLACEMENT A\r
+     WHERE A.CLIENT_ID = VL_CLIENT_ID \r
+      AND A.EXIT_DT IS NULL \r
+      AND A.ENTRY_DT IS NOT NULL\r
+      AND A.PLACEMENT_STRUCTURE_ID IS NOT NULL \r
+      AND A.APPROVAL_STATUS_CD = '3047' \r
+      AND COALESCE(A.VOID_SW, '') <> 'Y'\r
+      AND A.DELETE_SW = 'N'  ;----structureid\r
+       \r
+     -- raise notice 'VL_PLACEMENT_EXISTS%', VL_PLACEMENT_EXISTS;\r
+     \r
+     EXCEPTION WHEN OTHERS THEN  \r
+     VL_OUTPUT_SQLCODE  :=  SQLCODE;\r
+     VS_MESSAGE := 'SELECT  COUNT(*) FROM TB_PLACEMENT FAILED FOR intakeservicerequestactorid:' || VL_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+     RETURN;\r
+    END;\r
+   \r
+    -- COUNT CLOSED OR END-DATED PLACEMENTS\r
+    BEGIN  \r
+     SELECT COUNT(*) \r
+      INTO VL_PLACEMENT_END_DATED_EXISTS\r
+     FROM TB_PLACEMENT A\r
+     WHERE A.CLIENT_ID = VL_CLIENT_ID\r
+      AND A.EXIT_DT IS NOT NULL\r
+      AND A.ENTRY_DT IS NOT NULL\r
+      AND A.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+      AND COALESCE(A.VOID_SW, '') <> 'Y'\r
+      AND A.DELETE_SW = 'N'  ;\r
+      \r
+     -- raise notice 'VL_PLACEMENT_END_DATED_EXISTS%', VL_PLACEMENT_END_DATED_EXISTS;\r
+        \r
+     EXCEPTION WHEN OTHERS THEN  \r
+     VL_OUTPUT_SQLCODE  =  SQLCODE;\r
+     VS_MESSAGE = 'SELECT  COUNT(*) FOR END DATED PLACEMENT FROM TB_PLACEMENT FAILED FOR CLIENT_ID:' || VL_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+     RETURN;\r
+    END;\r
+  \r
+    -----SUBSIDY GUARDIANSHIP---------- \r
+    IF VS_TRANSACTION_TYPE_CD = '15' THEN -- #12329\r
+     IF VL_CIS_CLIENT_ROWCOUNT <= 0 THEN \r
+      VS_PROCESS_FLAG := 'N'; --02/16/2007  #12329\r
+     \r
+      CONTINUE TRIG_OUTBOUND;--\r
+      -- commented below as per specs -#12463\r
+      --UPDATE csesoutboundtrigger  STATUS_SW := 'I'             --UPDATE STATUS TO 'I'\r
+      --WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+\r
+      -- VL_OUTPUT_SQLCODE := SQLCODE;\r
+      --IF SQLCODE <> 0 AND (SQLSTATE <> '00000')  THEN\r
+      --   VS_MESSAGE := 'UPDATE OF STATUS FAILED FOR  TABLE csesoutboundtrigger'    || SQLERRM ;\r
+      --   CONTINUE ERROR_SECTION ;\r
+      --END IF;\r
+     ELSIF  \r
+      EXISTS ( SELECT  1 \r
+         FROM TB_GUARDIAN_SUBSIDY A \r
+         WHERE A.CLIENT_ID = VL_CLIENT_ID\r
+          AND A.SUBSIDY_START_DT IS NOT NULL \r
+          AND A.SUBSIDY_END_DT IS NOT NULL\r
+          AND A.CHECK_LIST_APPROVAL_STATUS_CD = '3047' \r
+          AND A.SUSBSIDY_APPROVAL_STATUS_CD = '3047'\r
+          AND A.DELETE_SW = 'N') THEN\r
+           \r
+       SET VS_PROCESS_FLAG = 'Y' ; --02/16/2007  #12329\r
+       CONTINUE TRIG_OUTBOUND; --****PROCESS CLIENTS & UPDATE STATUS.\r
+     END IF;--VL_CIS_CLIENT_ROWCOUNT <= 0\r
+         \r
+    ELSIF  VS_TRANSACTION_TYPE_CD IN ('10','70','20','40','41','44') THEN\r
+  \r
+     IF VL_CIS_CLIENT_ROWCOUNT <= 0 OR (VL_PLACEMENT_EXISTS <= 0 AND VS_TRANSACTION_TYPE_CD <> '70') THEN\r
+      IF VL_PLACEMENT_EXISTS <= 0 AND VS_TRANSACTION_TYPE_CD <> '70' THEN       --#12463\r
+       -- UPDATE STATUS TO 'I'\r
+       VS_PROCESS_FLAG := 'N';\r
+             \r
+       BEGIN                                              \r
+        UPDATE csesoutboundtrigger \r
+         SET statusflag= 'I'\r
+        WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+              \r
+        EXCEPTION WHEN OTHERS THEN                                              \r
+        VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+        VS_MESSAGE := 'UPDATEx OF STATUS FAILED FOR TABLE csesoutboundtrigger'  || SQLERRM   ;\r
+        RETURN ;\r
+       END;\r
+      END IF; \r
+     ELSIF VL_CIS_CLIENT_ROWCOUNT > 0 AND ((VL_PLACEMENT_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD <> '70') OR (VL_PLACEMENT_END_DATED_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD = '70')) THEN\r
+\r
+      IF LENGTH(VS_TRANSACTION_TYPE_CD) > 0 THEN\r
+       IF VS_TRANSACTION_TYPE_CD = '40' THEN\r
+        VL_PAYMENT_MAINTENANCE := 0 ;\r
+              \r
+        BEGIN\r
+         SELECT COUNT(*) \r
+          INTO VL_PAYMENT_MAINTENANCE\r
+         FROM TB_PAYMENT_HEADER \r
+         WHERE PAYMENT_ID::BIGINT = VL_CASE_ID\r
+          AND PAYMENT_TYPE_CD = '6' \r
+          AND PAYMENT_DT IS NOT NULL \r
+          AND DELETE_SW = 'N'  ;\r
+          \r
+         -- raise notice 'VL_PAYMENT_MAINTENANCE%', VL_PAYMENT_MAINTENANCE;\r
+          \r
+         EXCEPTION WHEN OTHERS THEN \r
+         VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+         VS_MESSAGE := 'SELECT PAYMENT MAINTENANCE FAILED FOR  TABLE paymentheader'  || SQLERRM ;\r
+        END;   \r
+  \r
+        IF VL_PAYMENT_MAINTENANCE <=0 THEN\r
+         VS_PROCESS_FLAG := 'N';\r
+        \r
+         BEGIN   \r
+          UPDATE csesoutboundtrigger \r
+           SET activeflag = 0 -- UPDATE DELETE STATUS\r
+          WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+  \r
+          EXCEPTION WHEN OTHERS THEN \r
+          VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+          VS_MESSAGE := 'DELETE OF RECORD FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+          RETURN;\r
+                 \r
+         END;\r
+         --END IF;\r
+         CONTINUE TRIG_OUTBOUND;\r
+         \r
+        ELSIF VL_PAYMENT_MAINTENANCE > 0 THEN\r
+         BEGIN   \r
+          SELECT SUM(FINAL_AMOUNT_NO) \r
+           INTO VDEC_PAYMENT_AMOUNT\r
+          FROM TB_PAYMENT_DETAIL \r
+          WHERE CLIENT_ID = VL_CLIENT_ID\r
+           AND PAYMENT_ID::BIGINT = VL_CASE_ID \r
+           AND DELETE_SW = 'N';\r
+           \r
+          -- raise notice 'VDEC_PAYMENT_AMOUNT%', VDEC_PAYMENT_AMOUNT;\r
+  \r
+          EXCEPTION WHEN OTHERS THEN \r
+          VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+          VS_MESSAGE = 'SELECT PAYMENT SUM FAILED FOR  TABLE TB_PAYMENT_DETAIL'    || SQLERRM ;\r
+          RETURN;\r
+         END;\r
+              \r
+         BEGIN\r
+          SELECT SUM(FINAL_AMOUNT_NO) \r
+           INTO VDEC_PAYMENT_PREVIOUS_AMOUNT\r
+          FROM TB_PAYMENT_DETAIL \r
+          WHERE CLIENT_ID = VL_CLIENT_ID\r
+           AND PAYMENT_ID = ( SELECT MAX(A.PAYMENT_ID)\r
+                 FROM TB_PAYMENT_DETAIL A, TB_PAYMENT_HEADER B\r
+                WHERE A.CLIENT_ID = VL_CLIENT_ID \r
+                 AND A.PAYMENT_ID = B.PAYMENT_ID\r
+                 AND A.PAYMENT_ID :: BIGINT < VL_CASE_ID AND B.PAYMENT_TYPE_CD = '6'\r
+                 AND B.PAYMENT_DT IS NOT NULL\r
+                 AND A.DELETE_SW = 'N' AND B.DELETE_SW = 'N')  \r
+           AND DELETE_SW = 'N';\r
+            \r
+          -- raise notice 'VDEC_PAYMENT_PREVIOUS_AMOUNT%', VDEC_PAYMENT_PREVIOUS_AMOUNT;\r
+  \r
+          EXCEPTION WHEN OTHERS THEN \r
+          VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+          VS_MESSAGE = 'SELECT PREVIOUS PAYMENT SUM FAILED FOR  TABLE paymentdetail'   || SQLERRM  ;\r
+          RETURN;\r
+         END;\r
+            \r
+  \r
+         IF VDEC_PAYMENT_AMOUNT IS NOT NULL AND VDEC_PAYMENT_PREVIOUS_AMOUNT IS NOT NULL THEN\r
+          IF VDEC_PAYMENT_AMOUNT = VDEC_PAYMENT_PREVIOUS_AMOUNT THEN\r
+           VS_PROCESS_FLAG := 'N';\r
+             \r
+           BEGIN                                                                               \r
+            UPDATE csesoutboundtrigger \r
+             SET activeflag = 0 --UPDATE DELETE STATUS\r
+            WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+  \r
+            EXCEPTION WHEN OTHERS THEN \r
+             VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+             VS_MESSAGE := 'DELETE OF RECORD FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+             RETURN;\r
+           END; \r
+          END IF;--VDEC_PAYMENT_AMOUNT = VDEC_PAYMENT_PREVIOUS_AMOUNT\r
+                   \r
+          CONTINUE TRIG_OUTBOUND;\r
+                   \r
+         END IF; -- VDEC_PAYMENT_AMT IS NOT NULL\r
+        END IF; --VL_PAYMENT_MAINTENANCE <=0\r
+       END IF; --VS_TRANSACTION_TYPE_CD=40\r
+       VS_PROCESS_FLAG := 'Y';\r
+       CONTINUE TRIG_OUTBOUND; --****PROCESS CLIENTS & UPDATE STATUS.                                         \r
+      END IF; -- VS_TRANSACTION_TYPE_CD > 0\r
+     END IF; -- VL_CIS_CLIENT_ROWCOUNT <=0\r
+     \r
+    ELSIF VS_TRANSACTION_TYPE_CD = '43' THEN\r
+           \r
+     IF EXISTS \r
+      (\r
+      /*  SELECT 1 \r
+       FROM  hearingtype B , \r
+         intakeservicerequestcourthearing isrc , \r
+         intakeservicerequest isr,\r
+         servicecase SC\r
+       WHERE  b.hearingtypekey = isrc.hearingtypekey\r
+         AND  isrc.intakeserviceid = isr.intakeserviceid\r
+         AND ISR.servicecaseid = SC.servicecaseid\r
+         AND SC.servicecasenumber:: BIGINT = VL_CASE_ID\r
+         AND B.hearingtypekey IN ('Adjudi','Disp','MHC') \r
+         AND B.activeflag = 1 */\r
+      select  1\r
+      from hearingtype B  \r
+       join intakeservicerequestcourthearing isrc on isrc.hearingtype ? b.hearingtypekey\r
+       join intakeservicerequest isr on isrc.intakeserviceid = isr.intakeserviceid\r
+       join servicecase SC on  ISR.servicecaseid = SC.servicecaseid\r
+      where SC.servicecasenumber::BIGINT = VL_CASE_ID\r
+       AND B.hearingtypekey IN ('Adjudi','Disp','MHC', 'CINA', 'CC') \r
+       AND B.activeflag = 1\r
+      )  THEN -- '3931','7331'\r
+\r
+       IF VL_CIS_CLIENT_ROWCOUNT > 0 AND VL_PLACEMENT_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD = '43' THEN\r
+        VS_PROCESS_FLAG := 'Y';\r
+        CONTINUE TRIG_OUTBOUND;                --****PROCESS CLIENTS & UPDATE STATUS.\r
+       END IF;\r
+           \r
+     ELSE\r
+      VS_PROCESS_FLAG := 'N';\r
+     \r
+      BEGIN                                       \r
+       UPDATE csesoutboundtrigger \r
+        SET activeflag = 0\r
+       WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+          \r
+       EXCEPTION WHEN OTHERS THEN \r
+       VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+       VS_MESSAGE = 'DELETE OF RECORD FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'    || SQLERRM ;\r
+       RETURN;\r
+      END;     \r
+     END IF;\r
+         \r
+    ELSIF VS_TRANSACTION_TYPE_CD = '45' THEN\r
+           \r
+     IF VL_CIS_CLIENT_ROWCOUNT > 0 AND VL_PLACEMENT_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD = '45' THEN\r
+      VS_PROCESS_FLAG := 'Y';\r
+      CONTINUE TRIG_OUTBOUND; --****PROCESS CLIENTS & UPDATE STATUS.\r
+     END IF;               \r
+    END IF ; --VS_TRANSACTION_TYPE_CD = '15'\r
+\r
+   ELSIF VL_CLIENT_ID <= 0 OR VL_CLIENT_ID IS NULL OR VS_TRANSACTION_TYPE_CD IN ('42','45') \r
+    AND VS_TRANSACTION_TYPE_CD NOT IN ('40','41') THEN\r
+        \r
+    IF VL_CASE_ID > 0 THEN\r
+     IF VS_TRANSACTION_TYPE_CD = '43' THEN\r
+  \r
+      IF EXISTS\r
+       ( SELECT 1 \r
+        FROM hearingtype B, \r
+         intakeservicerequestcourthearing isrc, \r
+         intakeservicerequest isr,\r
+         servicecase SC\r
+        WHERE b.hearingtypekey = isrc.hearingtypekey\r
+         AND isrc.intakeserviceid = isr.intakeserviceid\r
+         AND ISR.servicecaseid = SC.servicecaseid\r
+         AND SC.servicecasenumber:: BIGINT = VL_CASE_ID \r
+         AND B.hearingtypekey IN ('Adjudi','Disp','MH') \r
+         AND B.activeflag = 1)  THEN -- '3931','7331'\r
+            \r
+       BEGIN\r
+       \r
+        SELECT COUNT(*) \r
+         INTO VL_CASE_HEARING_PLACEMENT_EXISTS\r
+        FROM hearingclients HC, \r
+         intakeservicerequestcourthearing ich, \r
+         person pp, \r
+         intakeservicerequest ISR, \r
+         intakeservicerequestactor ISA,\r
+         servicecase SC\r
+        WHERE HC.courthearingid = ich.intakeservicerequestcourthearingid\r
+         AND pp.personid = HC.personid\r
+         AND ISR.servicecaseid = SC.servicecaseid\r
+         AND SC.servicecasenumber:: BIGINT = VL_CASE_ID\r
+         AND ISR.intakeserviceid = ICH.intakeserviceid \r
+         AND ISA.personid = pp.personid\r
+         AND EXISTS ( SELECT 1 FROM intakeservicerequestactor TCC, actor TA\r
+             WHERE  TCC.intakeserviceid = ICH.intakeserviceid  \r
+               AND TCC.personid = HC.personid \r
+               AND TA.actortype = 'CHILD' \r
+               AND TCC.activeflag = 1 \r
+               and TA.activeflag = 1)\r
+         AND HC.activeflag = 1\r
+         AND ICH.activeflag = 1\r
+         AND SC.activeflag = 1\r
+         AND EXISTS ( SELECT 1 FROM TB_PLACEMENT TBP,  person PP\r
+             WHERE  TBP.CLIENT_ID = PP.cjamspid \r
+               AND PP.personid = HC.personid \r
+               AND TBP.EXIT_DT IS NULL\r
+               AND   TBP.ENTRY_DT IS NOT NULL\r
+               AND   TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+               AND   TBP.APPROVAL_STATUS_CD = '3047' \r
+               AND COALESCE(TBP.VOID_SW, '') <> 'Y'\r
+               AND TBP.DELETE_SW = 'N') ;  \r
+\r
+        -- raise notice 'VL_CASE_HEARING_PLACEMENT_EXISTS%', VL_CASE_HEARING_PLACEMENT_EXISTS;       \r
+\r
+        EXCEPTION WHEN OTHERS THEN \r
+        VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+        VS_MESSAGE = 'SELECT  COUNT(*) FROM TB_COURT_HEARINGS FAILED FOR COURT_HEARING_ID:' || VL_CASE_ID::VARCHAR   || SQLERRM  ;\r
+         \r
+       END;       \r
+\r
+       IF VL_CASE_HEARING_PLACEMENT_EXISTS <= 0 THEN\r
+        \r
+        BEGIN\r
+         UPDATE csesoutboundtrigger \r
+          SET statusflag = 'I'\r
+         WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+\r
+         EXCEPTION WHEN OTHERS THEN\r
+         VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+         VS_MESSAGE = 'UPDATE2 OF STATUS FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+         RETURN;\r
+        END;\r
+        CONTINUE TRIG_OUTBOUND ;\r
+       END IF;   \r
+               \r
+       SELECT  count(*) \r
+       INTO vl_hearing_clients_count\r
+       FROM hearingclients HC, \r
+        intakeservicerequestcourthearing ich, \r
+        person pp, \r
+        intakeservicerequest ISR, \r
+        intakeservicerequestactor ISA,\r
+        servicecase SC\r
+       WHERE HC.courthearingid = ich.intakeservicerequestcourthearingid\r
+        AND pp.personid = HC.personid\r
+        AND ISR.servicecaseid = SC.servicecaseid\r
+        AND SC.servicecasenumber:: BIGINT = VL_CASE_ID\r
+        AND ISR.intakeserviceid = ICH.intakeserviceid \r
+        AND ISA.personid = pp.personid\r
+        AND EXISTS ( SELECT  1 FROM intakeservicerequestactor TCC, actor TA\r
+            WHERE  TCC.intakeserviceid = ICH.intakeserviceid  \r
+              AND TCC.personid = HC.personid \r
+              AND TA.actortype = 'CHILD' \r
+              AND TCC.activeflag = 1 \r
+              and TA.activeflag = 1)\r
+        AND HC.activeflag = 1\r
+        AND ICH.activeflag = 1\r
+        AND SC.activeflag = 1\r
+        AND EXISTS ( SELECT  1 FROM TB_PLACEMENT TBP,  person PP\r
+            WHERE  TBP.CLIENT_ID = PP.cjamspid \r
+              AND PP.personid = HC.personid \r
+              AND TBP.EXIT_DT IS NULL\r
+              AND   TBP.ENTRY_DT IS NOT NULL\r
+              AND   TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+              AND   TBP.APPROVAL_STATUS_CD = '3047'\r
+              AND COALESCE(TBP.VOID_SW, '') <> 'Y'               \r
+              AND TBP.DELETE_SW = 'N');  \r
+     \r
+       --raise notice 'vl_hearing_clients_count%', vl_hearing_clients_count;\r
+\r
+       OPEN CASE_HEARING;\r
+       <<HEAR_CLIENT_LABEL>>\r
+       WHILE vl_hearing_clients_count > 0 LOOP\r
+              \r
+        FETCH  CASE_HEARING INTO vl_case_client_id, VL_CASE_PERSON_ID ;\r
+   \r
+        -- raise notice 'vl_case_client_id%', vl_case_client_id;\r
+   \r
+        IF vl_hearing_clients_count <= 0 THEN\r
+         EXIT HEAR_CLIENT_LABEL;\r
+        END IF;\r
+\r
+        IF vl_case_client_id  > 0 THEN\r
+      \r
+         VL_CIS_CASE_CLIENT_ROWCOUNT := 0 ;\r
+         BEGIN                                                              \r
+          SELECT COUNT(*) \r
+           INTO VL_CIS_CASE_CLIENT_ROWCOUNT \r
+          FROM person\r
+          WHERE cjamspid = VL_CASE_CLIENT_ID\r
+           AND LENGTH(cisclientid) > 0 \r
+           AND activeflag = 1;\r
+          \r
+          EXCEPTION WHEN OTHERS THEN\r
+          VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+          VS_MESSAGE = 'SELECT  COUNT(*) FROM TB_CLIENT FAILED FOR CIS_CLIENT_ID:' || VL_CASE_CLIENT_ID::VARCHAR    || SQLERRM ;\r
+          RETURN;\r
+         END ;\r
+  \r
+                   \r
+         IF VL_CIS_CASE_CLIENT_ROWCOUNT <= 0 THEN\r
+          IF VS_TRANSACTION_TYPE_CD = '43' THEN\r
+          \r
+           BEGIN                                                                          \r
+            INSERT INTO csesoutboundtrigger \r
+             ( old_id,\r
+              fk_id,\r
+              transactionon,\r
+              transactiontypekey,\r
+              statusflag,\r
+              activeflag\r
+             )\r
+            VALUES\r
+             ( VL_CASE_ID,\r
+              vl_case_client_id,\r
+              CURRENT_TIMESTAMP,\r
+              '43',\r
+              'N',\r
+              1\r
+             );\r
+             \r
+            EXCEPTION WHEN OTHERS THEN\r
+            VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+            VS_MESSAGE = 'INSERT INTO TB_CSES_OUTBOUND_TRIGGER FAILED'  || SQLERRM   ;\r
+            RETURN;\r
+           END ;\r
+           VS_INTERFACE_PROCESSED_FLAG := 'Y' ;\r
+          END IF; \r
+  \r
+         ELSIF VL_CIS_CASE_CLIENT_ROWCOUNT > 0 THEN\r
+          VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;\r
+          -- RAISE NOTICE 'W OUTBOUND BEFORE GEN DATA%', VL_CLIENT_ID; \r
+          BEGIN                                                                       \r
+           SELECT * \r
+            INTO VS_MESSAGE,VL_OUTPUT_SQLCODE \r
+           from sp_cses_outbound_interface_gen_data(  VL_CLIENT_ID,\r
+                      VL_CASE_ID,\r
+                      VS_TRANSACTION_TYPE_CD,\r
+                      VL_TRANSACTION_SEQUENCE,\r
+                      VD_TRANSACTION_TS\r
+                     );\r
+       \r
+           EXCEPTION WHEN OTHERS THEN\r
+           VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+           VS_MESSAGE = 'FAILED TO GENERATE INTERFACE DATA FOR TRANSACTION_TYPE_CD:'||VS_TRANSACTION_TYPE_CD || ' AND CLIENT_ID:'||VL_CASE_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+           RETURN;\r
+          END ;\r
+          VS_INTERFACE_PROCESSED_FLAG := 'Y' ;\r
+         END IF;\r
+        END IF;\r
+              \r
+        vl_hearing_clients_count := vl_hearing_clients_count -1 ;\r
+       END LOOP;\r
+       CLOSE CASE_HEARING;\r
+\r
+       IF VL_OUTPUT_SQLCODE = '00000' AND VS_INTERFACE_PROCESSED_FLAG = 'Y' THEN\r
+                \r
+        BEGIN   \r
+         UPDATE csesoutboundtrigger \r
+          SET statusflag = 'P'\r
+         WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+\r
+         EXCEPTION WHEN OTHERS THEN\r
+         VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+         VS_MESSAGE = 'UPDATE3 OF STATUS FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'  || SQLERRM ;\r
+         RETURN;\r
+        END ;\r
+        VS_INTERFACE_PROCESSED_FLAG := 'N' ;\r
+       END IF;\r
+\r
+       VS_INTERFACE_PROCESSED_FLAG := 'N' ;\r
+           \r
+      ELSE -- IF EXISTS TB_HEARING_PICKLIST\r
+   \r
+       BEGIN                                               \r
+        UPDATE csesoutboundtrigger \r
+         SET statusflag = 'Y'\r
+        WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+\r
+        EXCEPTION WHEN OTHERS THEN\r
+        VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+        VS_MESSAGE = 'DELETE OF RECORD FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+        RETURN ;\r
+       END ;\r
+      END IF;\r
+      CONTINUE TRIG_OUTBOUND ;\r
+     END IF;  \r
+     -- VS_TRANSACTION_TYPE_CD='43'\r
+  \r
+     VL_PLACEMENT_EXISTS := 0 ;\r
+          \r
+     BEGIN\r
+      /*  SELECT  COUNT(*) \r
+      INTO  VL_PLACEMENT_EXISTS \r
+      FROM  intakeservicerequestactor i , intakeservicerequest ins,servicecase SC\r
+      WHERE  i.intakeserviceid = ins.intakeserviceid\r
+        AND INS.servicecaseid = SC.servicecaseid\r
+        AND SC.servicecasenumber:: BIGINT = VL_CASE_ID  AND i.activeflag = 1\r
+        AND ins.activeflag = 1\r
+        AND SC.activeflag = 1\r
+        AND EXISTS ( SELECT  1 FROM TB_PLACEMENT TBP , person pp , intakeservicerequestactor i\r
+            WHERE  pp.personid = i.personid \r
+              and TBP.CLIENT_ID = pp.cjamspid\r
+              AND TBP.EXIT_DT IS NULL \r
+              AND TBP.ENTRY_DT IS NOT NULL \r
+              AND TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+              AND TBP.APPROVAL_STATUS_CD = '3047' \r
+              AND TBP.DELETE_SW = 'N');             -- */\r
+           \r
+           \r
+      select  COUNT(*)\r
+      INTO  VL_PLACEMENT_EXISTS\r
+      FROM    intakeservicerequestactor A,\r
+        person P,  \r
+        servicecase S,\r
+        intakeservicerequest C \r
+      WHERE   A.personid = P.personid and\r
+        A.intakeserviceid = C.intakeserviceid and\r
+        A.intakeservicerequestpersontypekey = 'CHILD' and\r
+        S.servicecasenumber = VL_CASE_ID and\r
+        s.servicecaseid = C.servicecaseid and\r
+        A.activeflag = 1 and\r
+        C.activeflag = 1 and\r
+        P.activeflag = 1 AND\r
+        EXISTS (    SELECT 1\r
+           FROM TB_PLACEMENT TBP, person p\r
+           WHERE TBP.client_id = P.cjamspid \r
+            AND TBP.EXIT_DT IS NULL AND TBP.ENTRY_DT IS NOT NULL\r
+            AND TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+            AND TBP.APPROVAL_STATUS_CD = '3047'\r
+            AND COALESCE(TBP.VOID_SW, '') <> 'Y'               \r
+            AND TBP.DELETE_SW = 'N' );\r
+\r
+      EXCEPTION WHEN OTHERS THEN\r
+      VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+      VS_MESSAGE = 'SELECT  COUNT(*) FROM intakeservicerequestactor FAILED FOR CASE_ID:' || VL_CASE_ID::VARCHAR    || SQLERRM ;\r
+      RETURN;\r
+     END ;\r
+  \r
+     IF VL_PLACEMENT_EXISTS <= 0 THEN\r
+  \r
+      BEGIN  \r
+       UPDATE csesoutboundtrigger \r
+        SET statusflag = 'I'\r
+       WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+\r
+       EXCEPTION WHEN OTHERS THEN\r
+       VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+       VS_MESSAGE = 'UPDATE4 OF STATUS FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+       RETURN;\r
+      END ;\r
+      CONTINUE TRIG_OUTBOUND ; \r
+     END IF;\r
+\r
+     SELECT Count(*) \r
+      INTO vl_case_client_count  \r
+     FROM intakeservicerequestactor i , \r
+      intakeservicerequest ins,\r
+      servicecase SC\r
+     WHERE i.intakeserviceid = ins.intakeserviceid\r
+      AND INS.servicecaseid = SC.servicecaseid\r
+      AND SC.servicecasenumber:: BIGINT = VL_CASE_ID  AND i.activeflag = 1\r
+      AND ins.activeflag = 1\r
+      AND SC.activeflag = 1\r
+      AND EXISTS ( SELECT 1 FROM TB_PLACEMENT TBP , person pp , intakeservicerequestactor i\r
+          WHERE  pp.personid = i.personid \r
+            and TBP.CLIENT_ID = pp.cjamspid\r
+            AND TBP.EXIT_DT IS NULL \r
+            AND TBP.ENTRY_DT IS NOT NULL \r
+            AND TBP.PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+            AND COALESCE(TBP.VOID_SW, '') <> 'Y'\r
+            AND TBP.APPROVAL_STATUS_CD = '3047' \r
+            AND TBP.DELETE_SW = 'N');    \r
+    \r
+     -- raise notice 'vl_case_client_count%', vl_case_client_count ;\r
+     \r
+     OPEN  CASE_CLIENT;\r
+     <<CASE_CLIENT_LABEL>>  \r
+     WHILE vl_case_client_count > 0 LOOP\r
+      FETCH  CASE_CLIENT INTO VL_CASE_CLIENT_ID, VL_CASE_PERSON_ID  ;\r
+      -- raise notice 'VL_CASE_CLIENT_ID%', VL_CASE_CLIENT_ID;\r
+      -- raise notice 'VL_CASE_PERSON_ID%', VL_CASE_PERSON_ID;\r
+      IF vl_case_client_count <= 0 THEN\r
+       EXIT CASE_CLIENT_LABEL;\r
+      END IF;\r
+           \r
+      vl_case_client_count := vl_case_client_count -1 ;\r
+      IF vl_case_client_id  > 0 THEN\r
+       VL_CIS_CASE_CLIENT_ROWCOUNT := 0 ;\r
+    \r
+       BEGIN\r
+        SELECT COUNT(*) \r
+        INTO VL_CIS_CASE_CLIENT_ROWCOUNT \r
+        FROM person\r
+        WHERE cjamspid = vl_case_client_id \r
+         AND LENGTH(cisclientid) > 0\r
+         AND activeflag = 1;\r
+          \r
+        EXCEPTION WHEN OTHERS THEN\r
+        VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+        VS_MESSAGE = 'SELECT  COUNT(*) FROM TB_CLIENT FAILED FOR CLIENT_ID:' || VL_CASE_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+        RETURN;\r
+       END ;\r
+  \r
+       IF VL_CIS_CASE_CLIENT_ROWCOUNT <= 0 THEN\r
+        IF VS_TRANSACTION_TYPE_CD = '45' THEN\r
+         BEGIN\r
+          INSERT INTO csesoutboundtrigger  \r
+           ( csesoutboundtriggerid,\r
+            old_id,\r
+            fk_id,\r
+            transactionon,\r
+            transactiontypekey,\r
+            statusflag,\r
+            activeflag\r
+           )\r
+          VALUES \r
+           ( gen_random_uuid(), \r
+            VL_CASE_ID,\r
+            vl_case_client_id,\r
+            CURRENT_TIMESTAMP,\r
+            '45',\r
+            'N',\r
+            1\r
+           );\r
+                   \r
+           EXCEPTION WHEN OTHERS THEN\r
+           VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+           VS_MESSAGE ='INSERT INTO TB_CSES_OUTBOUND_TRIGGER FAILED'   || SQLERRM  ;\r
+           RETURN;\r
+         END ;\r
+         VS_INTERFACE_PROCESSED_FLAG := 'Y' ;\r
+        END IF; \r
+       ELSIF  VL_CIS_CASE_CLIENT_ROWCOUNT > 0 THEN\r
+    \r
+        IF LENGTH(VS_TRANSACTION_TYPE_CD) > 0 THEN\r
+         IF VS_TRANSACTION_TYPE_CD = '42' THEN\r
+          VL_PARENT_EXISTS := 0 ;\r
+        \r
+          BEGIN\r
+           SELECT COUNT(*) \r
+            INTO VL_PARENT_EXISTS\r
+           FROM actorrelationship acr, \r
+            person p  \r
+           WHERE p.personid = acr.client2id \r
+            and p.cjamspid = VL_CASE_CLIENT_ID  \r
+            --AND client1id :: uuid  = VL_CASE_PERSON_ID\r
+            --AND relationshiptypekey IN ('3447','3449','BGCHLD') \r
+            AND relationshiptypekey IN ('1881','1885','BGFTHR','BGMTHR')\r
+            AND acr.activeflag = 1 \r
+            and p.activeflag = 1;\r
+             \r
+           -- RAISE NOTICE 'VL_PARENT_EXISTS%', VL_PARENT_EXISTS;\r
+        \r
+           EXCEPTION WHEN OTHERS THEN\r
+           VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+           VS_MESSAGE = 'SELECT PARENT EXISTS COUNT FAILED FOR  TABLE TB_CLIENT_RELATIONSHIPS'   || SQLERRM  ;\r
+           RETURN;\r
+          END ;\r
+        \r
+          IF VL_PARENT_EXISTS <= 0 THEN\r
+           CONTINUE CASE_CLIENT_LABEL ;\r
+          END IF ;\r
+\r
+          VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;\r
+        \r
+          -- RAISE NOTICE 'X OUTBOUND BEFORE GEN DATA%', VL_CLIENT_ID;\r
+        \r
+          BEGIN \r
+           SELECT  * \r
+            INTO VS_MESSAGE ,VL_OUTPUT_SQLCODE\r
+           from sp_cses_outbound_interface_gen_data( VL_CASE_CLIENT_ID,\r
+                      VL_CASE_ID,\r
+                      VS_TRANSACTION_TYPE_CD,\r
+                      VL_TRANSACTION_SEQUENCE,\r
+                      VD_TRANSACTION_TS\r
+                     );\r
+              \r
+           EXCEPTION WHEN OTHERS THEN\r
+           VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+           VS_MESSAGE = 'FAILED TO GENERATE INTERFACE DATA FOR TRANSACTION_TYPE_CD:'||VS_TRANSACTION_TYPE_CD || ' AND CLIENT_ID:'||VL_CASE_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+           RETURN;\r
+          END ;\r
+         ELSE\r
+          VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;\r
+          -- RAISE NOTICE 'Y OUTBOUND BEFORE GEN DATA%', VL_CLIENT_ID;\r
+         \r
+          BEGIN \r
+           SELECT * \r
+            INTO VS_MESSAGE ,VL_OUTPUT_SQLCODE\r
+           from sp_cses_outbound_interface_gen_data( VL_CASE_CLIENT_ID,\r
+                      VL_CASE_ID,\r
+                      VS_TRANSACTION_TYPE_CD,\r
+                      VL_TRANSACTION_SEQUENCE,\r
+                      VD_TRANSACTION_TS\r
+                     );\r
+           EXCEPTION WHEN OTHERS THEN\r
+           VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+           VS_MESSAGE ='FAILED TO GENERATE INTERFACE DATA FOR TRANSACTION_TYPE_CD:'||VS_TRANSACTION_TYPE_CD || ' AND CLIENT_ID:'||VL_CASE_CLIENT_ID::VARCHAR   || SQLERRM  ;\r
+           RETURN; \r
+          END  ;     \r
+         END IF;\r
+  \r
+         VS_INTERFACE_PROCESSED_FLAG := 'Y' ;\r
+        END IF; -- transaction_type_cd > 0\r
+       END IF; -- VL_CIS_CASE_CLIENT_ROWCOUNT <= 0\r
+      END IF; --vl_case_client_id > 0\r
+             \r
+     END LOOP;  \r
+     CLOSE CASE_CLIENT;\r
+\r
+     IF VL_OUTPUT_SQLCODE = '00000' AND VS_INTERFACE_PROCESSED_FLAG = 'Y' THEN\r
+           \r
+      BEGIN \r
+       UPDATE csesoutboundtrigger \r
+        SET statusflag = 'P'\r
+       WHERE CURRENT OF TRIGGER_OUTBOUND;\r
+       \r
+       EXCEPTION WHEN OTHERS THEN\r
+       VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+       VS_MESSAGE = 'UPDATE5 OF STATUS FAILED FOR  TABLE TB_CSES_OUTBOUND_TRIGGER'   || SQLERRM  ;\r
+       RETURN ;\r
+      END;\r
+      VS_INTERFACE_PROCESSED_FLAG := 'N' ;\r
+     END IF;\r
+          \r
+     VS_INTERFACE_PROCESSED_FLAG := 'N' ;\r
+\r
+    END IF; -- VL_CASE_ID > 0\r
+   END IF; -- vl_client_id > 0\r
+  END LOOP;  \r
+  CLOSE TRIGGER_OUTBOUND;\r
+  \r
+  -- Add record to Interface Log\r
+  \r
+  --INSERT INTO TB_INTERFACES_RUNTIMES_LOG\r
+    --( RUN_ID,\r
+   --INTERFACE_TX,\r
+   --CURRENT_RUN_TS,\r
+   --PREVIOUS_RUN_TS,\r
+   --CREATE_TS,\r
+   --CREATE_USER_ID,\r
+   --UPDATE_TS,\r
+   --UPDATE_USER_ID,\r
+   --activeflag  )\r
+   --SELECT\r
+   --NEXTVAL FOR CHESSIE.SQ_INTERFACES_RUNTIMES_LOG,\r
+   --'CSES_OUTBOUND',\r
+   --vts_current_run_ts,\r
+   --vts_previous_run_ts,\r
+   --CURRENT TIMESTAMP,\r
+   --'batch',          \r
+   --CURRENT TIMESTAMP,\r
+   --'batch',\r
+   --'N'\r
+   --FROM sysibm.sysdummy1 ;\r
+  \r
+  --  VL_OUTPUT_SQLCODE  ;=  SQLCODE;\r
+  --IF SQLCODE <> 0 AND (SQLSTATE <> '00000')  THEN\r
+    -- VS_MESSAGE := 'INSERT INTO TB_INTERFACES_RUNTIMES_LOG FAILED'  ;\r
+    --CONTINUE ERROR_SECTION ;\r
+  --END IF;\r
+  -- Success.\r
+  --COMMIT;\r
+\r
+  VL_OUTPUT_SQLCODE := '00000';\r
+  VS_MESSAGE := 'THE RUN WAS SUCCESSFUL.';\r
+  -- a := vts_current_run_ts;\r
+  -- b :=  vts_previous_run_ts;\r
+ END;\r
+END;\r
+$function$
+

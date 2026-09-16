@@ -1,0 +1,82 @@
+CREATE OR REPLACE FUNCTION prov_getolmroutingusers(v_securityuserid character varying, v_appeventcode character varying, v_roleid character varying, v_teamtypekey character varying DEFAULT NULL::character varying, v_teamtypekey2 character varying DEFAULT NULL::character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+declare 
+
+v_teamid character varying;
+v_parentteamid character varying;
+jsondata json;
+
+BEGIN
+
+
+        SELECT  tm.teamid, t.parentteamid  INTO v_teamid, v_parentteamid
+        FROM    (select * from teammemberassignment union all select * from as_teammemberassignment t2 where t2.securityusersid not in (select t1.securityusersid from teammemberassignment t1 where t1.activeflag=1)) tma 
+                INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+                INNER JOIN  teammemberroletype  tmrt   ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+                INNER JOIN  team t on t.teamid = tm.teamid  and t.activeflag =1
+    INNER JOIN muser m on m.securityusersid = tma.securityusersid 
+    INNER JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag = 1 
+    INNER JOIN role r on r.id = rm.roleid 
+        WHERE  m.SecurityUsersId = v_securityuserid 
+        AND rm.teamtypekey IN ('OLM','OLMDJS', 'OLMSSA', 'RESDJS')
+        and r.id = v_roleid
+  AND    tma.activeflag =1;
+
+
+select json_agg(a) into jsondata from (
+select  tm.securityusersid as userid,
+        t.teamname, 
+        cast (coalesce(rt.workload,0) as int) as workload,
+        cast(up.firstname || ' ' || up.lastname as character varying) as username,
+        tm.agency as agencykey,
+        up.email,
+        cast(r.name as character varying) as userrole,
+        tm.loadnumber,
+        cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+        ,supervisor,
+        tm.zipcode,
+        tm.zipcodeplus,
+        tm.juridiction,
+        up.cjamspid,
+         cast(coalesce(rt.casecount,0) as bigint) as totalcases,
+         r.description,
+         (select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) from userprofilephonenumber u where  u.securityusersid =tm.securityusersid  ) as phonenumber
+         FROM 
+        (SELECT distinct  tma.securityusersid,tma.teammemberid,r.roletypekey ,
+            cast(rm.teamtypekey as character varying) agency
+            ,tm.teamid, tm.loadnumber,r.name as rolename,
+            coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction        
+            
+            FROM (select * from teammemberassignment union all select * from as_teammemberassignment t2 where t2.securityusersid not in (select t1.securityusersid from teammemberassignment t1 where t1.activeflag=1)) tma
+            INNER join teammember tm ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+            INNER JOIN team t on t.teamid = tm.teamid  AND  t.activeflag =1   
+            INNER JOIN muser m on m.securityusersid = tma.securityusersid 
+            INNER JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag = 1 
+            INNER JOIN role r on r.id = rm.roleid and r.activeflag=1
+            INNER join teammemberroletype  tmrt  ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join teamtype tty on tty.teamtypekey = tmrt.teamtypekey AND tty.activeflag= 1 
+            LEFT JOIN UserProfileAddress upa  ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+            INNER join routingcONfig rc  
+         ON (case when v_appeventcode = 'submit' then rc.sourcerolekey  = r.roletypekey 
+                    when v_appeventcode = 'return' then rc.targetrolekey = r.roletypekey  end) and rc.eventcode ='OLMRT'   AND rc.activeflag= 1
+            WHERE
+                 tma.activeflag =1  
+                AND rm.teamtypekey in (v_teamtypekey, v_teamtypekey2)
+                -- AND m.securityusersid not in (v_securityuserid)
+  ) tm
+        inner join  userprofile up   ON up.securityusersid = tm.securityusersid AND up.activeflag= 1 AND up.expirationdate IS NULL 
+     inner join team t on t.teamid = tm.teamid and t.activeflag= 1  
+        LEFT JOIN (SELECT * FROM "cjams".getuserworkloadcount()) rt ON   rt.securityusersid = tm.securityusersid 
+        inner join role r on r.roletypekey = tm.roletypekey and r.activeflag=1
+        order by  useravailable desc, up.fullname, coalesce(rt.workload,0)  
+) a;
+
+return jsondata;
+
+        
+  end;
+$function$
+

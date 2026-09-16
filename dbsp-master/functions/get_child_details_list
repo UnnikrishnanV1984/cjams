@@ -1,0 +1,81 @@
+CREATE OR REPLACE FUNCTION get_child_details_list(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, client_id bigint, client_name character varying, client_dob timestamp without time zone, client_age integer, ssn character varying, client_gender character varying, case_id character varying, case_nm character varying, case_worker_id bigint, case_worker_name character varying, case_worker_phone_no character varying, local_dept character varying, county_cd text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_client_id bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_client_name character varying;
+
+BEGIN 
+v_client_id := searchobj ->> 'client_id';
+v_client_name := searchobj ->> 'client_name';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+ return query
+SELECT  COUNT(1) OVER() totalcount, 
+ P.cjamspid as client_id, 
+ CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as client_name, 
+    P.dob as client_dob ,        
+    (DATE_PART('year', current_date ::date) - DATE_PART('year', P.dob::date)) :: integer as client_age ,
+ -- p.ssnno :: character varying 
+ (select pid.personidentifiervalue from personidentifier pid 
+  where pid.personidentifiertypekey = 'SSN' and pid.personid = p.personid and pid.activeflag = 1 limit 1) :: character varying as ssn
+ ,GT.typedescription as client_gender  
+ ,sc.servicecasenumber as case_id  
+--  ,ISRT.description as case_nm
+-- ,''::character varying as case_nm 
+ ,(select description from intakeservicerequesttype 
+  where intakeservreqtypeid=sc.intakeservreqtypeid and activeflag=1 order by insertedon desc limit 1 ) as case_nm 
+ ,up.cjamspid as case_worker_id
+ ,up.displayname as case_worker_name
+ ,uppn.phonenumber as case_worker_phone_no
+, c.countyname,
+(select trim(PICKLIST_VALUE_CD) from tb_picklist_values where TRIM(lower(value_tx)) like '%' || TRIM(lower(c.countyname)) || '%' 
+ AND PICKLIST_type_id=104 AND delete_sw='N' AND active_sw='Y' AND  c.countyname is not null limit 1) as  county_cd
+FROM person as P
+INNER JOIN tb_placement pl ON P.cjamspid=pl.client_id and pl.delete_sw='N'
+INNER JOIN gendertype as GT ON GT.gendertypekey = p.gendertypekey and GT.activeflag =1
+INNER JOIN servicecase as sc ON sc.servicecasenumber = pl.case_id:: character varying AND sc.activeflag = 1
+INNER JOIN (SELECT RANK() OVER(PARTITION BY objectid ORDER BY insertedon DESC) rno, * 
+    FROM caseassignment) ca ON ca.objectid = sc.servicecaseid AND sc.activeflag = 1 AND rno = 1
+LEFT JOIN userprofile up on up.securityusersid= ca.toworkeridno and up.activeflag =1 
+LEFT JOIN userprofilephonenumber uppn on up.securityusersid=uppn.securityusersid and uppn.userprofiletypekey='cell' and uppn.activeflag =1 
+LEFT JOIN userprofileaddress upa on up.securityusersid=upa.securityusersid  and upa.activeflag =1 AND upa.county is not null
+left join teammemberassignment tma on tma.securityusersid=  up.securityusersid and tma.activeflag=1 
+left join teammember tm on  tm.teammemberid = tma.teammemberid  and tm.activeflag=1 
+left join team t on t.teamid = tm.teamid and t.activeflag=1
+left join county c on  t.countyid = c.countyid::character varying  
+WHERE --P.cjamspid =  v_client_id 
+ (v_client_id is null or P.cjamspid = v_client_id)
+ and ( v_client_name is null  or 
+ (lower(CAST(INITCAP(TRIM(P.firstname)||' ' ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ELSE '' END
+       || ' '||TRIM(P.lastname) )as character varying)) like lower('%' || v_client_name || '%'))
+ OR CASE  WHEN  lower(trim(v_client_name))  is  NOT  NULL  THEN  ( soundex(lower(trim(p.firstname))) = soundex(lower(trim(v_client_name))))  END 
+ OR  CASE  WHEN  lower(trim(v_client_name))  is  NOT  NULL  THEN  ( soundex(lower(trim( p.LastName))) = soundex(lower(trim(v_client_name))))  END
+    OR  CASE  WHEN  lower(trim(v_client_name))  is  NOT  NULL  THEN  ( soundex(lower(trim( p.MiddleName))) = soundex(lower(trim(v_client_name))))END  
+    )
+--        AND (v_client_name is null or lower(CAST(INITCAP(TRIM(P.firstname)||' ' ||
+-- CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ELSE '' END
+--       || ' '||TRIM(P.lastname) )as character varying)) like lower('%' || v_client_name || '%') )
+--AND (v_client_name is null or lower(CAST(INITCAP(TRIM(P.firstname)||' ' ||
+-- CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ||''  ELSE '' END
+--       || ''||TRIM(P.lastname) )as character varying)) like lower('%' || v_client_name || '%') )
+ /*lower(CAST(INITCAP(TRIM(P.firstname)||' ' ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ELSE '' END
+       || ' '||TRIM(P.lastname) )as character varying)) like lower('%Darren%')*/
+ AND pl.placement_id=(SELECT MAX(PLA.placement_id) from tb_placement PLA where PLA.client_id=P.cjamspid)
+-- AND sc.servicecasenumber=pl.case_id::character varying
+ AND p.activeflag =1
+ -- limit 1;
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+$function$
+

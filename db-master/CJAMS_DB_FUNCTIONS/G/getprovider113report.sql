@@ -1,0 +1,135 @@
+DROP FUNCTION IF EXISTS getprovider113report(integer, character varying, date, date);
+
+CREATE OR REPLACE FUNCTION cjams.getprovider113report(v_providerid integer, date_sw character varying, date_from date, date_to date)
+ RETURNS TABLE(child113report json)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 07/29/2021 Vineet Tirodkar - To fix FMIS Response check details display (CDM-15551)
+-- 01/20/2023 Umasankar Raavi- Tax ID information modification(CDM-22915)
+-- 09/06/2023 Palani/Vineet - Performance fix (CIDM-7879)
+-- 11/09/2023 Sundeep Kiran - To get check no and payment_status CJAMS Report (CDM-35359)
+-- Parshal Chitrakar - 09/12/2024 CIDM-9412 Provider Name Suffix is not updated in CW Application
+------------------------------------------------------------------------------------------------------------	
+BEGIN  
+	RETURN QUERY 
+	(select json_agg(x) from (
+		select current_date as run_date ,  
+		(	select value_tx 
+				from tb_picklist_values 
+			where PICKLIST_type_id = 37 
+				AND delete_sw = 'N'
+				AND active_sw = 'Y' 
+				AND  TRIM(PICKLIST_VALUE_CD) = TRIM(payhead.check_status_cd)
+		) as check_status,
+		PROV.provider_id,
+		/*CASE WHEN (prov.provider_nm = null OR prov.provider_nm='') THEN 
+			CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) 
+		ELSE 
+			prov.provider_nm 
+		END AS provider_nm  */
+		cjams.f_ename('2953', prov.provider_id::bigint) as provider_nm
+		,(CASE WHEN Prov.PROV_TAX_TYPE_CD = '2518' THEN 
+			(CONCAT('***-**-',RIGHT(Prov.TAX_ID_NO::character varying,4)))
+		ELSE 
+			LEFT(Prov.TAX_ID_NO::character varying,2) || '-' 
+				|| SUBSTR(Prov.TAX_ID_NO::character varying,3, LENGTH(Prov.TAX_ID_NO::character varying))
+		END 
+		)AS TAXID,
+		prov.mail_code_tx,
+		(select value_tx 
+			from tb_picklist_values 
+		where trim(picklist_value_cd) = trim(prov.prov_tax_type_cd) 
+		and picklist_type_id =216
+		)as tax_id_type,
+		(CASE WHEN (RH.BALANCE_NO > 0) THEN 'YES' ELSE 'NO' END ) AS ACCONTS_RECEIVABLE_SW,
+		coalesce(RH.BALANCE_NO,0.00) AS ACCONTS_RECEIVABLE,
+		payhead.payment_id AS payment_id,
+		payhead.payment_dt AS payment_dt,
+	
+		case when (payhead.payment_type_cd = '3294' or payhead.payment_type_cd = '4') THEN
+			(select tar.check_no as check_no 
+				from tb_afs_response tar 
+			where  tar.payment_id = payhead.payment_id 
+				AND tar.DELETE_SW = 'N' 
+			ORDER BY AFS_RESPONSE_ID DESC  
+			limit 1
+			)
+		else 
+			(SELECT WARRANT_NO as check_no 
+				FROM TB_FMIS_RESPONSE FMIS 
+			WHERE FMIS.INVOICE_NO::bigint = payhead.PAYMENT_ID
+				AND FMIS.DELETE_SW = 'N' 
+			ORDER BY FMIS_RESPONSE_ID DESC 
+			limit 1
+			) 
+		end,		
+	
+		case when (payhead.payment_type_cd = '3294' or payhead.payment_type_cd = '4') THEN
+			--(select tar.check_no as check_no from tb_afs_response tar where  tar.payment_id = payhead.payment_id AND tar.DELETE_SW = 'N' ORDER BY AFS_RESPONSE_ID DESC  limit 1)
+			(select tar.payment_status  as payment_status 
+				from tb_afs_response tar 
+			where  tar.payment_id = payhead.payment_id 
+				AND tar.DELETE_SW = 'N' 
+			ORDER BY AFS_RESPONSE_ID DESC  
+			limit 1
+			)
+		else 
+			--( SELECT WARRANT_NO as check_no FROM TB_FMIS_RESPONSE FMIS WHERE FMIS.INVOICE_NO = payhead.PAYMENT_ID ::character varying 	AND FMIS.DELETE_SW = 'N' ORDER BY FMIS_RESPONSE_ID DESC limit 1) ,
+			( SELECT CASE WHEN FMIS.TRANSACTION_CODE = '242' THEN 'Check Sent' 
+				WHEN FMIS.TRANSACTION_CODE = '710' THEN 'Check Cancelled' 
+				ELSE '' 
+				end  as payemnt_status 
+			FROM TB_FMIS_RESPONSE FMIS 
+			where FMIS.INVOICE_NO::bigint = payhead.PAYMENT_ID
+				AND FMIS.DELETE_SW = 'N' 
+			ORDER BY FMIS_RESPONSE_ID DESC 
+			limit 1
+			)
+		END								
+										
+		,coalesce(   payhead.GROSS_AMOUNT_NO,0.00) AS GROSS_AMOUNT
+		,coalesce(   payhead.OFFSET_AMOUNT_NO,0.00) AS OFFSET_AMOUNT
+		,coalesce(   (	(CASE WHEN payhead.GROSS_AMOUNT_NO IS NULL THEN 0
+						 ELSE payhead.GROSS_AMOUNT_NO END)
+						 - 
+						(CASE WHEN payhead.OFFSET_AMOUNT_NO IS NULL THEN 0 
+						ELSE payhead.OFFSET_AMOUNT_NO END)
+		),0.00) AS NET_AMOUNT,
+		(select value_tx 
+			from tb_picklist_values tpv 
+		where trim(tpv.picklist_value_cd)= trim(payhead.payment_type_cd) 
+			and tpv.picklist_type_id=2 
+		limit 1) as payment_type_nm
+	from tb_provider prov
+		LEFT JOIN TB_RECEIVABLE_HEADER RH ON RH.PROVIDER_ID = PROV.PROVIDER_ID
+			AND RH.DELETE_SW = 'N'
+		join tb_payment_header payhead on payhead.PROVIDER_ID = PROV.PROVIDER_ID 
+			AND payhead.payment_type_cd not in ('21','22')
+	where (v_providerid is null or  PROV.PROVIDER_ID = v_providerid ) 
+		AND payhead.DELETE_SW = 'N'
+		AND prov.DELETE_SW = 'N'
+		and
+			(date_sw is null 
+	  		or case 
+	  		/*  when date_sw = 'A' then
+			  		 to_date(cast(payhead.payment_dt as TEXT), 'YYYY-MM-DD')   >= '1900-01-01'
+			  when date_sw = 'M' then 
+			  	(date_trunc('month',payhead.payment_dt) = date_trunc('month', CURRENT_DATE - interval '1' month)) 
+			  when date_sw = 'Y' then
+			    date_part('year', now() :: date):: integer = date_part('year', payhead.payment_dt):: integer*/
+			  when date_sw = 'D' then 
+				  to_date(cast(payhead.payment_dt as TEXT), 'YYYY-MM-DD') 
+				  BETWEEN to_date(cast(date_from as TEXT), 'YYYY-MM-DD') 
+		  			AND to_date( cast(date_to as TEXT), 'YYYY-MM-DD' ) 
+  			end) 
+	group by PROV.provider_id,provider_nm,TAXID,prov.mail_code_tx,prov.prov_tax_type_cd, 
+		payhead.payment_id ,payhead.payment_dt,payhead.payment_type_cd,payhead.GROSS_AMOUNT_NO,
+		payhead.OFFSET_AMOUNT_NO,rh.balance_no,payhead.check_status_cd 
+	order by payment_id desc
+ )as x ) ;
+ END;
+
+$function$
+;

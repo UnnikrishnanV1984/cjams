@@ -1,0 +1,344 @@
+CREATE OR REPLACE FUNCTION sp_fostercare_csms_outbound(userid character varying, clientid bigint, removalid bigint, reviewperiod character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+-------------------------------------------------
+---05-03 - Veera Issue fix for NCP details
+
+----------------------------------------------------
+
+DECLARE
+returnStatus text;
+al_clientid bigint;
+al_removalid bigint;
+v_inputjson json;
+v_result json;
+v_count INTEGER;
+outputjson json;
+al_reviewperiod varchar;
+al_referralcounty varchar;
+v_securityuserid varchar;
+v_agencyDetails varchar;
+v_validate_agency varchar;
+v_ive_eligibility varchar;
+v_eligibility_check varchar;
+
+begin
+al_clientid = clientid;
+al_removalid = removalid;
+al_reviewperiod = reviewperiod;
+v_securityuserid = userid;
+
+select count(*) into v_count from ivecsesoutbounddata ivb where ivb.clientid = al_clientid and ivb.removalid = al_removalid and ivb.activeflag = 1;
+
+SELECT inputjson->'children' -> 0 -> 'fosterCareDetails' -> 'providerid' into v_agencyDetails FROM ivecsesoutbounddata ivb where ivb.clientid = al_clientid and ivb.removalid = al_removalid and ivb.activeflag = 1; 
+
+select tp.altproviderid into v_validate_agency  from placement tp 
+  join intakeservreqchildremoval isrcr2 on isrcr2.intakeservreqchildremovalid = tp.intakeservreqchildremovalid 
+  where tp.placementtypekey = 'PRPL' and isrcr2.removalid::bigint= al_removalid AND tp.activeflag = 1 order by tp.updatedon desc limit 1;
+
+SELECT inputjson-> 'iveCaseType' into v_ive_eligibility FROM ivecsesoutbounddata ivb where ivb.clientid = al_clientid and ivb.removalid = al_removalid and ivb.activeflag = 1; 
+
+select CASE WHEN btrim(tce.ELIGIBILITY_STATUS_CD) IN ('2913','3597','3598') THEN 'F' else 'S' END into v_eligibility_check from tb_client_eligibility tce 
+where tce.client_id = al_clientid and tce.removal_id = al_removalid limit 1;
+
+select icc.fipscode into al_referralcounty from ivecsescountycodes icc where icc.description in (select c.countyname from caseassignment ca 
+     join servicecase sc on ca.objectid = sc.servicecaseid 
+     join intakeservreqchildremoval isrcr on isrcr.servicecaseid = sc.servicecaseid  
+     join intakeservicerequestactor isra on isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid
+     join person p on p.personid = isra.personid 
+     join county c on c.countyid = ca.toldssid and c.activeflag =1
+     where p.cjamspid::bigint = al_clientid and ca.enddate is null order by ca.updatedon desc limit 1);
+
+
+
+select row_to_json(a) into v_inputjson from (
+      select tce.client_id as "iveCaseNumber",
+       --(select tep.approvalstatus from tb_eligibility_period tep where tce.eligibility_id = tep.eligibility_id order by update_ts desc limit 1) 
+       (case when al_reviewperiod is not null then 'APPROVED' else 'PENDING' end) as "iveCaseStatus",
+       (SELECT CASE WHEN btrim(tce.ELIGIBILITY_STATUS_CD) IN ('2913','3597','3598') THEN 'F'
+                            else 'S' END) as "iveCaseType",
+       (select tep.approvedon from tb_eligibility_period tep where tce.eligibility_id = tep.eligibility_id order by update_ts desc limit 1)::date as "iveApprovalDate",
+       (case when tce.start_dt::date is not null then tce.start_dt::date else '0001-01-01' end) as "effectiveDate",
+       (case when tce.end_dt::date is not null then tce.end_dt else '0001-01-01' end) as "iveGrantEndDate",
+       (case when v_ive_eligibility <> v_eligibility_check and v_count <> 0 then 'UPDT-E'
+             when v_agencyDetails <> v_validate_agency and v_count <> 0 then 'UPDT-P'
+             when (select ivb.csmsreferralid from ivecsesoutbounddata ivb where ivb.clientid = al_clientid and ivb.removalid = al_removalid order by ivb.csmsreferralid limit 1) is not null then 'UPDT' else 'NAPP' 
+        end) "ivdRecordType",
+       (case when (select fam.fund_allocation_date from tb_fund_allocation_master fam                                                                      
+       inner  join tb_payment_detail tpd on tpd.payment_detail_id= fam.payment_detail_id and tpd.delete_sw ='N'               
+       inner  join tb_payment_header tph on tph.payment_id= tpd.payment_id and tph.delete_sw='N'                              
+       inner  join person P on p.cjamspid=tpd.client_id                                                                      
+       where tpd.client_id= tce.client_id and fam.delete_sw='N'  order by fam.update_ts desc limit 1)::date is not null then (select fam.fund_allocation_date from tb_fund_allocation_master fam                                                                      
+       inner  join tb_payment_detail tpd on tpd.payment_detail_id= fam.payment_detail_id and tpd.delete_sw ='N'               
+       inner  join tb_payment_header tph on tph.payment_id= tpd.payment_id and tph.delete_sw='N'                              
+       inner  join person P on p.cjamspid=tpd.client_id                                                                      
+       where tpd.client_id= tce.client_id and fam.delete_sw='N'  order by fam.update_ts desc limit 1):: date else '0001-01-01' end) as "iveGrantDate",
+       (select fam.funding_amount_no from tb_fund_allocation_master fam                                                                      
+       inner  join tb_payment_detail tpd on tpd.payment_detail_id= fam.payment_detail_id and tpd.delete_sw ='N'               
+       inner  join tb_payment_header tph on tph.payment_id= tpd.payment_id and tph.delete_sw='N'                              
+       inner  join person P on p.cjamspid=tpd.client_id                                                                      
+       where tpd.client_id= tce.client_id and fam.delete_sw='N'  order by fam.update_ts desc limit 1) as "iveGrantAmount",
+       'N' as "parentalRightsTerminationInd",
+       'N' as "courtOrderInd",
+       null as "courtOrderType",
+       null as "familyViolenceIndicator",
+       (case when v_count > 0 then (select ivb.csmsreferralid from ivecsesoutbounddata ivb where ivb.clientid = al_clientid and ivb.removalid = al_removalid order by ivb.csmsreferralid limit 1) else null end) as "referralId",
+       now():: date as "referralDate",
+       null as "referralWorkerCaseNotes",
+     (select icc.countycode from ivecsescountycodes icc where icc.description in (select c.countyname  
+         from caseassignment ca 
+     join servicecase sc on ca.objectid = sc.servicecaseid 
+     join intakeservreqchildremoval isrcr on isrcr.servicecaseid = sc.servicecaseid  
+     join intakeservicerequestactor isra on isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid
+     join person p on p.personid = isra.personid 
+     join county c on c.countyid = ca.toldssid and c.activeflag =1
+     where p.cjamspid::bigint = al_clientid and ca.enddate is null order by ca.updatedon desc limit 1)) as "referralJurisd", 
+     (select up.fullname from userprofile up where up.securityusersid = v_securityuserid limit 1)  as "referralWorkerName",
+     (select icc.fipscode from ivecsescountycodes icc where icc.description in (select c.countyname from caseassignment ca 
+     join servicecase sc on ca.objectid = sc.servicecaseid 
+     join intakeservreqchildremoval isrcr on isrcr.servicecaseid = sc.servicecaseid  
+     join intakeservicerequestactor isra on isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid
+     join person p on p.personid = isra.personid 
+     join county c on c.countyid = ca.toldssid and c.activeflag =1
+     where p.cjamspid::bigint = al_clientid and ca.enddate is null order by ca.updatedon desc limit 1)) as "referralWorkerCounty",
+     (select up.email from userprofile up where up.securityusersid = v_securityuserid limit 1)  as "referralWorkerEmail",
+     (select upn.phonenumber from userprofilephonenumber upn where upn.securityusersid = v_securityuserid limit 1) as "referralWorkerPhone",
+        -- Children Details 
+        (SELECT  json_agg(a)  FROM  (SELECT 
+        p.cisclientid:: numeric as "childIrn",
+        p.firstname as "firstName",
+          p.lastname  as "lastName",
+          p.middlename as "middleName",
+          p.suffix  as "suffixName",
+          p.maidenname as "maidenName",
+          (CASE WHEN p.racetypekey LIKE '%WH%' THEN 'WH'
+       WHEN  p.racetypekey LIKE '%AI%' THEN 'AI'
+       WHEN  p.racetypekey LIKE '%AN%' THEN 'AN'
+       WHEN  p.racetypekey LIKE '%BA%' THEN 'BA'
+         WHEN  p.racetypekey LIKE '%AS%' THEN 'AS'
+         WHEN  p.racetypekey LIKE '%PI%' THEN 'PI'
+       ELSE 'UN'
+      END) as race,
+          p.gendertypekey as gender,
+          p.dob:: date as "dateOfBirth",
+          p.ssnno as ssn,
+          'RE' as "childMbrType",
+          -- healthInsuranceDetails
+          (select row_to_json(c) from(
+           select pis.medicalinsuranceprovider as "insuranceCarrierName", 'CHILD' as "isInsuranceCoveredBy",pis.policynumber as "insurancePolicyNumber",pis.groupnumber as "insuranceGroupNumber",tpv.description_tx as "insCoveredBy",
+          pis.effectivedate:: date as "effectiveDate", pis.expirationdate as "expirationDate",pis.ismedicaidmedicare ,'' as "isInsProvidedByEmployer",'' as "insProvidedByEmployerId", '' as "otherProviderName"
+          from personhealthinsurance pis
+          left join tb_picklist_values tpv on tpv.picklist_value_cd = pis.patientpolicyholderrelation and tpv.picklist_type_id = 172 
+          where pis.personid = p.personid order by pis.updatedon desc limit 1
+           ) c ) as "healthInsuranceDetails",
+          '' as  "medicalCoverageInd",
+          'N' as "paternityEstablishedInd",
+          '' as "medicalCoverageInd",
+           -- fosterCare Agency Details
+           (select row_to_json(d) from(
+            select tbp.provider_nm  as "agencyName",
+            tp.altproviderid as "providerid",
+            placementtypekey as "agencyPlacementCd",
+            '' as "agencyPhoneNum",
+            '' as "agencyFax",
+            (select row_to_json(b) from(
+            select tpa.adr_street_tx as "addressLine1",
+            tpa.adr_street_nm as "addressLine2" ,tpa.adr_city_nm as city ,tpa.adr_state_cd as state,tpa.adr_zip5_no::varchar as "zipCode",'USA' as country,
+            '' as "smartyStreetValidatedInd",
+            null as "addrVerificationDt",
+            'N' as "isInternationalAddr",
+            tpa.adr_county_cd as "county",
+            '0001-01-01' as "lastAddrDt",
+            '' as "addrExist"            
+            ) b ) as "agencyAddress"
+            from placement tp 
+          join tb_services tbs on tbs.service_id = tp.service_id 
+          join tb_provider tbp on tbp.provider_id = tp.altproviderid
+          join tb_provider_addresses  tpa on tpa.parent_key_id = tbp.provider_id::character varying and tpa.adr_type_cd in ('3357', '3358') and tpa.delete_sw = 'N' AND tpa.adr_default_sw = 'Y'
+          join intakeservreqchildremoval isrcr2 on isrcr2.intakeservreqchildremovalid = tp.intakeservreqchildremovalid and isrcr.activeflag = 1
+          where tp.placementtypekey = 'PRPL' and isrcr2.removalid::bigint= isrcr.removalid AND tp.activeflag = 1 order by isrcr2.updatedon desc limit 1
+           ) d ) as "fosterCareDetails",
+          (select personidentifiervalue mdm_id from personidentifier pf where pf.personid=p.personid and pf.personidentifiertypekey='MDM_ID' LIMIT 1) as "mdmId",
+          '' as "childOnCrtord",
+          null as "tprInitDate",
+          (select email from personemail p2 where p2.personid = p.personid and p2.activeflag = 1 limit 1),
+          (select row_to_json(b) from(
+           select pa.address as "addressLine1",
+           pa.address2 as "addressLine2" ,pa.city ,pa.state,pa.zipcode as "zipCode",(select c.statecountycode from county c where c.countyid:: character varying = pa.county limit 1) as county,pa.country, 'N' as "smartyStreetValidatedInd", 'N' as "isInternationalAddr",'0001-01-01' as "lastAddrDt", null as "addrVerificationDt"  from personaddress pa where pa.personid = p.personid and pa.currentlocationflag = 1 order by pa.updatedon desc limit 1
+          ) b ) as "resAddress",
+          (select row_to_json(b) from(
+            select pa.address as "addressLine1",
+            pa.address2 as "addressLine2" ,pa.city ,pa.state,pa.zipcode as "zipCode",(select c.statecountycode from county c where c.countyid:: character varying = pa.county limit 1) as county,pa.country, 'N' as "smartyStreetValidatedInd", 'N' as "isInternationalAddr",'0001-01-01' as "lastAddrDt" , null as "addrVerificationDt" from personaddress pa where pa.personid = p.personid and pa.currentlocationflag = 1 order by pa.updatedon desc limit 1
+          ) b ) as "mailingAddress"
+        ) a )::json  AS  children,
+        -- Parent Info
+        (SELECT json_agg(d) FROM (
+         (select per.cjamspid as clientid, 
+         per.personid ,
+         peri.personidentifiervalue as "mdmId",
+         per.cisclientid::numeric as "ncpIrn",
+         per.firstname as "firstName",
+         per.lastname  as "lastName",
+         per.middlename as "middleName",
+         per.suffix  as "suffixName",
+         per.maidenname as "maidenName",
+         (CASE WHEN per.racetypekey LIKE '%WH%' THEN 'WH'
+       WHEN  per.racetypekey LIKE '%AI%' THEN 'AI'
+       WHEN  per.racetypekey LIKE '%AN%' THEN 'AN'
+       WHEN  per.racetypekey LIKE '%BA%' THEN 'BA'
+         WHEN  per.racetypekey LIKE '%AS%' THEN 'AS'
+         WHEN  per.racetypekey LIKE '%PI%' THEN 'PI'
+       ELSE 'UN'
+     END) as race,
+         per.gendertypekey as gender,
+         per.dob:: date as "dateOfBirth",
+         per.ssnno as ssn,
+         'AP' as "ncpMbrType",
+         '' as "ncpRelationshipCode",
+         '' as "ncpLegalEstablishedInd",
+         '0001-01-01' as "ncpLegalEstablishedDate",
+         '' as "ncpBirthHospital",
+         '' as "ncpBirthCity",
+         '' as "ncpBirthState",
+         '' as "ncpDeathDate",
+         '' as "ncpMaritalStatus",
+         '' as "ncpMarriageDate",
+         '' as "ncpMarriageTermDate",
+         '' as "ncpMarriageTermCity",
+         '' as "healthInsuranceInd",
+         (select email from personemail p2 where p2.personid = per.personid and p2.activeflag = 1 limit 1),
+         null as "lastKnownAddressType",
+         (select row_to_json(b) from(
+            select pa.address as "addressLine1",
+            pa.address2 as "addressLine2" ,pa.city ,pa.state,pa.zipcode as "zipCode",(select c.statecountycode from county c where c.countyid:: character varying = pa.county limit 1) as county ,pa.country, 'N' as "smartyStreetValidatedInd", 'N' as "isInternationalAddr", '0001-01-01' as "lastAddrDt" from personaddress pa where pa.personid = per.personid and pa.activeflag = 1 and pa.currentlocationflag = 1 order by pa.updatedon desc limit 1
+         ) b ) as "lastKnownAddress",
+         (select row_to_json(b) from (
+            select pe.employername as "employerName",
+             pe.mobile as "phoneNum",
+             pe.startdate as "startDate",
+             pe.enddate as "endDate",
+            (select row_to_json(b) from(
+              select p2.address1 as "addressLine1",p2.address2 as "addressLine2",
+              p2.cityname ,p2.statetypekey ,p2.zip5no as "zipCode",p2.countytypekey ,p2.country,
+             '' as "smartyStreetValidatedInd",
+             null as "addrVerificationDt",
+             'N' as "isInternationalAddr",
+             '0001-01-01' as "lastAddrDt",
+             '' as "addrExist"
+             from personemployment p2  where p2.personid = per.personid and p2.activeflag = 1 order by p2.updatedon desc limit 1
+            ) b ) as "employerAddress"
+           from personemployment pe 
+          where pe.personid = per.personid and pe.activeflag = 1 order by pe.updatedon desc
+        ) as b) as "lastKnownEmployerDetails",
+         (select row_to_json(b) from(
+         select ps.startdate as "militaryStartDt", ps.enddate as "militaryEndDt",ps.branchkey as "militaryBranch" from personmilitaryservices ps
+         where ps.personid = per.personid and ps.activeflag = 1 order by ps.updatedon desc limit 1
+        ) b ) as "militaryServiceDetails",
+        (select row_to_json(c) from(
+         select pis.medicalinsuranceprovider as "insuranceCarrierName", pis.policynumber as "insurancePolicyNumber",pis.groupnumber as "insuranceGroupNumber",tpv.description_tx as "insCoveredBy",
+          pis.effectivedate:: date as "effectiveDate", pis.expirationdate as "expirationDate",pis.ismedicaidmedicare ,'' as "isInsProvidedByEmployer",'' as "insProvidedByEmployerId", '' as "otherProviderName"
+          from personhealthinsurance pis
+          left join tb_picklist_values tpv on tpv.picklist_value_cd = pis.patientpolicyholderrelation and tpv.picklist_type_id = 172 
+          where pis.personid = per.personid and pis.activeflag = 1 order by pis.updatedon desc limit 1
+         ) c ) as "healthInsuranceDetails"
+         from actorrelationship ar 
+         join person per on per.personid = ar.person1id and per.dateofdeath is null
+         left join personidentifier peri on peri.personid = ar.person1id and peri.personidentifiertypekey = 'MDM_ID' and peri.activeflag = 1 
+         left join personphonenumber perpn on perpn.personid = ar.person1id and perpn.activeflag = 1 and perpn.personphonetypekey = 'P'
+         where ar.person2id = p.personid ::uuid and ar.activeflag = 1 and ar.relationshiptypekey in ('BGMTHR') limit 1)
+         UNION ALL
+         (select per.cjamspid as clientid, 
+         per.personid ,
+         peri.personidentifiervalue as "mdmId",
+         per.cisclientid::numeric as "ncpIrn",
+         per.firstname as "firstName",
+         per.lastname  as "lastName",
+         per.middlename as "middleName",
+         per.suffix  as "suffixName",
+         per.maidenname as "maidenName",
+         (CASE WHEN per.racetypekey LIKE '%WH%' THEN 'WH'
+       WHEN  per.racetypekey LIKE '%AI%' THEN 'AI'
+       WHEN  per.racetypekey LIKE '%AN%' THEN 'AN'
+       WHEN  per.racetypekey LIKE '%BA%' THEN 'BA'
+         WHEN  per.racetypekey LIKE '%AS%' THEN 'AS'
+         WHEN  per.racetypekey LIKE '%PI%' THEN 'PI'
+       ELSE 'UN'
+     END) as race,
+         per.gendertypekey as gender,
+         per.dob:: date as "dateOfBirth",
+         per.ssnno as ssn,
+         'AP' as "ncpMbrType",
+         '' as "ncpRelationshipCode",
+         '' as "ncpLegalEstablishedInd",
+         '0001-01-01' as "ncpLegalEstablishedDate",
+         '' as "ncpBirthHospital",
+         '' as "ncpBirthCity",
+         '' as "ncpBirthState",
+         '' as "ncpDeathDate",
+         '' as "ncpMaritalStatus",
+         '' as "ncpMarriageDate",
+         '' as "ncpMarriageTermDate",
+         '' as "ncpMarriageTermCity",
+         '' as "healthInsuranceInd",
+         (select email from personemail p2 where p2.personid = per.personid and p2.activeflag = 1 limit 1),
+         null as "lastKnownAddressType",
+         (select row_to_json(b) from(
+            select pa.address as "addressLine1",
+            pa.address2 as "addressLine2" ,pa.city ,pa.state,pa.zipcode as "zipCode",(select c.statecountycode from county c where c.countyid:: character varying = pa.county limit 1) as county ,pa.country, 'N' as "smartyStreetValidatedInd", 'N' as "isInternationalAddr", '0001-01-01' as "lastAddrDt" from personaddress pa where pa.personid = per.personid and pa.activeflag = 1 and pa.currentlocationflag = 1 order by pa.updatedon desc limit 1
+         ) b ) as "lastKnownAddress",
+         (select row_to_json(b) from (
+            select pe.employername as "employerName",
+             pe.mobile as "phoneNum",
+             pe.startdate as "startDate",
+             pe.enddate as "endDate",
+            (select row_to_json(b) from(
+              select p2.address1 as "addressLine1",p2.address2 as "addressLine2",
+              p2.cityname ,p2.statetypekey ,p2.zip5no as "zipCode",p2.countytypekey ,p2.country,
+             '' as "smartyStreetValidatedInd",
+             null as "addrVerificationDt",
+             'N' as "isInternationalAddr",
+             '0001-01-01' as "lastAddrDt",
+             '' as "addrExist"
+             from personemployment p2  where p2.personid = per.personid and p2.activeflag = 1 order by p2.updatedon desc limit 1
+            ) b ) as "employerAddress"
+           from personemployment pe 
+          where pe.personid = per.personid and pe.activeflag = 1 order by pe.updatedon desc
+        ) as b) as "lastKnownEmployerDetails",
+         (select row_to_json(b) from(
+         select ps.startdate as "militaryStartDt", ps.enddate as "militaryEndDt",ps.branchkey as "militaryBranch" from personmilitaryservices ps
+         where ps.personid = per.personid and ps.activeflag = 1 order by ps.updatedon desc limit 1
+        ) b ) as "militaryServiceDetails",
+        (select row_to_json(c) from(
+         select pis.medicalinsuranceprovider as "insuranceCarrierName", pis.policynumber as "insurancePolicyNumber",pis.groupnumber as "insuranceGroupNumber",tpv.description_tx as "insCoveredBy",
+          pis.effectivedate:: date as "effectiveDate", pis.expirationdate as "expirationDate",pis.ismedicaidmedicare ,'' as "isInsProvidedByEmployer",'' as "insProvidedByEmployerId", '' as "otherProviderName"
+          from personhealthinsurance pis
+          left join tb_picklist_values tpv on tpv.picklist_value_cd = pis.patientpolicyholderrelation and tpv.picklist_type_id = 172 
+          where pis.personid = per.personid and pis.activeflag = 1 order by pis.updatedon desc limit 1
+         ) c ) as "healthInsuranceDetails"
+         from actorrelationship ar 
+         join person per on per.personid = ar.person1id and per.dateofdeath is null
+         left join personidentifier peri on peri.personid = ar.person1id and peri.personidentifiertypekey = 'MDM_ID' and peri.activeflag = 1 
+         left join personphonenumber perpn on perpn.personid = ar.person1id and perpn.activeflag = 1 and perpn.personphonetypekey = 'P'
+         where ar.person2id = p.personid ::uuid and ar.activeflag = 1 and ar.relationshiptypekey in ('BGFTHR') limit 1)
+         ) d ) as "nonCustodialParents"
+    from tb_client_eligibility tce 
+        inner join person p on p.cjamspid  = tce.client_id and activeflag = 1
+        INNER JOIN intakeservreqchildremoval isrcr ON isrcr.removalid = tce.removal_id AND isrcr.activeflag=1 --AND isrcr.exitdate is null
+        INNER JOIN placement pl on (( pl.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid and pl.placementtypekey = 'PRPL') or (pl.placementtypekey = 'LA' and pl.personid = p.personid ))
+        where tce.client_id = al_clientid and tce.removal_id = al_removalid and btrim(tce.eligibility_type_cd) IN ('2931','2934')
+        and tce.delete_sw = 'N' and tce.START_DT IS NOT NULL) a;
+
+IF v_count > 0 THEN 
+   update ivecsesoutbounddata cb set cb.activeflag = 0, cb.updatedon = now()  where cb.clientid = al_clientid and cb.removalid = al_removalid and cb.activeflag = 1;
+end if;
+
+insert into  ivecsesoutbounddata (ivecsesoutboundid, inputjson, reviewperiod, clientid, removalid , activeflag, insertedon, updatedon, referralcounty) 
+values (gen_random_uuid(),v_inputjson,al_reviewperiod,al_clientid,al_removalid,1,now(),now(), al_referralcounty);        
+
+return v_inputjson;
+
+end
+ $function$
+

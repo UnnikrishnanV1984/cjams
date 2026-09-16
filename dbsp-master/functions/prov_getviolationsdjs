@@ -1,0 +1,93 @@
+CREATE OR REPLACE FUNCTION prov_getviolationsdjs(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+  DECLARE 
+  jsondata json;
+        v_monitoring_id character varying;
+        v_provider_id character varying;
+        v_cap_needed character varying;
+        v_exit_conf_number character varying;
+  
+  BEGIN
+   v_monitoring_id  = reqobj->> 'monitoring_id';
+            v_provider_id  = reqobj->> 'provider_id';
+            v_cap_needed  = reqobj->> 'cap_needed';
+            v_exit_conf_number  = reqobj->> 'exit_conf_number';
+            
+  SELECT JSON_AGG(pla) INTO jsondata FROM (select distinct 
+                  (select count(case when  pmrd.monitoring_record_value = 'Compliance' then 1 else null end)) as compliant_count,
+                  (select count(case when  pmrd.monitoring_record_value = 'Non-Compliance' then 1 else null end)) as noncompliant_count,
+                  (select count(case when  pmrd.monitoring_record_value = 'Pending' then 1 else null end)) as pending_count,
+                    tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,prq.displayorder,
+                    (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                    (case when tp.provider_nm is null then (select * from prov_get_formatted_applicantaddresses(pm.applicant_id))  else (select * from prov_get_formatted_addresses(tp.provider_id)) end) as site_address,
+                    (case when tp.provider_id::character varying is null then pm.applicant_id else tp.provider_id::character varying end) as site_id,
+                    pm.monitoring_id,
+                    pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+                    pv.reference_value_id,
+                    pv.reference_id,
+                    pv.violation_id,
+                    pv.deficiency_number,
+                    mec.cap_number_djs,
+                    pv.comments,
+                    pv.isdraft,
+                    pv.cap_status,
+                    pv.cap_status_description,
+                    pv.planofcorrection,
+                    pv.personresponsible,
+                    pv.title,
+                    pv.disputecomarcitation,
+                    pv.targetdate,
+                    pv.isdispute,
+                    pv.isacknowledged,
+                    m.monitoring_id,
+                    pv.isnotificationsent,
+                    m.provider_id,
+                    pv.duedate,
+                    pv.cap_needed,
+                    mec.exit_conf_number, 
+                    mec.summary, 
+                    mec.program_changes, 
+                    mec.exit_dt, 
+                    mec.ec_comments, 
+                    mec.rationale_comments,
+                    mec.ec_status ,
+                    mec.ec_isacknowledged,
+                    mec.ec_isnotificationsent,
+                    mec.ec_prv_signimage,
+                    mec.ec_prv_signdate,
+                    mec.cap_submitted_by, 
+                    mec.cap_submitted_dt,
+                    mec.cap_created_dt
+                from prov_record_question prq 
+                inner join prov_monitoring_record_data pmrd   on prq.record_question_id = pmrd.record_question_id 
+                inner join prov_monitoring_record_site pm     on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                inner join prov_monitoring m                  on pm.monitoring_id = m.monitoring_id
+                left  join prov_monitoring_exit_conf mec      on mec.monitoring_id = m.monitoring_id
+                inner join prov_violation pv                  on pv.record_question_id = pmrd.record_question_id and (pv.site_id = pm.site_id or pv.applicant_id = pm.applicant_id) and pv.reference_value_id = pm.monitoring_id
+                inner join prov_record pr                     on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pm.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = pm.site_id
+                where  pm.delete_sw = 'N' 
+                    and pv.deficiency_number is not null 
+                    and (prq.monitoring_id is null or prq.monitoring_id = m.monitoring_id)
+                    and case when v_monitoring_id is null then true else m.monitoring_id = v_monitoring_id end 
+                    and case when v_provider_id is null then true else m.provider_id = v_provider_id end 
+                    and case when v_cap_needed is null then true else pv.cap_needed = true end 
+                    and case when v_exit_conf_number is null then true else mec.exit_conf_number = v_exit_conf_number end 
+            group by 
+                prq.record_question_id ,  
+                pm.site_id, pm.applicant_id, pm.monitoring_id,
+                pv.violation_id, 
+                pr.record_id , 
+                tp.provider_id , 
+                tpa.applicant_id,
+                mec.exit_conf_id,
+                m.monitoring_id
+           order by pr.records_type , prq.displayorder
+  ) AS pla;
+  RETURN jsondata;
+  END;
+$function$
+

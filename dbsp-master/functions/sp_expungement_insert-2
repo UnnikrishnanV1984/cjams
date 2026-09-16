@@ -1,0 +1,123 @@
+CREATE OR REPLACE FUNCTION sp_expungement_insert(v_client_id bigint)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+declare 
+v_allrows record ;
+v_currentdate date ;
+v_expungepersonrow record;
+
+begin
+v_currentdate  := (select current_date)  ;
+
+for v_allrows in select
+distinct  (select personidentifiervalue mdm_id from personidentifier where personid=p.personid and personidentifiertypekey='MDM_ID'), 
+p.cjamspid cjamspid,p.cisclientid cisclientid,insa.intakenumber case_number,insa.spexpungementflag status_flag ,
+p.personid , (select intakeserviceid from intakeservicerequestactor where personid=p.personid and intakeservicerequestpersontypekey = 'AM')
+from intakeservicerequestactor insa,investigation inv,investigationallegation inva,allegation alleg,investigationfinding inf, investigationallegationmaltreators imt ,person p,personidentifier pi
+where NOT EXISTS (
+select mdm_id ,cjamspid,cisclientid,case_number ,1 from expungementstaging where cjamspid=p.cjamspid) and
+insa.intakeserviceid=inv.intakeserviceid and
+inv.investigationid=inva.investigationid and 
+inva.allegationid=alleg.allegationid and 
+inva.investigationallegationid=inf.investigationallegationid and
+inf.investigationallegationid = imt.investigationallegationid and
+p.personid=insa.personid and 
+insa.spexpungementflag=1 and inf.finalfinding='RO' and insa.activeflag=1 and inf.activeflag=1 
+and p.cjamspid = v_client_id
+LOOP
+
+-- Person record to store encrypted values before expungement
+SELECT 
+firstname, middlename, lastname, dob, ssnno,
+concat(left(firstname,1), 'xxxxxx') AS expunge_firstname,
+concat(left(middlename,1), 'xxxxxx') AS expunge_middlename,
+concat(left(lastname,1), 'xxxxxx') AS expunge_lastname
+FROM 
+person 
+WHERE 
+cjamspid = v_allrows.cjamspid
+INTO 
+v_expungepersonrow;
+
+INSERT INTO expungementstaging
+(mdm_id,
+cjamspid,
+cisclientid,
+DateOfExpungement,
+case_number,
+status_flag,
+insertedon,
+ncrypt_firstname,
+ncrypt_middlename,
+ncrypt_lastname,
+ncrypt_dob,
+ncrypt_ssn
+)
+VALUES
+(v_allrows.mdm_id,
+v_allrows.cjamspid,
+v_allrows.cisclientid,
+NOW(),
+v_allrows.case_number, 
+0,
+NOW(),
+PGP_SYM_ENCRYPT(v_expungepersonrow.firstname, 'AES_KEY'),
+PGP_SYM_ENCRYPT(v_expungepersonrow.middlename, 'AES_KEY'),
+PGP_SYM_ENCRYPT(v_expungepersonrow.lastname, 'AES_KEY'),
+PGP_SYM_ENCRYPT(v_expungepersonrow.dob::text, 'AES_KEY'),
+PGP_SYM_ENCRYPT(v_expungepersonrow.ssnno, 'AES_KEY')
+);
+
+INSERT INTO expungementoutbound
+(mdm_id,
+cjamspid,
+cisclientid,
+DateOfExpungement,
+case_number,
+status_flag,
+insertedon,
+updatedon)
+VALUES
+(v_allrows.mdm_id,
+v_allrows.cjamspid,
+v_allrows.cisclientid,
+NOW(),
+v_allrows.case_number,
+0,
+NOW(),
+NOW()
+);
+
+-- Mask the person data as per the described rules
+UPDATE person SET
+firstname = v_expungepersonrow.expunge_firstname,
+middlename = v_expungepersonrow.expunge_middlename,
+lastname = v_expungepersonrow.expunge_lastname,
+dob = '1900-01-01', --v_expungepersonrow.expunge_dob,
+ssnno = null,
+activeflag = 0,
+updatedon = now()
+WHERE 
+cjamspid = v_allrows.cjamspid;
+
+update intakeservicerequestactor set 
+activeflag = 0,
+updatedon = now()
+where 
+personid = v_allrows.personid and intakeserviceid = v_allrows.intakeserviceid and activeflag = 1;
+
+update intakeservrequestsdmmaltreatment set
+activeflag = 0,
+updatedon = now()
+where maltreatmenttype = 'AM' and client_id = v_allrows.cjamspid;
+
+END LOOP ;
+
+return 1;
+
+end;
+
+$function$
+

@@ -1,0 +1,26 @@
+DROP FUNCTION IF EXISTS cjams.provider_uir_contact_detail(v_provider_uir_id character varying);
+CREATE OR REPLACE FUNCTION cjams.provider_uir_contact_detail(v_provider_uir_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+jsondata  json;
+BEGIN
+
+SELECT  Json_agg(a)  INTO      jsondata  FROM      (  
+
+SELECT c.provider_uir_contact_detail_id, c.provider_uir_id, c.uir_no,
+c.firstname, c.lastname, c.email, c.phonenumber,
+c.insertedon, c.updatedon, c.updatedby, c.insertedby
+FROM cjams.provider_uir_contact_detail c 
+where c.provider_uir_id=v_provider_uir_id and c.activeflag=1
+
+)  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+;

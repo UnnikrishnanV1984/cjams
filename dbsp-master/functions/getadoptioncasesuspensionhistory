@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION getadoptioncasesuspensionhistory(v_adoptionagreementid uuid, v_page integer, v_limit integer)
+ RETURNS TABLE(adoptionsuspensionid uuid, reasonforsuspension character varying, suspensionreasontypekey character varying, suspensionbegindate timestamp without time zone, suspensionenddate timestamp without time zone, suspensionremarks character varying, requestedby text, requesteddate timestamp without time zone, approvedby text, approvaldate timestamp without time zone, approvalstatus text, adoptionactiveflag integer)
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+DECLARE \r
+v_pagenumber   int;\r
+v_pageoffset  int;  \r
+\r
+BEGIN\r
+\r
+        v_pagenumber  :=  v_page-1;\r
+        v_pageoffset  =  v_pagenumber  *  v_limit;\r
+    \r
+\r
+RETURN query\r
+\r
+SELECT DISTINCT\r
+    adspr.adoptionsuspensionid,\r
+ (SELECT rv.description \r
+ FROM \r
+ referencevalues rv WHERE activeflag =1 AND rv.ref_key = adspr.suspensionreasontypekey LIMIT 1) as description,\r
+ adspr.suspensionreasontypekey,\r
+ adspr.suspensionbegindate,\r
+-- adspr.suspensionenddate,\r
+ case when\r
+                ((select gsv.suspensionenddate from \r
+                adoptioncasesuspensionrevision gsv where gsv.adoptionsuspensionid=adspr.adoptionsuspensionid \r
+                 and gsv.approvalstatustypekey='3045' and gsv.activeflag=1 \r
+               order by gsv.insertedon desc limit 1\r
+                )is not null  and rs.typedescription='Review') then (select gsv.suspensionenddate from \r
+                adoptioncasesuspensionrevision gsv where gsv.adoptionsuspensionid=adspr.adoptionsuspensionid  \r
+                and gsv.approvalstatustypekey='3045' and gsv.activeflag=1\r
+                ) else adspr.suspensionenddate end as enddate  ,\r
+ adspr.suspensionremarks,--1 as activeflag,\r
+-- adspr.activeflag as activeflag,\r
+ (SELECT up.firstname || ' '|| up.lastname \r
+  FROM userprofile up \r
+  WHERE up.securityusersid = adspr.insertedby AND up.activeflag =1 LIMIT 1 ) as requestedby,\r
+ adspr.transactiondate as requesteddate,\r
+ CASE r.routingstatustypeid WHEN  15  THEN ''\r
+ ELSE (SELECT up1.firstname || ' '|| up1.lastname \r
+  FROM userprofile up1 \r
+  WHERE up1.securityusersid = r.fromsecurityusersid AND up1.activeflag =1 )  END as approvedby,\r
+ CASE r.routingstatustypeid WHEN  15  THEN NULL ELSE  r.insertedon END :: timestamp without time zone  as approveddate,\r
+ rs.typedescription as approvalstatus ,\r
+  adspr.activeflag  as activeflag\r
+ \r
+FROM  adoptioncasesuspension adspr\r
+  LEFT JOIN routing r ON r.objectid = (adspr.adoptionsuspensionid) :: character varying AND r.eventcode = 'ADSR'  AND r.activeflag =1 /*Migration Fix*/\r
+  LEFT JOIN routingstatustype rs ON r.routingstatustypeid = rs.sequencenumber and rs.activeflag =1  /*Migration Fix*/\r
+WHERE  adspr.adoptioncaseid = v_adoptionagreementid and adspr.activeflag=1\r
+LIMIT  v_limit  OFFSET  v_pageoffset; \r
+\r
+END;\r
+\r
+$function$
+

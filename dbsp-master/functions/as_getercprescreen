@@ -1,0 +1,168 @@
+CREATE OR REPLACE FUNCTION as_getercprescreen(p_intakenumber character varying, p_intakeserviceid uuid, p_securityusersid character varying)
+ RETURNS TABLE(prescreenjson json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+v_djsstaff character varying(100);
+BEGIN
+ 
+ SELECT cast(coalesce((djsup.firstname||' '||djsup.lastname),null) as character varying) INTO v_djsstaff from userprofile djsup
+ where djsup.securityusersid = p_securityusersid and djsup.activeflag = 1;
+ 
+     RETURN QUERY 
+      select json_agg(b) as prescreenjson from (
+   select distinct 
+    cast(p.cjamspid as character varying) as assitnumber,
+    cast(ich.hearingdatetime as character varying) as currenthearingdate,
+    cast(isrp.petitionid as character varying) as petitionnumber,
+    (select 
+     jsonb_Agg(t)
+    from (
+    select al."name"
+    from intakeservicerequestevaluationconfig isrec
+    join allegation al on al.allegationid = isrec.allegationid and al.activeflag = 1
+    where isrec.intakeservicerequestevaluationid = isrpc.intakeservicerequestevaluationid and isrec.activeflag = 1)t ) as currentoffense,
+    cast(null as character varying) as draiscore,
+    cast(pl.addate as character varying) as ercadmdate,
+    cast(isrca.hearingdatetime as character varying) as nextcourtdate,
+    cast(null as character varying) as courtroom,
+    cast(isrca.magistratename as character varying) as judgename,
+    cast(pl.startdatetime as character varying) as firstdateatsite,
+    (case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as youthname,
+    cast(p.dob as character varying) as dob,
+    cast(p.gendertypekey as character varying) as sex,
+    cast(rt.typedescription as character varying) as race,
+    cast(null as character varying) as complexion,
+    cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Ht' and activeflag = 1) as character varying) as height,
+    cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Wt' and activeflag = 1) as character varying) as weight,
+    cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Eyecolor' and activeflag = 1) as character varying) as eyecolor,
+    cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Haircolor' and activeflag = 1) as character varying) as haircolor,
+    cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Tattoo' and activeflag = 1) as character varying) as identifyingmarks,
+    cast(pgdetail.parentguaridanname as character varying) as parentguaridanname,
+    cast(pgdetail.parentcontactnumber as character varying) as parentcontactnumber,
+    cast(pgdetail.parentaddress as character varying) as parentaddress,
+    cast(epp.firstname||' '||epp.lastname as character varying) as emercontactname,
+    cast(coalesce(eph.phoneextension,'000')||eph.phonenumber as character varying) as emercontactnumber,
+    cast((case when pe.activeflag = 1 then 'Yes' else 'No' end) as character varying) as currentlyinschool,
+    cast(pe.extracurricular as character varying) as otherpgms,
+    cast(s.schoolname as character varying) as latestschool,
+    cast(pe.lastgradetypekey as character varying) as lastestgrade,
+    cast((case when s.activeflag = 1 then 'Active' else 'Inactive' end) as character varying) as schoolstatus,
+    cast(pe.specialeducationtypekey as character varying) as specialeducation,
+    cast(upm.firstname||' '||upm.lastname as character varying) as casemanager,
+    cast(null as character varying) as erccasemanager,
+    cast(up.firstname||' '||up.lastname as character varying) as caseworker,
+    cast(rv.description as character varying) as "level",
+    cast(pr.providername as character varying) as facilityname,
+    cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = p_securityusersid) as character varying) as officeworkername,
+    v_djsstaff as djsstaff,
+    '[]'::jsonb as personjson,
+    '[]'::jsonb as evaljson,
+    false as jsonflag
+   from intakeservicerequest isr 
+   left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on pl.intakeserviceid = isr.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+   join actor a on a.actorid = isra.actorid and a.activeflag = 1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join racetype rt ON rt.racetypekey = P.racetypekey AND rt.activeflag = 1
+   left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing) ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1 and ich.recno = 1
+   left join (select *,row_number() over(partition by personid order by startdate desc) as recno from personeducation) pe on pe.personid = p.personid and pe.recno = 1
+   left join school s on s.schoolid = pe.schoolid
+   left join (select  isra.intakeserviceid,
+        row_number() over(partition by isra.intakeserviceid order by rel) as recno,
+        cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying) as parentguaridanname,
+    cast(coalesce(pph.phoneextension,'000')||pph.phonenumber as character varying) as parentcontactnumber,
+    cast(pa.address||' '||pa.address2||' '||pa.city||','||pa.state||','||pa.zipcode as character varying) as parentaddress
+   from intakeservicerequestactor isra  
+   left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+   join actor a on a.actorid = isra.actorid and a.activeflag =1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join personphonenumber pph on pph.personid = p.personid
+   left join personaddress pa on pa.personid = p.personid
+   join (select 1 as seq,'father' as relation union 
+      select 2 as seq,'mother' as relation union
+      select 3 as seq,'fosterparent' as relation union 
+      select 4 as seq,'stepparent' as relation union
+      select 5 as seq,'adoptiveparent' as relation union 
+      select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey )pgdetail on pgdetail.intakeserviceid = isr.intakeserviceid and pgdetail.recno = 1 
+   left join emergencycontactperson ep on ep.personid = p.personid and ep.activeflag = 1
+   left join person epp on epp.personid = ep.contactpersonid and epp.activeflag =1 
+   left join personphonenumber eph on eph.personid = epp.personid and eph.activeflag = 1
+   left join userprofile up on up.securityusersid = pl.updatedby and up.activeflag = 1
+   left join routing r on r.tosecurityusersid = pl.updatedby and ((cast(isr.intakeserviceid as character varying)= r.objectid) or (isr.intakenumber = r.objectid)) and r.toroleid = 'JSCW' and r.activeflag = 1
+   left join userprofile upm on upm.securityusersid = r.fromsecurityusersid and upm.activeflag = 1
+   left join ( select r.description,r.ref_key 
+        from referencetype rt 
+        join referencevalues r on rt.referencetypeid = r.referencetypeid and r.activeflag = 1
+        where rt.tablename = 'providerunittype' and rt.activeflag = 1 ) rv on rv.ref_key = pr.providerunit
+   --left join userprofile djsup on  djsup.securityusersid = p_securityusersid and djsup.activeflag = 1
+   left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+   left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+   left join intakeservicerequestcourtaction isrca on isrca.intakeservicerequestcourthearingid = ichc.intakeservicerequestcourthearingid and isrca.activeflag = 1   
+   left join intakeservreqevalpetitionconfig isrpc on isrpc.intakeservicerequestpetitionid = isrp.intakeservicerequestpetitionid and isrpc.activeflag = 1
+   where isr.activeflag = 1 
+   and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+   and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end)
+   union 
+   select distinct 
+    cast(null as character varying) as assitnumber,
+    cast(null as character varying) as currenthearingdate,
+    cast(null as character varying) as petitionnumber,
+    '[]'::jsonb as currentoffense,
+    cast(null as character varying) as draiscore,
+    cast(null as character varying) as ercadmdate,
+    cast(null as character varying) as nextcourtdate,
+    cast(null as character varying) as courtroom,
+    cast(null as character varying) as judgename,
+    cast(null as character varying) as firstdateatsite,
+    cast(null as character varying) as youthname,
+    cast(null as character varying) as dob,
+    cast(null as character varying) as sex,
+    cast(null as character varying) as race,
+    cast(null as character varying) as complexion,
+    cast(null as character varying) as height,
+    cast(null as character varying) as weight,
+    cast(null as character varying) as eyecolor,
+    cast(null as character varying) as haircolor,
+    cast(null as character varying) as identifyingmarks,
+    cast(null as character varying) as parentguaridanname,
+    cast(null as character varying) as parentcontactnumber,
+    cast(null as character varying) as parentaddress,
+    cast(null as character varying) as emercontactname,
+    cast(null as character varying) as emercontactnumber,
+    cast(null as character varying) as currentlyinschool,
+    cast(null as character varying) as otherpgms,
+    cast(null as character varying) as latestschool,
+    cast(null as character varying) as lastestgrade,
+    cast(null as character varying) as schoolstatus,
+    cast(null as character varying) as specialeducation,
+    cast(upm.firstname||' '||upm.lastname as character varying) as casemanager,
+    cast(null as character varying) as erccasemanager,
+    cast(up.firstname||' '||up.lastname as character varying) as caseworker,
+    rv.description as "level",
+    cast(pr.providername as character varying) as facilityname,
+    cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = p_securityusersid) as character varying) as officeworkername,
+    v_djsstaff as djsstaff,
+    coalesce((jsondata->>'persons')::jsonb,'[]'::jsonb) as personjson,
+    coalesce((jsondata->>'evaluationFields')::jsonb,'[]'::jsonb) as evaljson,
+    true as jsonflag
+   from intakedastaging da 
+   left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on pl.intakenumber = da.intakenumber and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   left join userprofile up on up.securityusersid = pl.updatedby and up.activeflag = 1
+   left join routing r on r.tosecurityusersid = pl.updatedby and da.intakenumber = r.objectid and r.toroleid = 'JSCW' and r.activeflag = 1
+   left join userprofile upm on upm.securityusersid = r.fromsecurityusersid and upm.activeflag = 1
+   left join ( select r.description,r.ref_key 
+        from referencetype rt 
+        join referencevalues r on rt.referencetypeid = r.referencetypeid and r.activeflag = 1
+        where rt.tablename = 'providerunittype' and rt.activeflag = 1 ) rv on rv.ref_key = pr.providerunit
+   left join userprofile djsup on  djsup.securityusersid = pl.updatedby and djsup.activeflag = 1
+   where da.activeflag = 1 and da.intakenumber not in (select intakenumber from intakeservicerequest) 
+   and (case when p_intakenumber is not null then da.intakenumber = p_intakenumber else true end)
+   )b;
+
+END;
+$function$
+

@@ -1,0 +1,6 @@
+CREATE INDEX idx_tb_receivable_detail_write_off_approval_status ON tb_receivable_detail(write_off_approval_status);
+CREATE INDEX idx_tb_receivable_detail_approved_by ON tb_receivable_detail(approved_by);
+CREATE INDEX idx_tb_receivable_detail_write_off_request_user_id ON tb_receivable_detail(write_off_request_user_id);
+
+CREATE INDEX idx_Placement_activeflag ON Placement(activeflag);
+CREATE INDEX idx_tb_receivable_collection_status_active_sw ON tb_receivable_collection_status(active_sw);

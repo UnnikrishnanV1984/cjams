@@ -1,0 +1,3 @@
+INSERT INTO cjams.routing
+(eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES('ADPC', '73999176-0c94-4d08-9ef2-0efe966ce506', '73999176-0c94-4d08-9ef2-0efe966ce506', 'f367fc82-9044-4f74-a40e-6d96db9e8625'::uuid, 'CWCW', 'CWCW', 'ed5ed4e4-403f-4cf7-8f93-021e75881bee', 4, 1, 'CDM-13853', now(), 'CDM-13853', now(), false, NULL, NULL, 'Adoption Case Created', '20200140856', 'adoptioncase', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);

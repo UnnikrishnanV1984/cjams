@@ -1,0 +1,4 @@
+ALTER TABLE cjams.adoptioninitialsavedatatable DROP COLUMN IF EXISTS previousadoptiveparentstprterminationofparentrightdateiftermina;
+ALTER TABLE cjams.adoptioninitialsavedatatable DROP COLUMN IF EXISTS previousAdoptiveParentsTpRterminationofparentrightDateIfterminated;
+
+ALTER TABLE cjams.adoptioninitialsavedatatable ADD COLUMN IF NOT EXISTS previousAdoptiveParentsTpRterminationDate timestamp;

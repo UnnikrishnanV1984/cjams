@@ -1,0 +1,301 @@
+CREATE OR REPLACE FUNCTION as_getservicecasesummarydtls(v_servicecaseid uuid, loginsecurityuserid character varying)
+ RETURNS getdsdsactionsummarydtls_type
+ LANGUAGE plpgsql
+AS $function$
+
+ DECLARE 
+
+ result_record getdsdsactionsummarydtls_type;
+ daStatusTypeId character varying;
+ v_intakeserviceid uuid;
+ v_intakeservreqinputtypeid uuid;
+ v_intakeserreqstatustypeid uuid;
+ v_intakeservicerequestclassid uuid;
+ v_IntakeServReqTypeId uuid;
+ v_DAType character varying;
+ v_DASubtype character varying;
+ v_FocusName character varying;
+ v_FocusRole character varying;
+ v_Identifier character varying;
+ v_ldReceivedDate TIMESTAMP(3);
+ v_Region VARCHAR(50);
+ v_County VARCHAR(50);
+ v_zip character varying;
+ v_status  character varying;                                   
+ v_disposition character varying;
+ v_AssignedTo character varying;
+ v_CompletedBy character varying;
+ v_duedateoffset int;
+ v_intakenumber character varying;
+ v_servicecasestatus text;
+ l_programstartdate TIMESTAMP;
+ v_latestdisposition_opendate TIMESTAMP;
+ v_latestdisposition_closedate TIMESTAMP;
+ l_assigncount bigint;
+ BEGIN
+
+ SELECT  intakeserviceid, narrativeUpdatedDate
+   , reporterincidentdate, intakedaterecieved, intakenumber
+   INTO result_record.intakeserviceid,result_record.narrativeUpdatedDate
+   , result_record.da_reporterincidentdate, result_record.da_intakedaterecieved,result_record.intakenumber
+ FROM   intakeservicerequest 
+ WHERE   servicecaseid   =  v_servicecaseid 
+ ORDER BY insertedon DESC LIMIT 1;  
+    
+ SELECT json_agg(e) AS intake_jsondata INTO result_record.intake_jsondata
+    from
+    (
+     SELECT  intakenumber       
+       FROM  intakeservicerequest 
+     WHERE servicecaseid  =  v_servicecaseid
+     ORDER BY insertedon DESC  /*D-20077*/
+      
+    ) AS e;
+   
+ select old_id into result_record.service_old_id from servicecase where servicecaseid   =  v_servicecaseid; 
+  
+ SELECT tm.loadnumber,tm.teamid 
+     INTO result_record.da_loadnumber, result_record.teamid
+ FROM userprofile u 
+        INNER JOIN  as_teammemberassignment tma  ON tma.SecurityUsersId =  u.SecurityUsersId AND tma.activeflag =1
+        INNER JOIN teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+ WHERE u.activeflag =1   AND u.SecurityUsersId = loginsecurityuserid;
+ 
+ SELECT sc.servicecasenumber,sc.IntakeServReqTypeId,sc.IntakeServReqTypeId,dispositioncode,
+    sc.startdate,sc.startdate,sc.enddate,sc.statustypekey
+ INTO result_record.DA_Number, v_IntakeServReqTypeId, result_record.da_typeid  ,v_disposition,
+    result_record.DA_ReceivedDate,result_record.case_opendate,result_record.case_closedate,
+ daStatusTypeId
+    FROM servicecase sc 
+    -- LEFT OUTER JOIN ServicecaseRequest scr ON scr.servicecaseid = sc.servicecaseid 
+ WHERE  SC.servicecaseid  =  v_servicecaseid LIMIT 1 ;  
+
+ result_record.da_subtypeid:= '00000000-0000-0000-0000-000000000000';
+ result_record.DA_Type := 'Service Case'; 
+ result_record.da_subtype := '';
+
+ /*
+ SELECT --description 
+ case when  description = 'Closed' then 'Closed' else 'Open' end::varchar INTO result_record.DA_Status
+ 
+    FROM referencevalues WHERE ref_key = daStatusTypeId AND referencetypeid =72 ;
+
+*/
+ /*
+ SELECT rs.typedescription  into v_servicecasestatus
+     FROM routing r  
+      INNER JOIN routingstatustype rs ON r.routingstatustypeid = rs.sequencenumber AND rs.activeflag    =1
+      inner join servicecasedisposition scp on r.objectid=scp.servicecasedispositionid::character varying
+      INNER JOIN intakeserreqstatustype ist ON ist.intakeserreqstatustypekey = scp.intakeserreqstatustypekey AND ist.activeflag = 1
+     WHERE scp.servicecaseid = v_servicecaseid AND r.eventcode = 'SCDR'AND r.activeflag =1 LIMIT 1;    
+   
+   
+   if v_servicecasestatus is not null then
+ 
+   SELECT     
+        case 
+        when  (ist.description = 'Closed' and v_servicecasestatus='Approved') then 'Closed' else 'Open' end::varchar  INTO result_record.DA_Status
+        FROM  servicecasedisposition scp 
+    INNER JOIN intakeserreqstatustype ist ON ist.intakeserreqstatustypekey = scp.intakeserreqstatustypekey AND ist.activeflag = 1    
+    WHERE scp.servicecaseid = v_servicecaseid AND scp.activeflag = 1 ;
+   
+   else
+   
+     SELECT 
+     case when  description = 'Closed' then 'Closed' else 'Open' end::varchar INTO result_record.DA_Status 
+         FROM referencevalues WHERE ref_key = daStatusTypeId AND referencetypeid =72 ;
+   
+   end if;
+ 
+ 
+ SELECT Description INTO result_record.DA_Disposition FROM dispositioncode WHERE dispositioncode =v_disposition AND activeflag =1 LIMIT 1;
+  */
+
+ /*Status and disposition taken from disposition table*/
+ -- SELECT dispositioncode,intakeserreqstatustypekey 
+ -- INTO v_disposition, result_record.DA_Status  
+ -- FROM servicecasedisposition WHERE servicecaseid = v_servicecaseid ORDER BY statusdate DESC LIMIT 1; 
+
+ SELECT dispositioncode,intakeserreqstatustypekey 
+ INTO v_disposition, result_record.DA_Status  
+ FROM servicecasedisposition scd
+ LEFT JOIN routing r ON r.objectid = scd.servicecasedispositionid::CHARACTER VARYING
+ WHERE scd.servicecaseid = v_servicecaseid AND scd.activeflag = 1
+ AND (r.routingstatustypeid is NULL OR r.routingstatustypeid = 16) --The left join and null value is needed because 'Re-open' disposition won't have routing record
+ ORDER BY scd.statusdate DESC LIMIT 1;
+ 
+ SELECT Description INTO result_record.DA_Disposition FROM dispositioncode WHERE dispositioncode =v_disposition AND activeflag =1 LIMIT 1;
+ 
+  result_record.DA_Status:= COALESCE( result_record.DA_Status,'Open');
+
+ SELECT typedescription
+    INTO result_record.DA_Role 
+    FROM ActorType WHERE actortype IN (SELECT FocusRoletype FROM ServiceRequestTypeConfig 
+                                         WHERE IntakeServReqTypeId = v_IntakeServReqTypeId AND ServiceRequestSubTypeId = result_record.da_subtypeid AND ActiveFlag =1);
+
+ SELECT INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+   CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END),
+            P.userphoto,P.dob,P.old_id as assistpid,P.cjamspid ,p.dateofdeath,p.personid
+    INTO result_record.DA_Focus,result_record.da_focusProfilePhoto,
+       result_record.persondob,result_record.assistpid,result_record.cjamspid ,result_record.persondod,result_record.personid
+    FROM person as P WHERE personid in (
+ SELECT PersonId FROM actor WHERE ActorId IN (
+ SELECT Actorid  FROM IntakeServiceRequestActor WHERE servicecaseid = v_servicecaseid AND intakeservicerequestpersontypekey IN ('LG') LIMIT 1));
+
+ SELECT coalesce(personidentifiervalue,null) into result_record.DA_Identifier  FROM PersonIdentifier WHERE personid IN (
+ SELECT PersonId FROM actor WHERE ActorId IN (
+ SELECT Actorid  FROM IntakeServiceRequestActor WHERE servicecaseid = v_servicecaseid AND intakeservicerequestpersontypekey IN ('RA','RC', 'Youth') LIMIT 1)) AND personidentifiertypekey = 'DCN';
+
+ SELECT  zipcode,county INTO result_record.DA_Zip,result_record.DA_County FROM PersonAddress WHERE PersonAddressId in  (
+ SELECT RoutingAddressId  FROM IntakeServiceRequestActor WHERE servicecaseid = v_servicecaseid AND RoutingAddressId IS NOT NULL);
+
+ /*SELECT CAST(UP2.firstname || ' ' || UP2.lastname AS character varying) into result_record.da_assignedto
+    FROM  userprofile UP2  
+    inner join routing r on r.tosecurityusersid = up2.securityusersid and r.routingstatustypeid = 4 and r.activeflag =1
+    WHERE UP2.activeflag =1 
+    and r.objectid = v_servicecaseid::character varying LIMIT 1;*/
+
+ -- SELECT  CAST(u1.firstname||' '||u1.lastname AS character varying) into result_record.da_assignedto
+ -- FROM routing r
+ --   LEFT JOIN caseassignment ca ON ca.objectid::character varying = r.objectid
+ --   LEFT JOIN userprofile u1 ON u1.securityusersid = ca.fromworkeridno
+ -- WHERE  -- r.old_id = ca.old_id AND
+ --   r.objectid = v_servicecaseid::character varying
+ -- ORDER BY ca.enddate DESC LIMIT 1;
+ 
+ SELECT  CAST(u1.firstname||' '||u1.lastname AS character varying) into result_record.da_assignedto
+ FROM routing r
+   LEFT JOIN userprofile u1 ON u1.securityusersid = r.tosecurityusersid AND r.activeflag = 1
+ WHERE 
+   r.objectid = v_servicecaseid::character varying AND r.eventcode = 'SRVC'
+ ORDER BY 
+   r.insertedon DESC LIMIT 1;
+   
+ --## SHOW UNIT SUPERVISOR ON BLUE RIBBON WHEN EVER OPEN A CASE
+ SELECT COUNT (1) INTO l_assigncount FROM caseassignment WHERE objectid = v_servicecaseid AND toworkeridno = loginsecurityuserid;
+ IF l_assigncount  > 0 THEN 
+  SELECT  u2.firstname||COALESCE(' '||u2.middlename,'')||' '||u2.lastname into result_record.da_assignedby
+  FROM userprofile u1 
+    INNER JOIN userprofile u2 ON u2.securityusersid = u1.assupervisorid
+  WHERE  u1.securityusersid = loginsecurityuserid;
+ END IF;
+ IF result_record.da_assignedby IS NULL AND l_assigncount  = 0 THEN
+  SELECT  u2.firstname||COALESCE(' '||u2.middlename,'')||' '||u2.lastname into result_record.da_assignedby
+  FROM caseassignment ca
+    INNER JOIN userprofile u1  ON u1.securityusersid = toworkeridno
+    INNER JOIN userprofile u2  ON u2.securityusersid = u1.assupervisorid
+  WHERE  ca.objectid = v_servicecaseid AND ca.enddate is null
+  ORDER BY CASE LOWER(ca.responsibilitytypekey) WHEN 'family' THEN 1 WHEN 'child' THEN 2 ELSE 3 END 
+  LIMIT 1; 
+ END IF;
+ IF result_record.da_assignedby IS NULL THEN
+
+  SELECT  CAST(u1.firstname||' '||u1.lastname AS character varying) into result_record.da_assignedby
+  FROM routing r
+    INNER JOIN userprofile u1 ON u1.securityusersid = r.fromsecurityusersid AND r.activeflag = 1
+  WHERE  r.objectid = v_servicecaseid::character varying AND r.eventcode = 'SRVC' AND (r.routeddescription IS NULL OR r.routeddescription = 'Service Case Assigned') AND tosecurityusersid::character varying = loginsecurityuserid
+  ORDER BY r.insertedon DESC LIMIT 1; 
+ END IF;
+
+    IF result_record.da_assignedby IS NULL THEN
+
+ SELECT  CAST(u1.firstname||' '||u1.lastname AS character varying) into result_record.da_assignedby
+ FROM routing r
+   LEFT JOIN userprofile u1 ON u1.securityusersid = r.fromsecurityusersid AND r.activeflag = 1
+ WHERE 
+   r.objectid = v_servicecaseid::character varying AND r.eventcode = 'SRVC'AND (r.routeddescription IS NULL OR r.routeddescription = 'Service Case Assigned')
+ ORDER BY 
+   r.insertedon DESC LIMIT 1;
+
+    END IF;
+ /*IF result_record.DA_Status = 'Closed' THEN
+ SELECT string_agg(TRIM(lastname) ||', ' ||TRIM(firstname),'|') into result_record.da_completedby FROM UserProfile WHERE SecurityUsersId in (SELECT SecurityUsersId FROM SecurityUsers WHERE SecurityUsersId in (
+ SELECT SecurityUsersId FROM as_teammemberassignment WHERE TeamMemberId  in(SELECT  TeamMemberId FROM AreaTeamMemberServiceRequest 
+ WHERE IntakeServiceId = v_intakeserviceid) AND ActiveFlag = 1));
+ END IF;*/
+    
+ SELECT duedateoffset into v_duedateoffset FROM servicerequesttypeconfig WHERE intakeservreqtypeid  = v_IntakeServReqTypeId AND servicerequestsubtypeid = result_record.da_subtypeid AND activeflag =1 AND category= 'Intake' LIMIT 1;
+
+ result_record.da_duedate:= result_record.DA_ReceivedDate::date +v_duedateoffset;
+ 
+ result_record.da_daystogo:= EXTRACT(day FROM (result_record.da_duedate  - now()));
+
+ IF result_record.da_daystogo < 0 THEN
+  result_record.da_daystogo = 0;
+ END IF;
+
+ /*Programarea start date as open date */
+    -- SELECT   MIN(p.startdate) INTO l_programstartdate FROM personprogramarea p
+ -- WHERE   p.activeflag =1 AND p.enddate IS NULL  AND LOWER(p.objecttypekey ) ='servicecase'
+ --   AND p.objectid = v_servicecaseid::character varying;
+ -- result_record.case_opendate := COALESCE(l_programstartdate,result_record.case_opendate);
+
+ /** Use disposition to set the latest open and closed dates **/
+ SELECT effectivedate INTO v_latestdisposition_opendate FROM servicecasedisposition 
+ WHERE servicecaseid = v_servicecaseid AND intakeserreqstatustypekey ILIKE 'Open' AND activeflag = 1 ORDER BY effectivedate DESC LIMIT 1;
+ 
+ result_record.case_opendate := COALESCE(v_latestdisposition_opendate, result_record.case_opendate);
+
+
+ SELECT effectivedate INTO v_latestdisposition_closedate FROM servicecasedisposition 
+ WHERE servicecaseid = v_servicecaseid AND intakeserreqstatustypekey ILIKE 'Closed' ORDER BY effectivedate DESC LIMIT 1;
+
+ result_record.case_closedate := COALESCE(v_latestdisposition_closedate, result_record.case_closedate);
+
+ -----
+
+ SELECT json_agg(e) AS programarea INTO result_record.programarea
+    FROM
+             (
+     SELECT
+      DISTINCT ppa.programkey,
+      /*ppa.subprogramkey,
+      (SELECT rv.description  FROM referencevalues rv 
+      WHERE rv.ref_key = ppa.subprogramkey AND rv.referencetypeid = 12 AND rv.activeflag =1 LIMIT 1) subprogramname,*/
+      (SELECT ap.programname FROM agencyprogramarea ap 
+      WHERE ap.programkey = ppa.programkey AND ap.activeflag =1 LIMIT 1) programname
+     FROM personprogramarea ppa 
+     WHERE ppa.personid = result_record.personid AND ppa.objectid=v_servicecaseid::character varying AND ppa.activeflag=1
+    ) AS e;
+   
+ 
+    SELECT   json_agg(worker) INTO result_record.responsibleworkers
+    FROM   (
+        SELECT
+          ca.responsibilitytypekey,
+    ca.enddate,
+          up.firstname,
+          up.lastname,
+          up.email,
+          (
+            SELECT
+              json_agg(e) as address
+            FROM
+              (
+                SELECT
+                  upa.address,
+                  upa.city,
+                  upa.county,
+                  upa.state,
+                  upa.country,
+                  upa.zipcode
+                FROM
+                  userprofileaddress upa
+                where
+                  upa.securityusersid = up.securityusersid
+              ) e
+          ),
+          (select upp.phonenumber from userprofilephonenumber upp where upp.securityusersid = up.securityusersid and upp.activeflag =1 limit 1)
+         FROM  caseassignment ca
+            INNER JOIN userprofile up on up.securityusersid = ca.toworkeridno  AND up.activeflag = 1
+         WHERE   ca.objectid = v_servicecaseid AND CA.enddate IS NULL 
+       ORDER BY COALESCE(CA.enddate:: date,now() + interval '1' day ) DESC
+   ) worker;
+  
+
+ RETURN result_record;
+
+ END;
+
+$function$
+

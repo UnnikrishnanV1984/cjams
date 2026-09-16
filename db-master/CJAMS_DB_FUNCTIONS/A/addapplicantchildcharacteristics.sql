@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION cjams.addapplicantchildcharacteristics(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+returnStatus text;
+applicantId text;
+--v_providerid text;
+services json;
+picklistTypeId text;
+picklistValueCode text;
+currentRow json;
+l_applicantChildCharacteristicsId int;
+
+BEGIN
+
+applicantId=insertedtlsobj->>'applicant_id';
+--v_providerid=insertedtlsobj->>'providerid';
+services = insertedtlsobj->>'services';
+
+--picklistTypeId= insertedtlsobj->>'picklist_type_id';
+--picklistValueCode= insertedtlsobj->>'picklist_value_cd';
+
+for currentRow IN SELECT * FROM json_array_elements(services)
+loop
+
+select max(applicant_child_characteristics_id)+1 into l_applicantChildCharacteristicsId from tb_applicant_child_characteristics;
+if(l_applicantChildCharacteristicsId is null) then 
+l_applicantChildCharacteristicsId = 1000;
+end if;
+insert into tb_applicant_child_characteristics (applicant_child_characteristics_id,applicant_id,picklist_type_id,picklist_value_cd, value_desc, create_ts,create_user_id,update_ts,update_user_id)
+values
+(l_applicantChildCharacteristicsId, applicantId, (currentRow->>'picklist_type_id')::numeric, currentRow->>'picklist_value_cd', currentRow->>'value_tx',
+insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id');
+END LOOP;
+
+for currentRow IN SELECT * FROM json_array_elements(services)
+loop
+
+INSERT INTO tb_provider_picklist
+( provider_id, program_id, picklist_type_id, picklist_value_cd,create_ts, create_user_id, update_ts,update_user_id, delete_sw,value_desc)
+values
+(applicantId::int, null, (currentRow->>'picklist_type_id')::numeric, currentRow->>'picklist_value_cd', 
+now()::timestamp, insertedtlsobj->>'create_user_id',now()::timestamp, insertedtlsobj->>'update_user_id','N',currentRow->>'value_tx');
+END LOOP;
+
+returnStatus:= 'Success';
+
+RETURN returnStatus;
+                                                      
+END;
+
+$function$

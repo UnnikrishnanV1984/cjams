@@ -1,0 +1,60 @@
+CREATE OR REPLACE FUNCTION as_getprogramtypes(v_servicerequestsubtypeid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+ v_result json;
+ v_intakeservid uuid;
+ v_classkey character varying;
+ 
+BEGIN      
+ 
+ SELECT classkey INTO v_classkey 
+  FROM servicerequestsubtype
+  WHERE servicerequestsubtypeid = v_servicerequestsubtypeid::uuid
+  LIMIT 1;
+ 
+ IF (v_classkey = '24 Hours' OR v_classkey = '5 Days' OR v_classkey = 'NA') THEN
+  RAISE NOTICE 'Option1';
+ 
+  SELECT its1.intakeservid INTO v_intakeservid
+  FROM intakeserv its1 
+  WHERE intakeservtypekey = 'APS' and its1.activeflag = 1
+  LIMIT 1;
+  
+  IF (v_classkey = 'NA') THEN
+   SELECT json_agg(a1) into v_result FROM
+    (SELECT itss.intakeservid, itss.intakeservsubtypeid, itss.intakeservsubtypekey, itss.typedescription 
+     FROM intakeservsubtype itss
+     WHERE itss.activeflag = 1 and itss.intakeservid = v_intakeservid 
+     AND itss.intakeservsubtypekey = 'NA'
+     ORDER by itss.typedescription ) a1; 
+  ELSE
+   SELECT json_agg(a1) into v_result FROM
+    (SELECT itss.intakeservid, itss.intakeservsubtypeid, itss.intakeservsubtypekey, itss.typedescription 
+     FROM intakeservsubtype itss
+     WHERE itss.activeflag = 1 and itss.intakeservid = v_intakeservid 
+     AND itss.intakeservsubtypekey != 'NA'
+     ORDER by itss.typedescription ) a1; 
+  
+  END IF;
+   
+ ELSE
+  RAISE NOTICE 'Option2';
+  SELECT json_agg(a1) into v_result FROM
+  (SELECT  srs.servicerequestsubtypeid,itss.intakeservid, itss.intakeservsubtypeid, itss.intakeservsubtypekey, itss.typedescription
+   from intakeserv its
+   join intakeagencyserv itas on  its.intakeservid = itas.intakeservid
+   join intakeservsubtype itss ON  itss.intakeservid = its.intakeservid and itss.activeflag = 1
+   join servicerequestsubtype srs on  srs.intakeservreqtypeid = itas.intakeservreqtypeid
+    where itas.teamtypekey = 'AS' and itas.activeflag = 1
+   and srs.servicerequestsubtypeid = v_servicerequestsubtypeid::uuid
+   and its.intakeservtypekey = srs.classkey
+    ORDER by itss.typedescription ) a1; 
+   
+ END IF;
+ 
+ RETURN v_result;
+END;
+$function$
+

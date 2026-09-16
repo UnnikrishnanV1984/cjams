@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION cjams.fn_clnt_upd()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- Revision(s)
+-- 09/29/2020 Vineet Tirodkar - Modification to exclude APS Persons
+-- 11/25/2020 Vineet Tirodkar - Modification for CJAMS - E&E Interface
+------------------------------------------------------------------------ 
+BEGIN
+	IF OLD.primarycitizenshiptypekey <> NEW.primarycitizenshiptypekey THEN
+	
+		IF EXISTS ( select 1 
+						from actor 
+					where personid = NEW.personid 
+						and  activeflag = 1
+						and lower(coalesce(objecttype,'')) not like 'as_%' ) THEN
+		
+			INSERT INTO caresoutboundtrigger
+				(	fk_id,
+					transactionon,
+					transactiontypekey,
+					statusflag,
+					activeflag
+				)
+		
+			select
+				cjamspid,
+				CURRENT_TIMESTAMP,
+				'62',
+				'N',
+				1
+			from person
+			where cjamspid = NEW.cjamspid;
+			
+			INSERT INTO eneoutboundtrigger
+				(	fk_id,
+					transactionon,
+					transactiontypekey,
+					statusflag,
+					activeflag
+				)
+		
+			select
+				cjamspid,
+				CURRENT_TIMESTAMP,
+				'62',
+				'N',
+				1
+			from person
+			where cjamspid = NEW.cjamspid;
+			
+		ELSE				
+			-- Do nothing (APS Client Only)					
+		END IF;
+		
+	END IF;
+	return new;
+END;
+
+$function$
+;

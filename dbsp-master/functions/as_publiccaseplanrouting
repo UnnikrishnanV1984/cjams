@@ -1,0 +1,163 @@
+CREATE OR REPLACE FUNCTION as_publiccaseplanrouting(v_objectid character varying, v_securityuserid character varying, v_tosecurityusersid character varying, v_routingstatusid numeric, appeventcode character varying, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying, v_service_number numeric DEFAULT (0)::numeric, v_ytp_id character varying DEFAULT ''::character varying, v_status character varying DEFAULT 'Pending'::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ v_date timestamp without time zone; 
+ v_msg character varying;
+ v_username character varying;
+ v_returnstatus character varying;
+ v_teamid uuid;
+ v_roletypekey text;
+ v_routing_rec record;
+ v_routingid uuid;
+ v_comdate timestamp without time zone; 
+ v_nextduedate timestamp without time zone;
+ v_serviceplanid uuid;
+ v_clientid uuid;
+ v_clientname character varying;
+ v_ytpname character varying;
+ 
+ BEGIN
+ v_date:= now();
+ v_serviceplanid:= gen_random_uuid();
+ 
+ -- Get the youth for the YTP
+ SELECT clientid 
+   INTO v_clientid 
+   FROM youthtransitionplan 
+   WHERE youthtransitionplanid=v_ytp_id::uuid;
+ 
+ -- Currently getting name of the youth to be used in serviceplan name, can get more info about person if needed
+ SELECT COALESCE(p.firstname,'') || ' ' || COALESCE(p.lastname,'') 
+   INTO v_clientname
+   FROM person p
+   WHERE personid = v_clientid;
+ 
+ v_ytpname := 'Youth Transition Plan' || ' - ' || v_clientname || ' - ' || to_char(v_date, 'Mon DD YYYY');
+ 
+ --*Routing*-- 
+    SELECT tm.teamid,  tm.roletypekey INTO 
+   v_teamid, v_roletypekey 
+   FROM    as_teammemberassignment tma 
+   INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+   WHERE  tma.SecurityUsersId = v_securityuserid AND   tma.activeflag =1;
+  RAISE NOTICE 'v_teamid;:%', v_teamid ;
+    RAISE NOTICE 'v_roletypekey;:%', v_roletypekey ;
+    RAISE NOTICE 'appeventcode;:%', appeventcode ;
+    
+    FOR v_routing_rec IN SELECT routingstatustypekey,sourcerolekey,targetrolekey,
+        ftmrt.teamtypekey frmteamtypekey, ttmrt.teamtypekey  toteamtypekey,
+                             CASE ftmrt.teamtypekey WHEN ttmrt.teamtypekey THEN 0 ELSE 1 END isotheragency
+                             FROM routingconfig  rc
+                       INNER JOIN teammemberroletype ftmrt   on  ftmrt.roletypekey  = rc.sourcerolekey AND ftmrt.activeflag =1
+                       INNER JOIN teammemberroletype ttmrt   on  ttmrt.roletypekey  = rc.targetrolekey AND ttmrt.activeflag =1
+         WHERE  eventcode = appeventcode AND  sourcerolekey =v_roletypekey   
+                             AND rc.activeflag =1
+    LOOP
+        IF COALESCE(v_tosecurityusersid,'') = '' THEN
+                 SELECT fromsecurityusersid, COALESCE(up.firstname,'') || ' ' || COALESCE(up.lastname,'') 
+                 INTO v_tosecurityusersid, v_username
+        FROM routing r 
+        INNER JOIN userprofile up 
+     ON up.securityusersid = r.fromsecurityusersid 
+        WHERE tosecurityusersid = v_securityuserid 
+        AND r.activeflag =1
+        AND eventcode='SPLAN'
+        AND r.objectid  = v_objectid
+        ORDER BY r.insertedon desc limit 1;
+       
+   ELSE  
+          SELECT v_tosecurityusersid , COALESCE(up.firstname,'') || ' ' || COALESCE(up.lastname,'')  
+       INTO v_tosecurityusersid, v_username
+       FROM userprofile up 
+    WHERE up.securityusersid = v_securityuserid;
+   END if;
+   RAISE NOTICE 'v_tosecurityusersid;:%', v_tosecurityusersid ;
+      RAISE NOTICE 'v_username;:%', v_username ;
+  IF COALESCE(v_tosecurityusersid,'') <>'' then
+                 IF v_status = 'approved' THEN  
+       SELECT routingid into v_routingid
+       FROM routing r WHERE tosecurityusersid = v_securityuserid 
+       AND activeflag =1
+       AND r.objectid  = v_objectid
+       ORDER BY insertedon desc limit 1;
+        
+       UPDATE routing SET activeflag =0 ,remarks =v_notifymsg,updatedon= v_date 
+       WHERE routingid = v_routingid;               
+                  END IF;
+                  INSERT INTO routing(
+         eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+         FROMroleid, toroleid,objectid , routingstatustypeid,
+         insertedby,  updatedby,insertedon,updatedon,  
+         servicerequestnumber)
+  
+      VALUES( appeventcode, v_securityuserid,
+        v_tosecurityusersid   , v_teamid,
+        v_routing_rec.sourcerolekey, v_routing_rec.targetrolekey,
+        v_objectid,v_routingstatusid,
+        v_securityuserid,v_securityuserid,
+        v_date,v_date, v_service_number);
+     
+                 v_msg:=  v_notifymsg || ' by '  ||   v_username;
+                
+       SELECT send_notIFication INTO v_returnstatus FROM send_notIFication(v_tosecurityusersid
+                                                                        ,v_securityuserid, v_tosecurityusersid,
+      'System', 'High', v_msg,
+       v_msg , v_objectid);
+                   v_returnstatus:='Success';
+  ELSE
+   v_returnstatus:='User not available for this role';
+  
+  END IF;
+ END LOOP;
+
+ -- 15 Review - 16 Approved - 17-reject
+ IF v_status = 'approved' THEN 
+  --SELECT CURRENT_DATE + INTERVAL '180 day' INTO v_comdate;
+  -- Youth between 14 to 16 add 365 days
+  SELECT CURRENT_DATE + INTERVAL '365 day' INTO v_nextduedate;
+  -- TODO: Add 180 when youth over 16 years
+
+  UPDATE youthtransitionplan SET approvalstatuskey=v_status,approvaldate=v_date,completiondate=v_date,nextduedate=v_nextduedate WHERE youthtransitionplanid=v_ytp_id::uuid;
+  
+  ----- Service plan for YTP
+  INSERT INTO serviceplan
+  (serviceplanid,activeflag, effectivedate, insertedby, updatedby, insertedon, updatedon, objectid, serviceplanname)
+  VALUES(v_serviceplanid, 1, v_date, v_securityuserid, v_securityuserid, v_date, v_date,v_objectid, v_ytpname);
+   
+  -- Service plan focus items
+  ----- This is annoying, updatedby is varchar in serviceplan and uuid in serviceplanfocus
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Education');
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Employment');
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Money Management');
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Housing');  
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Supportive Relationships');  
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Health');  
+  INSERT INTO serviceplanfocus
+  (serviceplanfocusid, serviceplanid, insertedby, insertedon, updatedby, updatedon, activeflag, focusname)
+  VALUES(gen_random_uuid(), v_serviceplanid, v_securityuserid::uuid, v_date, v_securityuserid::uuid, v_date, 1, 'Documentation');  
+ 
+ ELSE
+  UPDATE youthtransitionplan SET approvalstatuskey=v_status WHERE youthtransitionplanid=v_ytp_id::uuid;
+ END IF;
+ 
+RETURN v_returnstatus::text;
+
+END;                 
+ 
+$function$
+

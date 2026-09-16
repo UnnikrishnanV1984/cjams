@@ -1,0 +1,3 @@
+INSERT INTO cjams.routing
+(eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES('INTR', 'd01eb0ea-2486-4422-87ce-8e036fe78425', 'f7b97cee-2314-42a0-9582-8fa89c8efb9a', 'e93e0de6-170b-400c-aa47-cd74e7e9d2dc', 'CWSP', 'CWCW', 'I202000192015', 2, 1, 'd01eb0ea-2486-4422-87ce-8e036fe78425', '2020-10-26 16:04:48.495', 'CDM-6278', now(), true, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);

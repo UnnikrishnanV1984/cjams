@@ -1,0 +1,149 @@
+CREATE OR REPLACE FUNCTION updatepaymentreceiptdetails(searchobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ v_collectedamount INT;
+    v_computedbaldetail numeric;
+    v_receipt_id int;
+ v_provider_id INT;
+ v_offset_id INT;
+ v_receivable_id INT;
+ v_receivable_detail_id INT;
+ v_updateuserid VARCHAR(50);
+     v_balanceno  numeric;
+    v_computedbal numeric;
+   v_bulk_update json;
+    v_receivable_detail json;
+vl_liqd_id integer;
+v_checkupdatepif character varying;
+v_collectionstatus character varying;
+v_receivable_balance_no numeric;
+v_current_receivable_no integer;
+
+ 
+BEGIN 
+  v_receivable_detail := searchobj ->> 'receivable_details';
+  v_computedbal := searchobj ->> 'payment_amount_no';
+ v_computedbaldetail := searchobj ->> 'payment_amount_no';
+
+--v_collectedamount := searchobj ->> 'payment_amount_no';
+
+SELECT ('[' || STRING_AGG(j::TEXT, ',' ORDER BY (j->>'receivable_detail_id')::integer) || ']')::JSON into v_receivable_detail FROM json_array_elements(v_receivable_detail::JSON) j ;
+  FOR v_bulk_update IN   SELECT * FROM Json_array_elements (v_receivable_detail)
+   LOOP
+SELECT al_next_value from  sp_nextid ( 'sq_payment_header') into vl_liqd_id;
+v_receipt_id := searchobj ->> 'receipt_id'; 
+v_provider_id := searchobj ->> 'provider_id';  
+v_offset_id := searchobj ->> 'offset_id';  
+v_receivable_id := v_bulk_update ->> 'receivable_id'; 
+v_receivable_detail_id := v_bulk_update ->> 'receivable_detail_id'; 
+v_updateuserid := searchobj ->> 'update_user_id'; 
+
+
+
+if(v_computedbal > 0) 
+then
+select balance_no into v_balanceno from tb_receivable_header where receivable_id=v_receivable_id and provider_id=v_provider_id;
+--raise notice ' v_balanceno %',v_balanceno;
+--raise notice ' v_computedbal %',v_computedbal;
+if(v_balanceno > v_computedbal)
+then
+--raise notice ' if header';
+--raise notice ' v_computedbal %',v_computedbal;
+v_computedbal  := v_balanceno - v_computedbal;
+update tb_receivable_header set balance_no = v_computedbal where receivable_id=v_receivable_id and provider_id=v_provider_id;
+v_computedbal :=0;
+else
+--raise notice ' else header';
+--raise notice ' v_computedbal %',v_computedbal;
+v_computedbal  :=  v_computedbal - v_balanceno;
+update tb_receivable_header set balance_no = 0 where receivable_id=v_receivable_id and provider_id=v_provider_id;
+
+end if;
+end if;
+--if (v_computedbal<0) then v_computedbal =0; end if;
+
+--update tb_receivable_header set balance_no = v_computedbal where receivable_id=v_receivable_id and provider_id=v_provider_id; 
+
+
+select receivable_balance_no into v_balanceno from tb_receivable_detail where receivable_detail_id=v_receivable_detail_id and receivable_id=v_receivable_id;
+--v_computedbal  = v_balanceno - v_collectedamount;
+--if (v_computedbal<0) then v_computedbal =0; end if;
+
+--raise notice ' bbbbb total  %',v_computedbaldetail;
+if(v_computedbaldetail > 0) 
+then
+--raise notice ' v_balanceno %',v_balanceno;
+--raise notice ' v_computedbaldetail %',v_computedbaldetail;
+if(v_balanceno > v_computedbaldetail)
+then
+--raise notice ' if detail';
+--raise notice ' v_computedbaldetail %',v_computedbaldetail;
+INSERT INTO tb_receivable_liquidation
+(rcvbl_liquidation_id,collected_amount_no, receipt_id, receivable_detail_id, offset_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(vl_liqd_id,v_computedbaldetail, v_receipt_id , v_receivable_detail_id, null, v_updateuserid, now(), v_updateuserid, now(), 'N'::bpchar);
+
+v_computedbaldetail  := v_balanceno - v_computedbaldetail;
+
+select trim(collection_status_cd) into v_collectionstatus from tb_receivable_collection_status where receivable_detail_id=v_receivable_detail_id and delete_sw='N';
+raise notice ' v_collectionstatus %',v_collectionstatus;
+---if refer to ccu then make balance to 0
+if (v_collectionstatus = '775'::character varying) then 
+v_computedbaldetail := v_balanceno;
+end if;
+if (v_collectionstatus = '779'::character varying) then 
+select current_receivable_amount into v_current_receivable_no from tb_payment_plan where receivable_id=v_receivable_id and delete_sw='N' limit 1;
+v_current_receivable_no := v_current_receivable_no - ((searchobj ->> 'payment_amount_no')::float );
+update tb_payment_plan set current_receivable_amount =v_current_receivable_no  where receivable_id=v_receivable_id and delete_sw='N';
+end if;
+update tb_receivable_detail set receivable_balance_no = v_computedbaldetail,update_ts=now() where receivable_detail_id=v_receivable_detail_id and receivable_id=v_receivable_id;
+--
+
+v_computedbaldetail :=0;
+else
+v_computedbaldetail  :=  v_computedbaldetail - v_balanceno;
+
+--raise notice ' else detail';
+--raise notice ' v_computedbaldetail %',v_computedbaldetail;
+
+--INSERT INTO tb_receivable_liquidation
+--(rcvbl_liquidation_id,collected_amount_no, receipt_id, receivable_detail_id, offset_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+--VALUES(vl_liqd_id,v_computedbaldetail, v_receipt_id , v_receivable_detail_id, null, v_updateuserid, now(), v_updateuserid, now(), 'N'::bpchar);
+select receivable_balance_no into v_receivable_balance_no from tb_receivable_detail where receivable_detail_id=v_receivable_detail_id;
+select trim(collection_status_cd) into v_collectionstatus from tb_receivable_collection_status where receivable_detail_id=v_receivable_detail_id and delete_sw='N';
+raise notice ' v_collectionstatus %',v_collectionstatus;
+if (v_collectionstatus = '775'::character varying) then 
+v_receivable_balance_no := v_computedbaldetail;
+end if;
+if (v_collectionstatus = '779'::character varying) then 
+select current_receivable_amount into v_current_receivable_no from tb_payment_plan where receivable_id=v_receivable_id and delete_sw='N' limit 1;
+v_current_receivable_no := v_current_receivable_no - ((searchobj ->> 'payment_amount_no')::float );
+update tb_payment_plan set current_receivable_amount =v_current_receivable_no  where receivable_id=v_receivable_id and delete_sw='N';
+end if;
+--raise notice ' v_receivable_balance_no-------- %',v_receivable_balance_no;
+--raise notice ' v_receivable_detail_id-------- %',v_receivable_detail_id;
+INSERT INTO tb_receivable_liquidation
+(rcvbl_liquidation_id,collected_amount_no, receipt_id, receivable_detail_id, offset_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+select vl_liqd_id,v_receivable_balance_no, v_receipt_id , v_receivable_detail_id, null, v_updateuserid, now(), v_updateuserid, now(), 'N'::bpchar
+from tb_receivable_detail trd where trd.receivable_detail_id=v_receivable_detail_id;
+
+update tb_receivable_detail set receivable_balance_no = 0,update_ts=now() where receivable_detail_id=v_receivable_detail_id and receivable_id=v_receivable_id;
+
+end if;  
+end if;
+
+select checkupdatepif into v_checkupdatepif from checkupdatepif(v_receivable_detail_id);
+
+end loop;
+
+
+
+
+return 'Success';
+
+END;
+
+$function$
+

@@ -1,0 +1,181 @@
+CREATE OR REPLACE FUNCTION as_f_fm810r(start_date date, end_date date)
+ RETURNS TABLE(payment_id integer, ldss character varying, county_cd character varying, final_fiscal_category_cd character, provider_id integer, client_id bigint, payment_date date, gross_payment_amt numeric, original_payment_id integer, offset_amt integer, original_payment_date date, provider_nm text, last_nm character varying, middle_nm character varying, first_nm character varying, suffix_cd character varying, start_dt date, end_dt date, placement_structure text, program_nm text, child_wrk_nm character varying, child_sup_num character varying, fam_wrk_nm character varying, family_sup_nm character varying, offset_flag text, payment_start_dt date, payment_end_dt date)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+(      
+       
+
+SELECT distinct  ph.payment_id,
+    as_f_plvalue(d.county_cd, 104) AS ldss,
+    d.county_cd,
+    d.final_fiscal_category_cd,
+    ph.provider_id,
+    d.client_id,
+    ph.payment_dt AS "PAYMENT DATE",
+    d.final_amount_no AS "GROSS PAYMENT AMT",
+    0 AS "ORIGINAL PAYMENT ID",
+    0 AS "OFFSET AMT",
+    NULL::date AS "ORIGINAL PAYMENT DATE",
+    rtrim(ph.payee_nm::text) AS provider_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.lastname
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS last_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.middlename
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS middle_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.firstname
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS first_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT as_f_plvalue(l.suffix, 214) AS f_plvalue
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS suffix_cd,
+    d.final_service_start_dt AS start_date,
+    d.final_service_end_dt AS end_date,
+    (((( SELECT s.servicename
+           FROM service s
+          WHERE s.old_id::text = d.final_service_id::text
+         fetch first 1 rows only))::text) || ' - '::text) || as_f_plvalue(d.final_rate_type_cd, 82)::text AS placement_structure,
+    ( SELECT rtrim(c.programname::text) AS rtrim
+           FROM program c
+          WHERE (c.old_id::integer IN ( SELECT p.contract_program_id
+                   FROM tb_placement p
+                  WHERE p.delete_sw = 'N'::bpchar AND p.placement_id = d.placement_id)) AND c.activeflag = 1) AS program_nm,(SELECT F_SNAME (userprofile.cjamspid::integer) AS F_SNAME
+             FROM userprofile
+            WHERE     (userprofile.cjamspid :: VARCHAR IN
+                          (SELECT caseassignment.toworkeridno
+                               FROM caseassignment, ASSIGNMENTCLIENTS
+                              WHERE     caseassignment.caseASSIGNMENTid :: VARCHAR =
+                                        ASSIGNMENTCLIENTS.ASSIGNMENTID  :: VARCHAR
+                                    AND caseassignment.objectid  :: VARCHAR = D.CASE_ID :: VARCHAR
+                                    AND (((SELECT PI.PERSONIDENTIFIERVALUE
+                                            FROM PERSONIDENTIFIER PI, PERSON P
+                                           WHERE     PI.PERSONID = P.PERSONID
+                                                 AND P.PERSONID =
+                                                     ASSIGNMENTCLIENTS.PERSONID))::TEXT) =
+                                        D.CLIENT_ID::TEXT
+                                    AND caseassignment.RESPONSIBILITYTYPEKEY::TEXT =
+                                        'S'::TEXT
+                                    AND caseassignment.ACTIVEFLAG =1
+                                    AND ASSIGNMENTCLIENTS.ACTIVEFLAG = 0
+                                    AND caseassignment.STARTDATE >=
+                                        PH.PAYMENT_START_DT
+                                    AND (   caseassignment.ENDDATE IS NULL
+                                         OR caseassignment.ENDDATE >=
+                                            PH.PAYMENT_END_DT)
+                           ORDER BY (COALESCE (
+                                        caseassignment.ENDDATE,
+                                        CURRENT_DATE::TIMESTAMP WITHOUT TIME ZONE)) DESC,
+                                    caseassignment.STARTDATE DESC
+                              fetch first 1 row only))
+                  AND userprofile.activeflag=1)
+             AS CHILD_WRK_NM,
+          (SELECT F_SNAME (
+                     F_SUPERVISOR (userprofile.cjamspid::CHARACTER VARYING)) AS F_SNAME
+             FROM userprofile
+            WHERE     (userprofile.cjamspid  :: VARCHAR IN
+                          (SELECT caseassignment.toworkeridno
+                               FROM caseassignment, ASSIGNMENTCLIENTS
+                              WHERE     caseassignment.caseASSIGNMENTid  :: VARCHAR=
+                                        ASSIGNMENTCLIENTS.ASSIGNMENTID  :: VARCHAR
+                                    AND caseassignment.objectid  :: VARCHAR = D.CASE_ID  :: VARCHAR
+                                    AND (((SELECT PI.PERSONIDENTIFIERVALUE
+                                            FROM PERSONIDENTIFIER PI, PERSON P
+                                           WHERE     PI.PERSONID = P.PERSONID
+                                                 AND P.PERSONID =
+                                                     ASSIGNMENTCLIENTS.PERSONID))::TEXT) =
+                                        D.CLIENT_ID::TEXT
+                                    AND caseassignment.RESPONSIBILITYTYPEKEY::TEXT =
+                                        'S'::TEXT
+                                    AND caseassignment.STARTDATE >=
+                                        PH.PAYMENT_START_DT
+                                    AND (   caseassignment.ENDDATE IS NULL
+                                         OR caseassignment.ENDDATE >=
+                                            PH.PAYMENT_END_DT)
+                           ORDER BY (COALESCE (
+                                        caseassignment.ENDDATE,
+                                        CURRENT_DATE::TIMESTAMP WITHOUT TIME ZONE)) DESC,
+                                    caseassignment.STARTDATE DESC
+                              fetch first 1 row only))
+                  AND userprofile.activeflag=1)
+             AS CHILD_SUP_NM,
+          (SELECT F_SNAME (userprofile.cjamspid::integer) AS F_SNAME
+             FROM userprofile
+            WHERE     (userprofile.cjamspid :: VARCHAR IN
+                          (SELECT caseassignment.toworkeridno
+                               FROM caseassignment
+                              WHERE     caseassignment.objectid  :: VARCHAR = D.CASE_ID  :: VARCHAR
+                                    AND caseassignment.ACTIVEFLAG = 1
+                                    AND caseassignment.RESPONSIBILITYTYPEKEY::TEXT =
+                                        'P'::TEXT
+                                    AND caseassignment.STARTDATE >=
+                                        PH.PAYMENT_START_DT
+                                    AND (   caseassignment.ENDDATE IS NULL
+                                         OR caseassignment.ENDDATE >=
+                                            PH.PAYMENT_END_DT)
+                           ORDER BY (COALESCE (
+                                        caseassignment.ENDDATE,
+                                        CURRENT_DATE::TIMESTAMP WITHOUT TIME ZONE)) DESC,
+                                    caseassignment.STARTDATE DESC
+                              fetch first 1 row only))
+                  AND userprofile.activeflag=1)
+             AS FAM_WRK_NM,
+          (SELECT F_SNAME (
+                     F_SUPERVISOR (userprofile.cjamspid::CHARACTER VARYING)) AS F_SNAME
+             FROM userprofile
+            WHERE     (userprofile.cjamspid  :: VARCHAR IN
+                          (SELECT caseassignment.toworkeridno
+                               FROM caseassignment
+                              WHERE     caseassignment.objectid :: VARCHAR = D.CASE_ID  :: VARCHAR 
+                                    AND caseassignment.ACTIVEFLAG =1
+                                    AND caseassignment.RESPONSIBILITYTYPEKEY::TEXT =
+                                        'P'::TEXT
+                                    AND caseassignment.STARTDATE >=
+                                        PH.PAYMENT_START_DT
+                                    AND (   caseassignment.ENDDATE IS NULL
+                                         OR caseassignment.ENDDATE >=
+                                            PH.PAYMENT_END_DT)
+                           ORDER BY (COALESCE (
+                                        caseassignment.ENDDATE,
+                                        CURRENT_DATE::TIMESTAMP WITHOUT TIME ZONE)) DESC,
+                                    caseassignment.STARTDATE DESC
+                              fetch first 1 row only))
+                  AND userprofile.activeflag=1)
+             AS FAMILY_SUP_NM,
+                  CASE
+            WHEN COALESCE(ph.offset_amount_no, 0::numeric) > 0::numeric THEN 'Y'::text
+            ELSE NULL::text
+        END AS offset_flag,
+    ph.payment_start_dt,
+    ph.payment_end_dt
+   FROM tb_payment_header ph
+     JOIN tb_payment_detail d ON d.payment_id = ph.payment_id AND d.delete_sw = 'N'::bpchar AND ph.delete_sw = 'N'::bpchar
+     JOIN tb_payment_status ps ON ps.payment_id = ph.payment_id AND ps.delete_sw = 'N'::bpchar
+  WHERE d.final_amount_no > 0::numeric AND ps.payment_id = ph.payment_id AND ph.payment_type_cd::text = '6'::text 
+       AND ps.payment_status_cd::text = '1636'::text AND ps.delete_sw = 'N'::bpchar
+and  ph.PAYMENT_START_DT>=CAST(START_DATE  AS DATE)
+AND ph.PAYMENT_END_DT<=CAST(END_DATE   AS DATE) );
+END;
+$function$
+

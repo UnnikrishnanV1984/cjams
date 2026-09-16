@@ -1,0 +1,1259 @@
+CREATE OR REPLACE FUNCTION sp_nytd_data_population(vi_online_client_id integer, vd_run_dt character varying, run_sw character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+DECLARE
+
+VS_STMT VARCHAR(5500) DEFAULT '';
+VS_STMT1 VARCHAR(5500) DEFAULT '';
+VS_STMT2 VARCHAR(5500) DEFAULT '';
+
+VS_COMBINED_VAL1 VARCHAR(20000) DEFAULT '';
+VS_COMBINED_VAL2 VARCHAR(2000) DEFAULT '';
+VS_OLD_DETVAL VARCHAR DEFAULT '';
+VS_CUR_DETVAL VARCHAR DEFAULT '';
+VS_ELEVAL VARCHAR(250) DEFAULT '';
+
+VL_OUTPUT_SQLCODE VARCHAR;
+VD_RUN_DATE DATE;
+VI_FNYEAR INTEGER;
+VI_AGE INTEGER;
+VD_START_DT DATE;
+VD_END_DT DATE;
+VD_START_DT_SRV DATE;
+VD_END_DT_SRV DATE;
+VD_START_DT1 DATE;
+VD_END_DT1 DATE;
+VD_START_DT_SRV1 DATE;
+VD_END_DT_SRV1 DATE;
+VD_START_DT_SRV_PREV DATE;
+VD_END_DT_SRV_PREV DATE;
+VI_SUMMARY_ID uuid;
+VI_OLD_SUMMARY_ID uuid;
+VI_REPORTING_PERIOD INTEGER;
+VI_45_DAYS_CHK INTEGER;
+VL_ERRCODE INTEGER DEFAULT 0;
+VS_REPORT_TYPE_CD VARCHAR(6);
+VS_COUNTY_CD VARCHAR(20);
+VI_CLIENT_ID INTEGER;
+VS_STATE VARCHAR(8) DEFAULT 'Maryland'; --element 1
+VS_REPORT_DT VARCHAR(10);
+VI_RECORD_NO INTEGER;
+VS_DOB_DT VARCHAR(20);
+VS_SEX VARCHAR(6);
+VS_RACE_CD VARCHAR(5);
+VS_SECONDARY_RACE_CD VARCHAR(5);
+VS_RACE_TX VARCHAR(5);
+VS_HISPANIC VARCHAR(8);
+VS_FOSTER_CARE_STATUS VARCHAR(3) default 'No';
+VS_LOCAL_AGENCY VARCHAR(3);
+VS_TRIBE VARCHAR(3);
+VS_DELINQUENT VARCHAR(3);
+VS_EDUCATION VARCHAR(100);
+VS_SPC_EDUCATION VARCHAR(10);
+VS_INDEPENDENT_ASSESS VARCHAR(3);
+VS_ACADEMIC_SUPPORT VARCHAR(3);
+VS_POST_SECNDRY_EDU_SUPPORT VARCHAR(3);
+VS_CAREER_PREPARATION VARCHAR(3);
+VS_VOC_TRAINING VARCHAR(3);
+VS_FIN_MANGT VARCHAR(3);
+VS_HOUS_EDUCATION VARCHAR(3);
+VS_HEALTH_EDU_RISK_PREVENTION VARCHAR(3);
+VS_FM_SUPP_MARG_EDU VARCHAR(3);
+VS_MENTORING VARCHAR(3);
+VS_SUPVD_IND_LIVING VARCHAR(3);
+VS_RM_BRD_FIN_ASSIST VARCHAR(3);
+VS_EDU_FINANCIAL_ASSIST VARCHAR(3);
+VS_OTH_FIN_ASSISTANCE VARCHAR(3);
+VS_OUTCOME_REPORT_STS VARCHAR(10);
+VS_OUTCOME_DATA_COLL VARCHAR(10);
+VS_OUTCOME_FOSTER_CARE VARCHAR(10);
+VS_TICKLER_TX VARCHAR(500); 
+VS_ERRMSG VARCHAR(3000) DEFAULT '';
+VS_NYTD_CLIENT_CHK VARCHAR(1);
+VI_PREV_REC_CLIENT_CHK INTEGER;
+VI_WORKER_ID INTEGER;
+VS_ENTITY_CD VARCHAR(5);
+VI_ENTITY_ID INTEGER;
+VI_LOOP_COUNT  INTEGER;
+VI_COUNT       INTEGER;
+SUMMARY_INSERTED CHAR(1);
+VS_ELEMENT6 VARCHAR(3)  DEFAULT 'No';
+VS_ELEMENT7 VARCHAR(3)  DEFAULT 'No';
+VS_ELEMENT8 VARCHAR(3)  DEFAULT 'No';
+VS_ELEMENT9 VARCHAR(3)  DEFAULT 'No';
+VS_ELEMENT10 VARCHAR(3) DEFAULT 'No';
+VS_ELEMENT11 VARCHAR(3) DEFAULT 'No';
+VS_ELEMENT12 VARCHAR(3);
+VS_ELEMENT15 VARCHAR(20);
+VS_ELEMENT16 VARCHAR(10)  DEFAULT '';
+VS_GRADE VARCHAR(50);
+VS_ELEMENT18 VARCHAR(50);
+VS_ELEMENT19 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT20 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT21 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT22 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT23 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT24 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT25 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT26 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT27 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT28 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT29 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT30 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT31 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT32 VARCHAR(10)  DEFAULT '';
+VS_ELEMENT33 VARCHAR(10)  DEFAULT '';
+VI_PERSON_ID uuid;
+VS_OUTCODE integer;
+
+VD_END_DT_SRV1_45DAY DATE;
+MAIN_CUR REFCURSOR;
+DET_CUR REFCURSOR;
+
+BEGIN
+ VL_OUTPUT_SQLCODE := '00000';
+ if VD_RUN_DT is null then 
+  VD_RUN_DATE := now()::date;
+ else 
+  VD_RUN_DATE := VD_RUN_DT::DATE;
+ end if ;
+
+ IF EXTRACT(MONTH from VD_RUN_DATE) IN (10,11,12,1,2,3) THEN
+ IF EXTRACT(MONTH from VD_RUN_DATE) IN (1,2,3) THEN
+  VD_START_DT_SRV := DATE('10/01/'||(EXTRACT(YEAR from VD_RUN_DATE))-1);
+  VD_END_DT_SRV := DATE('03/31/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  --Set Prev date
+  VD_START_DT_SRV_PREV := DATE('04/01/'||(EXTRACT(YEAR from VD_RUN_DATE)) -1);
+  VD_END_DT_SRV_PREV := DATE('09/30/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+ ELSE
+  VD_START_DT_SRV := DATE('10/01/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  VD_END_DT_SRV := DATE('03/31/'||(EXTRACT(YEAR from VD_RUN_DATE))+ 1);
+  --Set Prev date
+  VD_START_DT_SRV_PREV := DATE('04/01/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  VD_END_DT_SRV_PREV := DATE('09/30/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  
+ END IF;
+ ELSE
+  VD_START_DT_SRV := DATE('04/01/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  VD_END_DT_SRV := DATE('09/30/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  --Set Prev date
+  VD_START_DT_SRV_PREV := DATE('10/01/'||(EXTRACT(YEAR from VD_RUN_DATE)) -1);
+  VD_END_DT_SRV_PREV := DATE('03/31/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  
+ END IF ;
+ 
+ IF EXTRACT(MONTH from VD_RUN_DATE) IN (10,11,12) THEN
+  VD_START_DT := DATE('10/01/'||(EXTRACT(YEAR from VD_RUN_DATE)));
+  VD_END_DT := DATE('09/30/'||(EXTRACT(YEAR from VD_RUN_DATE)+1));
+     VI_FNYEAR := EXTRACT(YEAR from VD_END_DT);
+ ELSE IF EXTRACT(MONTH from VD_RUN_DATE) IN (1,2,3,4,5,6,7,8,9) THEN
+     VD_START_DT := DATE('10/01/'||(EXTRACT(YEAR from VD_RUN_DATE)-1));
+  VD_END_DT := DATE('09/30/'||EXTRACT(YEAR from VD_RUN_DATE));
+     VI_FNYEAR := EXTRACT(YEAR from VD_END_DT);
+     END IF;
+ END IF ;
+
+  VI_45_DAYS_CHK := 0;
+  
+ CASE RUN_SW
+ WHEN 'D' THEN
+     VD_START_DT_SRV1 := VD_START_DT_SRV;
+     VD_END_DT_SRV1 := VD_END_DT_SRV;
+ 
+     VD_START_DT1 := VD_START_DT_SRV;
+     VD_END_DT1 := VD_END_DT_SRV;
+  
+ WHEN 'N' THEN
+         IF VD_START_DT_SRV1 = VD_RUN_DATE THEN
+                 VD_START_DT_SRV1 := VD_START_DT_SRV;
+                 VD_END_DT_SRV1 := VD_RUN_DATE;
+         ELSE
+                 VD_START_DT_SRV1 := VD_START_DT_SRV;
+                 VD_END_DT_SRV1 := VD_RUN_DATE - interval '1' day;
+         END IF;
+ 
+         IF VD_START_DT1 = VD_RUN_DATE THEN
+                 VD_START_DT1 := VD_START_DT;
+                 VD_END_DT1 := VD_RUN_DATE;
+         ELSE
+                 VD_START_DT1 := VD_START_DT;
+                 VD_END_DT1 := VD_RUN_DATE - interval '1' day;
+         END IF;
+ ELSE
+         VD_START_DT_SRV1 := VD_START_DT_SRV;
+         VD_END_DT_SRV1 := VD_END_DT_SRV;
+ 
+         VD_START_DT1 := VD_START_DT;
+         VD_END_DT1 := VD_END_DT;
+ END CASE  ;
+ 
+ IF VI_ONLINE_CLIENT_ID IS NULL then
+ 
+  OPEN MAIN_CUR FOR 
+  SELECT  DISTINCT cjamspid,
+    REPORT_TYPE 
+  FROM (
+    select distinct pr.cjamspid, 'F' as REPORT_TYPE from person pr where pr.activeflag = 1 and 
+    (f_age(pr.dob,VD_START_DT1) = 19 or f_age(pr.dob,VD_END_DT1) = 19 or f_age(pr.dob,VD_START_DT1) = 21 or f_age(pr.dob,VD_END_DT1) = 21) and 
+    (pr.personid in (select pns.personid from personnytdsummary pns where pns.reporttypekey = '13056' ))
+    and ((MOD((VI_FNYEAR - 2013),3)=0 OR MOD((VI_FNYEAR + 2015),3)=0 ) AND (VI_FNYEAR>=2013) )
+    union 
+    select distinct pr.cjamspid, 'B' as REPORT_TYPE from person pr inner join personprogramarea ppa on ppa.personid = pr.personid
+    and ppa.programkey = 'OOH'
+    and ppa.startdate <= DATE(VD_END_DT1) and (ppa.enddate is null or ppa.enddate >= DATE(VD_START_DT1))
+    where (ppa.startdate <= (pr.dob + interval '17' YEAR + interval '45' DAY) AND (ppa.enddate IS NULL OR ppa.enddate >= pr.dob + interval '17' YEAR) )
+    and (((pr.dob + interval '17' YEAR + interval '1' DAY) >= DATE(VD_START_DT1) and (pr.dob + interval '17' YEAR + interval '1' DAY) <= DATE(VD_END_DT1))
+    or ((pr.dob + interval '17' YEAR + interval '45' DAY) >=  DATE(VD_START_DT1) and (pr.dob + interval '17' YEAR + interval '45' DAY) <= DATE(VD_END_DT1)))
+    and ((pr.dob + interval '17' YEAR + interval '1' DAY) between DATE(VD_START_DT1) and  DATE(VD_END_DT1)) and ppa.activeflag = 1 and pr.activeflag = 1 
+    AND MOD((VI_FNYEAR-2011),3)=0 AND (VI_FNYEAR >=2011) 
+    UNION
+    SELECT DISTINCT CLIENT_ID,'S' AS REPORT_TYPE FROM ( 
+    SELECT p.cjamspid AS CLIENT_ID 
+    FROM personprogramarea ppa
+    INNER JOIN person p ON p.personid=ppa.personid AND p.activeflag=1
+    WHERE 
+     ppa.programkey = 'IL' AND 
+     ( ppa.startdate <= VD_END_DT_SRV1::date AND (ppa.enddate IS NULL OR ppa.enddate >= VD_START_DT_SRV1::date ) ) 
+    AND ppa.activeflag = 1 
+     UNION  
+    SELECT SL.CLIENT_ID 
+    FROM TB_SERVICE_LOG SL 
+    INNER JOIN TB_PROVIDER_SERVICES PS ON SL.PROVIDER_SERVICE_ID = PS.PROVIDER_SERVICE_ID
+    INNER JOIN TB_SERVICES S ON PS.SERVICE_ID = S.SERVICE_ID  AND PS.DELETE_SW = 'N'
+    WHERE  
+    (S.SERVICE_ID IN (select ns.old_id::int from nytdservices ns WHERE activeflag = 1) ) AND  
+    ( SL.START_DT <= VD_END_DT_SRV1::date AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1::date ) ) 
+    UNION 
+    SELECT DISTINCT CLIENT_ID
+    FROM TB_PLACEMENT
+    WHERE DELETE_SW = 'N' 
+    AND ENTRY_DT IS NOT NULL
+    AND ENTRY_DT <= VD_END_DT_SRV1::date AND (EXIT_DT IS NULL OR EXIT_DT >= VD_START_DT_SRV1::date)
+     --AND CLIENT_ID = CHAR(VI_ONLINE_CLIENT_ID) 
+    AND PLACEMENT_STRUCTURE_ID IN (1,73,75)  
+    UNION   
+    SELECT SL.CLIENT_ID
+     FROM TB_SERVICE_LOG SL 
+    INNER JOIN TB_SERVICES S ON SL.AGENCY_SERVICE_LDSS_ID = S.SERVICE_ID  AND SL.DELETE_SW = 'N'  
+    WHERE 
+     (S.SERVICE_ID IN  (select ns.old_id::int from nytdservices ns WHERE activeflag = 1)) and 
+     ( SL.START_DT <= VD_END_DT_SRV1::date AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1::date ) )
+    ) SRV
+    )TAB ;
+  
+ ELSE 
+   
+  OPEN MAIN_CUR FOR 
+  
+  SELECT  DISTINCT cjamspid,
+    REPORT_TYPE 
+  FROM  (
+    Select  distinct pr.cjamspid, 'F' as REPORT_TYPE 
+    from  person pr 
+    where  pr.activeflag = 1
+      and (f_age(pr.dob,VD_START_DT_SRV1) = 19 or f_age(pr.dob,VD_END_DT_SRV1) = 19 or f_age(pr.dob,VD_START_DT_SRV1) = 21 or f_age(pr.dob,VD_END_DT_SRV1) = 21) 
+      and (pr.personid in ( select pns.personid 
+            from  personnytdsummary pns ,
+              personnytddetail pnd
+            where  pns.summaryid = pnd.summaryid 
+              and pns.reporttypekey = '13056'
+              and pnd.elementid = '34')
+              and pnd.elementvalue = '13058')
+      and pr.cjamspid = VI_ONLINE_CLIENT_ID
+      and ((MOD((VI_FNYEAR - 2013),3)=0 OR MOD((VI_FNYEAR + 2015),3)=0 ) AND (VI_FNYEAR>=2013) )
+    union
+    select  distinct pr.cjamspid, 'B' as REPORT_TYPE 
+    from  person pr inner join personprogramarea ppa on ppa.personid = pr.personid
+      and ppa.programkey = 'OOH'
+      and ppa.startdate <= DATE(VD_END_DT_SRV1) and (ppa.enddate is null or ppa.enddate >= DATE(VD_START_DT_SRV1))
+    where  (ppa.startdate <= (pr.dob + interval '17' YEAR + interval '45' DAY) 
+      AND (ppa.enddate IS NULL OR ppa.enddate >= pr.dob + interval '17' YEAR) )
+      and (((pr.dob + interval '17' YEAR + interval '1' DAY) >= DATE(VD_START_DT_SRV1) and (pr.dob + interval '17' YEAR + interval '1' DAY) <= DATE(VD_END_DT_SRV1))
+      or ((pr.dob + interval '17' YEAR + interval '45' DAY) >=  DATE(VD_START_DT_SRV1) and (pr.dob + interval '17' YEAR + interval '45' DAY) <= DATE(VD_END_DT_SRV1)))
+      and ((pr.dob + interval '17' YEAR + interval '1' DAY) between DATE(VD_START_DT_SRV1) and  DATE(VD_END_DT_SRV1)) and ppa.activeflag = 1 and pr.activeflag = 1 
+      AND MOD((VI_FNYEAR-2011),3)=0 AND (VI_FNYEAR >=2011) 
+      and pr.cjamspid = VI_ONLINE_CLIENT_ID
+    union 
+    SELECT  DISTINCT CLIENT_ID,'S' AS REPORT_TYPE 
+    FROM  ( 
+      SELECT  p.cjamspid AS CLIENT_ID 
+      FROM  personprogramarea ppa INNER JOIN person p ON p.personid=ppa.personid AND p.activeflag=1
+      WHERE  ppa.programkey = 'IL'
+        AND ( ppa.startdate <= VD_END_DT_SRV1::date AND (ppa.enddate IS NULL OR ppa.enddate >= VD_START_DT_SRV1::date ) ) 
+        AND ppa.activeflag = 1 
+        and pr.cjamspid = VI_ONLINE_CLIENT_ID
+      union 
+      SELECT DISTINCT CLIENT_ID
+      FROM  TB_PLACEMENT
+      WHERE  DELETE_SW = 'N' 
+        AND ENTRY_DT IS NOT NULL
+        AND ENTRY_DT <= VD_END_DT_SRV1::date AND (EXIT_DT IS NULL OR EXIT_DT >= VD_START_DT_SRV1::date) 
+        AND PLACEMENT_STRUCTURE_ID IN (1,73,75)  
+        and pr.cjamspid = VI_ONLINE_CLIENT_ID 
+      UNION  
+      SELECT SL.CLIENT_ID 
+      FROM  TB_SERVICE_LOG SL 
+        INNER JOIN TB_PROVIDER_SERVICES PS ON SL.PROVIDER_SERVICE_ID = PS.PROVIDER_SERVICE_ID
+        INNER JOIN TB_SERVICES S ON PS.SERVICE_ID = S.SERVICE_ID  AND PS.DELETE_SW = 'N'
+      WHERE   (S.SERVICE_ID IN ( select ns.old_id::int 
+             from  nytdservices ns 
+             WHERE  activeflag = 1) ) 
+        AND  ( SL.START_DT <= VD_END_DT_SRV1::date AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1::date ) ) 
+        and pr.cjamspid = VI_ONLINE_CLIENT_ID
+      UNION
+      SELECT SL.CLIENT_ID
+      FROM  TB_SERVICE_LOG SL 
+        INNER JOIN TB_SERVICES S ON SL.AGENCY_SERVICE_LDSS_ID = S.SERVICE_ID  AND SL.DELETE_SW = 'N'  
+      WHERE  (S.SERVICE_ID IN  ( select  ns.old_id::int 
+             from  nytdservices ns 
+             WHERE activeflag = 1)) 
+        and ( SL.START_DT <= VD_END_DT_SRV1::date AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1::date ) )
+      ) SRV
+      ) tab 
+      FETCH FIRST 1 ROW ONLY;
+    
+ END IF;
+
+   << MAIN_CUR >> WHILE VL_OUTPUT_SQLCODE = '00000' 
+   LOOP FETCH MAIN_CUR INTO VI_CLIENT_ID,VS_REPORT_TYPE_CD; 
+   RAISE NOTICE 'MAIN_CUR';
+            RAISE NOTICE 'VI_CLIENT_ID %', VI_CLIENT_ID;
+   RAISE NOTICE 'VS_REPORT_TYPE_CD %', VS_REPORT_TYPE_CD; 
+    -- Element 3 is the client id which is set here in the Main Cursor.
+    IF VS_REPORT_TYPE_CD <> 'N' THEN
+
+     --element 4 DOB
+     --element 5 Sex
+     --element 6 - 11 is Race
+     -- element 13 Hispanic or Latino Ethnicity
+    
+     SELECT  dob::varchar AS VS_DOB_DT, 
+     (case when pp.gendertypekey = 'M' then 'Male' when pp.gendertypekey = 'F' then 'Female' else 'No' end) as gendertype, 
+     (CASE WHEN pp.ethnicgrouptypekey IS null or pp.ethnicgrouptypekey = 'U' THEN 'Unknown' 
+      WHEN pp.ethnicgrouptypekey = 'H' THEN 'Yes'
+      WHEN pp.ethnicgrouptypekey = 'X' THEN 'No'
+     end) as ethiniccd INTO VS_DOB_DT, VS_SEX, VS_HISPANIC
+     FROM person PP WHERE  PP.cjamspid = VI_CLIENT_ID and PP.activeflag = 1;
+       
+     /*RACE Logic is changed.it also takes into consideration the secondary race code.
+     so if primary race code is declined(6314) then element12 will be Yes. Else it will be No.
+     all other elements 6-11 will be taken from primary race & secondary race code together.
+     if primary or secondary either of them is Yes then the corresponding element will be Yes.
+     Element 6 is AMERICAN INDIAN OR ALASKAN NATIVE
+     Element 7 is ASIAN
+     Element 8 is BLACK OR AFRICAN AMERICAN
+     Element 9 is NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER
+     Element 10 is WHITE
+     Element 11 is UNKNOWN
+     Element 12 is DECLINED*/ 
+ 
+     SELECT ptm.racetypekey,
+      CASE WHEN ptm.racetypekey IN ('AN','AI') THEN 'Yes' 
+        ELSE 'No' END ,
+      CASE WHEN ptm.racetypekey='AS' THEN 'Yes' 
+        ELSE 'No' END ,
+      CASE WHEN ptm.racetypekey='BA' THEN 'Yes' 
+        ELSE 'No' END ,
+      CASE WHEN ptm.racetypekey='WH' THEN 'Yes' 
+        ELSE 'No' END ,
+      CASE WHEN ptm.racetypekey='PI' THEN 'Yes' 
+        ELSE 'No' END ,
+      CASE WHEN ptm.racetypekey='UN' THEN 'Yes' 
+        ELSE 'No' END    
+     INTO 
+      VS_RACE_CD,
+        VS_ELEMENT6,
+      VS_ELEMENT7,
+      VS_ELEMENT8,
+      VS_ELEMENT9,
+      VS_ELEMENT10,
+      VS_ELEMENT11 
+     FROM person p 
+     LEFT JOIN personracetypemap ptm ON p.personid=ptm.personid AND p.activeflag=1 AND ptm.activeflag=1
+     WHERE p.cjamspid=VI_CLIENT_ID;
+    
+     IF VS_RACE_CD = 'DC' THEN
+        VS_ELEMENT6 := null;
+        VS_ELEMENT7 := null;
+        VS_ELEMENT8 := NULL;
+        VS_ELEMENT9 := NULL;
+        VS_ELEMENT10 := NULL;
+        VS_ELEMENT11 := NULL;
+              VS_ELEMENT12 := 'Yes';
+           END IF; 
+         
+     IF  (VS_ELEMENT6 = 'No') AND (VS_ELEMENT7 = 'No') AND (VS_ELEMENT8 = 'No') AND (VS_ELEMENT9 = 'No') 
+     AND (VS_ELEMENT10 = 'No') AND (VS_ELEMENT11 = 'No') THEN  
+   
+      VS_ELEMENT12 := 'Yes';
+     ELSE
+      VS_ELEMENT12 := 'No';
+     END IF;  
+     -- checking age
+     VI_AGE := (SELECT f_age(dob,VD_RUN_DT::date) FROM person WHERE cjamspid = VI_CLIENT_ID);
+     IF VS_REPORT_TYPE_CD = 'S' THEN
+      --temporarily to check base line
+      VI_REPORTING_PERIOD := ((EXTRACT(YEAR from VD_END_DT_SRV))::varchar|| CASE WHEN EXTRACT(MONTH from VD_END_DT_SRV) < 10 THEN ('0'||(EXTRACT(MONTH from VD_END_DT_SRV))::varchar) ELSE (EXTRACT(MONTH from VD_END_DT_SRV)::varchar) end )::int ;
+      IF VI_AGE = 17 THEN
+       IF EXISTS (SELECT personid FROM personnytdsummary pns join person pr on pr.personid = pns.personid  WHERE reportingperiod = VI_REPORTING_PERIOD AND reporttypekey = '13056' AND activeflag = 1 AND pr.cjamspid = VI_CLIENT_ID)
+       THEN
+        VS_REPORT_TYPE_CD := 'B';
+       END IF;
+      END IF;
+     END IF; 
+    
+     IF VS_REPORT_TYPE_CD = 'S' THEN
+      VI_REPORTING_PERIOD := ((EXTRACT(YEAR from VD_END_DT_SRV))::varchar|| CASE WHEN EXTRACT(MONTH from VD_END_DT_SRV) < 10 THEN ('0'||(EXTRACT(MONTH from VD_END_DT_SRV))::varchar) ELSE (EXTRACT(MONTH from VD_END_DT_SRV)::varchar) end )::int ;
+     ELSE
+      VI_REPORTING_PERIOD := ((EXTRACT(YEAR from VD_END_DT_SRV))::varchar|| CASE WHEN EXTRACT(MONTH from VD_END_DT_SRV) < 10 THEN ('0'||(EXTRACT(MONTH from VD_END_DT_SRV))::varchar) ELSE (EXTRACT(MONTH from VD_END_DT_SRV)::varchar) end )::int ;
+     END IF;
+    
+       -- Setting Element 2 which is Report Date.
+     IF VS_REPORT_TYPE_CD = '13054' OR VS_REPORT_TYPE_CD = '13055' THEN
+      VS_REPORT_DT := (VI_REPORTING_PERIOD)::varchar || (CASE WHEN EXTRACT(MONTH from VD_END_DT_SRV)=3 THEN '03' WHEN EXTRACT(MONTH from VD_END_DT_SRV)=9 THEN '09' END);
+        ELSE
+      VS_REPORT_DT := (VI_REPORTING_PERIOD)::varchar || (CASE WHEN EXTRACT(MONTH from VD_END_DT)=3 THEN '03' WHEN EXTRACT(MONTH from VD_END_DT)=9 THEN '09' END);
+     END IF;
+     VS_REPORT_TYPE_CD := (CASE WHEN VS_REPORT_TYPE_CD = 'S' AND EXTRACT(MONTH from VD_END_DT_SRV)=3 THEN '13054'
+                          WHEN VS_REPORT_TYPE_CD = 'S' AND EXTRACT(MONTH from VD_END_DT_SRV)=9 THEN '13055'
+                          WHEN VS_REPORT_TYPE_CD = 'B' THEN '13056'
+                          WHEN VS_REPORT_TYPE_CD = 'F' THEN '13057' END);
+                    VI_OLD_SUMMARY_ID := (SELECT summaryid FROM personnytdsummary pns join person pr on pns.personid = pr.personid WHERE pns.reportingperiod = VI_REPORTING_PERIOD::varchar AND pns.activeflag=1
+        AND pns.reporttypekey = VS_REPORT_TYPE_CD AND pr.cjamspid = VI_CLIENT_ID AND (pns.validationflag <> 1 OR validationflag IS NULL)
+     ORDER BY summaryid DESC FETCH FIRST 1 ROW ONLY);
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_STATE,'');
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_REPORT_DT,'');
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VI_CLIENT_ID::varchar,'');
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_DOB_DT,'');
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_SEX,'');
+     VS_RACE_TX = (CASE WHEN VS_RACE_CD in ('AN','AI') THEN 'Yes' ELSE 'No' END);
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_RACE_TX,'');
+     IF VS_RACE_CD in ('AN','AI') THEN
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || 'No';
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || 'No';
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || 'No';
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || 'No';
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || 'No';
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || 'No';
+     ELSE
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || (CASE VS_RACE_CD WHEN 'AS' THEN 'Yes' ELSE 'No' END);
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || (CASE VS_RACE_CD WHEN 'BA' THEN 'Yes' ELSE 'No' END);
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || (CASE VS_RACE_CD WHEN 'WH' THEN 'Yes' ELSE 'No' END);
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || (CASE VS_RACE_CD WHEN 'PI' THEN 'Yes' ELSE 'No' END);
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || (CASE VS_RACE_CD WHEN 'UN' THEN 'Yes' ELSE 'No' END);
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || (CASE VS_RACE_CD WHEN 'DC' THEN 'Yes' ELSE 'No' END);
+     END IF;
+    
+     --element 14 FOSTER CARE STATUS 
+     -- B-06756 allow foster care status for baseline/followup.
+        RAISE NOTICE 'VI_CLIENT_ID element 11111113  %', VI_CLIENT_ID ;
+     RAISE NOTICE 'VD_START_DT_SRV1   element 11111113  %', VD_START_DT_SRV1 ;
+     RAISE NOTICE 'VD_END_DT_SRV1  element 11111113  %', VD_END_DT_SRV1 ;
+     RAISE NOTICE 'VS_COMBINED_VAL1  element 11111113  %', VS_COMBINED_VAL1 ;
+    
+     --VS_FOSTER_CARE_STATUS := 
+     select CASE WHEN (SELECT COUNT(*) FROM personprogramarea ppa INNER JOIN person pr ON pr.personid = ppa.personid
+     WHERE (EXTRACT(year from (VD_END_DT_SRV1 - pr.dob)) BETWEEN 14 AND 21)
+     AND ppa.programkey = 'OOH' AND ( ppa.startdate <= VD_END_DT_SRV1 AND (ppa.enddate IS NULL OR ppa.enddate >= VD_START_DT_SRV1) )
+     AND ppa.activeflag = 1 AND pr.activeflag = 1 AND pr.cjamspid = VI_CLIENT_ID ) > 0 THEN 'No'
+     ELSE 'Yes' END  
+     into VS_FOSTER_CARE_STATUS;
+   
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_FOSTER_CARE_STATUS,'');
+    
+     --element 15          
+           select  af.afcars_ref_cd :: character varying
+     into VS_COUNTY_CD
+     from person p 
+     join intakeservicerequestactor isra on p.personid=isra.personid and p.activeflag=1 and isra.activeflag=1
+     join routing ru on isra.intakeserviceid::varchar=ru.objectid  and ru.eventcode='INVT' and ru.activeflag=1 
+     join userprofileaddress upa on ru.tosecurityusersid = upa.securityusersid and upa.activeflag=1 
+     LEFT JOIN afcars_ref_code af on lower(trim(upa.county)) = lower(trim(af.cjams_cd)) 
+     where  p.cjamspid = VI_CLIENT_ID;
+      
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_COUNTY_CD,'');
+        
+       select case when p.tribalassociation is not null and p.tribalassociation!='' then 'Yes' else 'No' end
+       into VS_TRIBE
+     from person p 
+     where p.cjamspid = VI_CLIENT_ID;
+      
+     VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_TRIBE,'');
+       --element 17 
+       --element 18,19
+      
+     SELECT  (select rv.description as currentgradeleveldesc  
+      from referencevalues rv 
+      where rv.ref_key = e.currentgradetypekey 
+      and rv.referencetypeid = 185 and rv.activeflag = 1 limit 1)   
+      ,isspecialeducation :: character varying 
+      into VS_GRADE ,VS_SPC_EDUCATION 
+     FROM personeducation e 
+     WHERE e.personid = '5268ce6b-9793-4bac-823f-fa624680926e' AND e.activeflag = 1    
+     and e.enddate is null order by e.startdate desc limit 1;
+    If (VS_GRADE = 'Grade 1' or  VS_GRADE = 'Grade 1' or  VS_GRADE = 'Grade 1' or VS_GRADE = 'Grade 1' or VS_GRADE = 'Grade 1') then 
+      VS_EDUCATION:='Less then 6th grade';
+    end if;     
+    if VS_GRADE = 'Grade 6' then 
+      VS_EDUCATION:='6th grade';
+    end if;
+    if VS_GRADE = 'Grade 7' then 
+      VS_EDUCATION:='7th grade';
+    end if;
+    if VS_GRADE = 'Grade 8' then 
+      VS_EDUCATION:='8th grade';
+    end if;
+    if VS_GRADE = 'Grade 9' then 
+      VS_EDUCATION:='9th grade';
+    end if;
+    if VS_GRADE = 'Grade 10' then 
+      VS_EDUCATION:='10th grade';
+    end if;
+    if VS_GRADE = 'Grade 11' then 
+      VS_EDUCATION:='11th grade';
+    end if;
+    if VS_GRADE = 'Grade 12' then 
+      VS_EDUCATION:='12th grade';
+    end if;
+    
+    if VS_GRADE = 'Post Secondary Education or Training' then 
+      VS_EDUCATION:='Post Secondary Education or Training';
+    end if;
+    if VS_GRADE = 'College' then 
+     VS_EDUCATION:='College';
+    end if;
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_EDUCATION,'');
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_SPC_EDUCATION,'');
+   
+   --element 20
+   -- Element ID 21 - Academic Support -
+   VS_ACADEMIC_SUPPORT := (CASE WHEN ( SELECT COUNT(*)
+          FROM TB_SERVICE_LOG SL
+          WHERE SL.CLIENT_ID = VI_CLIENT_ID
+          AND SL.DELETE_SW = 'N'
+          AND SL.START_DT  <= VD_END_DT_SRV1
+          AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+          AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                  FROM TB_PROVIDER_SERVICES
+                  WHERE DELETE_SW = 'N'
+                  AND SERVICE_ID IN (1125,11364,11355,1122,1118,1119,1126,1121,11374)
+                  )
+           OR SL.AGENCY_SERVICE_LDSS_ID IN (11387,11378,1217,1223,1224,1219,11397,1220)
+           OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                  FROM TB_SERVICE_LOG SL
+                   WHERE SL.DELETE_SW = 'N'
+                  AND SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                            FROM TB_PROVIDER_SERVICES
+                            WHERE DELETE_SW = 'N'
+                            AND SERVICE_ID IN (11344,11401,1127)
+                           )
+                 )
+           )
+         ) > 0 THEN
+          'Yes'
+         ELSE
+          'No'
+         END);  
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_ACADEMIC_SUPPORT,''); 
+   -- Element ID 22 - Post Secondary Educational Support - 
+   VS_POST_SECNDRY_EDU_SUPPORT := (CASE WHEN (SELECT COUNT(*)
+              FROM TB_SERVICE_LOG SL
+                                         WHERE SL.CLIENT_ID = VI_CLIENT_ID
+              AND SL.DELETE_SW = 'N'
+              AND SL.START_DT  <= VD_END_DT_SRV1
+              AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+              AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                       FROM TB_PROVIDER_SERVICES
+                       WHERE DELETE_SW = 'N'
+                       AND SERVICE_ID IN (11365,11356,11373)
+                      )
+               OR SL.AGENCY_SERVICE_LDSS_ID IN (11388,11396,11379)
+                                                )
+              ) > 0 THEN
+              'Yes'
+                                  ELSE
+              'No'
+                               END);
+                              
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_POST_SECNDRY_EDU_SUPPORT,'');
+   
+   -- Element ID 23 - Career Preparation
+   VS_CAREER_PREPARATION := (CASE WHEN (SELECT COUNT(*)
+            FROM TB_SERVICE_LOG SL
+            WHERE SL.CLIENT_ID = VI_CLIENT_ID
+            AND SL.DELETE_SW = 'N'
+            AND SL.START_DT  <= VD_END_DT_SRV1
+            AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+            AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                     FROM TB_PROVIDER_SERVICES
+                     WHERE DELETE_SW = 'N'
+                     AND SERVICE_ID IN (11357,11366)
+                    )
+             OR SL.AGENCY_SERVICE_LDSS_ID IN (11389,11380,1274,1271,1273,1275,1272,1276)
+             OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                    FROM TB_SERVICE_LOG SL
+                     WHERE SL.DELETE_SW = 'N'
+                    AND SL.PROVIDER_SERVICE_ID IN ( SELECT PROVIDER_SERVICE_ID
+                             FROM TB_PROVIDER_SERVICES
+                             WHERE DELETE_SW = 'N'
+                             AND SERVICE_ID IN (11346)
+                              )
+                   )
+             )
+            ) > 0 THEN
+            'Yes'
+                                ELSE
+            'No'
+                               END);
+                              
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_CAREER_PREPARATION,''); 
+--    RAISE NOTICE 'VS_COMBINED_VAL1 % element 11112222233313', VS_COMBINED_VAL1 ;
+   -- Element ID 24 - Employment Programs or Vocational Training
+   VS_VOC_TRAINING := (CASE WHEN ( SELECT COUNT(*)
+           FROM TB_SERVICE_LOG SL
+                                      WHERE SL.CLIENT_ID = VI_CLIENT_ID
+           AND SL.DELETE_SW = 'N'
+           AND SL.START_DT  <= VD_END_DT_SRV1
+           AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+           AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                    FROM TB_PROVIDER_SERVICES
+                    WHERE DELETE_SW = 'N'
+                    AND SERVICE_ID IN (11367,11358,1130,1129,1120,1128,1131) --#13052
+                   )
+            OR SL.AGENCY_SERVICE_LDSS_ID IN (11390,11381,1226,1228,1216,1221,1227)
+            OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                   FROM TB_SERVICE_LOG SL
+                   WHERE SL.DELETE_SW = 'N'
+                   AND SL.PROVIDER_SERVICE_ID IN ( SELECT PROVIDER_SERVICE_ID
+                            FROM TB_PROVIDER_SERVICES
+                            WHERE DELETE_SW = 'N'
+                            AND SERVICE_ID IN (11347)
+                             )
+                   )
+                                             )
+          ) > 0 THEN
+           'Yes'
+                                ELSE
+           'No'
+                              END);
+         VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_VOC_TRAINING,'');
+   
+   -- Element ID 25 - Budget and Financial Management - 
+   VS_FIN_MANGT := (CASE WHEN (SELECT COUNT(*)
+          FROM TB_SERVICE_LOG SL
+                                     WHERE SL.CLIENT_ID = VI_CLIENT_ID
+          AND SL.DELETE_SW = 'N'
+          AND SL.START_DT  <= VD_END_DT_SRV1
+          AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+          AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                   FROM TB_PROVIDER_SERVICES
+                   WHERE DELETE_SW = 'N'
+                   AND SERVICE_ID IN (11368,11359,1124,1103)
+                  )
+           OR SL.AGENCY_SERVICE_LDSS_ID IN (11391,11382,1218,1201)
+           OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                  FROM TB_SERVICE_LOG SL
+                  WHERE SL.DELETE_SW = 'N'
+                  AND SL.PROVIDER_SERVICE_ID IN ( SELECT PROVIDER_SERVICE_ID
+                           FROM TB_PROVIDER_SERVICES
+                           WHERE DELETE_SW = 'N'
+                           AND SERVICE_ID IN (11348)
+                            )
+                                                                    )
+                                            )
+          ) > 0 THEN
+          'Yes'
+                              ELSE
+          'No'
+                            END);
+                           
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_FIN_MANGT,'');   
+--    RAISE NOTICE 'VS_COMBINED_VAL1 % element 1137878788678768', VS_COMBINED_VAL1 ;
+   -- Element ID 26 - Housing Education and Home Management Training -
+   VS_HOUS_EDUCATION := (CASE WHEN (SELECT COUNT(*)
+            FROM TB_SERVICE_LOG SL
+                                       WHERE SL.CLIENT_ID = VI_CLIENT_ID
+            AND SL.DELETE_SW = 'N'
+            AND SL.START_DT  <= VD_END_DT_SRV1
+            AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+            AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                     FROM TB_PROVIDER_SERVICES
+                     WHERE DELETE_SW = 'N'
+                     AND SERVICE_ID IN (11370,11361,11369,11360,1104)
+                    )
+             OR SL.AGENCY_SERVICE_LDSS_ID IN (11393,11384,11392,11383,1200,1202,1203)
+             OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                    FROM TB_SERVICE_LOG SL
+                    WHERE SL.DELETE_SW = 'N'
+                    AND SL.PROVIDER_SERVICE_ID IN ( SELECT PROVIDER_SERVICE_ID
+                             FROM TB_PROVIDER_SERVICES
+                             WHERE DELETE_SW = 'N'
+                             AND SERVICE_ID IN (11349, 11350)
+                              )
+                    )
+             )
+            ) > 0 THEN
+           'Yes'
+                               ELSE
+           'No'
+                              END);
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_HOUS_EDUCATION,'');
+  
+   -- Element ID 27 - Health Education and Risk Prevention -
+   
+   VS_HEALTH_EDU_RISK_PREVENTION := (CASE WHEN ( SELECT COUNT(*)
+               FROM TB_SERVICE_LOG SL
+                                          WHERE SL.CLIENT_ID = VI_CLIENT_ID
+               AND SL.DELETE_SW = 'N'
+               AND SL.START_DT  <= VD_END_DT_SRV1
+               AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+               AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                        FROM TB_PROVIDER_SERVICES
+                        WHERE DELETE_SW = 'N'
+                        AND SERVICE_ID IN (11362,11371,1195,1192,1304,1145,1147,1197,1108)
+                       )
+                OR SL.AGENCY_SERVICE_LDSS_ID IN (11385,11394,1263,1262,1300,1244,1265,1264,1205,1252,1253)
+                OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                       FROM TB_SERVICE_LOG SL
+                        WHERE SL.DELETE_SW = 'N'
+                       AND SL.PROVIDER_SERVICE_ID IN ( SELECT PROVIDER_SERVICE_ID
+                                FROM TB_PROVIDER_SERVICES
+                                WHERE DELETE_SW = 'N'
+                                AND SERVICE_ID IN (11351,1196)
+                                )
+                      )
+                )
+               ) > 0 THEN
+             'Yes'
+                                 ELSE
+             'No'
+                                 END);
+                                
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_HEALTH_EDU_RISK_PREVENTION,'');                              
+   -- Element ID 28 - Family Support/Healthy Marriage Education
+   VS_FM_SUPP_MARG_EDU := (CASE WHEN ( SELECT COUNT(*)
+            FROM TB_SERVICE_LOG SL
+                                       WHERE SL.CLIENT_ID = VI_CLIENT_ID
+            AND SL.DELETE_SW = 'N'
+            AND SL.START_DT  <= VD_END_DT_SRV1
+            AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+            AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                     FROM TB_PROVIDER_SERVICES
+                     WHERE DELETE_SW = 'N'
+                     AND SERVICE_ID IN (11363,11372,1100,1157,1144,1117,1101,1107)
+                    )
+             OR SL.AGENCY_SERVICE_LDSS_ID IN (11395,11386,1198,1245,1241,1214,1199,1204)
+             OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                    FROM TB_SERVICE_LOG SL
+                     WHERE SL.DELETE_SW = 'N'
+                    AND SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                            FROM TB_PROVIDER_SERVICES
+                            WHERE DELETE_SW = 'N'
+                            AND SERVICE_ID IN (11352)
+                              )
+                   )
+             )
+           ) > 0 THEN
+          'Yes'
+                              ELSE
+          'No'
+                              END);
+                             
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_FM_SUPP_MARG_EDU,'');
+  
+   -- Element ID 29 - Mentoring   
+   VS_MENTORING := (CASE WHEN ( SELECT COUNT(*)
+          FROM TB_SERVICE_LOG SL
+                                     WHERE SL.CLIENT_ID = VI_CLIENT_ID
+          AND SL.DELETE_SW = 'N'
+          AND SL.START_DT  <= VD_END_DT_SRV1
+          AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+          AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                   FROM TB_PROVIDER_SERVICES
+                   WHERE DELETE_SW = 'N'
+                   AND SERVICE_ID IN (11375,1150,1153)
+                  )
+           OR SL.AGENCY_SERVICE_LDSS_ID IN (11398,1254,1259,1258,1260)
+           OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                  FROM TB_SERVICE_LOG SL
+                  WHERE SL.DELETE_SW = 'N'
+                  AND SL.PROVIDER_SERVICE_ID IN ( SELECT PROVIDER_SERVICE_ID
+                           FROM TB_PROVIDER_SERVICES
+                           WHERE DELETE_SW = 'N'
+                           AND SERVICE_ID IN (11353)
+                           )
+                 )
+           )
+         ) > 0 THEN
+        'Yes'
+                            ELSE
+        'No'
+                            END);
+            VS_COMBINED_VAL1 = VS_COMBINED_VAL1 || COALESCE(VS_MENTORING,'');
+           
+   -- Element ID 30 - Supervised Independent Living -
+   VS_SUPVD_IND_LIVING := ( CASE WHEN (select count(*)
+            from personprogramarea ppa join person pr 
+            on pr.personid = ppa.personid
+                                       where pr.cjamspid = VI_CLIENT_ID
+            and ppa.startdate <= VD_END_DT_SRV1
+            and (ppa.enddate is null or ppa.enddate >= VD_START_DT_SRV1 )
+            and ppa.programkey IN ('IL', 'OOH')
+            and pr.cjamspid in (select tp.client_id
+                  from tb_placement tp
+                  where tp.delete_sw = 'N'
+                  and tp.entry_dt <= VD_END_DT_SRV1
+                  and (tp.exit_dt is null or tp.exit_dt >= VD_START_DT_SRV1 )
+                  and tp.placement_structure_id = 1
+                  order by tp.placement_id desc
+                 fetch first 1 row only
+                  )
+                                    ) > 0 THEN
+         'Yes'
+        WHEN (select count(*)
+          from personprogramarea ppa join person pr 
+            on pr.personid = ppa.personid
+                                       where pr.cjamspid = VI_CLIENT_ID
+            and ppa.startdate <= VD_END_DT_SRV1
+            and (ppa.enddate is null or ppa.enddate >= VD_START_DT_SRV1 )
+            and ppa.programkey IN ('IL', 'OOH')
+            and pr.cjamspid in (select tp.client_id
+                  from tb_placement tp
+                  where tp.delete_sw = 'N'
+                  and tp.entry_dt <= VD_END_DT_SRV1
+                  and (tp.exit_dt is null or tp.exit_dt >= VD_START_DT_SRV1 )
+                  and tp.placement_structure_id = 75
+                  order by tp.placement_id desc
+                fetch first 1 row only
+                 )
+                                    ) > 0 THEN
+         'Yes'
+        WHEN (SELECT COUNT(*)
+          FROM livingarrangement la join person pr
+          on pr.personid = la.personid
+          WHERE la.livingarrangementtypekey = '13071'
+          AND pr.cjamspid = VI_CLIENT_ID
+          AND la.livingstartdate <= VD_END_DT_SRV1
+          AND (la.livingenddate IS NULL OR la.livingenddate >= VD_START_DT_SRV1)) > 0 THEN
+         'Yes'
+                          ELSE
+         'No'
+                          END);
+                        
+      VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_SUPVD_IND_LIVING,'');    
+   -- Element ID 31 - Room and Board Financial Assistance -
+   VS_RM_BRD_FIN_ASSIST := ( CASE WHEN ( SELECT COUNT(*)
+             FROM TB_SERVICE_LOG SL
+                                        WHERE SL.CLIENT_ID = VI_CLIENT_ID
+             AND SL.DELETE_SW = 'N'
+             AND SL.START_DT  <= VD_END_DT_SRV1
+             AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+             AND (SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                      FROM TB_PROVIDER_SERVICES
+                      WHERE DELETE_SW = 'N'
+                      AND SERVICE_ID IN (1133,1134,11377,1132,1135,
+                             11376,1136,1137,1138,1109)
+                     )
+              OR SL.AGENCY_SERVICE_LDSS_ID IN (1232,1233,11400,1283,1229,1230,
+                       11399,1231,1234,1235,1236,1206)
+              OR SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                     FROM TB_SERVICE_LOG SL
+                      WHERE SL.DELETE_SW = 'N'
+                     AND SL.PROVIDER_SERVICE_ID IN  (SELECT PROVIDER_SERVICE_ID
+                              FROM TB_PROVIDER_SERVICES
+                              WHERE DELETE_SW = 'N'
+                              AND SERVICE_ID IN (11343,1033,1034,1032,1035,
+                                     1036,1037,11342,1039)
+                             )
+                    )
+              )
+            ) > 0 THEN
+           'Yes'
+          WHEN (SELECT COUNT(*)
+            FROM livingarrangement la join person pr
+            on pr.personid = la.personid
+            WHERE la.livingarrangementtypekey = '13071'
+            AND pr.cjamspid = VI_CLIENT_ID
+            AND la.livingstartdate <= VD_END_DT_SRV1
+            AND (la.livingenddate IS NULL OR la.livingenddate >= VD_START_DT_SRV1)) > 0 THEN
+           'Yes'
+          WHEN ( select count(*)
+             from personprogramarea ppa join person pr 
+             on pr.personid = ppa.personid
+                                        where pr.cjamspid = VI_CLIENT_ID
+             and ppa.startdate <= VD_END_DT_SRV1
+             and (ppa.enddate is null or ppa.enddate >= VD_START_DT_SRV1 )
+             and ppa.programkey IN ('IL', 'OOH')
+             and pr.cjamspid in (select tp.client_id
+                   from tb_placement tp
+                   where tp.delete_sw = 'N'
+                   and tp.entry_dt <= VD_END_DT_SRV1
+                   and (tp.exit_dt is null or tp.exit_dt >= VD_START_DT_SRV1 )
+                   and tp.placement_structure_id = 73
+                   order by tp.placement_id desc
+                    )
+                                     ) > 0 THEN
+           'Yes'
+                               ELSE
+           'No'
+                               END);
+                              
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_RM_BRD_FIN_ASSIST,'');
+   -- Element ID 32 - Room and Board Financial Assistance - 
+   VS_EDU_FINANCIAL_ASSIST := (CASE WHEN ( SELECT COUNT(*)
+             FROM TB_SERVICE_LOG SL
+                                        WHERE SL.CLIENT_ID = VI_CLIENT_ID
+             AND SL.DELETE_SW = 'N'
+             AND SL.START_DT  <= VD_END_DT_SRV1
+             AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+             AND (SL.SERVICE_LOG_ID IN ( SELECT SL.SERVICE_LOG_ID
+                     FROM TB_SERVICE_LOG SL
+                     WHERE SL.DELETE_SW = 'N'
+                     AND SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                             FROM TB_PROVIDER_SERVICES
+                             WHERE DELETE_SW = 'N'
+                             AND SERVICE_ID IN (1018,1019,1021,1022,1025,1026,1027,11322
+                                    ,11324,11326,11328,11345)
+                               )
+                                                                     )
+                 OR SL.AGENCY_SERVICE_LDSS_ID IN (1225)
+              )
+             ) > 0 THEN
+           'Yes'
+                               ELSE
+           'No'
+                               END);
+                              
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_EDU_FINANCIAL_ASSIST,'');    
+   -- Element ID 33 - Other Financial Assistance - 
+   VS_OTH_FIN_ASSISTANCE := (CASE WHEN (SELECT COUNT(*)
+            FROM TB_SERVICE_LOG SL
+                                     WHERE SL.CLIENT_ID = VI_CLIENT_ID
+                                       AND SL.DELETE_SW = 'N'
+                                       AND SL.START_DT  <= VD_END_DT_SRV1
+                                       AND (SL.END_DT IS NULL OR SL.END_DT >= VD_START_DT_SRV1)
+                                       AND ( SL.SERVICE_LOG_ID IN (SELECT SL.SERVICE_LOG_ID
+                    FROM TB_SERVICE_LOG SL
+                                                                    WHERE SL.DELETE_SW = 'N'
+                    AND SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                             FROM TB_PROVIDER_SERVICES
+                             WHERE DELETE_SW = 'N'
+                             AND SERVICE_ID IN (1066,11341)
+                              )
+                   )
+              OR SL.AGENCY_SERVICE_LDSS_ID IN (1266) 
+              OR SL.PROVIDER_SERVICE_ID IN (SELECT PROVIDER_SERVICE_ID
+                      FROM TB_PROVIDER_SERVICES
+                      WHERE DELETE_SW = 'N'
+                      AND SERVICE_ID IN (1166)
+                     )           
+             )
+           ) > 0 THEN
+           'Yes'
+                               ELSE
+           'No'
+                               END);
+   
+   VS_COMBINED_VAL1 := VS_COMBINED_VAL1 || COALESCE(VS_OTH_FIN_ASSISTANCE,'');
+  
+   VS_OUTCOME_DATA_COLL := CAST(
+          CASE WHEN (SELECT 1 from person pr where pr.cjamspid = VI_CLIENT_ID and pr.activeflag = 1
+            and (pr.dob + interval '17' year + interval '45' day) > now()::date ) > 0
+          THEN
+           (SELECT (dob + interval '17' year + interval '45' day) from person where cjamspid = VI_CLIENT_ID and activeflag = 1)
+          ELSE
+           now()::date
+          END AS CHAR(10));
+   -- Element ID 36 - Foster Care Status - Outcomes
+     select   CASE WHEN ( select count(*)
+             from personprogramarea ppa join person pr 
+             on ppa.personid = pr.personid
+                                        where ppa.activeflag = 1
+             and ppa.programkey = 'OOH'
+             and ppa.startdate <= VD_END_DT_SRV1
+             and (ppa.enddate is null or ppa.enddate >= VD_START_DT_SRV1)
+             and pr.cjamspid :: character varying = VI_CLIENT_ID :: character varying) > 0 THEN
+          'Yes'
+                           ELSE
+          'No'
+                           END into VS_OUTCOME_FOSTER_CARE;
+                                              
+--   IF VI_OLD_SUMMARY_ID IS NOT NULL THEN
+--    VS_CUR_DETVAL := VS_COMBINED_VAL1;
+--        
+--    OPEN DET_CUR FOR 
+--     SELECT elementvalue FROM personnytddetail WHERE summaryid = (VI_OLD_SUMMARY_ID) AND elementid NOT IN ('503232e9-4945-4ef7-8efb-875598cc9976','a815b4fd-1c01-45be-9cc8-b9e699615cb2','ec48e1dd-6ba7-449c-a2c3-bf74b6e44af1') ORDER BY elementid ;
+--    << DET_CUR >> WHILE VL_OUTPUT_SQLCODE = '00000' 
+--    LOOP FETCH DET_CUR INTO VS_ELEVAL;
+--    VS_OLD_DETVAL := VS_OLD_DETVAL || COALESCE(VS_ELEVAL,'old');
+--    FETCH DET_CUR INTO VS_ELEVAL;
+--    END loop;
+--    CLOSE DET_CUR;
+    
+--   ELSE 
+--        VS_CUR_DETVAL := 'CURRENT';
+--        VS_OLD_DETVAL := 'OLD';
+     
+--      END IF; --IF VI_OLD_SUMMARY_ID IS NOT NULL    
+
+   RAISE NOTICE 'VI_OLD_SUMMARY_ID %  ', VI_OLD_SUMMARY_ID ;  
+      RAISE NOTICE 'VS_CUR_DETVAL %  ', VS_CUR_DETVAL ;        
+        RAISE NOTICE 'VS_OLD_DETVAL %  ', VS_OLD_DETVAL ;
+  -- IF VS_CUR_DETVAL <> VS_OLD_DETVAL then  --- commented to execute below
+    -- Delete old Summary records for the client.
+    -- Delete old Detail records for the client.
+    -- Delete old ticklers for the client.
+    select personid into VI_PERSON_ID from person  where cjamspid :: character varying = VI_CLIENT_ID :: character varying;
+    IF VI_OLD_SUMMARY_ID IS NOT NULL then     
+    
+     UPDATE personnytdsummary SET activeflag=0,updatedby='NYTDOLD', updatedon = now()
+     WHERE reportingperiod = VI_REPORTING_PERIOD::varchar AND activeflag=1 AND reporttypekey = VS_REPORT_TYPE_CD AND personid = VI_PERSON_ID AND (validationflag <> 1 OR validationflag IS NULL) ;
+ 
+     UPDATE personnytddetail SET activeflag=0, updatedby='NYTDOLD', updatedon = now() WHERE summaryid IN
+     (SELECT summaryid FROM personnytdsummary WHERE reportingperiod = VI_REPORTING_PERIOD::varchar AND activeflag=1 AND reporttypekey = VS_REPORT_TYPE_CD AND personid = VI_PERSON_ID AND (validatedflag <> 1 OR validatedflag IS NULL) );
+ 
+    END IF;
+   
+    VI_SUMMARY_ID = gen_random_uuid();
+   
+    INSERT INTO personnytdsummary
+    (summaryid, personid, reportingperiod, reporttypekey, insertedby, updatedby, insertedon, updatedon, activeflag)
+    VALUES(VI_SUMMARY_ID, VI_PERSON_ID, VI_REPORTING_PERIOD, VS_REPORT_TYPE_CD, 'NYTDUSR','NYTDUSR', now(), now(),1);
+    
+    SUMMARY_INSERTED := 'Y';
+    IF SUMMARY_INSERTED = 'Y' then
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 1), VS_STATE, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 2), VS_REPORT_DT, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 3), VI_CLIENT_ID::varchar, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 4), VS_DOB_DT, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 5), VS_SEX, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 6), VS_ELEMENT6, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 7), VS_ELEMENT7, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 8), VS_ELEMENT8, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 9), VS_ELEMENT9, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 10), VS_ELEMENT10, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 11), VS_ELEMENT11, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 12), VS_ELEMENT12, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 13), VS_HISPANIC, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     -- If ele 20 to 33 is no then set ele 14 to null, so that 14 to 33 can be null.
+     IF  TRIM(LOWER(VS_INDEPENDENT_ASSESS)) = 'no'    AND TRIM(LOWER(VS_ACADEMIC_SUPPORT)) = 'no'  
+      AND TRIM(LOWER(VS_POST_SECNDRY_EDU_SUPPORT)) = 'no' AND TRIM(LOWER(VS_CAREER_PREPARATION)) = 'no' 
+      AND TRIM(LOWER(VS_VOC_TRAINING)) = 'no'    AND TRIM(LOWER(VS_FIN_MANGT)) = 'no' 
+      AND TRIM(LOWER(VS_HOUS_EDUCATION)) = 'no'   AND TRIM(LOWER(VS_HEALTH_EDU_RISK_PREVENTION)) = 'no'
+      AND TRIM(LOWER(VS_FM_SUPP_MARG_EDU)) = 'no'   AND TRIM(LOWER(VS_MENTORING)) = 'no' 
+      AND TRIM(LOWER(VS_SUPVD_IND_LIVING)) = 'no'   AND TRIM(LOWER(VS_RM_BRD_FIN_ASSIST)) = 'no' 
+      AND TRIM(LOWER(VS_EDU_FINANCIAL_ASSIST)) = 'no'  AND TRIM(LOWER(VS_OTH_FIN_ASSISTANCE)) = 'no' THEN
+        
+       VS_FOSTER_CARE_STATUS := NULL;
+     END IF;    
+     -- End. 
+     INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+     VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 14), VS_FOSTER_CARE_STATUS, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+    
+     IF VS_FOSTER_CARE_STATUS = '' OR VS_FOSTER_CARE_STATUS IS NULL THEN
+          
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 15), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 16), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 17), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 18), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 19), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 20), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 21), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 22), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 23), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 24), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 25), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 26), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 27), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 28), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 29), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 30), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 31), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 32), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 33), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+     ELSE
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 15), VS_COUNTY_CD, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 16), VS_TRIBE, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 17), VS_DELINQUENT, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 18), VS_EDUCATION, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 19), VS_SPC_EDUCATION, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 20), VS_INDEPENDENT_ASSESS, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 21), VS_ACADEMIC_SUPPORT, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 22), VS_POST_SECNDRY_EDU_SUPPORT, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 23), VS_CAREER_PREPARATION, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 24), VS_VOC_TRAINING, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 25), VS_FIN_MANGT, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 26), VS_HOUS_EDUCATION, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 27), VS_HEALTH_EDU_RISK_PREVENTION, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 28), VS_FM_SUPP_MARG_EDU, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 29), VS_MENTORING, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 30), VS_SUPVD_IND_LIVING, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 31), VS_RM_BRD_FIN_ASSIST, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 32), VS_EDU_FINANCIAL_ASSIST, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 33), VS_OTH_FIN_ASSISTANCE, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     END IF ;--VS_FOSTER_CARE_STATUS = ''
+     
+     IF VS_REPORT_TYPE_CD = '13057' OR VS_REPORT_TYPE_CD = '13056' then
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 34), '13058', now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 35), VS_OUTCOME_DATA_COLL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 36), VS_OUTCOME_FOSTER_CARE, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     ELSE
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 34), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 35), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = 36), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+     END IF ;
+     
+     VI_LOOP_COUNT := 37;
+     VI_COUNT := 58;
+     WHILE VI_LOOP_COUNT <= VI_COUNT LOOP
+     
+      INSERT INTO personnytddetail(summaryid, elementid, elementvalue, insertedon, insertedby, updatedon, updatedby, activeflag)
+      VALUES(VI_SUMMARY_ID, (select elementid from  nytddataelements  where old_id::integer = VI_LOOP_COUNT), NULL, now(), 'NYTDUSR', now(), 'NYTDUSR', 1);
+      
+      VI_LOOP_COUNT := VI_LOOP_COUNT + 1; 
+     END LOOP;
+    
+     IF VS_REPORT_TYPE_CD = '13054' OR VS_REPORT_TYPE_CD = '13055' THEN
+     ELSE
+      IF VS_OUTCOME_FOSTER_CARE = 'Yes'  THEN
+       UPDATE  personnytddetail 
+        SET elementvalue = 'not applicable'
+        WHERE elementid IN (select elementid from  nytddataelements  where old_id::integer in(56,57))
+        AND summaryid  = VI_SUMMARY_ID;
+      END IF;
+     END IF;    
+    END IF ; --SUMMARY_INSERTED='Y'
+       SUMMARY_INSERTED=NULL ; 
+--   END IF ;-- VS_CUR_DETVAL <> VS_OLD_DETVAL
+   END IF;-- VS_REPORT_TYPE_CD <> 'N'
+   EXIT MAIN_CUR WHEN NOT FOUND;
+   RAISE NOTICE 'VS_COMBINED_VAL1 %', VS_COMBINED_VAL1;
+   RAISE NOTICE 'VI_CLIENT_ID %', VI_CLIENT_ID;
+   RAISE NOTICE 'VS_REPORT_TYPE_CD %', VS_REPORT_TYPE_CD;
+   VS_COMBINED_VAL1 := NULL ;
+      VS_COMBINED_VAL2 := NULL ;
+      VS_CUR_DETVAL := NULL ;
+      VS_OLD_DETVAL := NULL ;   
+   end loop;
+   RAISE NOTICE 'CAME OUT OF LOOP';
+   CLOSE MAIN_CUR;
+ 
+ --END IF;
+
+ RETURN 'success';
+
+END
+ $function$
+

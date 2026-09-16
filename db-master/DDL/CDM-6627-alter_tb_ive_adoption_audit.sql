@@ -1,0 +1,1 @@
+ALTER TABLE tb_ive_adoption_audit ALTER COLUMN childnotreturnhomeexplanation TYPE varchar(250);

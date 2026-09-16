@@ -1,0 +1,1 @@
+ALTER TABLE caseassignmentactor DROP CONSTRAINT IF EXISTS fk_caseassignmentactor_intakeservicerequestactor;

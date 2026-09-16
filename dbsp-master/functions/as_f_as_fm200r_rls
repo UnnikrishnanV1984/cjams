@@ -1,0 +1,31 @@
+CREATE OR REPLACE FUNCTION as_f_as_fm200r_rls(start_date date, end_date date)
+ RETURNS TABLE(receipt_type character varying, receipts numeric, transaction_dt date, county_cd character varying, create_ts date)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY (
+select * from ( SELECT as_f_plvalue(tb_main.transaction_source_cd, 38) AS receipt_type,
+    sum(tb_main.transaction_amount_no) AS receipts,
+    tb_main.transaction_dt,
+    as_f_plvalue(tb_main.county_cd,'104') as county_cd,
+    tb_main.create_ts
+   FROM ( SELECT tb_account_transaction.transaction_source_cd,
+                CASE
+                    WHEN tb_account_transaction.credit_debit_sw = 'D'::bpchar THEN tb_account_transaction.transaction_amount_no * '-1'::integer::numeric
+                    ELSE tb_account_transaction.transaction_amount_no
+                END AS transaction_amount_no,
+            tb_account_transaction.transaction_dt,
+            ( SELECT tb_staff.primary_county_cd
+                   FROM tb_staff
+                  WHERE tb_staff.user_id::text = tb_account_transaction.create_user_id::text AND tb_staff.delete_sw = 'N'::bpchar) AS county_cd,
+            date(tb_account_transaction.create_ts) AS create_ts
+           FROM tb_account_transaction
+             JOIN tb_client_account ON tb_client_account.client_account_id = tb_account_transaction.client_account_id AND tb_client_account.delete_sw = 'N'::bpchar AND tb_account_transaction.delete_sw = 'N'::bpchar
+          WHERE tb_account_transaction.transaction_type_cd::text = '589'::text OR tb_account_transaction.transaction_type_cd::text = '588'::text AND tb_account_transaction.adjustment_approval_status_cd::text = '3047'::text) tb_main
+  GROUP BY (as_f_plvalue(tb_main.transaction_source_cd, 38)), tb_main.transaction_dt, tb_main.county_cd, tb_main.create_ts
+)main
+WHERE main.CREATE_TS BETWEEN CAST(Start_date AS DATE) and CAST(End_date  AS DATE)
+);
+END;
+$function$
+

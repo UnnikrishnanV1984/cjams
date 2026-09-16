@@ -1,0 +1,2 @@
+update servicecase set activeflag = 0, updatedby = 'CDM-11051', updatedon = now() where servicecaseid = 'db766781-2459-4f06-87b0-55920a6dbeda';
+update servicecase set activeflag = 0, updatedby = 'CDM-11051', updatedon = now() where servicecaseid = 'b30058dc-cfa3-4d38-9ec3-2d9b63599dbd';

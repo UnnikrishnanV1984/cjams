@@ -1,0 +1,424 @@
+CREATE OR REPLACE FUNCTION cjams.updatepersondtls(updatedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+                                            
+
+DECLARE
+v_Persondata json;
+v_Personaddressesdata json;
+v_Personphonenumberdata json;
+v_Actordata json;
+v_Aliasdata character varying;
+v_Personidentifierdata json;
+v_Actorrelationdata json;
+v_ReqPersonId uuid;
+v_ReqPersonaddressid uuid;
+v_ReqPersonphonenumberid uuid;
+v_ReqAliasid uuid;
+v_ReqPersonidentifierid uuid;
+v_Actorid uuid;
+returnStatus text;
+v_Aliasid uuid;
+
+PersonaddressesdataItr json;
+PersonphonenumberdataItr json;
+ActordataItr json;
+PersonidentifierdataItr json;
+ActorrelationdataItr json;
+
+PersoneducationdataItr json;
+PersoneducationtestingdataItr  json;
+PersoneducationvocationdataItr json;
+PersonaccomplishmentdataItr  json;
+
+generated_actorid uuid;
+generated_intakeservicerequestactorid uuid;
+
+v_Personeducationdata json;
+v_Personeducationtestingdata json;
+v_Personeducationvocationdata json;
+v_Personaccomplishmentdata json;
+
+v_ReqPersoneducationid uuid;
+v_ReqPersoneducationtestingid uuid;
+v_Reqpersoneducationvocationid uuid;
+v_Reqpersonaccomplishmentid uuid;
+
+v_practorid uuid;
+v_prrole character varying;
+v_prrrelation character varying;
+v_rolerelation  character varying;
+
+v_reqactortype character varying ;
+v_isprimary boolean;
+v_updatedby character varying ;
+PersonemaildataItr  json;
+v_Personemaildata json;
+v_Reqpersonemailid uuid;
+
+BEGIN
+
+v_Persondata := updatedtlsobj->>'People';
+v_Personaddressesdata := updatedtlsobj->>'Personaddresses';
+v_Personphonenumberdata := updatedtlsobj->>'Personphonenumber';
+v_Actordata := updatedtlsobj->>'Personrole';
+v_Personemaildata = updatedtlsobj->>'Personemail';
+v_Personidentifierdata := updatedtlsobj->>'Personidentifier';
+v_Actorrelationdata := updatedtlsobj->>'Actorrelation';
+v_ReqPersonId := v_Persondata->>'personid';
+v_Aliasdata := v_Persondata->>'alias';
+v_Aliasid  := (v_Persondata->>'aliasid')::uuid;
+v_Personeducationdata := updatedtlsobj->>'School';
+v_Personeducationtestingdata := updatedtlsobj->>'Testing';
+v_Personeducationvocationdata := updatedtlsobj->>'Vocation';
+v_Personaccomplishmentdata := updatedtlsobj->>'Accomplishment';
+v_updatedby:= v_Persondata->> 'updatedby';
+v_practorid:= v_Persondata->>'actorid';
+v_prrole:= v_Persondata->>'role';
+v_prrrelation := v_persondata->>'relationshiptorA';
+RAISE NOTICE '%','11111111111111111111111111111111111111111111111111111';
+
+IF LENGTH(v_Persondata->>'personid') > 1
+THEN
+UPDATE person
+  SET activeflag= (v_Persondata->>'activeflag')::int, firstname=v_Persondata->> 'firstname', lastname=v_Persondata->> 'lastname', 
+       middlename=v_Persondata->> 'middlename', suffix=v_Persondata->> 'nameSuffix', dangerlevel=(v_Persondata->> 'dangerlevel')::int, 
+       dangerreason=v_Persondata->> 'dangerreason', updatedby=v_updatedby, updatedon = now(),
+       dob=(v_Persondata->> 'dob')::date,maritalstatustypekey=v_Persondata->> 'maritalstatustypekey', gendertypekey=v_Persondata->> 'gendertypekey',
+       racetypekey=v_Persondata->> 'racetypekey',ethnicgrouptypekey=v_Persondata->> 'ethnicgrouptypekey', incometypekey=v_Persondata->> 'incometypekey',
+       primarylanguageid=(v_Persondata->> 'primarylanguageid')::uuid, secondarylanguageid=(v_Persondata->> 'secondarylanguageid')::uuid ,refusessn=(v_Persondata->> 'refusessn')::boolean,dangertoself = (v_Persondata->> 'dangertoself'):: int,
+	   dangertoselfreason = (v_Persondata->> 'dangertoselfreason')::character varying,
+       refusedob=(v_Persondata->> 'refusedob')::boolean, userphoto=(v_Persondata->> 'userphoto')::text
+WHERE personid = v_ReqPersonId;
+
+UPDATE personaddress set activeflag = 0, updatedby=v_updatedby, updatedon = now() where personid = v_ReqPersonId;
+--Person Address Add/Update
+FOR PersonaddressesdataItr IN SELECT * FROM json_array_elements(v_Personaddressesdata)
+LOOP
+IF LENGTH(PersonaddressesdataItr->>'personaddressid') > 0 THEN  
+--Update Existing Record
+	v_ReqPersonaddressid := (PersonaddressesdataItr->>'personaddressid')::uuid;
+	UPDATE personaddress
+	   SET  personid=v_ReqPersonId, 
+		activeflag=1, personaddresstypekey=PersonaddressesdataItr->> 'personaddresstypekey',
+		address=PersonaddressesdataItr->> 'address', zipcode=PersonaddressesdataItr->> 'zipcode', city=PersonaddressesdataItr->> 'city',
+		state=PersonaddressesdataItr->> 'state', country=PersonaddressesdataItr->> 'country', county=PersonaddressesdataItr->> 'county',
+		updatedby=PersonaddressesdataItr->> 'updatedby',address2=PersonaddressesdataItr->> 'address2',
+		directions=PersonaddressesdataItr->> 'directions', danger=(PersonaddressesdataItr->> 'danger')::boolean, 
+		dangerreason=PersonaddressesdataItr->> 'dangerreason', updatedon = now()
+	WHERE personaddressid = v_ReqPersonaddressid;
+ELSE
+--Insert New Record
+INSERT INTO personaddress(personid, activeflag, personaddresstypekey, 
+            address, zipcode, city, state, country, county, insertedby,address2, directions, danger, dangerreason)
+    VALUES (v_ReqPersonId,1,PersonaddressesdataItr->> 'personaddresstypekey',PersonaddressesdataItr->> 'address',
+		PersonaddressesdataItr->> 'zipcode',PersonaddressesdataItr->> 'city',PersonaddressesdataItr->> 'state',PersonaddressesdataItr->> 'country',
+		PersonaddressesdataItr->> 'county',PersonaddressesdataItr->> 'insertedby',PersonaddressesdataItr->> 'address2',
+		PersonaddressesdataItr->> 'directions',(PersonaddressesdataItr->> 'danger')::boolean,PersonaddressesdataItr->> 'dangerreason');
+END IF;
+END LOOP;
+
+RAISE NOTICE '%','222222222222222222222222222222222222';
+
+--Person Phone Add/Update
+UPDATE personphonenumber set activeflag = 0, updatedby=v_updatedby, updatedon = now() where personid = v_ReqPersonId;
+FOR PersonphonenumberdataItr IN SELECT * FROM json_array_elements(v_Personphonenumberdata)
+LOOP
+IF LENGTH(PersonphonenumberdataItr->>'personphonenumberid') > 0 THEN  
+--Update Existing Record
+	v_ReqPersonphonenumberid := (PersonphonenumberdataItr->>'personphonenumberid')::uuid;	
+UPDATE personphonenumber
+   SET personid=v_ReqPersonId, updatedon =now(),
+   activeflag=1, personphonetypekey=PersonphonenumberdataItr->> 'personphonetypekey', 
+       phonenumber=PersonphonenumberdataItr->> 'phonenumber', phoneextension=PersonphonenumberdataItr->> 'phoneextension',
+       reversephonenumber=PersonphonenumberdataItr->> 'phonenumber', updatedby=PersonphonenumberdataItr->> 'insertedby'
+ WHERE personphonenumberid = v_ReqPersonphonenumberid;
+
+ELSE
+--Insert New Record
+INSERT INTO personphonenumber(
+            personid, activeflag, personphonetypekey, 
+            phonenumber, phoneextension, reversephonenumber,insertedby)
+    VALUES (v_ReqPersonId,1, PersonphonenumberdataItr->> 'personphonetypekey',PersonphonenumberdataItr->> 'phonenumber',
+    PersonphonenumberdataItr->> 'phoneextension', PersonphonenumberdataItr->> 'phonenumber', PersonphonenumberdataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+RAISE NOTICE '%','33333333333333333333333333333333333333333';
+--Person Alias Add/Update
+UPDATE alias set activeflag = 0,updatedby=v_updatedby, updatedon = now() where personid = v_ReqPersonId;
+
+IF LENGTH(v_Aliasid::character varying) > 0  THEN  
+--Update Existing Record
+	v_ReqAliasid := v_Aliasid;	
+UPDATE alias
+   SET activeflag=1, personid=v_ReqPersonId, firstname= v_Aliasdata,  updatedby=v_updatedby
+ WHERE aliasid = v_ReqAliasid;
+ELSE
+--Insert New Record
+
+IF v_Aliasdata is not null THEN
+
+INSERT INTO alias(activeflag, personid, firstname,insertedby)
+    VALUES (1, v_ReqPersonId, v_Aliasdata, v_Persondata->>'insertedby'  );
+	END IF;
+END IF;
+
+RAISE NOTICE '%','4444444444444444444444444444444444444';
+--Person Identifier Add/Update
+UPDATE personidentifier set activeflag = 0, updatedby=v_updatedby, updatedon = now() where personid = v_ReqPersonId;
+FOR PersonidentifierdataItr IN SELECT * FROM json_array_elements(v_Personidentifierdata)
+LOOP
+IF LENGTH(PersonidentifierdataItr->>'personidentifierid') > 0 THEN  
+--Update Existing Record
+	v_ReqPersonidentifierid := (PersonidentifierdataItr->>'personidentifierid')::uuid;	
+UPDATE personidentifier
+   SET personid=v_ReqPersonId, personidentifiertypekey=PersonidentifierdataItr->>'personidentifiertypekey', 
+       personidentifiervalue=PersonidentifierdataItr->>'personidentifiervalue', updatedby=PersonidentifierdataItr->>'insertedby', activeflag=(PersonidentifierdataItr->>'activeflag')::int
+ WHERE personidentifierid = v_ReqPersonidentifierid;
+
+ELSE
+--Insert New Record
+INSERT INTO personidentifier(personid, personidentifiertypekey, personidentifiervalue, 
+            insertedby, activeflag)
+    VALUES (v_ReqPersonId,PersonidentifierdataItr->>'personidentifiertypekey',PersonidentifierdataItr->>'personidentifiervalue',PersonidentifierdataItr->>'insertedby',(PersonidentifierdataItr->>'activeflag')::int);
+
+END IF;
+END LOOP;
+RAISE NOTICE '%','555555555555555555555555555555555555555555555555555555555';
+
+--Person Email Add/Update
+
+UPDATE  personemail set activeflag = 0, updatedby=v_updatedby, updatedon = now() where personid = v_ReqPersonId;
+FOR PersonemaildataItr IN SELECT * FROM json_array_elements(v_Personemaildata)
+LOOP
+IF LENGTH(PersonemaildataItr->>'personemailid') > 0 THEN  
+--Update Existing Record
+	v_ReqPersonemailid := (PersonemaildataItr->>'personemailid')::uuid;	
+UPDATE personemail
+   SET personid=v_ReqPersonId,
+        activeflag=1,
+        personemailtypekey=(PersonemaildataItr->> 'personemailtypekey'):: character varying, email=(PersonemaildataItr->> 'email'):: character varying,
+	    updatedby=v_Persondata->>'insertedby'
+ WHERE personemailid = v_Reqpersonemailid;
+
+ELSE
+--Insert New Record
+INSERT INTO personemail(
+            personid, activeflag, personemailtypekey, email,insertedby)
+    VALUES (v_ReqPersonId,1, (PersonemaildataItr->> 'personemailtypekey':: character varying),(PersonemaildataItr->> 'email':: character varying),PersonemaildataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+
+--Person Education Add/Update
+raise notice'v_Personeducationdata --> %',v_Personeducationdata;
+UPDATE  personeducation set activeflag = 0, updatedby=v_updatedby, updatedon = now()  where personid = v_ReqPersonId;
+FOR PersoneducationdataItr IN SELECT * FROM json_array_elements(v_Personeducationdata)
+LOOP
+IF LENGTH(PersoneducationdataItr->>'personeducationid') > 0 THEN  
+--Update Existing Record
+	v_ReqPersoneducationid := (PersoneducationdataItr->>'personeducationid')::uuid;	
+UPDATE personeducation
+   SET personid=v_ReqPersonId,
+        activeflag=1,
+        educationname=PersoneducationdataItr->> 'educationname', educationtypekey=PersoneducationdataItr->> 'educationtypekey',
+        countyid=(PersoneducationdataItr->> 'countyid') :: uuid, statecode=PersoneducationdataItr->> 'statecode',
+	    startdate=(PersoneducationdataItr->> 'startdate') :: timestamp , enddate=(PersoneducationdataItr->> 'enddate') :: timestamp,
+		lastgradetypekey=PersoneducationdataItr->> 'lastgradetypekey',
+		currentgradetypekey=PersoneducationdataItr->> 'currentgradetypekey',
+		isspecialeducation=(PersoneducationdataItr->> 'isspecialeducation') :: boolean,
+        specialeducationtypekey=PersoneducationdataItr->> 'specialeducationtypekey',
+        absentdate=(PersoneducationdataItr->> 'absentdate'):: timestamp, 
+        isreceived=(PersoneducationdataItr->> 'isreceived'):: boolean ,   
+        isverified=(PersoneducationdataItr->> 'isverified'):: boolean,
+        isexcuesed=(PersoneducationdataItr->> 'isexcuesed'):: boolean,
+	    updatedby=PersoneducationdataItr->> 'insertedby'
+ WHERE personeducationid = v_ReqPersoneducationid;
+
+ELSE
+--Insert New Record
+INSERT INTO personeducation(
+            personid, activeflag, educationname, educationtypekey,countyid,statecode,startdate,enddate,
+            lastgradetypekey, currentgradetypekey, isspecialeducation,specialeducationtypekey,absentdate, isreceived,  
+			isverified,isexcuesed,insertedby)
+    VALUES (v_ReqPersonId,1, PersoneducationdataItr->> 'educationname',PersoneducationdataItr->> 'educationtypekey',
+    (PersoneducationdataItr->> 'countyid') :: uuid,
+   PersoneducationdataItr->> 'statecode',(PersoneducationdataItr->> 'startdate') :: timestamp,
+   (PersoneducationdataItr->> 'enddate') :: timestamp,
+	PersoneducationdataItr->> 'lastgradetypekey' , PersoneducationdataItr->> 'currentgradetypekey',
+    (PersoneducationdataItr->> 'isspecialeducation'):: boolean,PersoneducationdataItr->> 'specialeducationtypekey',
+    (PersoneducationdataItr->> 'absentdate'):: timestamp,(PersoneducationdataItr->> 'isreceived')::boolean,
+    (PersoneducationdataItr->> 'isverified')::boolean,(PersoneducationdataItr->> 'isexcuesed')::boolean,
+    PersoneducationdataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+
+--Person Education testing Add/Update
+
+UPDATE  personeducationtesting set activeflag = 0, updatedby=v_updatedby, updatedon = now()  where personid = v_ReqPersonId;
+FOR PersoneducationtestingdataItr IN SELECT * FROM json_array_elements(v_Personeducationtestingdata)
+LOOP
+IF LENGTH(PersoneducationtestingdataItr->>'personeducationtestingid') > 0 THEN  
+--Update Existing Record
+	v_ReqPersoneducationtestingid := (PersoneducationtestingdataItr->>'personeducationtestingid')::uuid;	
+UPDATE personeducationtesting
+   SET personid=v_ReqPersonId,
+        activeflag=1,
+        testingtypekey=PersoneducationtestingdataItr->> 'testingtypekey', readinglevel=(PersoneducationtestingdataItr->> 'readinglevel'):: int,
+        readingtestdate=(PersoneducationtestingdataItr->> 'readingtestdate'):: timestamp, mathlevel=(PersoneducationtestingdataItr->> 'mathlevel'):: int,
+	    mathtestdate=(PersoneducationtestingdataItr->> 'mathtestdate'):: timestamp, testingprovider=PersoneducationtestingdataItr->> 'testingprovider',
+	    updatedby=PersoneducationtestingdataItr->> 'insertedby'
+ WHERE personeducationtestingid = v_ReqPersoneducationtestingid;
+
+ELSE
+--Insert New Record
+INSERT INTO personeducationtesting(
+            personid, activeflag, testingtypekey, readinglevel,readingtestdate,mathlevel,
+            mathtestdate, testingprovider,insertedby)
+    VALUES (v_ReqPersonId,1, PersoneducationtestingdataItr->> 'testingtypekey',(PersoneducationtestingdataItr->> 'readinglevel'):: int,
+    (PersoneducationtestingdataItr->> 'readingtestdate'):: timestamp, (PersoneducationtestingdataItr->> 'mathlevel'):: int, 
+	(PersoneducationtestingdataItr->> 'mathtestdate'):: timestamp , PersoneducationtestingdataItr->> 'testingprovider',PersoneducationtestingdataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+
+--Person Education vocation Add/Update
+UPDATE  personeducationvocation set activeflag = 0, updatedby=v_updatedby, updatedon = now()  where personid = v_ReqPersonId;
+FOR PersoneducationvocationdataItr IN SELECT * FROM json_array_elements(v_Personeducationvocationdata)
+LOOP
+IF LENGTH(PersoneducationvocationdataItr->>'personeducationvocationid') > 0 THEN  
+--Update Existing Record
+	v_Reqpersoneducationvocationid := (PersoneducationvocationdataItr->>'personeducationvocationid')::uuid;	
+UPDATE personeducationvocation
+   SET personid=v_ReqPersonId,
+        activeflag=1,
+        vocationinterest=PersoneducationvocationdataItr->> 'vocationinterest', vocationaptitude=PersoneducationvocationdataItr->> 'vocationaptitude',
+        isvocationaltest=(PersoneducationvocationdataItr->> 'isvocationaltest'):: boolean, certificatename=PersoneducationvocationdataItr->> 'certificatename',
+	    certificatepath=PersoneducationvocationdataItr->> 'certificatepath', 
+	    updatedby=PersoneducationvocationdataItr->> 'insertedby'
+ WHERE personeducationvocationid = v_Reqpersoneducationvocationid;
+
+ELSE
+--Insert New Record
+INSERT INTO personeducationvocation(
+            personid, activeflag, vocationinterest, vocationaptitude,isvocationaltest,certificatename,
+            certificatepath, insertedby)
+    VALUES (v_ReqPersonId,1, PersoneducationvocationdataItr->> 'vocationinterest',PersoneducationvocationdataItr->> 'vocationaptitude',
+    (PersoneducationvocationdataItr->> 'isvocationaltest'):: boolean, PersoneducationvocationdataItr->> 'certificatename', 
+	PersoneducationvocationdataItr->> 'certificatepath', PersoneducationvocationdataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+
+--Person accomplishment Add/Update
+
+UPDATE  personaccomplishment set activeflag = 0, updatedby=v_updatedby, updatedon = now()  where personid = v_ReqPersonId;
+FOR PersonaccomplishmentdataItr IN SELECT * FROM json_array_elements(v_Personaccomplishmentdata)
+LOOP
+IF LENGTH(PersonaccomplishmentdataItr->>'personaccomplishmentid') > 0 THEN  
+--Update Existing Record
+	v_Reqpersonaccomplishmentid := (PersonaccomplishmentdataItr->>'personaccomplishmentid')::uuid;	
+UPDATE personaccomplishment
+   SET personid=v_ReqPersonId,
+        activeflag=1,
+        highestgradetypekey=PersonaccomplishmentdataItr->> 'highestgradetypekey', accomplishmentdate=(PersonaccomplishmentdataItr->> 'accomplishmentdate'):: timestamp,
+        isrecordreceived=(PersonaccomplishmentdataItr->> 'isrecordreceived'):: boolean, receiveddate=(PersonaccomplishmentdataItr->> 'receiveddate'):: timestamp, 
+	    updatedby=PersonaccomplishmentdataItr->> 'insertedby'
+ WHERE personaccomplishmentid = v_Reqpersonaccomplishmentid;
+
+ELSE
+--Insert New Record
+INSERT INTO personaccomplishment(
+            personid, activeflag, highestgradetypekey, accomplishmentdate,isrecordreceived,receiveddate,
+            insertedby)
+    VALUES (v_ReqPersonId,1, PersonaccomplishmentdataItr->> 'highestgradetypekey',(PersonaccomplishmentdataItr->> 'accomplishmentdate') :: timestamp,
+    (PersonaccomplishmentdataItr->> 'isrecordreceived'):: boolean, (PersonaccomplishmentdataItr->> 'receiveddate'):: timestamp, 
+	 PersonaccomplishmentdataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+
+---actor inactive
+		UPDATE actorrelationship set activeflag = 0, updatedby=v_updatedby, updatedon = now()  where 
+		   intakeservicerequestactorid IN (select intakeservicerequestactorid from intakeservicerequestactor 
+		   where actorid = v_practorid );
+		   
+      
+	   UPDATE intakeservicerequestactor set activeflag = 0 where 
+	   actorid = v_practorid;
+	   
+	   UPDATE actor set activeflag = 0, updatedby=v_updatedby, updatedon = now()  where personid = v_ReqPersonId;
+	 
+
+	   
+	   /*actor insert*/
+	   
+	   INSERT INTO actor(activeflag, personid, actortype,insertedby)
+	   VALUES (1, v_ReqPersonId, v_prrole, v_Persondata ->> 'insertedby' ) RETURNING "actorid" into generated_actorid;
+			
+	   INSERT INTO intakeservicerequestactor(actorid, intakeservicerequestpersontypekey, 
+				 isprimary,intakeserviceid,ramentalhealth,ramentalretarted,insertedby)
+	   VALUES (generated_actorid,v_prrole,true,(v_Persondata->>'intakeserviceid')::uuid,
+			(v_Persondata->>'ramentalhealth')::boolean,(v_Persondata ->>'ramentalretarted'):: boolean,v_Persondata ->> 'insertedby')
+		 RETURNING "intakeservicerequestactorid" into generated_intakeservicerequestactorid;
+	   
+		
+       IF v_prrrelation is not null THEN
+		
+			INSERT INTO actorrelationship(relationshiptypekey, insertedby,
+					activeflag, intakeservicerequestactorid)
+			VALUES (v_prrrelation, v_Persondata ->> 'insertedby', 1, generated_intakeservicerequestactorid);
+			
+	   END IF;	 
+		 
+		
+--Person Actor Add/Update
+FOR ActordataItr IN SELECT * FROM json_array_elements(v_Actordata)
+LOOP
+     
+
+--Update Existing Record
+RAISE NOTICE '%','!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!';
+		
+	v_reqactortype :=ActordataItr->>'rolekey';
+	v_isprimary := (ActordataItr->>'isprimary'):: boolean;
+
+	     
+		 
+		 INSERT INTO intakeservicerequestactor(actorid, intakeservicerequestpersontypekey, 
+				 isprimary,intakeserviceid,ramentalhealth,ramentalretarted,insertedby)
+			VALUES (generated_actorid,v_reqactortype,v_isprimary,(v_Persondata->>'intakeserviceid')::uuid,
+			(v_Persondata->>'ramentalhealth')::boolean,(v_Persondata ->>'ramentalretarted'):: boolean,v_Persondata ->> 'insertedby')
+		 RETURNING "intakeservicerequestactorid" into generated_intakeservicerequestactorid;
+		 
+		
+		FOR ActorrelationdataItr IN SELECT * FROM json_array_elements(v_Actordata)
+		LOOP
+		
+		
+		v_rolerelation  := (ActorrelationdataItr->>'relationshipkey'):: character varying;
+              	
+			IF v_rolerelation is not null THEN
+				
+			 RAISE NOTICE '%','7777777777777777777';
+				INSERT INTO actorrelationship(relationshiptypekey, insertedby,
+							activeflag, intakeservicerequestactorid)
+					VALUES (v_rolerelation, v_Persondata ->> 'insertedby', 1, generated_intakeservicerequestactorid);
+			END IF;
+	   END LOOP;
+	   
+		 RAISE NOTICE '%','66666666666666666666666666666666666';
+
+END LOOP;
+END IF;
+returnStatus:= 'Success';
+RETURN returnStatus;
+                                                      
+END;
+
+$function$
+;

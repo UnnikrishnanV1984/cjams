@@ -1,0 +1,1018 @@
+CREATE OR REPLACE FUNCTION as_servicerequestsearch(searchobj json)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, srtype text, srsubtype character varying, raname character varying, zipcode character varying, county character varying, region character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, datedue timestamp without time zone, timedue timestamp without time zone, overdue boolean, count integer, providername character varying, ssbg character varying, contractstatus character varying, provideragrementid uuid, routingstatustypekey character varying, areateammemberservicerequestid uuid, groupnumber character varying, agencyid uuid, assignedto character varying, teamname character varying, disposition text, srstatus character varying, insertedby character varying, teamtypekey character varying, assignedtosid character varying, revisited boolean, investigationid character)
+ LANGUAGE plpgsql
+AS $function$ 
+ 
+ DECLARE 
+    checkStatus varchar;
+    v_ldNow        TIMESTAMP(3);                                                          
+    v_liPageNumber      INT;                                                          
+    v_liPageSize       INT;                                                          
+    v_lvServiceRequestNumber    VARCHAR(50);                                                          
+    v_lvStatus       VARCHAR(1000);                                                          
+    v_lvSRType       VARCHAR(15);                                                          
+    v_lvSRSubType      VARCHAR(15);                                                          
+    v_lvCounty       VARCHAR(200);                                                          
+    v_luRegion       INT;                                                          
+    v_liZipCode       INT;                                                          
+    v_liActiveFlag      INT;                                                          
+    v_liCount       INT;                                                          
+    v_lvSortCol       VARCHAR(50);                                                          
+    v_lvSortDir       VARCHAR(10);                                                          
+    v_luSId        VARCHAR;                                                          
+    v_ldReportedDate      TIMESTAMP(3); 
+    v_ldReportedEndDate TIMESTAMP(3);  
+    v_lvNarrative      VARCHAR(4000);                                                          
+    v_lvDisposition      VARCHAR(15);                                                          
+    v_lvReportedAdult     VARCHAR(50);                                                          
+    v_lvAllegedPerpetrator    VARCHAR(50);                                                          
+    v_lvReporter       VARCHAR(50);                                                          
+    v_lvDSDSWorker      VARCHAR(100);                                                          
+    v_ldOverdue       TIMESTAMP(3);                                                          
+    v_ldDueDate       TIMESTAMP(3);                                                          
+    v_lvDSDSProvider      VARCHAR(100);                                                          
+    v_lvLoadNumber      VARCHAR(50);                                                          
+    v_lvAgencyId       uuid;                                                        
+    v_lvGroupNumber    VARCHAR(50);                                                        
+    v_lvGroupCreateDate TIMESTAMP(3);                                              
+    v_lvMONumber varchar(50);                                            
+    v_lRecievedFromDate   TIMESTAMP(3);                                            
+    v_lRecievedToDate    TIMESTAMP(3);                                            
+    v_lOpenedFromDate       TIMESTAMP(3);                                            
+    v_lOpenedToDate       TIMESTAMP(3);                   
+    v_lClosedFromDate       TIMESTAMP(3);                                            
+    v_lClosedToDate       TIMESTAMP(3)  ;            
+    v_lMyTeam   VARCHAR(50);   
+    v_lIntakeServiceId uuid;
+    tempUserSid VARCHAR;
+  statusItr json;
+  statusItrData json;
+  v_pageoffset int;
+  v_pagenumber int;
+  
+ BEGIN 
+               
+   --SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED                                         
+ CREATE TEMP TABLE ServiceRequestSearch_temp_searchParms(parmKeyword VARCHAR(50),parmValue VARCHAR(1000));
+              
+  INSERT INTO ServiceRequestSearch_temp_searchParms( parmKeyword, parmValue)
+  values
+ ('pagenumber',searchObj ->> 'pagenumber'),
+ ('pagesize',searchObj ->> 'pagesize'),
+ ('servicerequestnumber',searchObj ->> 'servicerequestnumber'),
+ ('srtype',searchObj ->> 'srtype_1'),
+ ('srtype',searchObj ->> 'srtype_2'),
+ ('srtype',searchObj ->> 'srtype_3'),
+ ('srtype',searchObj ->> 'srtype_4'),
+ ('srtype',searchObj ->> 'srtype_5'),
+ ('srtype',searchObj ->> 'srtype_6'),
+ ('srtype',searchObj ->> 'srtype_7'),
+ ('srtype',searchObj ->> 'srtype_8'),
+ ('srtype',searchObj ->> 'srtype_9'),
+ ('srtype',searchObj ->> 'srtype_10'),
+ ('srtype',searchObj ->> 'srtype_11'),
+ ('srtype',searchObj ->> 'srtype_12'),
+ ('srtype',searchObj ->> 'srtype_13'), 
+ ('srsubtype',searchObj ->> 'srsubtype'),
+ ('county',searchObj ->> 'county'),
+ ('region',searchObj ->> 'region'),
+ ('zipcode',searchObj ->> 'zipcode'),
+ ('activeflag',searchObj ->> 'activeflag'),
+ ('activeflag1',searchObj ->> 'activeflag1'),
+ ('sortcol',searchObj ->> 'sortcol'),
+ ('sortdir',searchObj ->> 'sortdir'),
+ ('reporteddate',searchObj ->> 'reporteddate'),
+ ('reportedenddate',searchObj ->> 'reportedenddate'),
+ ('narrative',searchObj ->> 'narrative'),
+ ('disposition',searchObj ->> 'disposition'),
+ ('reportedadult',searchObj ->> 'reportedadult'),
+ ('llegedperpetrator',searchObj ->> 'allegedperpetrator'),
+ ('reporter',searchObj ->> 'reporter'),
+ ('dsdsworker',searchObj ->> 'dsdsworker'),
+ ('overdue',searchObj ->> 'overdue'),
+ ('duedate',searchObj ->> 'duedate'),
+ ('dsdsprovider',searchObj ->> 'dsdsprovider'),
+ ('loadnumber',searchObj ->> 'loadnumber'),
+ ('agencyid',searchObj ->> 'agencyid'),
+ ('groupnumber',searchObj ->> 'groupnumber'),
+ ('groupcreatedate',searchObj ->> 'groupcreatedate'),
+ ('monumber',searchObj ->> 'monumber'),
+ ('receivedfrom',searchObj ->> 'receivedfrom'),
+ ('receivedto',searchObj ->> 'receivedto'),
+ ('openfrom',searchObj ->> 'openfrom'),
+ ('opento',searchObj ->> 'opento'),
+ ('closefrom',searchObj ->> 'closefrom'),
+ ('closeto',searchObj ->> 'closeto'),
+ ('intakeserviceid',searchObj ->> 'intakeserviceid'),
+ ('myteam',searchObj ->> 'myteam'); 
+ 
+ statusItrData = searchObj ->> 'status';
+ 
+ IF statusItrData IS NOT NULL THEN 
+  SELECT * into checkStatus FROM json_array_elements(statusItrData); 
+  IF checkStatus IS NOT NULL THEN    
+   SELECT securityusersid into  tempUserSid from muser where id = (searchObj ->> 'userid')::int; 
+   v_luSId := tempUserSid;
+   INSERT INTO ServiceRequestSearch_temp_searchParms( parmKeyword, parmValue)
+   values('sid',v_luSId);   
+  END IF;
+  FOR statusItr IN SELECT * FROM json_array_elements(statusItrData)
+  LOOP
+  INSERT INTO ServiceRequestSearch_temp_searchParms( parmKeyword, parmValue)
+  values('status',statusItr->> 'Status');
+  END LOOP;
+ END IF;
+                
+  CREATE TEMP TABLE  ServiceRequestSearch_temp_DAStatus (parmValue VARCHAR(50));                                                                   
+  CREATE TEMP TABLE  ServiceRequestSearch_temp_DAAssigned (parmValue VARCHAR(50), TeamMemberAssigendId Char(36));                                                                   
+  CREATE TEMP TABLE  ServiceRequestSearch_temp_DATypes  (parmValue VARCHAR(50));   
+
+  CREATE TEMP TABLE  ServiceRequestSearch_temp_lGroupServiceRequests (IntakeServiceId uuid);       
+           
+ v_ldNow := NOW();                                                          
+            
+
+ v_liPageNumber := searchObj ->> 'pagenumber';                                                        
+ v_liPageSize := searchObj ->> 'pagesize';                                                          
+ v_lvServiceRequestNumber     := searchObj ->> 'servicerequestnumber';        
+ v_lvStatus     := searchObj ->> 'status';                                 
+ v_lvSRType     := searchObj ->> 'srtype_1';                                                           
+ v_lvSRSubType     := searchObj ->> 'srsubtype';                                                         
+ v_lvCounty     := searchObj ->> 'county';   
+ 
+ IF LENGTH(v_lvStatus) < 3 THEN v_lvStatus = null; END IF;
+ 
+ 
+ IF LENGTH(searchObj ->> 'assigned') > 0 and checkStatus IS NOT NULL  THEN
+  IF LENGTH(searchObj ->> 'userid') > 0 THEN
+  RAISE NOTICE '%','$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$';   
+   SELECT securityusersid into  tempUserSid from muser where id = (searchObj ->> 'userid')::int;
+   RAISE NOTICE '$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$--->   %',tempUserSid;   
+   v_luSId := tempUserSid;
+   
+    INSERT INTO ServiceRequestSearch_temp_searchParms( parmKeyword, parmValue)
+    values('sid',v_luSId);
+  END IF;
+ END IF;
+ 
+ 
+ RAISE NOTICE '%','@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';   
+ v_luRegion := searchObj ->> 'region';                                                          
+ v_liZipCode := searchObj ->> 'zipcode';
+ v_liActiveFlag := searchObj ->> 'activeflag';                                                          
+ v_lvSortCol     := searchObj ->> 'sortcol';                                                          
+ v_lvSortDir     := searchObj ->> 'sortcol';                                                  
+ v_ldReportedDate     := searchObj ->> 'reporteddate';  
+ v_ldReportedEndDate := searchObj ->>'reportedenddate';                                                       
+ v_lvNarrative     := searchObj ->> 'narrative';                                                      
+ v_lvDisposition     := searchObj ->> 'disposition';                                                          
+ v_lvReportedAdult        := searchObj ->> 'reportedadult';                                                          
+ v_lvAllegedPerpetrator        := searchObj ->> 'allegedperpetrator';                                                          
+ v_lvReporter              := searchObj ->> 'reporter';                                                          
+ v_lvDSDSWorker                 := searchObj ->> 'dsdsworker';                                                          
+ v_ldOverdue     := searchObj ->> 'overdue';                                                          
+ v_ldDueDate     := searchObj ->> 'duedate';                                                          
+ v_lvDSDSProvider     := searchObj ->> 'dsdsprovider';                                              
+ v_lvLoadNumber     := searchObj ->> 'loadnumber';         
+ v_lvAgencyId     := searchObj ->> 'agencyid';                                                          
+ v_lvGroupNumber     := searchObj ->> 'groupnumber';                                                        
+ v_lvGroupCreateDate     := searchObj ->> 'groupcreatedate';                                                
+ v_lvMONumber     := searchObj ->> 'monumber';      
+ v_lRecievedFromDate     := searchObj ->> 'receivedfrom';                                              
+ v_lRecievedToDate     := searchObj ->> 'receivedto';
+ v_lOpenedFromDate     := searchObj ->> 'openfrom';                                              
+ v_lOpenedToDate     := searchObj ->> 'opento';
+ v_lClosedFromDate     := searchObj ->> 'closefrom';                                               
+ v_lClosedToDate     := searchObj ->> 'closeto';
+ v_lIntakeServiceId     := searchObj ->> 'intakeserviceid';                                                 
+ v_lMyTeam     := searchObj ->> 'myteam';        
+
+ v_pagenumber := v_liPageNumber-1;
+ v_pageoffset = v_pagenumber * v_liPageSize;                                                       
+     
+ RAISE NOTICE '%','111111111111111111111111111111111111111111111111111';
+                  
+  INSERT INTO ServiceRequestSearch_temp_DAStatus                                       
+  SELECT parmValue                                                          
+  FROM ServiceRequestSearch_temp_searchParms                                                          
+  WHERE parmKeyword = 'status' and parmValue is not null;                                                          
+               
+  IF v_lMyTeam IS NOT NULL                                                         
+  THEN                                                          
+   INSERT INTO ServiceRequestSearch_temp_DAAssigned  (parmValue,TeamMemberAssigendId)                                                         
+   SELECT TMA.SecurityUsersId  'SecurityUsersId' , TMA.teammemberassignmentId                                                          
+   FROM as_teammemberassignment AS TMA                                                          
+    JOIN  TeamMember AS  TM ON TM.TeamMemberId  = TMA.TeamMemberId                                                           
+   WHERE TMA.TeamMemberId = TM.TeamMemberId  AND TMA.ActiveFlag = 1                                                        
+   AND TM.TeamId IN (  SELECT TM.TeamId                                                          
+   FROM TeamMember AS TM                                                          
+         JOIN as_teammemberassignment AS TMA ON TMA.TeamMemberId = TM.TeamMemberId                           
+        WHERE TMA.SecurityUsersId  = v_luSId                                            
+    );
+   --temp clear sid to correct issue with My DSDS Action Filters        
+   v_luSId := NULL;                                                         
+  END IF;                                                     
+   RAISE NOTICE '%','22222222222222222222222222222222222222222222';                                                   
+  --SELECT @lAssigned = COUNT(1) FROM ServiceRequestSearch_temp_DAAssigned                                                          
+  --       WHERE parmValue = 'Mine'                                                    
+                 
+  --IF @lAssigned > 0                                                          
+ INSERT INTO ServiceRequestSearch_temp_DAAssigned (parmValue) VALUES(v_luSId);             
+ --Correction for DSDS Actions "Mine" search
+ If v_luSId is not null and v_liPageSize = 20 Then
+ v_luSId := NULL;
+ End if;
+                
+  INSERT INTO ServiceRequestSearch_temp_DAAssigned (parmValue)                                               
+  SELECT SecurityUsersId                                                          
+  FROM UserProfile AS UP                                                          
+  WHERE up.FullName like v_lvDSDSWorker;                                                          
+         
+  INSERT INTO ServiceRequestSearch_temp_DATypes                                                          
+  SELECT parmValue                                                          
+  FROM ServiceRequestSearch_temp_searchParms                                                          
+  WHERE parmKeyword = 'srtype';                                                          
+                  
+  IF v_liActiveFlag = -1 THEN                                                          
+   v_liActiveFlag := NULL;
+  END IF;                                                          
+                
+  IF LENGTH(v_lvNarrative) > 0 THEN                                                           
+   v_lvNarrative := '%' || v_lvNarrative || '%';
+  END IF;                                                          
+                 
+  IF LENGTH(v_lvGroupNumber)  >  0 THEN                                    
+   v_lvGroupNumber := v_lvGroupNumber || '%';
+  END IF;                              
+        
+ /* IF   LENGTH(v_lvGroupNumber)  >  0                             
+  THEN                          
+   INSERT INTO ServiceRequestSearch_temp_lGroupServiceRequests                           
+   SELECT  ISGRD.IntakeServiceId                           
+   FROM IntakeServiceRequestGroup ISRG                          
+    -- JOIN  IntakeServiceRequestGroupDetails ISGRD ON ISRG.GroupId = ISGRD.GroupId                           
+   WHERE  ISRG.GroupNumber  LIKE v_lvGroupNumber;                           
+  END IF;                             
+          
+  IF LENGTH(cast(v_lvGroupCreateDate as character varying)) > 0                          
+  THEN                          
+    INSERT INTO ServiceRequestSearch_temp_lGroupServiceRequests                           
+    SELECT  ISGRD.IntakeServiceId                           
+   FROM IntakeServiceRequestGroup ISRG     
+   --JOIN  IntakeServiceRequestGroupDetails ISGRD ON ISRG.GroupId = ISGRD.GroupId                           
+   WHERE  TO_CHAR(ISRG.insertedon,110) =  TO_CHAR(v_lvGroupCreateDate,110);                          
+         
+  END IF;  */                        
+        
+        
+   IF LENGTH(v_lvLoadNumber) > 0                          
+  THEN                          
+    INSERT INTO ServiceRequestSearch_temp_lGroupServiceRequests                           
+    SELECT  ARS.IntakeServiceId                           
+    FROM AreaTeamMemberServiceRequest ARS                        
+     JOIN  TeamMember  TM ON ARS.TeamMemberId = TM.TeamMemberId                         
+   WHERE  TM.LoadNumber = v_lvLoadNumber AND ARS.ActiveFlag = 1;                        
+      
+  END IF;                                                      
+     RAISE NOTICE '%','333333333333333333333333333333333333333333333333';   
+     RAISE NOTICE '%','tttttttttttttttttttttttt';                                           
+  --CREATE SEQUENCE FullResults_temp_seq1;
+  RAISE NOTICE '%','zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'; 
+  CREATE TEMP TABLE  ServiceRequestSearch_temp_FullResults (                                                          
+   --ordinal     INT ,      
+      totalcount bigint,
+   IntakeServiceId   uuid,                                                          
+   ServiceRequestNumber VARCHAR(50),                                                          
+   SRType     TEXT,                                                          
+   SRSubType    VARCHAR(50),                       
+   RAName     VARCHAR(256),                                                          
+   ZIP        VARCHAR(10),                                                        
+   County     VARCHAR(256),                                                          
+   Region  VARCHAR(50),                                                        
+   DateReceived   TIMESTAMP(3),                                                
+   TimeReceived   TIMESTAMP(3),                                                          
+   DateDue     TIMESTAMP(3),                                                          
+   TimeDue     TIMESTAMP(3),                                                          
+   OverDue     Boolean,                                                          
+   ProviderName   VARCHAR(100),                                                          
+   SSBG     VARCHAR(20),                                                          
+   ContractStatus       VARCHAR(100),                                                          
+   Narrative    VARCHAR(4000),                                                          
+ ProviderAgreementId  uuid,                                             
+   RoutingStatusTypeKey VARCHAR(50),                                                          
+   AreaTeamMemberServiceRequestId uuid,                                                          
+   GroupNumber          VARCHAR(100),                                                          
+   AgencyId    uuid,                                                          
+  AssignedTo    VARCHAR(50),                                                          
+   TeamName    VARCHAR(50),                                                          
+   Disposition    TEXT,                                                          
+   SRStatus    VARCHAR(15),                                                          
+   InsertedBy    VARCHAR(50),                                                          
+   TeamTypeKey    VARCHAR(50),                                              
+   AssignedToSid        VARCHAR(50),                                                          
+   Revisited    BOOLEAN,                                                          
+   InvestigationId   CHAR(36)                                                          
+   );                                                          
+   RAISE NOTICE '%','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';                               
+  --CREATE SEQUENCE FullResults1_temp_seq2;
+
+  CREATE TEMP TABLE  ServiceRequestSearch_temp_FullResults1 (                                                          
+   --ordinal     INT default nextval ('FullResults1_temp_seq2'),      
+   --ordinal     INT,    
+         totalcount bigint,
+   IntakeServiceId   uuid,                                                          
+   ServiceRequestNumber VARCHAR(50),                                                          
+ SRType     TEXT,                                                          
+   SRSubType    VARCHAR(50),                                                          
+   RAName     VARCHAR(256),                                                        
+   ZIP        VARCHAR(10),                                                          
+   County     VARCHAR(256),         Region VARCHAR(50),                                              
+   DateReceived   TIMESTAMP(3),                                                          
+   TimeReceived   TIMESTAMP(3),    
+   DateDue     TIMESTAMP(3),                                                          
+   TimeDue     TIMESTAMP(3),                                                          
+   OverDue     BOOLEAN,                                                          
+   ProviderName   VARCHAR(100),                                                          
+   SSBG     VARCHAR(20),                                                          
+   ContractStatus       VARCHAR(100),                        Narrative    VARCHAR(4000),                                                          
+   ProviderAgreementId  uuid,                                                          
+   RoutingStatusTypeKey VARCHAR(50),                                                          
+   AreaTeamMemberServiceRequestId uuid,                                                   
+   GroupNumber          VARCHAR(100),                                                          
+   AgencyId    uuid ,                                                          
+   AssignedTo    VARCHAR(50),                                                          
+   TeamName    VARCHAR(50),                                                          
+   Disposition    TEXT,                    
+   SRStatus    VARCHAR(15),                                                          
+   InsertedBy    VARCHAR(50),                                                          
+   TeamTypeKey VARCHAR(50),                                                          
+   AssignedToSid        VARCHAR(50),                           
+   Revisited    BOOLEAN,                                                          
+   InvestigationId   CHAR(36)                     
+   );                                                        
+      RAISE NOTICE '%','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';           
+          
+          
+  IF (v_luSId IS NULL AND v_lvLoadNumber IS NULL)             
+                
+  THEN                                                           
+      RAISE NOTICE '%','444444444444444444444444444444444444444444444444';
+      RAISE NOTICE '4444444444444444------v_lvStatus===44444444444444444 --- %',LENGTH(v_lvStatus);
+      
+   IF v_lvServiceRequestNumber IS NULL THEN                                                          
+   v_lvServiceRequestNumber := '';
+   END IF;                                 
+                 
+   v_lvServiceRequestNumber := '%' || v_lvServiceRequestNumber || '%'; 
+   --re-populate sid:
+   SELECT parmValue INTO v_luSId     FROM ServiceRequestSearch_temp_searchParms WHERE parmKeyword = 'SId';                                                          
+                
+   INSERT INTO ServiceRequestSearch_temp_FullResults                                                           
+    (     
+    --ordinal,                                                             
+  IntakeServiceId,                                                          
+  ServiceRequestNumber,                                                          
+  SRType,                                                          
+  SRSubType,                                                          
+  RAName,                                                          
+  ZIP,                                                        
+  County,                                                        
+  Region,                                                           
+  DateReceived,                                                          
+  TimeReceived,                                            
+  --ProviderName,                                                          
+  --SSBG,                                                          
+  --ContractStatus,                                                          
+  Narrative,                                                          
+  --ProviderAgreementId,                                                          
+  RoutingStatusTypeKey,                                                          
+  AreaTeamMemberServiceRequestId,                                                          
+  --GroupNumber,                                                          
+  --AgencyId,                       
+  AssignedTo,                                                      
+  TeamName,                                                          
+  Disposition,                                                          
+  SRStatus ,                                                          
+  InsertedBy ,                                                          
+  TeamTypeKey ,                           
+  AssignedToSid,                                                          
+  --Revisited,                                             
+  InvestigationId ,                                                      
+  DateDue                                                         
+    )                                                          
+                
+   SELECT DISTINCT 
+  --row_number() OVER (ORDER BY ISR.IntakeServiceId),        
+  ISR.IntakeServiceId,                                                          
+  ISR.ServiceRequestNumber,                                                  
+  ISRT.IntakeServReqTypeKey   AS SRType,                                                          
+  cast(SRST.ClassKey as character varying) AS SRSubType,                                                          
+  PA.FirstName || ' ' || PA.LastName ,                                                         
+  CO.ZipCode ,                                                         
+  CO.CountyName,                                                           
+  RG.RegionName,                                                        
+  --CASE WHEN LENGTH(v_lvGroupNumber) > 0 OR LENGTH(CAST(v_lvGroupCreateDate as character varying)) > 0 THEN  ISRG.insertedon ELSE 
+  COALESCE(ISR.ReportedDate,ISR.insertedon)  AS DateReceived,                                                          
+  COALESCE(ISR.ReportedTime,ISR.insertedon)     AS TimeReceived,                                                        
+  --AG.AgencyName,                                                          
+  --PAG.SSBG,                                                          
+  --PAS.ProviderAgreementStatusName,                         
+  ISR.Description,                                                          
+  --PAG.ProviderAgreementId,                                                          
+  COALESCE(ATSR.RoutingStatusTypeKey,'New') AS RoutingStatusTypeKey,                                                          
+  ATSR.AreaTeamMemberServiceRequestId,                                                          
+  --ISRG.GroupNumber,                                                          
+  --AG.AgencyId,                                                          
+  UP.DisplayName,                                         
+  TE.TeamName,                                                     
+  --ISNULL(SRTYR.EntityRoleTypeKey,'') ,                                                       
+  --ISRD.Description ,                           
+  (                                
+   SELECT ISRD.Description                                 
+   FROM IntakeServiceRequestDispositionCode  AS ISRD                                                      
+   WHERE  ISRD.IntakeServiceId     = ISR.IntakeServiceId                                    
+    AND  (v_lvDisposition    IS NULL OR ISRD.ServiceRequestTypeConfigIdDispostionId::character varying LIKE v_lvDisposition)                                                           
+   ORDER BY      ISRD.insertedon DESC  limit 1                                                       
+   )  AS Description,                                                       
+  ISRS.IntakeSerReqStatusTypeKey   AS SRStatus ,                                                          
+  ISR.insertedby As insertedby,                                                          
+  TE.TeamTypeKey As TeamTypeKey,                                                          
+  COALESCE(TMA.SecurityUsersId , ISR.insertedby) As AssignedToSid,                                  
+  --CASE WHEN SOD.ParentId IS NOT NULL THEN true ELSE false END Revisited,                                                          
+  INV.InvestigationId InvestigationId ,                                                      
+  ISR.TargetCompleteDate                                      
+   FROM IntakeServiceRequest       AS ISR                                                          
+  LEFT JOIN  IntakeSerReqStatusType   AS ISRS  ON  ISR.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId                                                          
+  LEFT JOIN  IntakeServiceRequestType   AS ISRT  ON  ISR.IntakeServReqTypeId  = ISRT.IntakeServReqTypeId                                                          
+  LEFT JOIN  IntakeServiceRequestActor  AS ISRA  ON  ISR.IntakeServiceId   = ISRA.IntakeServiceId                                                          
+  LEFT JOIN  Actor       AS AC  ON  ISRA.ActorId    = AC.ActorId AND AC.ActorType  = 'RA'                                                              
+  LEFT JOIN  Person       AS PA  ON  AC.PersonId     = PA.PersonId                                                           
+  LEFT JOIN  PersonAddress     AS PAD  ON  ISRA.RoutingAddressId::uuid = PAD.PersonAddressId                                                          
+  LEFT JOIN  County       AS CO  ON  PAD.zipcode     = CAST(CO.ZipCode as character varying)                                                           
+  LEFT JOIN  Region      AS RG ON RG.RegionId  = CO.RegionId                                                         
+  LEFT JOIN  ServiceRequestSubType   AS SRST  ON  ISR.IntakeServiceRequestClassId = SRST.ServiceRequestSubTypeId                                                          
+  LEFT JOIN  AreaTeamMemberServiceRequest  AS ATSR  ON  ATSR.IntakeServiceId   = ISR.IntakeServiceId AND   ATSR.ActiveFlag = 1                                                           
+  LEFT JOIN  TeamMember AS TM  ON  ATSR.TeamMemberId   = TM.TeamMemberId                                                                        
+  LEFT JOIN  as_teammemberassignment    AS TMA  ON  TMA.TeamMemberId   = ATSR.TeamMemberId     AND TMA.ActiveFlag = 1                                                     
+  LEFT JOIN  Team     AS TE       ON  TM.TeamId     = TE.TeamId                                                          
+  --LEFT JOIN  ProviderAgreementServiceRequest AS PASR  ON  ISR.IntakeServiceId   = PASR.IntakeServiceId                                                          
+  --LEFT JOIN  ProviderAgreement    AS PAG  ON  PASR.ProviderAgreementId = PAG.ProviderAgreementId                                                          
+  --LEFT JOIN  Agency       AS AG  ON  PAG.AgencyId = AG.AgencyId                                                          
+  --LEFT JOIN  ProviderAgreementStatus   AS PAS  ON  PAG.ProviderAgreementStatusKey = PAS.ProviderAgreementStatusKey                                                          
+  --LEFT JOIN  IntakeServiceRequestGroupDetails AS ISRGD    ON  ISR.IntakeServiceId         = ISRGD.IntakeServiceId  AND ISRGD.ActiveFlag = 1                                                         
+  --LEFT JOIN  IntakeServiceRequestGroup        AS ISRG     ON  ISRGD.GroupId               = ISRG.GroupId                                                          
+  LEFT JOIN  UserProfile         AS UP  ON  UP.SecurityUsersId          = TMA.SecurityUsersId                                                          
+  LEFT JOIN  ServiceRequestTypeConfig         AS SRTYC    ON  SRTYC.IntakeServReqTypeId =  ISR.IntakeServReqTypeId                                                           
+             AND SRTYC.ServiceRequestSubTypeId  = ISR.IntakeServiceRequestClassId     
+            --    AND SRTYC.InternalFile <> 1                                                  
+  /*LEFT JOIN  ServiceRequestTypeConfigRole     AS SRTYR    ON  SRTYC.ServiceRequestTypeConfigId  =  SRTYR.ServiceRequestTypeConfigId                                                           
+              AND SRTYR.EntityRoleType = 'DisplayValue'*/                                                
+                   
+  LEFT JOIN  IntakeServiceRequestAgency       AS ISRAG    ON  ISRAG.IntakeServiceId  =  ISR.IntakeServiceId                                                           
+  --LEFT JOIN  Agency          AS AG1      ON  AG1.AgencyId  = ISRAG.AgencyId                                         
+  --LEFT JOIN  StatementOfDeficiency   AS SOD  ON  SOD.IntakeServiceId = ISR.IntakeServiceId                          
+  LEFT JOIN  Investigation     AS INV  ON  INV.IntakeServiceId = ISR.IntakeServiceId                                                      
+   
+  
+   WHERE  (v_lvServiceRequestNumber IS NULL OR ISR.ServiceRequestNumber LIKE v_lvServiceRequestNumber)                                                          
+   AND (v_lvMONumber  IS NULL OR ISR.MONumber  LIKE v_lvMONumber)     
+  AND ISR.ActiveFlag   = COALESCE(v_liActiveFlag, ISR.ActiveFlag)                                                          
+  AND  (v_lvStatus   IS NULL OR  ISRS.IntakeSerReqStatusTypeKey IN (SELECT parmValue FROM ServiceRequestSearch_temp_DAStatus))                                                           
+  AND  (v_lvSRType   IS NULL OR ISRT.IntakeServReqTypeKey IN (SELECT parmValue FROM ServiceRequestSearch_temp_DATypes))                                                          
+  --AND (@ldReportedDate IS NULL OR ISR.ReportedDate = @ldReportedDate)                                                          
+  --AND  (v_ldReportedDate IS NULL OR to_char (ISR.ReportedDate , 101)= v_ldReportedDate)    
+   AND (v_ldReportedDate IS NULL OR ISR.ReportedDate between v_ldReportedDate and v_ldReportedEndDate)
+  AND  (v_lRecievedFromDate IS NULL OR  ISR.ReportedDate between v_lRecievedFromDate and v_lRecievedToDate)                                            
+  --AND  (@lOpenedFromDate IS NULL OR ISR.ReportedDate between @lRecievedFromDate and @lRecievedToDate)                                            
+  --AND  (@ldReportedDate IS NULL OR convert(varchar, ISR.ReportedDate , 101)= @ldReportedDate)                                                              
+  AND  (v_lvSRSubType  IS NULL OR SRST.ClassKey = v_lvSRSubType)                                                          
+    AND  (v_luRegion   IS NULL OR CO.APSRegion = v_luRegion)                                                       
+    AND  (v_liZipCode  IS NULL OR CO.ZipCode = v_liZipCode)                                                          
+  AND  (v_luSId   IS NULL OR TMA.SecurityUsersId IN (SELECT parmValue FROM ServiceRequestSearch_temp_DAAssigned))                                                          
+  AND  (v_lvNarrative  IS NULL OR ISR.Narrative LIKE  v_lvNarrative)                                                           
+  AND  (v_lvReportedAdult  IS NULL OR (PA.FirstName like v_lvReportedAdult AND AC.ActorType = 'RA'))                                                          
+  AND  (v_lvAllegedPerpetrator  IS NULL OR (PA.FirstName like v_lvAllegedPerpetrator AND AC.ActorType = 'AP'))                                                          
+  AND  (v_lvReporter  IS NULL OR (PA.FirstName like v_lvReporter AND AC.ActorType = 'Rep'))                                                 
+  --AND  (v_ldDueDate  IS NULL OR DATEDIFF(DAY,ISR.ReportedDate,NOW()) =  SRTYC.DueDateOffset)                                                           
+  --AND  (v_ldOverdue     IS NULL OR DATEDIFF(DAY,ISR.ReportedDate,NOW()) >  SRTYC.DueDateOffset)                 
+  --AND  (v_lvDSDSProvider   IS NULL OR AG1.AgencyName  LIKE v_lvDSDSProvider) 
+        AND v_lvDSDSProvider   IS NULL  
+  AND  (v_lvLoadNumber     IS NULL OR ISR.IntakeServiceId IN (SELECT GR.IntakeServiceId   FROM ServiceRequestSearch_temp_lGroupServiceRequests GR ))                                                      
+  AND  (v_lvAgencyId       IS NULL OR ISRAG.AgencyId::text LIKE '%'||v_lvAgencyId||'%')                                                     
+  AND  (v_lvGroupNumber        IS NULL OR ISR.IntakeServiceId IN (SELECT GR.IntakeServiceId   FROM ServiceRequestSearch_temp_lGroupServiceRequests GR ))                                                      
+  AND  (v_lvGroupCreateDate    IS NULL OR ISR.IntakeServiceId IN (SELECT GR.IntakeServiceId   FROM ServiceRequestSearch_temp_lGroupServiceRequests GR ))                                                      
+  AND  (v_lIntakeServiceId IS NULL  OR ISR.IntakeServiceId  = v_lIntakeServiceId)                  
+  AND SRTYC.ActiveFlag = 1;                      
+          RAISE NOTICE '%','ccccccccccccccccccccccccccc';                                           
+  ELSE IF ( v_luSId IS NULL AND v_lvLoadNumber IS NOT NULL)                                                        
+  THEN                                                           
+   RAISE NOTICE '%','555555555555555555555555555555555555555555555';                                                         
+                
+   INSERT INTO ServiceRequestSearch_temp_FullResults                                                           
+    (        
+         --ordinal
+  IntakeServiceId,                                                          
+  ServiceRequestNumber,                                                          
+  SRType,                                                          
+  SRSubType,                                                          
+  RAName,                                                          
+  ZIP,                                                        
+  County,                                                        
+  Region,                                                           
+  DateReceived,                                                          
+  TimeReceived,                                            
+  --ProviderName,                                                          
+  --SSBG,                                                          
+  --ContractStatus,                                                          
+  Narrative,                                                          
+  --ProviderAgreementId,                                                          
+  RoutingStatusTypeKey,                                                          
+  AreaTeamMemberServiceRequestId,                                                          
+  --GroupNumber,                                                          
+  --AgencyId,                       
+  AssignedTo,                                                      
+  TeamName,                                                          
+  Disposition,                                                          
+  SRStatus ,                                                          
+  InsertedBy ,                                                          
+  TeamTypeKey ,                           
+  AssignedToSid,                                                          
+  --Revisited,                                             
+  InvestigationId ,                                                      
+  DateDue                                                         
+    )                                                          
+                
+   SELECT DISTINCT 
+ --row_number() OVER (ORDER BY ISR.IntakeServiceId),
+   ISR.IntakeServiceId,                                                          
+  ISR.ServiceRequestNumber,                                                  
+  ISRT.IntakeServReqTypeKey   AS SRType,                                                          
+  SRST.ClassKey::character varying AS SRSubType,                                                          
+  PA.FirstName || ' ' || PA.LastName ,                                                         
+  CO.ZipCode ,                                                         
+  CO.CountyName,                                                           
+  RG.RegionName,                                                        
+  --CASE WHEN LEN(v_lvGroupNumber) > 0 OR LEN(v_lvGroupCreateDate) > 0 THEN  ISRG.insertedonELSE --ELSE                                                          
+  COALESCE(ISR.ReportedDate,ISR.insertedon)  AS DateReceived,                                                          
+  COALESCE(ISR.ReportedTime,ISR.insertedon)     AS TimeReceived,                                                        
+  --AG.AgencyName,                                                          
+  --PAG.SSBG,                                                          
+  --PAS.ProviderAgreementStatusName,                         
+  ISR.Description,                                                          
+  --PAG.ProviderAgreementId,                                                          
+  COALESCE(ATSR.RoutingStatusTypeKey,'New') AS RoutingStatusTypeKey,                                                          
+  ATSR.AreaTeamMemberServiceRequestId,                                                          
+  --ISRG.GroupNumber,                                                          
+  --AG.AgencyId,                                                          
+  UP.DisplayName,                                         
+  TE.TeamName,                                                     
+  --ISNULL(SRTYR.EntityRoleTypeKey,'') ,                                                       
+  --ISRD.Description ,                           
+  (                                
+   SELECT ISRD.Description                                 
+   FROM IntakeServiceRequestDispositionCode  AS ISRD                                                      
+   WHERE  ISRD.IntakeServiceId     = ISR.IntakeServiceId                                    
+    AND  (v_lvDisposition    IS NULL OR ISRD.ServiceRequestTypeConfigIdDispostionId LIKE v_lvDisposition)                                                           
+   ORDER BY      ISRD.insertedon DESC   limit 1                                                      
+   )  AS Description,                                                       
+  ISRS.IntakeSerReqStatusTypeKey   AS SRStatus ,                                                          
+  ISR.insertedby As insertedby,                                                          
+  TE.TeamTypeKey As TeamTypeKey,                                                          
+  COALESCE(TMA.SecurityUsersId , ISR.insertedby) As AssignedToSid,                                  
+  --CASE WHEN SOD.ParentId IS NOT NULL THEN 1 ELSE 0 END Revisited,                                                          
+  INV.InvestigationId InvestigationId,                                                      
+  ISR.TargetCompleteDate                                      
+   FROM IntakeServiceRequest       AS ISR                                                          
+  LEFT JOIN  IntakeSerReqStatusType   AS ISRS  ON  ISR.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId                                                          
+  LEFT JOIN  IntakeServiceRequestType   AS ISRT  ON  ISR.IntakeServReqTypeId  = ISRT.IntakeServReqTypeId                                                          
+  LEFT JOIN  IntakeServiceRequestActor  AS ISRA  ON  ISR.IntakeServiceId   = ISRA.IntakeServiceId                                                          
+  LEFT JOIN  Actor       AS AC  ON  ISRA.ActorId    = AC.ActorId AND AC.ActorType  = 'RA'                                                              
+  LEFT JOIN  Person       AS PA  ON  AC.PersonId     = PA.PersonId                                                           
+  LEFT JOIN  PersonAddress     AS PAD  ON  ISRA.RoutingAddressId::uuid  = PAD.PersonAddressId                                                          
+  LEFT JOIN  County       AS CO  ON  PAD.zipcode     = CO.ZipCode                                                          
+  LEFT JOIN  Region      AS RG ON RG.RegionId  = CO.RegionId                                                         
+  LEFT JOIN  ServiceRequestSubType   AS SRST  ON  ISR.IntakeServiceRequestClassId = SRST.ServiceRequestSubTypeId                                                          
+  LEFT JOIN  AreaTeamMemberServiceRequest  AS ATSR  ON  ATSR.IntakeServiceId   = ISR.IntakeServiceId AND   ATSR.ActiveFlag = 1                                                           
+  LEFT JOIN  TeamMember AS TM  ON  ATSR.TeamMemberId   = TM.TeamMemberId                                                                        
+  LEFT JOIN  as_teammemberassignment    AS TMA  ON  TMA.TeamMemberId   = ATSR.TeamMemberId     AND TMA.ActiveFlag = 1                                                     
+  LEFT JOIN  Team     AS TE       ON  TM.TeamId     = TE.TeamId                                                          
+  --LEFT JOIN  ProviderAgreementServiceRequest AS PASR  ON  ISR.IntakeServiceId   = PASR.IntakeServiceId                                                          
+  --LEFT JOIN  ProviderAgreement    AS PAG  ON  PASR.ProviderAgreementId = PAG.ProviderAgreementId                                                          
+  --LEFT JOIN  Agency       AS AG  ON  PAG.AgencyId = AG.AgencyId                                                          
+  --LEFT JOIN  ProviderAgreementStatus   AS PAS  ON  PAG.ProviderAgreementStatusKey = PAS.ProviderAgreementStatusKey                                                          
+  --LEFT JOIN  IntakeServiceRequestGroupDetails AS ISRGD    ON  ISR.IntakeServiceId         = ISRGD.IntakeServiceId  AND ISRGD.ActiveFlag = 1                                                         
+  --LEFT JOIN  IntakeServiceRequestGroup        AS ISRG     ON  ISRGD.GroupId               = ISRG.GroupId                                                          
+  LEFT JOIN  UserProfile         AS UP  ON  UP.SecurityUsersId          = TMA.SecurityUsersId                                                          
+  LEFT JOIN  ServiceRequestTypeConfig         AS SRTYC    ON  SRTYC.IntakeServReqTypeId =  ISR.IntakeServReqTypeId                                                           
+             AND SRTYC.ServiceRequestSubTypeId  = ISR.IntakeServiceRequestClassId     
+            --    AND SRTYC.InternalFile <> 1                                                  
+  /*LEFT JOIN  ServiceRequestTypeConfigRole     AS SRTYR    ON  SRTYC.ServiceRequestTypeConfigId  =  SRTYR.ServiceRequestTypeConfigId                                                           
+              AND SRTYR.EntityRoleType = 'DisplayValue'  */                                              
+                   
+  LEFT JOIN  IntakeServiceRequestAgency       AS ISRAG    ON  ISRAG.IntakeServiceId  =  ISR.IntakeServiceId                                                           
+  --LEFT JOIN  Agency          AS AG1      ON  AG1.AgencyId  = ISRAG.AgencyId                                         
+  --LEFT JOIN  StatementOfDeficiency   AS SOD  ON  SOD.IntakeServiceId = ISR.IntakeServiceId
+  LEFT JOIN  Investigation     AS INV  ON  INV.IntakeServiceId = ISR.IntakeServiceId                                                      
+   
+  
+   WHERE  ISR.ActiveFlag   = COALESCE(v_liActiveFlag, ISR.ActiveFlag)                                                          
+  AND   ISR.IntakeServiceId IN (SELECT GR.IntakeServiceId   FROM ServiceRequestSearch_temp_lGroupServiceRequests GR )                                                      
+  AND SRTYC.ActiveFlag = 1;                     
+                
+  ELSE                                                  
+      RAISE NOTICE '%','6666666666666666666666666666666666';          
+
+                
+   INSERT INTO ServiceRequestSearch_temp_FullResults                                                           
+    (
+         --ordinal,                                                            
+        IntakeServiceId,                                                          
+  ServiceRequestNumber,                                                          
+  SRType,                    
+  SRSubType,                                                          
+  DateReceived,                                                          
+  TimeReceived,                                                          
+  Narrative,                                                          
+  RoutingStatusTypeKey,                                                          
+  AreaTeamMemberServiceRequestId,                                                          
+  AssignedTo,                                                    
+  TeamName,                                                          
+  Disposition,                                                          
+  SRStatus ,                                                           
+  InsertedBy ,                          
+  TeamTypeKey ,                                                          
+  AssignedToSid,                                                          
+  DateDue                                                       
+    )              
+       Select * from (
+   SELECT DISTINCT 
+   --row_number() OVER (ORDER BY isrq.IntakeServiceId)   ,               
+  isrq.IntakeServiceId,
+  isrq.ServiceRequestNumber,                                                     
+  ISRT.IntakeServReqTypeKey AS SRType,                                                          
+  SRST.ClassKey::character varying AS SRSubType,                                                          
+  COALESCE(isrq.ReportedDate,isrq.insertedon)  AS DateReceived,                                                          
+  COALESCE(isrq.ReportedTime,isrq.insertedon) AS TimeReceived,                                                       
+  isrq.Description,                                             
+  ATSR.RoutingStatusTypeKey,                           
+  ATSR.AreaTeamMemberServiceRequestId,                                                          
+  UP.DisplayName,                                                          
+  TE.TeamName,  
+  '' as EntityRoleTypeKey,--COALESCE(SRTYR.EntityRoleTypeKey,'') ,    
+  ISRS.IntakeSerReqStatusTypeKey AS SRStatus,                                                          
+  isrq.insertedby AS insertedby,                            
+  TE.TeamTypeKey As TeamTypeKey,                                                          
+  COALESCE(TMA.SecurityUsersId, isrq.insertedby) As AssignedToSid,
+  isrq.TargetCompleteDate                                                         
+   FROM intakeservicerequest AS isrq JOIN  IntakeSerReqStatusType AS ISRS  ON  (isrq.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId)
+  JOIN  IntakeServiceRequestType AS ISRT  ON  (isrq.IntakeServReqTypeId  = ISRT.IntakeServReqTypeId)
+  JOIN  ServiceRequestSubType AS SRST  ON  (isrq.IntakeServiceRequestClassId = SRST.ServiceRequestSubTypeId)
+  JOIN  AreaTeamMemberServiceRequest  AS ATSR  ON (ATSR.IntakeServiceId   = isrq.IntakeServiceId  AND ATSR.ActiveFlag = 1)
+        AND   ATSR.AreaTeamMemberServiceRequestId  IS NOT NULL  
+  JOIN  TeamMember AS TM  ON (ATSR.TeamMemberId   = TM.TeamMemberId)
+  JOIN  as_teammemberassignment AS TMA  ON (TMA.TeamMemberId    = ATSR.TeamMemberId  AND TMA.ActiveFlag = 1)                  
+  JOIN  Team  AS TE ON  (TM.TeamId = TE.TeamId)
+  JOIN  UserProfile AS UP  ON  (UP.SecurityUsersId = TMA.SecurityUsersId)
+  JOIN  ServiceRequestTypeConfig AS SRTYC ON  (SRTYC.IntakeServReqTypeId =  isrq.IntakeServReqTypeId
+  AND SRTYC.ServiceRequestSubTypeId  = isrq.IntakeServiceRequestClassId)                                                   
+  --JOIN  ServiceRequestTypeConfigRole AS SRTYR ON (SRTYC.ServiceRequestTypeConfigId  =  SRTYR.ServiceRequestTypeConfigId)     
+  --AND SRTYR.EntityRoleType = 'DisplayValue') 
+  WHERE (v_luSId IS NULL OR TMA.SecurityUsersId  IN  (SELECT parmValue FROM ServiceRequestSearch_temp_DAAssigned))
+                         
+  AND  (v_lvStatus   IS NULL OR  ISRS.IntakeSerReqStatusTypeKey IN (SELECT parmValue FROM ServiceRequestSearch_temp_DAStatus))                                                                                        
+ 
+   UNION                                                     
+                  
+   SELECT DISTINCT 
+    --row_number() OVER (ORDER BY isrq.IntakeServiceId)   ,
+    isrq.IntakeServiceId,                                                          
+  isrq.ServiceRequestNumber,                                                    
+  ISRT.IntakeServReqTypeKey AS SRType,                                                          
+    SRST.ClassKey::character varying AS SRSubType,                                                          
+  COALESCE(isrq.ReportedDate,isrq.insertedon) AS DateReceived,                                                          
+  COALESCE(isrq.ReportedTime,isrq.insertedon) AS TimeReceived,                                                          
+    isrq.Description,                                                          
+  --CASE WHEN DATE_PART('day', NOW()::timestamp - isrq.insertedon)::int = 0 THEN 'New' ELSE '' END,  
+  CASE WHEN 1 = 0 THEN 'New' ELSE '' END,  
+  ATSR.AreaTeamMemberServiceRequestId,                                                 
+  UP.DisplayName,                                                          
+  null,                                                        
+  '' as EntityRoleTypeKey,--COALESCE(SRTYR.EntityRoleTypeKey,'') ,                                
+  ISRS.IntakeSerReqStatusTypeKey    AS SRStatus,                                                          
+  isrq.insertedby AS insertedby,                                                          
+  null As TeamTypeKey ,                                                          
+  isrq.insertedby AS AssignedToSid,                                                          
+  isrq.TargetCompleteDate                                                       
+   FROM intakeservicerequest AS isrq JOIN  IntakeSerReqStatusType AS ISRS  ON (isrq.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId)
+  JOIN  IntakeServiceRequestType   AS ISRT  ON (isrq.IntakeServReqTypeId  = ISRT.IntakeServReqTypeId)                   
+  JOIN  ServiceRequestSubType   AS SRST  ON (isrq.IntakeServiceRequestClassId = SRST.ServiceRequestSubTypeId)
+  JOIN  UserProfile AS UP  ON  (UP.SecurityUsersId = isrq.insertedby)                  
+  JOIN  ServiceRequestTypeConfig  AS SRTYC ON  (SRTYC.IntakeServReqTypeId =  isrq.IntakeServReqTypeId
+  AND SRTYC.ServiceRequestSubTypeId  = isrq.IntakeServiceRequestClassId)                                                  
+  --JOIN  ServiceRequestTypeConfigRole AS SRTYR ON  (SRTYC.ServiceRequestTypeConfigId  =  SRTYR.ServiceRequestTypeConfigId)
+  --AND SRTYR.EntityRoleType = 'DisplayValue')                     
+  LEFT JOIN AreaTeamMemberServiceRequest ATSR on (ATSR.IntakeServiceId = isrq.IntakeServiceId)                        
+  WHERE  (ATSR.AreaTeamMemberServiceRequestId IS NULL                                                           
+    AND isrq.insertedby IN (SELECT parmValue FROM ServiceRequestSearch_temp_DAAssigned))      
+    AND  (v_lvStatus   IS NULL OR  ISRS.IntakeSerReqStatusTypeKey IN (SELECT parmValue FROM ServiceRequestSearch_temp_DAStatus))
+  )  as A   ;
+RAISE NOTICE '%','6666666666666666666666666666666666----------------';         
+  
+    UPDATE ServiceRequestSearch_temp_FullResults 
+    SET RAName = PA.FirstName || ' ' || PA.LastName, ZIP =  CO.ZipCode, County = CO.CountyName, Region = RG.RegionName
+    FROM   ServiceRequestSearch_temp_FullResults FR                  
+    JOIN  IntakeServiceRequestActor  AS ISRA  ON  FR.IntakeServiceId  = ISRA.IntakeServiceId                                                          
+  JOIN  Actor AS AC  ON  ISRA.ActorId    = AC.ActorId AND AC.ActorType  = 'RA'                                                              
+  JOIN  Person AS PA  ON  AC.PersonId     = PA.PersonId                                                           
+     LEFT JOIN  PersonAddress AS PAD  ON  ISRA.RoutingAddressId::uuid = PAD.PersonAddressId                                                          
+     LEFT JOIN County AS CO ON SUBSTRING(PAD.zipcode ,1,5) = CO.ZipCode::text                                                      
+     LEFT JOIN   Region      AS RG ON RG.RegionId  = CO.RegionId;                    
+        
+   UPDATE ServiceRequestSearch_temp_FullResults SET InvestigationId = INV.InvestigationId
+   FROM   ServiceRequestSearch_temp_FullResults FR                  
+     JOIN  Investigation  AS INV  ON  FR.IntakeServiceId   = INV.IntakeServiceId ;                                                         
+       
+   --UPDATE ServiceRequestSearch_temp_FullResults SET GroupNumber = ISRG.GroupNumber                                                    
+    --FROM   ServiceRequestSearch_temp_FullResults FR;                  
+    --JOIN  IntakeServiceRequestGroupDetails AS ISRGD    ON  FR.IntakeServiceId         = ISRGD.IntakeServiceId AND ISRGD.ActiveFlag = 1                                                          
+ --JOIN  IntakeServiceRequestGroup        AS ISRG     ON  ISRGD.GroupId               = ISRG.GroupId;                     
+       
+  /*UPDATE ServiceRequestSearch_temp_FullResults SET                                                                                                               
+  ContractStatus =    PAS.ProviderAgreementStatusName                                                                                                                                                                  
+  FROM   ServiceRequestSearch_temp_FullResults FR; */                 
+   --JOIN  ProviderAgreementServiceRequest AS PASR  ON  FR.IntakeServiceId   = PASR.IntakeServiceId
+   --JOIN  ProviderAgreement    AS PAG  ON  PASR.ProviderAgreementId = PAG.ProviderAgreementId
+   --JOIN  Agency       AS AG  ON  PAG.AgencyId    = AG.AgencyId                                                      
+   --JOIN  ProviderAgreementStatus   AS PAS  ON  PAG.ProviderAgreementStatusKey = PAS.ProviderAgreementStatusKey  ;                   
+
+  UPDATE ServiceRequestSearch_temp_FullResults SET  Revisited = false;                  
+            
+  --FROM   ServiceRequestSearch_temp_FullResults FR;                   
+                 
+   END IF;
+  END IF;                                                          
+            RAISE NOTICE '%','777777777777777777777777777777';                                                               
+  -- Return the final result subset.                                                   
+  INSERT INTO ServiceRequestSearch_temp_FullResults1
+ (   
+ --ordinal,    
+       totalcount,
+    IntakeServiceId,                                                          
+   ServiceRequestNumber,
+   SRType ,
+   SRSubType,
+   RAName,
+   ZIP,
+   County,
+   Region,
+   DateReceived,
+   TimeReceived,
+   DateDue,
+   TimeDue,
+   OverDue,
+   ProviderName,
+   SSBG,
+   ContractStatus,
+   Narrative,
+ ProviderAgreementId,
+   RoutingStatusTypeKey,
+   AreaTeamMemberServiceRequestId,
+   GroupNumber,
+   AgencyId,
+  AssignedTo,
+   TeamName,
+   Disposition,
+   SRStatus,
+   InsertedBy,
+   TeamTypeKey,
+   AssignedToSid,
+   Revisited,
+   InvestigationId
+    ) 
+  SELECT 
+--row_number() OVER (ORDER BY Fr.IntakeServiceId),
+ max(Fr.totalcount) ,
+  Fr.IntakeServiceId,
+    Fr.ServiceRequestNumber,
+    Fr.SRType,
+    Fr.SRSubType,
+    (SELECT Fr1.RAName FROM ServiceRequestSearch_temp_FullResults Fr1 WHERE Fr1.IntakeServiceId  = Fr.IntakeServiceId limit 1) AS RAName, 
+    NULL,
+    (SELECT Fr1.County  FROM ServiceRequestSearch_temp_FullResults Fr1 WHERE Fr1.IntakeServiceId  = Fr.IntakeServiceId limit 1) AS County, 
+    NULL,
+    --NULL,
+     
+  
+    --(SELECT Fr1.RAName FROM ServiceRequestSearch_temp_FullResults Fr1 WHERE Fr1.IntakeServiceId  = Fr.IntakeServiceId limit 1) AS RAName,                                       
+    --(SELECT Fr1.County  FROM ServiceRequestSearch_temp_FullResults Fr1 WHERE Fr1.IntakeServiceId  = Fr.IntakeServiceId limit 1) AS County,                                                          
+    COALESCE(Fr.DateReceived,NOW()) AS DateDateReceived,                                                          
+    COALESCE(Fr.TimeReceived,NOW()) AS TimeReceived,                                                     
+    (                                                    
+  SELECT ISR.insertedon::date + SRT.DueDateOffset::integer
+  FROM ServiceRequestTypeConfig SRT                                                    
+   JOIN IntakeServiceRequest ISR ON ISR.IntakeServReqTypeId = SRT.IntakeServReqTypeId                                                     
+             AND ISR.IntakeServiceRequestClassId = SRT.ServiceRequestSubTypeId                                           
+  WHERE ISR.IntakeServiceId = Fr.IntakeServiceId  limit 1                                                   
+  )       AS DueDate,                                                                                           
+   COALESCE(Fr.TimeReceived,NOW()) AS TimeDue,                                       
+    CASE WHEN   ( NOW() > (                                                    
+  SELECT  ISR.insertedon::date + SRT.DueDateOffset::integer                                                     
+ FROM ServiceRequestTypeConfig SRT                                                    
+   JOIN IntakeServiceRequest ISR ON ISR.IntakeServReqTypeId = SRT.IntakeServReqTypeId                                                     
+             AND ISR.IntakeServiceRequestClassId = SRT.ServiceRequestSubTypeId                                                 
+  WHERE ISR.IntakeServiceId = Fr.IntakeServiceId limit 1                                                     
+  )  ) THEN true ELSE false END AS OverDue,                                                          
+    FR.ProviderName,                                                          
+    FR.SSBG,                                                          
+    FR.ContractStatus,                                           
+    FR.Narrative,                                                          
+    FR.ProviderAgreementId,                                                          
+    FR.RoutingStatusTypeKey,                                                          
+    FR.AreaTeamMemberServiceRequestId,                                                          
+    FR.GroupNumber,                                                          
+    FR.AgencyId,                                                          
+    FR.AssignedTo,                                        
+    FR.TeamName,                                                          
+    FR.Disposition,                                                          
+    FR.SRStatus ,                                                          
+    FR.InsertedBy ,                                                          
+    FR.TeamTypeKey ,                                                          
+    FR.AssignedToSid,                                                          
+    FR.Revisited,                                                          
+    FR.InvestigationId                                
+  FROM ServiceRequestSearch_temp_FullResults AS Fr                                                          
+  GROUP BY Fr.IntakeServiceId,                                                          
+    Fr.ServiceRequestNumber,                                                          
+    Fr.SRType,                                                          
+    Fr.SRSubType,                                                          
+    Fr.DateReceived,                                                          
+    Fr.TimeReceived,                                                          
+    Fr.ProviderName,                                                          
+    Fr.SSBG,                                                          
+    Fr.ContractStatus,                                                          
+    Fr.Narrative,                                                          
+    Fr.ProviderAgreementId,                                                          
+    Fr.RoutingStatusTypeKey,                                                          
+    Fr.AreaTeamMemberServiceRequestId,                                                          
+    Fr.GroupNumber,                                                          
+    Fr.AgencyId,                                                          
+    Fr.AssignedTo,                                                          
+    Fr.TeamName,                                                          
+    Fr.Disposition,                                         
+    Fr.SRStatus ,                                                          
+    Fr.InsertedBy ,                                                          
+    Fr.TeamTypeKey ,                                           
+    Fr.AssignedToSid,                                                          
+    Fr.Revisited,                                                          
+    Fr.InvestigationId ,                                                      
+    Fr.DateDue,
+    Fr.OverDue                  
+  ORDER BY Fr.DateReceived DESC LIMIT v_liPageSize OFFSET v_pageoffset;
+  --ORDER BY RoutingStatusTypeKey DESC,Fr.OverDue DESC,Fr.DateDue ASC LIMIT v_liPageSize OFFSET v_pageoffset;                                                                                                 
+                  
+    /*UPDATE ServiceRequestSearch_temp_FullResults1 SET RAName = Fr.RAName
+    FROM ServiceRequestSearch_temp_FullResults1 Fr1                                                        
+    join ServiceRequestSearch_temp_FullResults Fr on Fr1.IntakeServiceId = Fr.IntakeServiceId                                                         
+    where Fr.RAName  is not null;       */                                  
+                  
+    UPDATE ServiceRequestSearch_temp_FullResults1 SET County  = Fr.County , ZIP = Fr.ZIP,Region  = Fr.Region                                                          
+    FROM ServiceRequestSearch_temp_FullResults1 Fr1                                                        
+    join ServiceRequestSearch_temp_FullResults Fr on Fr1.IntakeServiceId = Fr.IntakeServiceId                                                
+    where Fr.County   is not null;                                         
+            
+   /* UPDATE ServiceRequestSearch_temp_FullResults1 SET AssignedTo = UP.DisplayName                                                        
+    FROM ServiceRequestSearch_temp_FullResults1 Fr1                                                        
+    join UserProfile UP ON UP.SecurityUsersId =   Fr1.AssignedToSid                                                     
+    where Fr1.AssignedTo    is  null;         */                                                  
+        
+     /*IF v_luSId is NULL                
+     THEN                                     
+      delete Fr1                
+      FROM ServiceRequestSearch_temp_FullResults1 Fr1                 
+     join IntakeServiceRequest isr on Fr1.IntakeServiceId = isr.IntakeServiceId                                                       
+      WHERE                 
+      Fr1.SRType = 'ANE' and isr.AccessLevel = 1                
+     END IF;    */            
+          
+                  
+    SELECT COUNT(1) INTO v_liCount                                                          
+    FROM ServiceRequestSearch_temp_FullResults1;                                                          
+                 
+    IF v_liCount IS NULL THEN                
+  v_liCount := 0;
+    END IF;                                                          
+                  
+    IF COALESCE(v_liPageNumber, 0) < 1 THEN                                                          
+  v_liPageNumber := 1;
+    END IF;                                                          
+                 
+    IF COALESCE(v_liPageSize, 0) < 1 THEN                                                          
+  v_liPageSize := v_liCount;
+    END IF;                                              
+             RAISE NOTICE '%','88888888888888888888888888888888888';
+  IF (v_lvLoadNumber is not null or v_luSId is not null) THEN
+
+ RETURN QUERY 
+  SELECT   Fr1.totalcount,                                                            
+  Fr1.IntakeServiceId,                                   
+  CASE WHEN  (Fr1.RoutingStatusTypeKey = 'New') AND Fr1.AreaTeamMemberServiceRequestId IS NOT NULL THEN Fr1.ServiceRequestNumber || '(New)'                                  
+  --WHEN DATE_PART('day',Fr1.DateReceived::date - NOW()::date) = 0 THEN Fr1.ServiceRequestNumber || '(New)'
+  WHEN 1 = 0 THEN Fr1.ServiceRequestNumber || '(New)' 
+  -- WHEN AreaTeamMemberServiceRequestId IS NULL THEN ServiceRequestNumber + '(New)'                                  
+  ELSE Fr1.ServiceRequestNumber END AS ServiceRequestNumber,                                  
+  COALESCE(Fr1.SRType,'')  AS SRType,                                                          
+  COALESCE(Fr1.SRSubType,'') AS SRSubType,                                                       
+  COALESCE(INITCAP(Fr1.RAName)::character varying,'')  AS RAName,                                                         
+  COALESCE(Fr1.ZIP,'') AS ZipCode,                                                         
+  COALESCE(Fr1.County,'')  AS County,                                                        
+  COALESCE(Fr1.Region,'')  AS Region ,                                                          
+  Fr1.DateReceived,                                                          
+  Fr1.TimeReceived,                    
+  COALESCE(Fr1.DateDue,Fr1.DateReceived) AS DateDue,                                                          
+  Fr1.TimeDue,                                                          
+  Fr1.OverDue,                                                          
+  v_liCount      AS Count,                                                          
+  COALESCE(Fr1.ProviderName,'')   AS ProviderName,                                                          
+  COALESCE(Fr1.SSBG,'')     AS SSBG,                                                          
+  COALESCE(Fr1.ContractStatus,'') AS ContractStatus,                                                          
+  COALESCE(Fr1.ProviderAgreementId,'00000000-0000-0000-0000-000000000000'::uuid) AS ProviderAgreementId,                                                          
+  Fr1.RoutingStatusTypeKey,                                                          
+  COALESCE(Fr1.AreaTeamMemberServiceRequestId,'00000000-0000-0000-0000-000000000000'::uuid) AS AreaTeamMemberServiceRequestId,                                                          
+  COALESCE(Fr1.GroupNumber,'')    AS GroupNumber,                                                          
+  COALESCE(Fr1.AgencyId,'00000000-0000-0000-0000-000000000000'::uuid) AS AgencyId,
+  Fr1.AssignedTo AS AssignedTo,                                                          
+  Fr1.TeamName AS TeamName ,                                                           
+  Fr1.Disposition AS Disposition,                                                          
+  Fr1.SRStatus AS SRStatus ,                                                          
+  Fr1.InsertedBy As InsertedBy,                                                          
+  Fr1.TeamTypeKey As TeamTypeKey,                                                          
+  Fr1.AssignedToSid As AssignedToSid,                                                     
+  Fr1.Revisited As Revisited,                                                          
+  Fr1.InvestigationId As InvestigationId                                                          
+    FROM ServiceRequestSearch_temp_FullResults1 As Fr1
+  --FROM ServiceRequestSearch_temp_FullResults1 AS Fr   
+    --WHERE ordinal BETWEEN ((v_liPageNumber - 1) * v_liPageSize + 1) AND (v_liPageNumber * v_liPageSize)
+    ORDER BY Fr1.DateReceived DESC;    
+    --ORDER BY RoutingStatusTypeKey DESC,OverDue DESC,DateDue ASC;      
+    
+    ELSE    
+             RAISE NOTICE '%','999999999999999999999999999999';
+    RETURN QUERY
+    
+  SELECT   Fr1.totalcount,                                                          
+  Fr1.IntakeServiceId,                                   
+  CASE WHEN  (Fr1.RoutingStatusTypeKey = 'New') AND Fr1.AreaTeamMemberServiceRequestId IS NOT NULL THEN Fr1.ServiceRequestNumber || '(New)'                                  
+  WHEN (NOW()::date - Fr1.DateReceived::date) = 0 THEN  Fr1.ServiceRequestNumber || '(New)'
+  -- WHEN AreaTeamMemberServiceRequestId IS NULL THEN ServiceRequestNumber + '(New)'                                  
+  ELSE Fr1.ServiceRequestNumber END AS ServiceRequestNumber,                                  
+  COALESCE(Fr1.SRType,'')  AS  SRType,                                                          
+  COALESCE(Fr1.SRSubType,'') AS SRSubType,                                                       
+  COALESCE(INITCAP(Fr1.RAName)::character varying,'')  AS RAName,                                                         
+  COALESCE(Fr1.ZIP,'') AS ZipCode,                                                         
+  COALESCE(Fr1.County,'')  AS County,                                                        
+  COALESCE(Fr1.Region,'')  AS Region,                                                          
+  Fr1.DateReceived,                                                          
+  Fr1.TimeReceived,                    
+  COALESCE(Fr1.DateDue,Fr1.DateReceived) AS DateDue,                                                          
+  Fr1.TimeDue,                                                          
+  Fr1.OverDue,                                                          
+  v_liCount      AS Count,                                                          
+  COALESCE(Fr1.ProviderName,'')   AS ProviderName,                                                          
+  COALESCE(Fr1.SSBG,'')     AS SSBG,                                                          
+  COALESCE(Fr1.ContractStatus,'') AS ContractStatus,                                                          
+  COALESCE(Fr1.ProviderAgreementId,'00000000-0000-0000-0000-000000000000'::uuid) AS ProviderAgreementId,
+  Fr1.RoutingStatusTypeKey,                                                          
+  COALESCE(Fr1.AreaTeamMemberServiceRequestId,'00000000-0000-0000-0000-000000000000'::uuid) AS AreaTeamMemberServiceRequestId,                                                          
+  COALESCE(Fr1.GroupNumber,'')    AS GroupNumber,                               
+  COALESCE(Fr1.AgencyId,'00000000-0000-0000-0000-000000000000'::uuid) AS AgencyId ,
+  Fr1.AssignedTo AS AssignedTo,                                                          
+  Fr1.TeamName AS TeamName ,                                                           
+  Fr1.Disposition AS Disposition,                                                          
+  Fr1.SRStatus AS SRStatus,                                                          
+  Fr1.InsertedBy As InsertedBy,                                                          
+  Fr1.TeamTypeKey As TeamTypeKey,                                                          
+  Fr1.AssignedToSid As AssignedToSid,                                                     
+  Fr1.Revisited As Revisited,                                                          
+  Fr1.InvestigationId As InvestigationId                                                          
+    FROM ServiceRequestSearch_temp_FullResults1 AS Fr1
+  --FROM ServiceRequestSearch_temp_FullResults1 AS Fr   
+    WHERE Fr1.SRType <> 'ANEInt' 
+    --and ordinal BETWEEN ((v_liPageNumber - 1) * v_liPageSize + 1) AND (v_liPageNumber * v_liPageSize)    
+    --ORDER BY Fr1.RoutingStatusTypeKey DESC, Fr1.OverDue DESC,Fr1.DateDue ASC;        
+    ORDER BY Fr1.DateReceived DESC;        
+    END IF;        
+
+ DROP TABLE servicerequestsearch_temp_searchparms;
+ DROP TABLE servicerequestsearch_temp_dastatus;
+ DROP TABLE servicerequestsearch_temp_daassigned;
+ DROP TABLE servicerequestsearch_temp_datypes;
+ DROP TABLE servicerequestsearch_temp_lgroupservicerequests;
+ DROP TABLE servicerequestsearch_temp_fullresults;
+ --DROP SEQUENCE FullResults_temp_seq1;
+ DROP TABLE servicerequestsearch_temp_fullresults1;
+ --DROP SEQUENCE FullResults1_temp_seq2;   
+ END;
+ 
+
+ $function$
+

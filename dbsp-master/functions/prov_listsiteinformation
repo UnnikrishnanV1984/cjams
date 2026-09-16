@@ -1,0 +1,66 @@
+CREATE OR REPLACE FUNCTION prov_listsiteinformation(v_provider_id integer, v_site_id bigint)
+ RETURNS TABLE(provider_id integer, providername character varying, email character varying, phone character varying, address character varying, site_id integer, programname character varying, prgm_app_mail character varying, prgm_cell_phn character varying, prgm_work_phn character varying, prgm_home_phn character varying, adm_email_tx character varying, adm_cell_phone_tx character varying, adm_work_phone_tx character varying, adm_home_phone_tx character varying, adm_contact_first_nm character varying, adm_contact_last_nm character varying, adm_contact_middle_nm character varying, prgm_app_programtype character varying, prgm_app_address character varying, la_workerid character varying, la_name character varying, la_email character varying, la_phone character varying, agency character varying)
+ LANGUAGE plpgsql
+AS $function$
+declare 
+
+BEGIN
+ RETURN QUERY
+ select  pi.provider_id,
+            pi.provider_nm as providername,
+            pi.adr_email_tx as email,
+            pi.adr_cell_phone_tx as phone,
+            (cast(initcap(trim(tbpad.adr_street_tx) 
+                                                    ||' ' 
+                                                    ||trim(tbpad.adr_street_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad.adr_city_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad.adr_state_cd) 
+                                                    ||' ' 
+                                                    || trim(tbpad.adr_zip5_no::character VARYING)) AS character VARYING)) AS address,
+            tp2.provider_id as site_id,
+            tp2.provider_nm as programname,
+            pi.adr_email_tx as prgm_app_mail,
+            pi.adr_cell_phone_tx as prgm_cell_phn,
+            pi.adr_work_phone_tx as prgm_work_phn,
+            pi.adr_home_phone_tx as prgm_home_phn,
+            pi.adm_email_tx::character varying,
+            pi.adm_cell_phone_tx::character varying,
+            pi.adm_work_phone_tx::character varying,
+            pi.adm_home_phone_tx::character varying,
+            pi.adm_contact_first_nm::character varying,
+            pi.adm_contact_last_nm::character varying,
+            pi.adm_contact_middle_nm::character varying,
+            (select tpv.value_tx from tb_provider_licensing tpl
+                join tb_picklist_values tpv on tpv.picklist_value_cd = tpl.license_type_cd and tpv.active_sw = 'Y' and tpv.delete_sw='N' and tpv.picklist_type_id=284
+                where tpl.site_id = tp2.provider_id and tpl.delete_sw='N' order by tpl.create_ts desc limit 1
+            )as prgm_app_programtype,
+            (cast(initcap(trim(tbpad2.adr_street_tx) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_street_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_city_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_state_cd) 
+                                                    ||' ' 
+                                                    || trim(tbpad2.adr_zip5_no::character VARYING)) AS character VARYING)) AS prgm_app_address,
+                                                    t.la_workerid, t.la_name, t.la_email, t.la_phone, t.agency
+from  tb_provider pi
+left join tb_provider_addresses tbpad  on tbpad.parent_key_id = pi.provider_id :: character varying and tbpad.delete_sw ='N' and tbpad.adr_default_sw = 'Y'
+inner join tb_provider tp2 on tp2.affiliate_provider_id = pi.provider_id
+left join tb_provider_addresses tbpad2 on tbpad2.parent_key_id = tp2.provider_id :: character varying and tbpad2.delete_sw='N' and tbpad2.adr_default_sw = 'Y'
+left join lateral (select pa.toworkeridno::character varying as la_workerid, up.fullname::character varying as la_name,up.email::character varying as la_email, u.phonenumber::character varying as la_phone, tpv.value_tx as agency  
+    from providerassignment pa 
+    join userprofile up on up.securityusersid =  pa.toworkeridno and up.activeflag =1
+    left join tb_provider_licensing tpl on tpl.site_id::character varying = pa.objectid and active_sw = 'Y' and delete_sw = 'N'
+    left join tb_picklist_values tpv on trim(tpv.picklist_value_cd) = trim(tpl.licensing_agency_cd) and tpv.active_sw = 'Y' and tpv.delete_sw = 'N' and tpv.picklist_type_id = '111'
+    left join userprofilephonenumber u on u.securityusersid = up.securityusersid and u.activeflag =1 and pa.activeflag =1  
+    where (pa.enddate > now() or pa.enddate is null) and pa.objectid = v_site_id order by pa.insertedon desc, pa.updatedon desc limit 1) t on (1=1)
+where pi.provider_id = v_provider_id and tp2.provider_id = v_site_id;
+  
+
+
+end;
+$function$
+

@@ -1,0 +1,159 @@
+CREATE OR REPLACE FUNCTION cjams.getcaseconnected(l_object_id text)
+ RETURNS TABLE(object_id character varying, object_type character varying, is_servicecase boolean, is_isrcase boolean, is_intake boolean, isr_type character varying, isr_type_description character varying, isr_subtype character varying, isr_subtype_description character varying, intakenumber character varying, intakeserviceid uuid, servicerequestnumber character varying, servicecaseid uuid, servicecasenumber character varying, persons jsonb)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 07/25/2023 Palani/Chandra - Query tuning (CIDM-7565)
+
+------------------------------------------------------------------------------------------------------------	
+declare
+
+begin
+
+return
+query
+
+select
+case when i.servicecaseid is null then case when isr.servicerequestnumber is null then i.intakenumber else isr.servicerequestnumber end else s_c.servicecasenumber end as object_id,
+case when i.servicecaseid is null then case when isr.servicerequestnumber is null then 'Intake' else srt.classkey end  else 'Service Case' end as object_type,
+case when i.servicecaseid is null then false else true end as is_servicecase,
+case when i.intakeserviceid is null then false else true end as is_isrcase,
+case when i.intakenumber is null then false else true end as is_intake,
+t.intakeservreqtypekey as isr_type, t.description as isr_type_description,
+srt.classkey as isr_subtype, srt.description as isr_subtype_description,
+i.intakenumber,
+i.intakeserviceid, isr.servicerequestnumber,
+i.servicecaseid, s_c.servicecasenumber,
+(select json_agg(a) from (
+select p1.lastname, p1.firstname
+from  intakeservicerequestactor i1
+join person p1 on p1.personid = i1.personid
+and p1.activeflag = 1
+join actor a1 on i1.actorid = a1.actorid
+and a1.ishouseholdmember = 1
+and a1.activeflag = 1
+where (i1.intakeserviceid = i.intakeserviceid
+or
+i1.servicecaseid = i.servicecaseid
+or
+i1.intakenumber = i.intakenumber
+ )
+and i1.activeflag = 1
+and i1.isprimary = true
+--group by p1.lastname, p1.firstname
+) as a ):: jsonb as persons
+from intakeservicerequestactor i
+join actor a on
+i.actorid = a.actorid
+and a.activeflag = 1
+and a.ishouseholdmember = 1
+
+left join intakeservicerequest isr on isr.intakeserviceid = i.intakeserviceid and isr.activeflag = 1
+left join intakeservicerequesttype rt on rt.intakeservreqtypeid = isr.intakeservreqtypeid
+left join servicerequestsubtype srt on srt.servicerequestsubtypeid = isr.intakeservicerequestclassid
+left join servicecase s_c on s_c.servicecaseid = i.servicecaseid and s_c.activeflag = 1
+left join intakeservicerequesttype t on t.intakeservreqtypeid = isr.intakeservreqtypeid
+--left join intakedastaging staging on staging.intakenumber = i.intakenumber and staging.activeflag = 1
+
+
+where i.activeflag = 1
+  and i.isprimary = true
+  and (coalesce(i.intakeserviceid::text,'') <> l_object_id --or coalesce(i.servicecaseid::text, '') <> l_object_id
+  )
+  and i.personid in (
+select
+distinct i_a.personid
+from
+intakeservicerequestactor i_a
+join actor a on
+a.intakeserviceid = i_a.intakeserviceid
+and a.ishouseholdmember = 1
+where
+(i_a.intakeserviceid = l_object_id::uuid --or i_a.servicecaseid = l_object_id::uuid
+)
+ and
+i_a.activeflag = 1
+ and
+   i_a.isprimary = true
+ )
+group by t.intakeservreqtypekey, t.description,
+srt.classkey, srt.description,
+i.intakeserviceid, isr.servicerequestnumber,
+i.servicecaseid, s_c.servicecasenumber,
+i.intakenumber
+union
+select
+case when i.servicecaseid is null then case when isr.servicerequestnumber is null then i.intakenumber else isr.servicerequestnumber end else s_c.servicecasenumber end as object_id,
+case when i.servicecaseid is null then case when isr.servicerequestnumber is null then 'Intake' else srt.classkey end  else 'Service Case' end as object_type,
+case when i.servicecaseid is null then false else true end as is_servicecase,
+case when i.intakeserviceid is null then false else true end as is_isrcase,
+case when i.intakenumber is null then false else true end as is_intake,
+t.intakeservreqtypekey as isr_type, t.description as isr_type_description,
+srt.classkey as isr_subtype, srt.description as isr_subtype_description,
+i.intakenumber,
+i.intakeserviceid, isr.servicerequestnumber,
+i.servicecaseid, s_c.servicecasenumber,
+(select json_agg(a) from (
+select p1.lastname, p1.firstname
+from  intakeservicerequestactor i1
+join person p1 on p1.personid = i1.personid
+and p1.activeflag = 1
+join actor a1 on i1.actorid = a1.actorid
+and a1.ishouseholdmember = 1
+and a1.activeflag = 1
+where (i1.intakeserviceid = i.intakeserviceid
+or
+i1.servicecaseid = i.servicecaseid
+or
+i1.intakenumber = i.intakenumber
+ )
+and i1.activeflag = 1
+and i1.isprimary = true
+--group by p1.lastname, p1.firstname
+) as a ):: jsonb as persons
+from intakeservicerequestactor i
+join actor a on
+i.actorid = a.actorid
+and a.activeflag = 1
+and a.ishouseholdmember = 1
+
+left join intakeservicerequest isr on isr.intakeserviceid = i.intakeserviceid and isr.activeflag = 1
+left join intakeservicerequesttype rt on rt.intakeservreqtypeid = isr.intakeservreqtypeid
+left join servicerequestsubtype srt on srt.servicerequestsubtypeid = isr.intakeservicerequestclassid
+left join servicecase s_c on s_c.servicecaseid = i.servicecaseid and s_c.activeflag = 1
+left join intakeservicerequesttype t on t.intakeservreqtypeid = isr.intakeservreqtypeid
+--left join intakedastaging staging on staging.intakenumber = i.intakenumber and staging.activeflag = 1
+
+
+where i.activeflag = 1
+  and i.isprimary = true
+  and (--coalesce(i.intakeserviceid::text,'') <> l_object_id or
+  coalesce(i.servicecaseid::text, '') <> l_object_id)
+  and i.personid in (
+select
+distinct i_a.personid
+from
+intakeservicerequestactor i_a
+join actor a on
+a.intakeserviceid = i_a.intakeserviceid
+and a.ishouseholdmember = 1
+where
+(--i_a.intakeserviceid = l_object_id::uuid or
+i_a.servicecaseid = l_object_id::uuid )
+ and
+i_a.activeflag = 1
+ and
+   i_a.isprimary = true
+ )
+group by t.intakeservreqtypekey, t.description,
+srt.classkey, srt.description,
+i.intakeserviceid, isr.servicerequestnumber,
+i.servicecaseid, s_c.servicecasenumber,
+i.intakenumber
+;
+
+end;
+
+$function$
+;

@@ -1,0 +1,149 @@
+CREATE OR REPLACE FUNCTION as_getcdemgpsdocdetails(v_intakeserviceid uuid, v_intakenumber character varying, v_securityuserid character varying)
+ RETURNS TABLE(youthname character varying, firstname character varying, lastname character varying, suffix character varying, cjamspid character varying, dateofbirth character varying, gender character varying, race character varying, height_in character varying, weight_lbs character varying, identifyingmarks character varying, youthcounty character varying, workername character varying, workerphonenumber character varying, workeraddress character varying, supervisorname character varying, supervisorphonenumber character varying, supervisoraddress character varying, facilityname character varying, facilitycontactname character varying, facilitycontactno character varying, provideraddress character varying, providerphone character varying, youthaddress character varying, youthphonenumber character varying, userphoto character varying, parentguaridanname character varying, relationship character varying, parentguardianphonenumber character varying, offense character varying, offensedate character varying, alert character varying, workeremail character varying, supervisoremail character varying, parentaddress1 character varying, parentaddress2 character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_workername character varying;
+v_workerphonenumber character varying;
+v_workeraddress character varying;
+v_workeremail character varying;
+parentguaridanname character varying;
+relationship character varying;
+parentguardianphonenumber character varying;
+v_jsondata jsonb;
+v_youthphonenumber character varying;
+v_seriousoffensename character varying;
+v_supervisorname character varying;
+v_supervisorphonenumber character varying;
+v_supervisoraddress character varying;
+v_supervisoremail character varying;
+v_offensedate character varying;
+v_parentaddress1 character varying;
+v_parentaddress2 character varying;
+
+begin
+ 
+ select 
+  up.lastname||','||up.firstname,
+  cast(coalesce(uph.phoneextension,'000')||uph.phonenumber as character varying),
+  cast(((case when upa.address is null then '' else upa.address end)||(case when upa.city is null then '' else ', '||upa.city end)||(case when upa.state is null then '' else ', '||upa.state end)||(case when upa.zipcode is null then '' else ', '||upa.zipcode end) )as character varying),
+  up.email 
+ into v_workername,v_workerphonenumber,v_workeraddress,v_workeremail 
+ from userprofile up 
+ left join userprofileaddress upa on upa.securityusersid = up.securityusersid and upa.activeflag = 1 and upa.userprofileaddresstypekey = 'P'
+ left join userprofilephonenumber uph on uph.securityusersid = up.securityusersid and uph.activeflag = 1 and uph.userprofiletypekey = 'office'
+ where up.securityusersid = v_securityuserid and up.activeflag = 1;
+
+ select 
+  up.lastname||','||up.firstname,
+  cast(coalesce(uph.phoneextension,'000')||uph.phonenumber as character varying),
+  cast(((case when upa.address is null then '' else upa.address end)||(case when upa.city is null then '' else ', '||upa.city end)||(case when upa.state is null then '' else ', '||upa.state end)||(case when upa.zipcode is null then '' else ', '||upa.zipcode end) )as character varying),
+  up.email 
+  into v_supervisorname,v_supervisorphonenumber,v_supervisoraddress,v_supervisoremail
+ from routing r 
+ left join userprofile up on up.securityusersid = r.fromsecurityusersid and up.activeflag = 1
+ left join userprofileaddress upa on upa.securityusersid = up.securityusersid and upa.activeflag = 1 and upa.userprofileaddresstypekey = 'P'
+ left join userprofilephonenumber uph on uph.securityusersid = up.securityusersid and uph.activeflag = 1 and uph.userprofiletypekey = 'office'
+ where 
+ ((cast(v_intakeserviceid as character varying)= r.objectid) or (v_intakenumber = r.objectid)) 
+ and r.activeflag = 1  and r.fromroleid in ('JSCSP','JSSP') order by r.updatedby desc limit 1;
+
+ select
+  string_agg(cast(alg.name as character varying),','),
+  cast(to_char(isre.offensedate,'MM/DD/YYYY') as character varying) into v_seriousoffensename,v_offensedate
+ from intakeservicerequestevaluation isre
+ join intakeservicerequestevaluationconfig isrec on isre.intakeservicerequestevaluationid = isrec.intakeservicerequestevaluationid
+ join allegation alg on alg.allegationid = isrec.allegationid and alg.activeflag = 1
+ where isre.intakenumber = v_intakenumber and isre.activeflag = 1 group by isre.offensedate
+ order by isre.offensedate desc limit 1;
+ 
+ select  
+  cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying),
+  cast(ac.relationshiptypekey as character varying),
+  cast(coalesce(relphone.phoneextension,'000')||relphone.phonenumber as character varying),
+  (select cast(((case when pa.address is null then '' else pa.address end)||(case when pa.address2 is null then '' else ', '||pa.address2 end)||(case when pa.city is null then '' else ', '||pa.city end)||(case when pa.state is null then '' else ', '||pa.state end)||(case when pa.zipcode is null then '' else ', '||pa.zipcode end) )as character varying)
+   from personaddress pa where pa.personid = p.personid and pa.activeflag = 1 and pa.personaddresstypekey = '31' order by personadrstartdate desc limit 1)  as parentaddress1,
+  (select cast(((case when pa.address is null then '' else pa.address end)||(case when pa.address2 is null then '' else ', '||pa.address2 end)||(case when pa.city is null then '' else ', '||pa.city end)||(case when pa.state is null then '' else ', '||pa.state end)||(case when pa.zipcode is null then '' else ', '||pa.zipcode end) )as character varying) as parentaddress
+   from personaddress pa 
+   left join personaddresstype pat on pat.personaddresstypekey = pa.personaddresstypekey and pat.activeflag = 1
+   where pa.personid = p.personid and pa.activeflag = 1 and pa.personaddresstypekey != '31' order by pat.sequencenumber,pa.personadrstartdate desc limit 1
+  ) as parentaddress2
+  into parentguaridanname,relationship,parentguardianphonenumber,v_parentaddress1,v_parentaddress2
+ from intakeservicerequestactor isra  
+ left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+ join actor a on a.actorid = isra.actorid and a.activeflag =1
+ join person p on p.personid = a.personid and p.activeflag = 1
+ left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1 and pa.personaddresstypekey = '31'
+ join (select 1 as seq,'father' as relation union 
+   select 2 as seq,'mother' as relation union
+   select 3 as seq,'fosterparent' as relation union 
+   select 4 as seq,'stepparent' as relation union
+   select 5 as seq,'adoptiveparent' as relation union 
+   select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey
+ left join (select ph.phoneextension,ph.phonenumber,ph.personid from personphonenumber ph left join personphonetype pp on ph.personphonetypekey = pp.personphonetypekey and ph.activeflag =1 and pp.activeflag =1 order by pp.sequencenumber limit 1) relphone on relphone.personid = p.personid 
+ where isra.intakeserviceid=v_intakeserviceid
+ order by rel.seq limit 1;
+
+ return query
+
+ select 
+  distinct
+  cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+  cast(p.firstname as character varying),
+  cast(p.lastname as character varying),
+  cast(p.suffix as character varying),
+  cast(p.cjamspid as character varying),
+  cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as dateofbirth,
+  (select distinct typedescription from gendertype where gendertypekey=p.gendertypekey) as gender, 
+  (select distinct typedescription from racetype where racetypekey=p.racetypekey) as race,                                                                                                                                                                                                                                                                                                                                             
+  cast((select attributevalue from personphysicalattribute where physicalattributetypekey='Ht' and activeflag=1 and personid=p.personid) as character varying) as height_in,
+  cast((select attributevalue from personphysicalattribute where physicalattributetypekey='Wt' and activeflag=1 and personid=p.personid) as character varying) as weight_lbs,
+  cast((select attributevalue from personphysicalattribute where physicalattributetypekey='Tattoo' and activeflag=1 and personid=p.personid) as character varying) as identifyingmarks,
+  cast(trim(regexp_replace(pa.county, '\\''+', '''', 'g')) as character varying) as youthcounty,
+  cast(v_workername as character varying) as workername,
+  cast(v_workerphonenumber as character varying) as workerphonenumber,
+  cast(v_workeraddress as character varying) as workeraddress,
+  cast(v_supervisorname as character varying) as supervisorname,
+  cast(v_supervisorphonenumber as character varying) as supervisorphonenumber,
+  cast(v_supervisoraddress as character varying) as supervisoraddress,
+  cast(pr.providername as character varying) as facilityname,
+  cast(null as character varying) as facilitycontactname,
+  cast(null as character varying) as facilitycontactno,
+  (select cast(paddr.buildingno||','||paddr.addressline1||','||COALESCE(paddr.addressline2, '')||','||paddr.city||','||coun.countyname||','||paddr.state||','||coun.zipcode as character varying)
+  from provideraddress paddr 
+  left join county coun on paddr.countyid = coun.countyid and coun.activeflag = 1 where pr.providerid = paddr.providerid and paddr.activeflag = 1 limit 1) as provideraddress,
+  (select cast(pcinfo.phoneextension||(case when nullif(pcinfo.phoneextension,'') is not null then '-' else '' end)||pcinfo.phonenumber as character varying) from providercontactinfo pcinfo where providercontactinfotypekey = 'P' and pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1 limit 1) as providerphone,
+  cast(((case when pa.address is null then '' else pa.address end)||(case when pa.address2 is null then '' else ', '||pa.address2 end)||(case when pa.city is null then '' else ', '||pa.city end)||(case when pa.state is null then '' else ', '||pa.state end)||(case when pa.zipcode is null then '' else ', '||pa.zipcode end) )as character varying) as youthaddress,
+  cast(coalesce(relphone.phoneextension,'000')||relphone.phonenumber as character varying) as youthphonenumber,
+  cast(p.userphoto as character varying) as userphoto,
+  parentguaridanname,
+  relationship,
+  parentguardianphonenumber,
+  v_seriousoffensename as offense,
+  v_offensedate as offensedate,
+  (select cast(string_agg(ptt.typedescription,',') as character varying)
+   from personalert pt  
+   left join personalerttype ptt on ptt.personalerttypekey = pt.alerttype
+   where pt.personid = p.personid) as alert,
+  v_workeremail as workeremail,
+  v_supervisoremail as supervisoremail,
+  v_parentaddress1 as parentaddress1,
+  v_parentaddress2 as parentaddress2
+ from intakeservicerequest isr 
+ join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.activeflag = 1
+ join actor a on a.actorid = isra.actorid and a.activeflag = 1
+ join person p on p.personid = a.personid and p.activeflag = 1
+ left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1 and pa.personaddresstypekey = '31'
+ left join (select ph.phoneextension,ph.phonenumber,ph.personid from personphonenumber ph left join personphonetype pp on ph.personphonetypekey = pp.personphonetypekey and ph.activeflag =1 and pp.activeflag =1 order by pp.sequencenumber limit 1) relphone on relphone.personid = p.personid
+ left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on (pl.intakenumber = isr.intakenumber or pl.intakeserviceid =  isr.intakeserviceid) and pl.activeflag = 1 and pl.recno = 1
+ left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+ left join placementrelease prl on prl.placementid = pl.placementid and prl.activeflag = 1
+ left join intakeservicerequestcourthearing ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1 and ich.hearingtypekey = 'Disp'
+ left join intakeservicerequestcourtaction ica on ica.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ica.activeflag = 1
+ where isra.intakeservicerequestpersontypekey = 'Youth' 
+ and isr.intakeserviceid = v_intakeserviceid;
+
+end;
+$function$
+

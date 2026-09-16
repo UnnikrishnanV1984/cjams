@@ -1,0 +1,1 @@
+create index Xie3_usernotification on usernotification(date(insertedon),old_id);

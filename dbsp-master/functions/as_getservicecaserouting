@@ -1,0 +1,63 @@
+CREATE OR REPLACE FUNCTION as_getservicecaserouting(v_servicecaseid uuid)
+ RETURNS TABLE(routinginfo json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+BEGIN
+      
+RETURN query
+
+SELECT 
+(
+ SELECT json_agg(e) AS routinginfo 
+ FROM 
+ (
+  SELECT 
+   up.fullname AS fromusername,  
+   upto.fullname AS tousername,
+   RT.roletypename AS fromrole,RT1.roletypename AS torole,
+   CASE r.routingstatustypeid WHEN 4 THEN 'Assigned' ELSE RST.routingstatustypekey END routingstatustypekey,
+   r.insertedon AS routedon,up.title,   
+    (
+    SELECT 
+     upa.address 
+    FROM userprofileaddress upa  
+    INNER JOIN userprofileaddresstype upat ON upa.userprofileaddresstypekey=upat.userprofileaddresstypekey 
+    WHERE upa.userprofileaddresstypekey='P' AND upa.activeflag=1 AND upa.securityusersid=up.securityusersid LIMIT 1
+    ),
+    (
+    SELECT 
+     uppn.phonenumber 
+    FROM userprofilephonenumber uppn 
+    INNER JOIN userprofilephonetype uppt ON uppn.userprofiletypekey=uppt.userprofiletypekey 
+    WHERE uppn.userprofiletypekey='office' AND uppn.activeflag=1 AND uppn.securityusersid=up.securityusersid LIMIT 1
+    )
+  FROM routing r 
+  INNER JOIN routingstatustype RST ON RST.sequencenumber = r.routingstatustypeid
+  INNER JOIN userprofile up ON up.securityusersid = r.fromsecurityusersid 
+  INNER JOIN userprofile upto ON upto.securityusersid = r.tosecurityusersid 
+  INNER JOIN (
+     SELECT 
+      rt.*, rtt.roletypename 
+     FROM role RT   
+     INNER JOIN roletype rtt ON rtt.shortname = rt.name 
+     ) RT ON r.fromroleid = RT.roletypekey
+  INNER JOIN (
+     SELECT rt.*, rtt.roletypename 
+     FROM role RT
+     INNER JOIN roletype rtt ON rtt.shortname = rt.name 
+     ) RT1 ON r.toroleid = RT1.roletypekey
+  WHERE r.objectid =v_servicecaseid::character varying
+  ORDER BY r.updatedon desc 
+ )e
+)::json
+FROM servicecase sc 
+WHERE sc.servicecaseid = v_servicecaseid AND sc.activeflag=1
+ORDER BY sc.insertedon desc;        
+
+END;
+
+$function$
+

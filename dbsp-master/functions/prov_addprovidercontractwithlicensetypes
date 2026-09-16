@@ -1,0 +1,200 @@
+CREATE OR REPLACE FUNCTION prov_addprovidercontractwithlicensetypes(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+returnStatus text;
+
+contractId numeric;
+currentContractId numeric;
+providerId numeric;
+contractStartDate date;
+contractEndDate date;
+comments text;
+estimateValue numeric;
+contractReceivedDate date;
+contractEntryDate date;
+contractSolicitation text;
+contractTypeNewValue text;
+contractNumber text;
+contractAgency text;
+licenseAgency text;
+oosLicenseAgency text;
+contractTermType text;
+contractTermStatus text;
+contractTermEndReason text;
+ contractpo text;
+ contractbpo text;
+ totalcontractbeds text;
+ contractBudgetCodes json; 
+ contractBudgetType text;  
+currentRow json;
+ budgetCodelicense json;                                                                                                                                         
+ v_license_bed integer;
+ v_irc_bed_capacity integer;
+ v_fiscal_date CHARACTER VARYING ;
+ v_contract_license_type_status character varying;   
+contractfiscalyear json;
+basecontractId numeric;
+v_program_id numeric;
+v_new_program_id numeric;
+l_contractno text;
+x numeric;
+y numeric;
+BEGIN
+
+contractId=insertedtlsobj->>'contract_id'; 
+currentContractId=insertedtlsobj->>'current_contract_id'; 
+basecontractId = (insertedtlsobj->>'base_contract_id')::numeric;
+providerId=insertedtlsobj->>'provider_id';
+contractStartDate= insertedtlsobj->>'start_dt';
+contractEndDate =insertedtlsobj->>'end_dt';
+comments=insertedtlsobj->>'comments_tx';
+estimateValue= insertedtlsobj->>'estimate_value_no';
+contractReceivedDate= insertedtlsobj->>'contract_received_date';
+contractEntryDate = insertedtlsobj->>'contract_entry_date';
+contractSolicitation = insertedtlsobj->>'contract_solicitation';
+contractTypeNewValue =insertedtlsobj->>'contract_type_new_value';
+contractNumber= insertedtlsobj->>'contract_number';
+contractAgency = insertedtlsobj->>'contract_agency';
+licenseAgency = insertedtlsobj->>'license_agency';
+oosLicenseAgency = insertedtlsobj->>'oos_license_agency';
+contractTermType= insertedtlsobj->>'contract_term_type';
+contractTermStatus= insertedtlsobj->>'contract_term_status';
+contractTermEndReason= insertedtlsobj->>'contract_term_end_reason';
+contractfiscalyear= insertedtlsobj->>'fiscalyeararray';
+contractBudgetCodes= insertedtlsobj->>'contract_budget_codes';
+ contractBudgetType= insertedtlsobj->>'contract_budget_type';
+ contractpo = insertedtlsobj->>'contract_po';
+ contractbpo = insertedtlsobj->>'contract_bpo';
+ totalcontractbeds = insertedtlsobj->>'total_contract_beds';                                                                                          
+v_license_bed := insertedtlsobj->>'license_bed';
+v_irc_bed_capacity := insertedtlsobj->>'irc_bed_capacity';
+v_fiscal_date := insertedtlsobj->>'fiscal_date';
+v_contract_license_type_status :=  insertedtlsobj->>'contract_license_type_status';  
+
+
+----update
+IF(contractId is not null)
+THEN 
+
+    UPDATE tb_provider_contracts
+    SET contract_number = contractNumber, contract_type_cd='', start_dt=contractStartDate, end_dt=contractEndDate, comments_tx=comments, provider_id=providerId,
+    estimate_value_no=estimateValue, update_ts=now(), update_user_id= insertedtlsobj->>'update_user_id',
+    delete_sw='N'::bpchar, contract_received_date=contractReceivedDate, contract_entry_date=contractEntryDate, 
+    contract_solicitation=contractSolicitation, contract_type_new_value=contractTypeNewValue,
+    contract_agency = contractAgency, license_agency = licenseAgency, oos_license_agency = oosLicenseAgency,
+    contract_term_type=contractTermType, contract_term_status=contractTermStatus, contract_term_end_reason=contractTermEndReason,
+    contract_po = contractpo, contract_bpo = contractbpo, total_contract_beds = totalcontractbeds, contract_budget_type = contractBudgetType
+    WHERE contract_id=contractId;
+
+    UPDATE tb_contract_budget_codes tcbc
+    SET 
+    tcbc.active_flag = 0
+    WHERE tcbc.contract_id=contractId;
+
+    FOR budgetCodelicense IN SELECT *FROM  json_array_elements(contractBudgetCodes)
+    LOOP
+        INSERT INTO tb_contract_budget_codes
+        (contract_id, budget_code, license_no, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+        VALUES (contractId,  budgetCodelicense->>'budget_code', budgetCodelicense->>'license_no', insertedtlsobj->>'create_ts', 
+        insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id', 'N'::bpchar, 1);  
+    END LOOP;  
+
+    UPDATE tb_contract_fiscal_year tcfy
+    SET 
+    tcfy.active_flag = 0
+    WHERE tcfy.contract_id=contractId;
+
+    if contractfiscalyear is not null then
+        FOR currentRow IN SELECT * FROM json_array_elements(contractfiscalyear)
+        LOOP
+            RAISE NOTICE 'values %', currentRow->>'fiscalstartdate';
+            INSERT INTO tb_contract_fiscal_year
+            (contract_id, fiscalyear, fiscalstartdate, fiscalenddate, amount, create_ts, create_user_id, update_ts, update_user_id)
+            VALUES(contractId, (currentRow->>'fiscalyear')::int4, currentRow->>'fiscalstartdate', currentRow->>'fiscalenddate',
+            (currentRow->>'amount')::numeric, insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id');
+        END LOOP;
+    end if;
+
+------creation or modification:
+ELSE
+
+    ------modification
+    IF basecontractId IS NOT NULL THEN 
+        select count(1) from tb_provider_contracts where base_contract_id = basecontractId and delete_sw= 'N' into x;
+        select contract_number from tb_provider_contracts where contract_id = basecontractId and delete_sw= 'N' into contractNumber;
+        y := x +(1::numeric);
+        l_contractno = contractNumber||'-A'||y::character VARYING; 
+    ------creation
+    ELSE 
+        l_contractno = contractNumber;
+    END IF;
+
+    ------BOTH
+    INSERT INTO tb_provider_contracts
+    (contract_type_cd, base_contract_id, start_dt, end_dt, comments_tx, provider_id, estimate_value_no,
+    contract_received_date, contract_entry_date, contract_solicitation, contract_type_new_value, 
+    contract_number, contract_agency, license_agency, oos_license_agency,
+    contract_term_type, contract_term_status, contract_term_end_reason,
+    create_ts, create_user_id, update_ts, update_user_id, delete_sw, status_cd, contract_po, contract_bpo, total_contract_beds,
+    contract_budget_type)
+    VALUES
+    ('', basecontractId, contractStartDate, contractEndDate, comments, providerId, estimateValue,
+    contractReceivedDate, contractEntryDate, contractSolicitation, contractTypeNewValue,
+    l_contractno, contractAgency, licenseAgency, oosLicenseAgency,
+    contractTermType, contractTermStatus, contractTermEndReason,
+    insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id',
+    'N'::bpchar, insertedtlsobj->>'status_cd',insertedtlsobj->>'contract_po',insertedtlsobj->>'contract_bpo',insertedtlsobj->>'total_contract_beds',
+    insertedtlsobj->>'contract_budget_type'
+    )  RETURNING contract_id INTO contractId;      
+
+  
+    ------modification
+    IF basecontractId IS NOT NULL THEN 
+
+        update tb_contract_program
+        set contract_id = contractId
+        where contract_id = currentContractId;
+
+
+    END IF ;   
+
+
+    ------BOTH
+    FOR budgetCodelicense IN SELECT *FROM  json_array_elements(contractBudgetCodes)
+    LOOP
+
+        INSERT INTO tb_contract_budget_codes
+        (contract_id, budget_code, license_no, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+        VALUES (contractId,  budgetCodelicense->>'budget_code', budgetCodelicense->>'license_no', insertedtlsobj->>'create_ts', 
+        insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id', 'N'::bpchar, 1);  
+
+    END LOOP;  
+
+    if contractfiscalyear is not null then
+
+        FOR currentRow IN SELECT * FROM json_array_elements(contractfiscalyear)
+        LOOP
+
+            --RAISE NOTICE 'values %', currentRow->>'fiscalstartdate';
+            INSERT INTO tb_contract_fiscal_year
+            (contract_id, fiscalyear, fiscalstartdate, fiscalenddate, amount, create_ts, create_user_id, update_ts, update_user_id)
+            VALUES(contractId, (currentRow->>'fiscalyear')::int4, currentRow->>'fiscalstartdate', currentRow->>'fiscalenddate',
+            (currentRow->>'amount')::numeric, insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id');
+
+        end loop;
+    end if;
+
+END IF;
+
+returnStatus:= ''||contractId;
+
+RETURN returnStatus;
+
+END;
+
+
+$function$
+

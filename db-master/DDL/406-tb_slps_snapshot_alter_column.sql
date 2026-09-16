@@ -1,0 +1,2 @@
+ALTER TABLE tb_slpa_snapshot ALTER COLUMN create_ts type timestamp USING create_ts::timestamp without time zone;
+ALTER TABLE tb_slpa_snapshot ALTER COLUMN update_ts type timestamp USING update_ts::timestamp without time zone;

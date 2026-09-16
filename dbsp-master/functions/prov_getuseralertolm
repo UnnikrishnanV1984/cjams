@@ -1,0 +1,105 @@
+CREATE OR REPLACE FUNCTION prov_getuseralertolm(searchobj json, isextentity boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, usernotificationid uuid, objecttype character varying, object_type character varying, usernotificationtypekey character varying, url text, subject character varying, priorityleveltypekey character varying, body text, hasattachments boolean, updatedby character varying, updatedon timestamp without time zone, insertedby character varying, insertedon timestamp without time zone, teammemberid uuid, attachmentlocation character, tosecurityusersid character varying, isreplied boolean, isforwarded boolean, iscarboncopy boolean, isread boolean, effectivedate timestamp without time zone, expirationdate timestamp without time zone, intakeserviceid character varying, fromusername character varying, tousername character varying, old_id character varying, provider_id character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+v_userID character varying;
+v_liPageNumber      INT;                                                          
+v_liPageSize       INT; 
+v_pageNumber INT;                                                          
+v_pageSize  INT; 
+v_pageOffset int;
+
+
+BEGIN
+
+v_userID := searchObj ->> 'userid';
+v_liPageNumber := searchObj ->> 'pagenumber';
+v_liPageSize := searchObj ->> 'pagesize';
+
+ v_pageNumber := v_liPageNumber-1;
+v_pageOffset = v_pageNumber * v_liPageSize;    
+
+
+RETURN QUERY 
+select count(1) over(), un.usernotificationid, intakereq.objecttype, un.objecttype as object_type, 
+un.usernotificationtypekey,un.url
+,un.subject,un.priorityleveltypekey,un.body,un.hasattachments,un.updatedby,un.insertedon as updatedon,un.insertedby,
+un.insertedon, un.teammemberid,un.attachmentlocation,
+unmap.tosecurityusersid,unmap.isreplied,unmap.isforwarded,unmap.iscarboncopy,unmap.isread,
+unmap.effectivedate,unmap.expirationdate,
+un.objectid , (select up.firstname||' '||up.lastname from userprofile up where up.securityusersid =un.insertedby)::character varying as fromusername, (select up2.firstname||' '||up2.lastname from userprofile up2 where up2.securityusersid =un.securityusersid)::character varying as tousername , un.old_id,
+(
+  case when (intakereq.objecttype = 'incidentreport') 
+    then 
+      (select pu1.provider_id ::character varying 
+      from provider_uir pu1 
+      where pu1.active_flag =1
+      and pu1.provider_uir_id::character varying  = un.objectid limit 1)
+  when (intakereq.objecttype = 'cap') 
+    then 
+      (select pv.provider_id::character varying   from prov_violation pv where pv.cap_number=un.objectid and delete_sw='N' limit 1)
+else 
+    (select tpc1.provider_id::character VARYING
+    from  tb_provider_complaint_deficiency tpcd 
+    inner join tb_provider_complaint tpc1 on tpc1.provider_complaintid = tpcd.provider_complaintid 
+    where tpcd.activeflag =1 and tpc1.activeflag = 1 
+    and tpcd.cap_number = un.objectid limit 1)
+  end 
+) as provider_id
+from prov_usernotification un 
+inner join prov_usernotificationmap unmap on un.usernotificationid=unmap.usernotificationid 
+left join 
+(
+select 'cap':: character varying as objecttype, pv.cap_number::character varying  as caseid from prov_violation pv where delete_sw='N'
+union 
+select 'changerequest':: character varying as objecttype, ppr.request_no::character varying  as caseid from Providerportalrequest ppr where delete_sw='N'
+union 
+select 'complaint':: character varying as objecttype, tpc.complaint_number ::character varying  as caseid from tb_provider_complaint tpc where tpc.activeflag =1
+union
+select 'monitoring':: character varying as objecttype, pm.monitoring_id ::character varying  as caseid from prov_monitoring pm
+union 
+select 'application':: character varying as objecttype, tpd.objectid ::character varying  as caseid from tb_provider_decision tpd where tpd.activeflag =1 and tpd.eventcode='PTA'
+union 
+select 'incidentreport':: character varying as objecttype, pu.provider_uir_id ::character varying  as caseid from provider_uir pu where pu.active_flag =1
+union 
+select 'referral':: character varying as objecttype, tpr.provider_referral_id ::character varying  as caseid from tb_provider_referral tpr where tpr.delete_sw ='N' 
+union 
+select 'serviceplanreferral':: character varying as objecttype, tvnd.vendorid ::character varying  as caseid from tb_vendor_applicant tvnd where tvnd.delete_sw ='N' and tvnd.vendortype = '37812'
+union 
+select 'vendorreferral':: character varying as objecttype, tvnd.vendorid ::character varying  as caseid from tb_vendor_applicant tvnd where tvnd.delete_sw ='N' and (tvnd.vendortype = '37811' or tvnd.vendortype IS NULL) 
+union 
+select 'ppapplicant':: character varying as objecttype, tppa.applicant_id ::character varying  as caseid from tb_public_provider_applicant tppa 
+union
+select 'pprovider':: character varying as objecttype, tpa.provider_id ::character varying  as caseid 
+ from tb_provider tpa 
+ inner join tb_provider_picklist  pck on pck.provider_id=tpa.provider_id  and pck.picklist_type_id='155' and pck.picklist_value_cd in ('1783' ,'1785')
+ inner join prov_usernotification pu2 on pu2.objectid = tpa.provider_id 
+ where tpa.delete_sw='N' and lower(pu2.subject) like '%provider%'
+union
+select 'serviceplan':: character varying as objecttype, tpa.provider_id ::character varying  as caseid 
+ from tb_provider tpa 
+ inner join tb_provider_picklist  pck on pck.provider_id=tpa.provider_id  and pck.picklist_type_id='155' and pck.picklist_value_cd='1787' 
+ where tpa.delete_sw='N'
+union
+select distinct 'vendor':: character varying as objecttype, tpa.provider_id ::character varying  as caseid from tb_provider tpa
+inner join tb_provider_picklist tppl on tppl.provider_id=tpa.provider_id  and tppl.picklist_type_id='155' and tppl.picklist_value_cd='3304'  
+inner join prov_usernotification pu2 on pu2.objectid = tpa.provider_id 
+where tpa.delete_sw='N' and lower(pu2.subject) like '%vendor%' and lower(pu2.subject)  not like '%provider%'
+union
+select distinct 'pprovider':: character varying as objecttype, tpa.provider_id ::character varying  as caseid from tb_provider tpa
+inner join tb_provider_picklist tppl on tppl.provider_id=tpa.provider_id  and tppl.picklist_type_id='155' and tppl.picklist_value_cd='3304'  
+inner join prov_usernotification pu2 on pu2.objectid = tpa.provider_id 
+where tpa.delete_sw='N' and lower(pu2.subject) like '%vendor%' and lower(pu2.subject) like '%provider%'
+
+)
+ intakereq on un.objectid=intakereq.caseid :: character varying
+where un.securityusersid = v_userID
+and un.activeflag=1 
+order by un.updatedon desc
+
+LIMIT v_liPageSize OFFSET v_pageOffset;
+
+ END;
+$function$
+

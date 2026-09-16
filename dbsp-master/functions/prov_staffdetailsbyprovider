@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION prov_staffdetailsbyprovider(pagenumber integer, pagelimit integer, providerid integer, p_provider_staff_number character varying, p_first_nm character varying, p_last_nm character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+totalcount bigint;
+v_uir_status character varying;
+orderbycolumn character varying;
+v_provider_id int;
+v_provider_staff_number character varying;
+v_first_nm character varying;
+v_last_nm character varying;
+v_jsondata json;
+
+ BEGIN
+ v_limit= pagelimit;
+ v_pagenumber := pageNumber-1;
+ v_pageoffset = v_pagenumber * v_limit; 
+ v_provider_id = providerid;
+ v_provider_staff_number = p_provider_staff_number;
+ v_first_nm = p_first_nm;
+ v_last_nm = p_last_nm;
+
+select  jsonb_agg(x) into v_jsondata from (
+
+ 
+select tps.*, count(1)  over() as totalcount,
+(select json_agg(x) from (select distinct tpas.object_id,tpa.program_name,tpa.prgram,tpa.program_type
+        from  providerstaffconfig tpas 
+        left join tb_provider_applicant tpa on (tpas.object_id = tpa.applicant_id or tpas.object_id = tpa.site_id) and tpa.delete_sw = 'N'
+        where tpas.provider_staff_id = tps.provider_staff_id and tpas.delete_sw = 'N'
+        ) x ),
+(select json_agg(y) as certificates from (select tpc.provider_certificate_id,tpc.provider_staff_id,tpc.behavioral_interventions_training,
+        tpc.rcc_certificate_type,tpc.rcc_certificate_due_date,tpc.rcc_date_application_mailed,
+        tpc.rcc_date_tested,tpc.rcc_certification_effective_date,tpc.rcc_certification_number,tpc.rcc_certification_renewal_date,
+        tpc.rcc_certificate_subtype,tpc.rcc_certificate_subtype_other,tpc.rcc_certificate_status
+        from tb_prov_certificates tpc   where tpc.provider_staff_id = tps.provider_staff_id and tpc.delete_sw = 'N') y )
+from providerstaff tps
+where tps.object_id = v_provider_id  
+and case when v_provider_staff_number is not null then tps.provider_staff_number ilike  '%'||v_provider_staff_number||'%' else true end
+and case when v_first_nm is not null then tps.first_nm ilike '%'||v_first_nm||'%' else true end
+and case when v_last_nm is not null then tps.last_nm ilike '%'||v_last_nm||'%' else true end
+and tps.delete_sw = 'N' order by tps.provider_staff_id desc , create_ts desc
+
+LIMIT v_limit OFFSET v_pageoffset )x;
+
+return v_jsondata;
+end;
+$function$
+

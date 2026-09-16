@@ -1,0 +1,1 @@
+update tb_receivable_detail set isreversal=false where delete_sw='N';

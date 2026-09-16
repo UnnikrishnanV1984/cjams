@@ -1,0 +1,15 @@
+ CREATE OR REPLACE FUNCTION public.updateadoptionchecklist(v_adoptionchecklistid uuid)
+  RETURNS text                                                                        
+  LANGUAGE plpgsql                                                                    
+ AS $function$                                                                        
+                                                                                      
+ Begin                                                                                
+                                                                                      
+                 UPDATE  Adoptionchecklistdetails  set  activeflag  =  0              
+                 where  adoptionchecklistid  =  v_adoptionchecklistid;                
+                 Return  'Success';                                                   
+                                                                                      
+ End                                                                                  
+                                                                                      
+ $function$                                                                           
+

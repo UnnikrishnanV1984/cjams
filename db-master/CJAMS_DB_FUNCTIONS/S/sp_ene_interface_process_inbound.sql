@@ -1,0 +1,1178 @@
+CREATE OR REPLACE FUNCTION cjams.sp_ene_interface_process_inbound(	vs_batch_user character varying, 
+																	OUT vs_message character varying, 
+																	OUT vl_output_sqlcode character varying, 
+																	OUT a timestamp without time zone, 
+																	OUT b timestamp without time zone
+																 )
+RETURNS record
+LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Date Created :11/24/2020
+-- Author: Vineet Tirodkar
+-- Process E&E Inbound Data
+
+-- Revision(s)
+-- 10/27/2021 - Vineet Tirodkar 
+-- To fix update logic issue of 'statusflag' column in the 'caresclient' table (CIDM-3964)
+------------------------------------------------------------------------
+DECLARE VS_OUTPUT_STATE CHAR(5) DEFAULT '00000';
+	vts_previous_run_ts timestamp;
+	vts_current_run_ts timestamp ;
+	VS_CIS_CLIENT_ID VARCHAR(50);
+	VL_CLIENT_ID INTEGER;
+	VL_PERSON_ID UUID ;
+	VL_ERROR_ID INTEGER;
+	-- INSURANCE VARIABLES
+	VL_AU_NO INTEGER;
+	VS_MA_TYPE VARCHAR(3);
+	VD_MA_ELIG_START_DT DATE;
+	VD_MA_ELIG_END_DT DATE;
+	VS_MA_ID VARCHAR(11);
+	-- EMPLOYER VARIABLES
+	VL_EMPLOYER_ID_NO INTEGER;
+	VS_EMPLOYER_NM VARCHAR(33);
+	VD_EMPLOYER_START_DT DATE;
+	VD_EMPLOYER_END_DT DATE;
+	VS_EMPLOYER_DELETE_SW INTEGER;
+
+	-- ASSET VARIABLES
+	VL_ASSET_ID_NO INTEGER;
+	VS_ASSET_TYPE CHAR(2);
+	VL_ASSET_OWNER INTEGER;
+	VD_ASSET_AMOUNT DECIMAL(10,2);
+	VS_ASSET_ACCOUNT_NO VARCHAR(16);
+	VS_ASSET_INSTITUTION_NM VARCHAR(30);
+	VS_ASSET_VERIFICATION_CD CHAR(2);
+	VS_ASSETS_DELETE_SW INTEGER;
+	VD_ASSET_DT DATE;
+
+	VS_ASSET_VERIFICATION_TYPE_CD VARCHAR(5);
+	VS_ASSET_TYPE_CD VARCHAR(5);
+	VS_ASSET_NOTES_TX VARCHAR(500);
+
+	VD_ASSET_MARKET_VALUE DECIMAL(10,2);
+	VD_ASSET_FACE_VALUE DECIMAL(10,2);
+	VD_ASSET_AMOUNT_OWNED_VALUE DECIMAL(10,2);
+	VD_ASSET_TOTAL_VALUE DECIMAL(10,2);
+	VD_ASSET_NON_EXEMPT_VALUE DECIMAL(10,2);
+
+	-- INCOME VARIABLES
+	VL_INCOME_ID_NO INTEGER;
+	VS_INCOME_TYPE CHAR(1);
+	VS_INCOME_CATEGORY CHAR(2);
+	VD_INCOME_AMOUNT DECIMAL(10,2);
+	VD_MONTHLY_AMOUNT DECIMAL(10,2);
+	VS_INCOME_VERIFICATION CHAR(2);
+	VD_INCOME_START_DT DATE;
+	VD_INCOME_END_DT DATE;
+	VS_INCOME_FREQUENCY CHAR(2);
+	VS_INCOME_DELETE_SW INTEGER;
+
+	VL_INCOME_SOURCE_ID INTEGER;
+	VS_VERIFICATION_CD VARCHAR(5);
+	VS_FREQUENCY_CD VARCHAR(5);
+	VS_NOTES_TX VARCHAR(500);
+	VS_CARES_INCOME_TYPE_DESC VARCHAR(500);
+
+-- Rec type = '02'
+DECLARE TRIGGER_INBOUND CURSOR FOR
+	SELECT old_id 
+	FROM caresclient
+	WHERE statusflag = 1 AND   activeflag = 1;
+	-- FOR UPDATE OF activeflag,STATUS_SW;
+
+-- Rec type = '16'
+DECLARE MA_INBOUND CURSOR FOR
+	SELECT auno, matype, maeligstartdate, maeligenddate, maid
+	FROM caresclientma ccma
+	where ccma.old_id::BIGINT = VS_CIS_CLIENT_ID::BIGINT
+		AND ccma.statusflag = 1 AND   ccma.activeflag = 1;
+	-- FOR UPDATE OF activeflag,STATUS_SW;          
+	-- WHERE SUBSTR('000000000',1,9 - LENGTH(LTRIM(RTRIM(CIS_CLIENT_ID)))) || LTRIM(RTRIM(CIS_CLIENT_ID)) = VS_CIS_CLIENT_ID
+       
+-- Rec type = '46'               
+DECLARE EMP_INBOUND CURSOR  FOR
+	SELECT employeridno, employername, employerstartdate, employerenddate, employerdeleteflag
+	FROM caresclientemployer 
+	WHERE old_id::BIGINT = VS_CIS_CLIENT_ID::BIGINT
+		AND statusflag = 1 
+		AND activeflag = 1;
+	-- FOR UPDATE OF activeflag,STATUS_SW;
+	-- WHERE SUBSTR('000000000',1,9 - LENGTH(LTRIM(RTRIM(CIS_CLIENT_ID)))) || LTRIM(RTRIM(CIS_CLIENT_ID)) = VS_CIS_CLIENT_ID
+
+-- Rec type = '21'
+DECLARE ASSET_INBOUND CURSOR  FOR
+	SELECT assetidno, assettype, assetowner, assetamount, assetaccountno, assetinstitutionname, 
+		assetverificationkey, assetsdeleteflag, assetdate
+	FROM caresclientassets 
+	WHERE old_id::BIGINT = VS_CIS_CLIENT_ID::BIGINT
+		AND statusflag = 1 
+		AND activeflag = 1;
+	-- FOR UPDATE OF activeflag,STATUS_SW;
+	-- WHERE SUBSTR('000000000',1,9 - LENGTH(LTRIM(RTRIM(CIS_CLIENT_ID)))) || LTRIM(RTRIM(CIS_CLIENT_ID)) = VS_CIS_CLIENT_ID
+
+-- Rec type = '51'
+DECLARE INCOME_INBOUND CURSOR  FOR
+	SELECT incomeidno, incometype, incomecategory, incomeamount, incomeverification, incomestartdate, 
+		incomeenddate, incomefrequency, incomedeleteflag
+	FROM caresclientincome
+	WHERE old_id::BIGINT= VS_CIS_CLIENT_ID::BIGINT
+		AND statusflag = 1 
+		AND  activeflag = 1;
+	-- FOR UPDATE OF activeflag,STATUS_SW;
+	-- WHERE SUBSTR('000000000',1,9 - LENGTH(LTRIM(RTRIM(CIS_CLIENT_ID)))) || LTRIM(RTRIM(CIS_CLIENT_ID)) = VS_CIS_CLIENT_ID       
+
+BEGIN       
+	-- Initialize variables with the current timestamp
+	vts_previous_run_ts := CURRENT_TIMESTAMP;
+	vts_current_run_ts := CURRENT_TIMESTAMP;
+	-- if first run, i.e., no rows in log, then leave as initialized
+       
+    OPEN TRIGGER_INBOUND;
+    BEGIN    
+        <<TRIG_INBOUND>>
+		LOOP
+			FETCH TRIGGER_INBOUND INTO VS_CIS_CLIENT_ID ;
+
+			EXIT TRIG_INBOUND WHEN NOT FOUND; 
+			
+			-- Initial Value (CIDM-3964)
+			VL_OUTPUT_SQLCODE := '00000';
+
+			VS_CIS_CLIENT_ID := LTRIM(RTRIM(VS_CIS_CLIENT_ID));
+			-- SELECT CLIENT_ID INTO VL_CLIENT_ID  FROM TB_CLIENT           
+			-- WHERE SUBSTR('0000000000',1,10 - LENGTH(LTRIM(RTRIM(CIS_CLIENT_ID)))) || LTRIM(RTRIM(CIS_CLIENT_ID)) =
+			-- SUBSTR('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+			-- AND activeflag = 1;
+			-- #13722 - changed the above with the below code.
+			BEGIN            
+				SELECT cjamspid INTO VL_CLIENT_ID FROM person WHERE cisclientid = (VS_CIS_CLIENT_ID)::VARCHAR AND activeflag = 1 ;
+				SELECT personid INTO VL_PERSON_ID FROM person WHERE cisclientid = (VS_CIS_CLIENT_ID)::VARCHAR AND activeflag = 1 ;
+				-- WHERE  BIGINT(CIS_CLIENT_ID) = BIGINT(VS_CIS_CLIENT_ID)
+				
+				EXCEPTION WHEN OTHERS THEN
+					VS_MESSAGE := '(E&E) CIS Client ID is unknown to CJAMS: ' || VS_CIS_CLIENT_ID   || SQLERRM  ;
+					INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno, 
+						errorcode, errorsqlcode,errordescription)
+					SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+					--GOTO ERROR_SECTION ;
+					CONTINUE TRIG_INBOUND;
+			END ;
+		
+            IF VL_CLIENT_ID > 0 THEN -- For personhealthinsurance records
+				OPEN MA_INBOUND;
+
+				<<MA_INB>>
+				LOOP
+					VS_MESSAGE := '' ;
+					VL_AU_NO := NULL;
+					VS_MA_TYPE := NULL;
+					VD_MA_ELIG_START_DT := NULL;
+					VD_MA_ELIG_END_DT := NULL;
+					VS_MA_ID := NULL;
+					FETCH  MA_INBOUND INTO VL_AU_NO,VS_MA_TYPE,VD_MA_ELIG_START_DT,VD_MA_ELIG_END_DT,VS_MA_ID ;								
+					EXIT MA_INB WHEN NOT FOUND;
+
+					VL_ERROR_ID := VL_AU_NO ;
+					IF VD_MA_ELIG_END_DT < VD_MA_ELIG_START_DT THEN
+						BEGIN    
+							UPDATE caresclientma SET activeflag = 0 WHERE CURRENT OF MA_INBOUND;
+
+							EXCEPTION WHEN OTHERS THEN
+								VS_MESSAGE := '(E&E) UPDATE activeflag FAILED FOR TABLE caresclientma. '  || SQLERRM  ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, 
+									errorlineno, errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE MA_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ;
+
+                        CONTINUE MA_INB ;
+
+					END IF;
+								
+					IF EXISTS (	SELECT 1 
+									FROM personhealthinsurance phlt, 
+										person p
+                                WHERE phlt.personid = p.personid
+									and p.cjamspid = VL_CLIENT_ID
+									AND phlt.caresauno = VL_AU_NO
+									AND phlt.activeflag = 1 
+									AND p.activeflag = 1 
+							  ) THEN
+                        BEGIN
+							UPDATE personhealthinsurance 
+								SET caresmatypekey = VS_MA_TYPE,
+									medicaidstartdate = VD_MA_ELIG_START_DT,
+									medicaidenddate = VD_MA_ELIG_END_DT,
+									medicarenumber = VS_MA_ID, 
+									insurancetype = 'MEDIC',
+									infoclienttypekey = 'R', 
+									providedbynotes = 'E&E', 
+									updatedon = CURRENT_TIMESTAMP, 
+									updatedby = VS_BATCH_USER, 
+									activeflag = 1
+							WHERE personid = VL_PERSON_ID 
+								AND caresauno = VL_AU_NO 
+								AND activeflag = 1 ;
+								
+								
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE:=SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE FAILED FOR TABLE personhealthinsurance. '  || SQLERRM  ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE MA_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ;
+                    ELSE
+                        BEGIN   
+							INSERT INTO personhealthinsurance
+								(	personhealthinsuranceid,
+									caresauno, 
+									caresmatypekey,
+									personid,
+									medicaidstartdate,
+									medicaidenddate,
+									medicarenumber,
+									insertedon,
+									insertedby,
+									updatedon,
+									updatedby,
+									activeflag,
+									insurancetype,
+									infoclienttypekey,
+									providedbynotes
+									
+								)
+							SELECT gen_random_uuid(),
+								VL_AU_NO,
+								VS_MA_TYPE,
+								VL_PERSON_ID,
+								VD_MA_ELIG_START_DT,
+								VD_MA_ELIG_END_DT,
+								VS_MA_ID,
+								CURRENT_TIMESTAMP,
+								VS_BATCH_USER,
+								CURRENT_TIMESTAMP,
+								VS_BATCH_USER,
+								1,
+								'1380',
+								'R',
+								'E&E'
+							;
+							
+							
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE:=SQLSTATE;
+								VS_MESSAGE := '(E&E) INSERT FAILED FOR TABLE personhealthinsurance. '  || SQLERRM  ;
+
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE MA_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ;
+					END IF;
+
+                    BEGIN
+                        UPDATE caresclientma  SET statusflag = 0 WHERE CURRENT OF MA_INBOUND;
+                        EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) UPDATE statusflag FAILED FOR TABLE caresclientma. '  || SQLERRM ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+							SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+							CLOSE MA_INBOUND;
+							CONTINUE TRIG_INBOUND;
+					END ;
+
+                               
+                END LOOP;              
+                CLOSE MA_INBOUND;
+						
+                -- For TB_CLIENT_EMPLOYER records
+                OPEN EMP_INBOUND;
+						
+                <<EMP_INB>>
+                LOOP
+					VS_MESSAGE := '' ;
+					VL_EMPLOYER_ID_NO := NULL;
+					VS_EMPLOYER_NM := NULL;
+					VD_EMPLOYER_START_DT := NULL;
+					VD_EMPLOYER_END_DT := NULL;
+					VS_EMPLOYER_DELETE_SW := NULL;
+
+					FETCH EMP_INBOUND INTO VL_EMPLOYER_ID_NO,VS_EMPLOYER_NM,VD_EMPLOYER_START_DT,
+						VD_EMPLOYER_END_DT,VS_EMPLOYER_DELETE_SW ;
+
+					EXIT  EMP_INB  WHEN NOT FOUND;
+
+					VL_ERROR_ID := VL_EMPLOYER_ID_NO ;
+
+					IF VS_EMPLOYER_DELETE_SW = 0 THEN
+						IF EXISTS (	SELECT 1 FROM personemployment pe,person p
+									WHERE pe.personid = p.personid
+										and p.cjamspid = VL_CLIENT_ID
+										AND employernumber = VL_EMPLOYER_ID_NO  
+										AND pe.activeflag = 1 
+										and p.activeflag = 1 ) THEN
+
+							IF VD_EMPLOYER_END_DT IS NULL THEN
+								BEGIN   
+									UPDATE personemployment 
+										SET activeflag = 0,
+											updatedon = CURRENT_TIMESTAMP, 
+											updatedby = VS_BATCH_USER
+									WHERE fk_id = VL_CLIENT_ID
+										AND employernumber = VL_EMPLOYER_ID_NO 
+										AND activeflag = 1 ;
+										
+									EXCEPTION WHEN OTHERS THEN
+										VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+										VS_MESSAGE := '(E&E) UPDATE activeflag FAILED FOR TABLE personemployment. '  || SQLERRM  ;
+										INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber,
+											errorlineno, errorcode, errorsqlcode, errordescription)
+										SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+										CLOSE EMP_INBOUND;
+										CONTINUE TRIG_INBOUND;
+								END ;
+							END IF;
+
+                            IF VD_EMPLOYER_END_DT IS NOT NULL THEN
+								BEGIN          
+									UPDATE personemployment
+										SET enddate = VD_EMPLOYER_END_DT,
+											updatedon = CURRENT_TIMESTAMP,
+											updatedby = VS_BATCH_USER
+									WHERE fk_id = VL_CLIENT_ID
+										AND employernumber = VL_EMPLOYER_ID_NO 
+										AND activeflag = 1 ;
+
+									EXCEPTION WHEN OTHERS THEN
+										VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+										VS_MESSAGE := '(E&E) UPDATE enddate FAILED FOR TABLE personemployment. '  || SQLERRM  ;
+										INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber,
+											errorlineno, errorcode, errorsqlcode, errordescription)
+										SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+										CLOSE EMP_INBOUND;
+										CONTINUE TRIG_INBOUND;
+								END ;
+							END IF;
+						ELSE
+							-- do nothing
+						END IF;
+
+                        BEGIN        
+							UPDATE caresclientemployer 
+								SET statusflag = 0 WHERE CURRENT OF EMP_INBOUND;
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE statusflag FAILED FOR TABLE caresclientemployer. '  || SQLERRM  ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE EMP_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ; 
+
+						CONTINUE EMP_INB;
+					END IF;
+
+                    IF EXISTS (	SELECT 1 FROM personemployment 
+								WHERE personid = VL_PERSON_ID
+									AND employernumber = VL_EMPLOYER_ID_NO 
+									AND activeflag = 1) THEN
+                        BEGIN
+							UPDATE personemployment
+								SET employername = VS_EMPLOYER_NM, 
+									startdate = VD_EMPLOYER_START_DT,
+									enddate = VD_EMPLOYER_END_DT,
+									updatedon = CURRENT_TIMESTAMP,
+									updatedby = VS_BATCH_USER, 
+									activeflag = 1
+							WHERE personid = VL_PERSON_ID 
+								AND employernumber = VL_EMPLOYER_ID_NO
+								AND activeflag = 1 ;
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE FAILED FOR TABLE personemployment. '  || SQLERRM  ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE EMP_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ; 
+
+                    ELSE
+						BEGIN
+							INSERT INTO personemployment
+								(	personemploymentid,
+									employernumber,
+									employername,
+									personid,
+									startdate,
+									enddate,
+									insertedon,
+									insertedby,
+									updatedon,
+									updatedby,
+									activeflag, 
+									clientmergeid
+								)
+
+							SELECT gen_random_uuid(),
+								VL_EMPLOYER_ID_NO,
+								VS_EMPLOYER_NM,
+								VL_PERSON_ID,
+								VD_EMPLOYER_START_DT,
+								VD_EMPLOYER_END_DT,
+								CURRENT_TIMESTAMP,
+								VS_BATCH_USER,
+								CURRENT_TIMESTAMP,
+								VS_BATCH_USER,
+								1,
+								'00000000-0000-0000-0000-000000000000';
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) INSERT FAILED FOR TABLE personemployment. '  || SQLERRM  ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE EMP_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ; 
+                                       
+					END IF;
+                END LOOP;              
+				CLOSE EMP_INBOUND;
+ 
+                -- For TB_CLIENT_INCOME records
+				OPEN INCOME_INBOUND;
+
+				<<INCOME_INB>>
+				LOOP
+					VS_MESSAGE := '' ;
+					VL_INCOME_ID_NO := NULL;
+					VS_INCOME_TYPE := NULL;
+					VS_INCOME_CATEGORY := NULL;
+					VD_INCOME_AMOUNT := NULL;
+					VS_INCOME_VERIFICATION := NULL;
+					VD_INCOME_START_DT := NULL;
+					VD_INCOME_END_DT := NULL;
+					VS_INCOME_FREQUENCY := NULL;
+					VS_INCOME_DELETE_SW := NULL;
+
+					VL_INCOME_SOURCE_ID := NULL;
+					VS_VERIFICATION_CD := NULL;
+					VS_FREQUENCY_CD := NULL;
+					VS_NOTES_TX := NULL;
+					VS_CARES_INCOME_TYPE_DESC := NULL;
+						 
+					FETCH  INCOME_INBOUND INTO VL_INCOME_ID_NO,VS_INCOME_TYPE,VS_INCOME_CATEGORY,VD_INCOME_AMOUNT,
+						VS_INCOME_VERIFICATION,VD_INCOME_START_DT,VD_INCOME_END_DT,VS_INCOME_FREQUENCY, VS_INCOME_DELETE_SW ;
+
+					EXIT INCOME_INB WHEN NOT FOUND;
+
+					VL_ERROR_ID := VL_INCOME_ID_NO ;
+
+					IF VS_INCOME_DELETE_SW = 0 THEN
+						IF EXISTS ( SELECT * FROM personincome ci,person pp
+									WHERE ci.personid = pp.personid
+										AND pp.cjamspid = VL_CLIENT_ID
+										AND caresincome = VL_INCOME_ID_NO 
+										AND isearned = VS_INCOME_TYPE 
+										AND ci.activeflag = 1  
+										AND pp.activeflag = 1 ) THEN
+										
+							IF VD_INCOME_END_DT IS NULL THEN
+								-- UPDATE personincome
+								BEGIN
+									UPDATE personincome 
+										SET activeflag = 0,
+											updatedon = CURRENT_TIMESTAMP,  
+											updatedby = VS_BATCH_USER
+									WHERE personid = VL_PERSON_ID 
+										AND caresincome = VL_INCOME_ID_NO
+										AND isearned = VS_INCOME_TYPE 
+										AND activeflag = 1 ;
+
+									EXCEPTION WHEN OTHERS THEN
+										VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+										VS_MESSAGE := '(E&E) UPDATE activeflag FAILED FOR TABLE personincome. '  || SQLERRM  ;
+										INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber,
+											errorlineno, errorcode, errorsqlcode, errordescription)
+										SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+										CLOSE INCOME_INBOUND;
+										CONTINUE TRIG_INBOUND;
+								END ; 
+
+                            END IF;
+
+                            IF VD_INCOME_END_DT IS NOT NULL THEN
+								BEGIN              
+									UPDATE personincome
+										SET enddate = VD_INCOME_END_DT,
+											updatedon = CURRENT_TIMESTAMP,
+											updatedby = VS_BATCH_USER
+									WHERE personid = VL_PERSON_ID
+										AND caresincome = VL_INCOME_ID_NO
+										AND isearned = VS_INCOME_TYPE
+										AND activeflag = 1 ;
+										
+									EXCEPTION WHEN OTHERS THEN
+										VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+										VS_MESSAGE := '(E&E) UPDATE enddate FAILED FOR TABLE personincome. '  || SQLERRM  ;
+										INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber,
+											errorlineno, errorcode, errorsqlcode, errordescription)
+										SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+										CLOSE INCOME_INBOUND;
+										CONTINUE TRIG_INBOUND;
+								END ; 
+   
+                            END IF;
+                        ELSE
+					        -- do nothing
+                        END IF;
+	
+                        BEGIN       
+							UPDATE caresclientincome
+								SET statusflag = 0
+							WHERE CURRENT OF INCOME_INBOUND;
+							
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE statusflag FAILED FOR TABLE caresclientincome. '  || SQLERRM ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE INCOME_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ; 
+                        CONTINUE INCOME_INB ;
+                    END IF;
+ 
+                    BEGIN
+						SELECT chessieincometypekey::INTEGER, caresincometypedesc
+							INTO VL_INCOME_SOURCE_ID , VS_CARES_INCOME_TYPE_DESC
+						FROM caresincometype
+						WHERE caresincometype = VS_INCOME_TYPE
+							AND chessieincometypekey = VS_INCOME_CATEGORY
+							AND activeflag = 1;
+                        
+                        EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) SELECT chessieincometypekey FAILED FOR TABLE caresincometype. ' || SQLERRM  ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,errorcode,errorsqlcode,errordescription)
+						SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+						CLOSE   INCOME_INBOUND;
+						CONTINUE TRIG_INBOUND;
+					END ; 
+
+                                          
+                    BEGIN
+					    SELECT chessieincomeverftypekey
+							INTO VS_VERIFICATION_CD
+                        FROM caresincomeverificationtype
+                        WHERE caresincomeverftypekey = VS_INCOME_VERIFICATION
+							AND activeflag = 1;
+                
+						EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) SELECT caresincomeverftypekey FAILED FOR TABLE caresincomeverificationtype. ' || SQLERRM  ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+							SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+							CLOSE INCOME_INBOUND;
+							CONTINUE TRIG_INBOUND;
+					END ;                             
+
+                    BEGIN 
+						SELECT chessieincomefreqkey
+							INTO VS_FREQUENCY_CD
+						FROM caresincomefrequencytype
+						WHERE caresincomefreqkey = VS_INCOME_FREQUENCY
+							AND activeflag = 1;
+							
+						EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) SELECT chessieincomefreqkey FAILED FOR TABLE caresincomefrequencytype. ' || SQLERRM  ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+							SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+							CLOSE INCOME_INBOUND;
+							CONTINUE TRIG_INBOUND;
+					END ;
+ 
+ 					VS_FREQUENCY_CD  := LTRIM(RTRIM(VS_FREQUENCY_CD));
+					VD_MONTHLY_AMOUNT:= CASE  VS_FREQUENCY_CD
+											WHEN '1236' THEN -- Daily
+											VD_INCOME_AMOUNT * 30.5
+											WHEN '1239'   THEN --One Time or Monthly
+											VD_INCOME_AMOUNT
+											WHEN   '1238' THEN --One Time or Monthly
+											VD_INCOME_AMOUNT
+											WHEN '1243'  THEN -- Weekly
+											VD_INCOME_AMOUNT * 4.33
+											WHEN '1237' THEN -- Bi Weekly
+											VD_INCOME_AMOUNT * 2.167
+											WHEN '1241' THEN -- Twice a month
+											VD_INCOME_AMOUNT * 2
+											WHEN '1240' THEN -- Quarterly
+											VD_INCOME_AMOUNT / 4
+											WHEN  '1242' THEN -- Twice a year
+											VD_INCOME_AMOUNT / 6
+											WHEN '1235' THEN -- Annual
+											VD_INCOME_AMOUNT / 12
+											ELSE -- Not in any frequency
+											VD_INCOME_AMOUNT
+										END ;
+
+                    VS_NOTES_TX := 'This income was imported from E&E. Displayed Start Date is the date E&E entered the income information into their system.' ;
+                    VS_NOTES_TX := VS_NOTES_TX || ' E&E Income Type = ' || VS_CARES_INCOME_TYPE_DESC ;
+					  
+                    IF EXISTS (	SELECT 1 FROM personincome
+                                WHERE  personid = VL_PERSON_ID
+									AND caresincome = VL_INCOME_ID_NO
+                                    AND isearned = VS_INCOME_TYPE
+                                    AND activeflag = 1 ) THEN
+                        BEGIN
+							UPDATE personincome
+								SET incomesourcetypekey = VL_INCOME_SOURCE_ID,
+									amount = VD_INCOME_AMOUNT,
+									verificationtypekey =  VS_VERIFICATION_CD,
+									startdate = VD_INCOME_START_DT,
+									enddate = VD_INCOME_END_DT,
+									incomefrequencytypekey = VS_FREQUENCY_CD,
+									notes = VS_NOTES_TX,
+									updatedon = CURRENT_TIMESTAMP,
+									updatedby = VS_BATCH_USER,
+									datasourcetypekey = '3246',
+									activeflag = 1,
+									monthlyamount = VD_MONTHLY_AMOUNT
+							WHERE personid = VL_PERSON_ID
+								AND caresincome = VL_INCOME_ID_NO
+								AND isearned = VS_INCOME_TYPE
+								AND activeflag = 1 ;
+								
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE FAILED FOR TABLE personincome. ' || SQLERRM ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE INCOME_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ;
+                           
+					ELSE
+						
+						BEGIN
+							INSERT INTO personincome
+								(	incomeid,
+									caresincome,
+									incomesourcetypekey,
+									amount,
+									verificationtypekey,
+									startdate,
+									enddate,
+									incomefrequencytypekey,
+									notes,
+									personid,
+									insertedon,
+									insertedby,
+									updatedon,
+									updatedby,
+									activeflag,
+									isearned,
+									datasourcetypekey,
+									monthlyamount,
+									isdisregard
+								) 
+								-- #18364
+							SELECT gen_random_uuid(),
+								VL_INCOME_ID_NO,
+								VL_INCOME_SOURCE_ID,
+								VD_INCOME_AMOUNT,
+								VS_VERIFICATION_CD,
+								VD_INCOME_START_DT,
+								VD_INCOME_END_DT,
+								VS_FREQUENCY_CD,
+								VS_NOTES_TX,
+								VL_PERSON_ID,
+								CURRENT_TIMESTAMP,
+								VS_BATCH_USER,
+								CURRENT_TIMESTAMP,
+								VS_BATCH_USER,
+								1,
+								VS_INCOME_TYPE,
+								'3246',
+								VD_MONTHLY_AMOUNT ,
+								'Y'
+								;
+  						
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) INSERT FAILED FOR TABLE personincome. ' || SQLERRM ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE INCOME_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ;
+
+                    END IF;
+ 
+                END LOOP;              
+                CLOSE INCOME_INBOUND;
+
+                -- For personasset records
+				OPEN ASSET_INBOUND;
+				<<ASSET_INB>>
+                LOOP
+					VS_MESSAGE := '' ;
+
+					VL_ASSET_ID_NO := NULL;
+					VS_ASSET_TYPE := NULL;
+					VL_ASSET_OWNER := NULL;
+					VD_ASSET_AMOUNT := NULL;
+					VS_ASSET_ACCOUNT_NO := NULL;
+					VS_ASSET_INSTITUTION_NM := NULL;
+					VS_ASSET_VERIFICATION_CD := NULL;
+					VS_ASSETS_DELETE_SW := NULL;
+					VD_ASSET_DT := NULL;
+
+					VS_ASSET_VERIFICATION_TYPE_CD := NULL;
+					VS_ASSET_TYPE_CD := NULL;
+					VS_ASSET_NOTES_TX := NULL;
+
+					VD_ASSET_MARKET_VALUE := NULL;
+					VD_ASSET_FACE_VALUE := NULL;
+					VD_ASSET_AMOUNT_OWNED_VALUE := NULL;
+					VD_ASSET_TOTAL_VALUE := NULL;
+					VD_ASSET_NON_EXEMPT_VALUE := NULL;
+					
+					FETCH  ASSET_INBOUND INTO VL_ASSET_ID_NO, VS_ASSET_TYPE, VL_ASSET_OWNER, VD_ASSET_AMOUNT, VS_ASSET_ACCOUNT_NO,
+						VS_ASSET_INSTITUTION_NM, VS_ASSET_VERIFICATION_CD, VS_ASSETS_DELETE_SW, VD_ASSET_DT ;
+						
+					EXIT ASSET_INB WHEN NOT FOUND;
+
+					VL_ERROR_ID := VL_ASSET_ID_NO ;
+
+					IF VS_ASSETS_DELETE_SW = 0 THEN
+
+						IF EXISTS (	SELECT 1 
+									FROM personasset pa, person pp
+                                    WHERE pp.personid = pa.personid
+										AND pp.cjamspid = VL_CLIENT_ID
+										AND pa.caresassetno = VL_ASSET_ID_NO
+										AND pp.activeflag = 1 AND pa.activeflag = 1 ) THEN
+                            BEGIN
+								UPDATE personasset
+									SET activeflag = 0,
+										updatedon = CURRENT_TIMESTAMP,
+										updatedby = VS_BATCH_USER
+								WHERE personid = VL_PERSON_ID
+									AND caresassetno = VL_ASSET_ID_NO
+									AND activeflag = 1 ;
+									
+								EXCEPTION WHEN OTHERS THEN
+									VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+									VS_MESSAGE := '(E&E) UPDATE activeflag FAILED FOR TABLE personasset. ' || SQLERRM ;
+									INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+										errorcode, errorsqlcode, errordescription)
+									SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+									CLOSE ASSET_INBOUND;
+									CONTINUE TRIG_INBOUND;
+							END ;
+                        END IF;
+	
+                        BEGIN                     
+                            UPDATE caresclientassets
+								SET statusflag = 'Y'
+							WHERE CURRENT OF ASSET_INBOUND;
+							
+							EXCEPTION WHEN OTHERS THEN
+								VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE activeflag FAILED FOR TABLE personasset. ' || SQLERRM ;
+								INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+									errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+								CLOSE ASSET_INBOUND;
+								CONTINUE TRIG_INBOUND;
+						END ;
+                        CONTINUE ASSET_INB ;
+
+                    END IF;
+		
+                    BEGIN       
+						SELECT caresassetverftypekey
+							INTO VS_ASSET_VERIFICATION_TYPE_CD
+						FROM caresassetverificationtype
+						WHERE old_id = VS_ASSET_VERIFICATION_CD
+							AND activeflag = 1
+							AND activeflag = 1;
+							
+						EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) SELECT caresassetverftypekey FAILED FOR TABLE caresassetverificationtype. '  || SQLERRM  ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+							SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+							CLOSE ASSET_INBOUND;
+							CONTINUE TRIG_INBOUND;
+					END ;
+
+                    BEGIN
+						SELECT caresassettypekey
+							INTO VS_ASSET_TYPE_CD 
+						FROM caresassettype
+						WHERE caresassettypekey   = VS_ASSET_TYPE 
+							AND activeflag = 1;
+							
+						EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) SELECT caresassettypekey FAILED FOR TABLE caresassettype. '  || SQLERRM  ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+								SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+							CLOSE ASSET_INBOUND;
+							CONTINUE TRIG_INBOUND;
+					END ;
+                       
+
+					VS_ASSET_NOTES_TX := 'This asset record was imported from E&E. Displayed Purchase Date is the date E&E entered the asset information into their system.' ;
+
+					VD_ASSET_TOTAL_VALUE := NULL;
+
+					IF LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '73' THEN
+						VD_ASSET_FACE_VALUE := VD_ASSET_AMOUNT ;
+					ELSE
+						VD_ASSET_MARKET_VALUE := VD_ASSET_AMOUNT ;
+					END IF;
+
+					IF VD_ASSET_MARKET_VALUE IS NULL THEN
+						VD_ASSET_MARKET_VALUE := 0.00;
+					END IF;
+
+					IF VD_ASSET_FACE_VALUE IS NULL THEN
+						VD_ASSET_FACE_VALUE := 0.00;
+					END IF;
+
+					IF VD_ASSET_AMOUNT_OWNED_VALUE IS NULL THEN
+						VD_ASSET_AMOUNT_OWNED_VALUE := 0.00;
+					END IF;
+
+                    IF LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '72' OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '81'
+                        OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '82' OR  LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '86' THEN
+						
+						VD_ASSET_FACE_VALUE := NULL ;
+						VD_ASSET_TOTAL_VALUE := VD_ASSET_MARKET_VALUE - VD_ASSET_AMOUNT_OWNED_VALUE ;
+						IF LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '86' THEN
+							IF VD_ASSET_TOTAL_VALUE > 1500.00 THEN
+								VD_ASSET_NON_EXEMPT_VALUE := VD_ASSET_TOTAL_VALUE - 1500.00 ;
+							END IF;
+						ELSE
+							VD_ASSET_NON_EXEMPT_VALUE := NULL ;
+						END IF;
+
+                    ELSIF LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '74' OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '75'
+                        OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '76' OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '78'
+                        OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '79' OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '83'
+                        OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '84' OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '85'
+                        OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '80' THEN
+						
+						VD_ASSET_FACE_VALUE := NULL ;
+						VD_ASSET_AMOUNT_OWNED_VALUE := NULL ;
+						VD_ASSET_TOTAL_VALUE := VD_ASSET_MARKET_VALUE ;
+
+                    ELSIF LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '73' OR LTRIM(RTRIM(VS_ASSET_TYPE_CD)) = '77' THEN
+						VD_ASSET_AMOUNT_OWNED_VALUE := NULL ;
+						IF  VD_ASSET_MARKET_VALUE <> 0.00 THEN
+							VD_ASSET_TOTAL_VALUE := VD_ASSET_MARKET_VALUE ;
+						ELSE
+							VD_ASSET_TOTAL_VALUE := VD_ASSET_FACE_VALUE ;
+						END IF;
+					END IF;
+
+                    IF EXISTS ( SELECT 1 
+									FROM personasset pa , person pp
+                                WHERE pp.personid = pa.personid
+									AND pp.cjamspid = VL_CLIENT_ID
+									AND caresassetno = VL_ASSET_ID_NO
+									AND pp.activeflag = 1 
+									AND pa.activeflag = 1 ) THEN
+
+						IF VS_ASSET_TYPE = 'BD' THEN
+							BEGIN
+								UPDATE personasset
+								SET assettypekey = VS_ASSET_TYPE_CD,
+									facevalue =  VD_ASSET_AMOUNT,
+									nonexemptvalue = VD_ASSET_NON_EXEMPT_VALUE,
+									valueno = VD_ASSET_TOTAL_VALUE,
+									accountno = VS_ASSET_ACCOUNT_NO,
+									locationname = (CASE WHEN VS_ASSET_INSTITUTION_NM IS NULL THEN 'E&E-No Location Provided'
+														WHEN VS_ASSET_INSTITUTION_NM = '' THEN 'E&E-No Location Provided'
+														ELSE VS_ASSET_INSTITUTION_NM
+													END),
+									verificationtypekey = (CASE WHEN VS_ASSET_VERIFICATION_TYPE_CD IS NULL THEN '10366'
+															WHEN VS_ASSET_VERIFICATION_TYPE_CD = '' THEN '10366'
+															ELSE VS_ASSET_VERIFICATION_TYPE_CD
+															END),
+									purchasedate = VD_ASSET_DT,
+									notes = VS_ASSET_NOTES_TX,
+									updatedon = CURRENT_TIMESTAMP,
+									updatedby = VS_BATCH_USER,
+									activeflag = 1
+								WHERE personid = VL_PERSON_ID
+									AND caresassetno = VL_ASSET_ID_NO
+									AND activeflag = 1 ;  
+
+								EXCEPTION WHEN OTHERS THEN
+									VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+									VS_MESSAGE := '(E&E) UPDATE FAILED FOR TABLE personasset (BD). '  || SQLERRM  ;
+									INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+										errorcode, errorsqlcode, errordescription)
+									SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+									CLOSE ASSET_INBOUND;
+									CONTINUE TRIG_INBOUND;
+							END ;                                                               
+                                                                      
+
+                        ELSE
+								
+							BEGIN
+								UPDATE personasset
+									SET assettypekey = VS_ASSET_TYPE_CD,
+									marketvaluetypekey =  VD_ASSET_AMOUNT,
+									nonexemptvalue = VD_ASSET_NON_EXEMPT_VALUE,
+									valueno = VD_ASSET_TOTAL_VALUE,
+									accountno = VS_ASSET_ACCOUNT_NO,
+									locationname =  (CASE WHEN VS_ASSET_INSTITUTION_NM IS NULL THEN 'E&E-No Location Provided'
+														WHEN VS_ASSET_INSTITUTION_NM = '' THEN 'E&E-No Location Provided'
+														ELSE VS_ASSET_INSTITUTION_NM
+													END),
+									verificationtypekey = (CASE WHEN VS_ASSET_VERIFICATION_TYPE_CD IS NULL THEN '10366'
+															WHEN VS_ASSET_VERIFICATION_TYPE_CD = '' THEN '10366'
+															ELSE VS_ASSET_VERIFICATION_TYPE_CD
+															END),
+									purchasedate = VD_ASSET_DT,
+									notes = VS_ASSET_NOTES_TX,
+									updatedon = CURRENT_TIMESTAMP,
+									updatedby = VS_BATCH_USER,
+									activeflag = 1
+								WHERE personid = (select p.personid from person p where p.cjamspid = VL_CLIENT_ID)
+									AND caresassetno = VL_ASSET_ID_NO
+									AND activeflag = 1 ;
+
+
+								EXCEPTION WHEN OTHERS THEN
+									VL_OUTPUT_SQLCODE  :=  SQLSTATE;   
+									VS_MESSAGE := '(E&E) UPDATE FAILED FOR TABLE personasset. ' || SQLERRM   ;
+									INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+										errorcode, errorsqlcode, errordescription)
+									SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+									CLOSE ASSET_INBOUND;
+									CONTINUE TRIG_INBOUND;
+							END ;              
+                        END IF;
+                    ELSE
+                        IF VS_ASSET_TYPE = 'BD' THEN
+                            BEGIN
+								INSERT INTO personasset
+									(	personassetid,
+										caresassetno,
+										assettypekey,
+										facevalue,
+										accountno,
+										locationname,
+										verificationtypekey,
+										purchasedate,
+										notes,
+										personid,
+										insertedon,
+										insertedby,
+										updatedon,
+										updatedby,
+										activeflag,
+										nonexemptvalue,
+										valueno
+									)
+								SELECT gen_random_uuid(),
+									VL_ASSET_ID_NO,
+									VS_ASSET_TYPE_CD,
+									VD_ASSET_AMOUNT,
+									VS_ASSET_ACCOUNT_NO,
+									(CASE WHEN VS_ASSET_INSTITUTION_NM IS NULL THEN 'E&E-No Location Provided'
+										WHEN VS_ASSET_INSTITUTION_NM = '' THEN 'E&E-No Location Provided'
+										ELSE VS_ASSET_INSTITUTION_NM
+									END),
+									(CASE WHEN VS_ASSET_VERIFICATION_TYPE_CD IS NULL THEN '10366'
+										WHEN VS_ASSET_VERIFICATION_TYPE_CD = '' THEN '10366'
+										ELSE VS_ASSET_VERIFICATION_TYPE_CD
+									END),
+									VD_ASSET_DT,
+									VS_ASSET_NOTES_TX,
+									VL_PERSON_ID,
+									CURRENT_TIMESTAMP,
+									VS_BATCH_USER,
+									CURRENT_TIMESTAMP,
+									VS_BATCH_USER,
+									1,
+									VD_ASSET_NON_EXEMPT_VALUE,
+									VD_ASSET_TOTAL_VALUE
+									;
+									
+								EXCEPTION WHEN OTHERS THEN
+									VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+									VS_MESSAGE := '(E&E) INSERT FAILED FOR TABLE personasset (BD). '  || SQLERRM  ;
+									INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+										errorcode, errorsqlcode, errordescription)
+									SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+									CLOSE ASSET_INBOUND;
+									CONTINUE TRIG_INBOUND;
+							END ;              
+                        ELSE
+						    BEGIN
+								INSERT INTO personasset
+									(	personassetid,
+										caresassetno,
+										assettypekey,
+										facevalue,
+										accountno,
+										locationname,
+										verificationtypekey,
+										purchasedate,
+										notes,
+										personid,
+										insertedon,
+										insertedby,
+										updatedon,
+										updatedby,
+										activeflag,
+										nonexemptvalue,
+										valueno
+									)
+								SELECT gen_random_uuid(),
+									VL_ASSET_ID_NO,
+									VS_ASSET_TYPE_CD,
+									VD_ASSET_AMOUNT,
+									VS_ASSET_ACCOUNT_NO,
+									(CASE WHEN VS_ASSET_INSTITUTION_NM IS NULL THEN 'E&E-No Location Provided'
+										WHEN VS_ASSET_INSTITUTION_NM = '' THEN 'E&E-No Location Provided'
+										ELSE VS_ASSET_INSTITUTION_NM
+									END),
+									(CASE WHEN VS_ASSET_VERIFICATION_TYPE_CD IS NULL THEN '10366'
+										WHEN VS_ASSET_VERIFICATION_TYPE_CD = '' THEN '10366'
+										ELSE VS_ASSET_VERIFICATION_TYPE_CD
+									END),
+									VD_ASSET_DT,
+									VS_ASSET_NOTES_TX,
+									VL_PERSON_ID,
+									CURRENT_TIMESTAMP,
+									VS_BATCH_USER,
+									CURRENT_TIMESTAMP,
+									VS_BATCH_USER,
+									1,
+									VD_ASSET_NON_EXEMPT_VALUE,
+									VD_ASSET_TOTAL_VALUE
+									;
+									
+                                EXCEPTION WHEN OTHERS THEN
+									VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+									VS_MESSAGE := '(E&E) INSERT FAILED FOR TABLE personasset. '  || SQLERRM  ;
+									INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+										errorcode, errorsqlcode, errordescription)
+									SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+									CLOSE ASSET_INBOUND;
+									CONTINUE TRIG_INBOUND;
+							END ;       
+                        END IF;
+                    END IF;
+
+                END LOOP;
+                CLOSE ASSET_INBOUND;
+				
+				-- RAISE NOTICE 'Before Update caresclient statusflag';
+				-- RAISE NOTICE 'VL_OUTPUT_SQLCODE >> %', VL_OUTPUT_SQLCODE;
+								
+                IF VL_OUTPUT_SQLCODE = '00000' THEN
+					-- RAISE NOTICE 'Inside VL_OUTPUT_SQLCODE = 00000';
+					BEGIN                 
+						UPDATE caresclient
+							SET statusflag = 0,
+								updatedon = now(),
+								updatedby = 'cjamsadmin'
+						WHERE CURRENT OF TRIGGER_INBOUND;
+						
+						EXCEPTION WHEN OTHERS THEN
+							VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+							VS_MESSAGE := '(E&E) UPDATE OF statusflag FAILED FOR TABLE caresclient. '  || SQLERRM  ;
+							INSERT INTO interfaceserrorlog (interfaceid, currentruntimestamp, batchnumber, errorlineno,
+								errorcode, errorsqlcode, errordescription)
+							SELECT 'ENE_INBOUND',CURRENT_TIMESTAMP,'',VL_ERROR_ID,'',VL_OUTPUT_SQLCODE,VS_MESSAGE ;
+
+							CONTINUE TRIG_INBOUND;
+					END ;
+                 
+					VS_MESSAGE := '' ;
+
+                END IF;
+				-- RAISE NOTICE 'After Update caresclient statusflag';
+			ELSE
+                -- do nothing
+                VS_MESSAGE := '' ;
+            END IF;
+
+			VS_CIS_CLIENT_ID  := NULL;
+			VL_CLIENT_ID := NULL;
+
+        END LOOP;
+        CLOSE TRIGGER_INBOUND;
+		-- Success.
+			
+		EXCEPTION WHEN OTHERS THEN
+			VS_MESSAGE := '(E&E) FAILED TO GENERATE CJAMS DATA.'  || SQLERRM ;
+			a := vts_current_run_ts;
+			b :=  vts_previous_run_ts;
+			RETURN;
+	END; 
+ 
+	VL_OUTPUT_SQLCODE := '00000';
+	VS_MESSAGE := '(E&E) THE RUN WAS SUCCESSFUL.' ;
+	a := vts_current_run_ts;
+	b :=  vts_previous_run_ts;
+	RETURN ;
+END;
+
+$function$
+;

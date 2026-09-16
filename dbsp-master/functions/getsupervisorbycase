@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION getsupervisorbycase(l_caseworkerid character varying, l_caseid character varying)
+ RETURNS TABLE(securityusersid uuid, caseworkerid uuid, firstname character varying, lastname character varying, fullname character varying, countyname character varying, countyid uuid, teamid uuid, roletypekey character varying, email character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+l_supervisorcount bigint;
+v_supervisorid uuid;
+v_countyid uuid; 
+ 
+BEGIN 
+
+  SELECT count(distinct supervisorid) into l_supervisorcount FROM v_userprofile up WHERE up.securityusersid = l_caseworkerid;
+  RAISE NOTICE 'l_supervisorcount : %', l_supervisorcount;
+  
+  IF l_supervisorcount > 1 AND l_caseid is NOT NULL THEN
+
+    SELECT distinct fromldssid INTO v_countyid FROM caseassignment ca 
+    WHERE  ca.objectid = l_caseid::uuid  and toworkeridno = l_caseworkerid 
+    order by enddate NULLS FIRST LIMIT 1 ;
+
+    IF v_countyid is NULL THEN
+      SELECT distinct fromldssid INTO v_countyid FROM caseassignment ca 
+      WHERE ca.objectid = l_caseid::uuid order by enddate NULLS FIRST LIMIT 1;
+    END IF;
+
+    IF v_countyid is NOT NULL THEN
+      SELECT distinct vup.supervisorid INTO v_supervisorid
+      FROM v_userprofile vup
+      WHERE vup.securityusersid = l_caseworkerid
+      and vup.countyid = v_countyid LIMIT 1;
+    ELSE
+      SELECT distinct vup.supervisorid INTO v_supervisorid
+      FROM v_userprofile vup
+      WHERE vup.securityusersid = l_caseworkerid LIMIT 1;
+    END IF;
+
+    RAISE NOTICE 'more than one supervisor: %', v_supervisorid;
+  ELSE 
+    SELECT vup.supervisorid INTO v_supervisorid
+    FROM v_userprofile vup WHERE vup.securityusersid = l_caseworkerid limit 1;
+  END IF;
+
+  --to make sure that supervisor id is not null
+  IF v_supervisorid is NULL THEN
+    SELECT vup.supervisorid INTO v_supervisorid
+    FROM v_userprofile vup WHERE vup.securityusersid = l_caseworkerid limit 1;
+  END IF;
+
+RAISE NOTICE 'supervisor id before return: %', v_supervisorid;
+
+return query
+
+select sup.securityusersid::uuid, l_caseworkerid::uuid, sup.firstname, sup.lastname, sup.fullname, sup.countyname, 
+sup.countyid, sup.teamid, sup.roletypekey, sup.email 
+from v_userprofile sup where sup.securityusersid = v_supervisorid::character varying;
+
+END;
+
+$function$
+

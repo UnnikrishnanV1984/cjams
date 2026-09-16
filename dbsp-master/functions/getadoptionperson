@@ -1,0 +1,643 @@
+CREATE OR REPLACE FUNCTION getadoptionperson(_page integer, _limit integer, v_adoptiocaseid uuid)
+ RETURNS TABLE(totalcount bigint, rolename character varying, finalizationdate timestamp without time zone, dcn character varying, personid uuid, fullname character varying, firstname character varying, lastname character varying, suffix character varying, gender character varying, dob timestamp without time zone, age character varying, incidentage character varying, timereceived timestamp with time zone, dateofdeath timestamp without time zone, isapproxdod integer, isapproxdob integer, address character varying, dangeraddress boolean, address2 character varying, state character varying, city character varying, zipcode character varying, county character varying, height character varying, weight character varying, haircolortypekey character varying, hairtexturetypekey character varying, eyecolortypekey character varying, physicalbuildtypekey character varying, skintonetypekey character varying, hairtextureotherdesc character varying, haircolorotherdesc character varying, isglasses boolean, employername character varying, clienttitle character varying, race json, phonenumber character varying, phonedetails json, emaildetails json, addressinfo json, dangerous json, actorid uuid, intakeservicerequestactorid uuid, isalleged integer, priorscount bigint, reported boolean, refusessn boolean, refusedob boolean, userphoto text, primarylanguageid character varying, primarylanguage character varying, secondarylanguageid character varying, secondarylanguage character varying, otherprimarylanguagetypekey character varying, otherreligion character varying, email character varying, roles json, relationship character varying, relationshiparray json, relationshipdescription character varying, ishousehold integer, iscollateralcontact integer, schoolname json, ssn character varying, assistpid character varying, cjamspid bigint, strengths character varying, needs character varying, medicalinformation json, medicationinformation json, addendum json, medicalcondition json, emergency json, guardianinfo json, guardianpropertyinfo json, guardianattornyinfo json, guardianworkerinfo json, guardiafuneralinfo json, guardiacodeinfo json, personpayeeinfo json, ethinicity character varying, gendertypedesc character varying, religion character varying, maritalstatus character varying, aliasname character varying, racetypekey character varying, fetalalcoholspctrmdisordflag integer, drugexposednewbornflag integer, probationsearchconductedflag integer, sexoffenderregisteredflag integer, citizenalenageflag integer, isqualifiedalien integer, alienregistrationtext character varying, verificationremarks character varying, alienstatustypekey character varying, issafe integer, programarea json, isheadofhousehold boolean, biologicalmothermarriedsw integer, ivedeterminationdetails json, is_mdm_sync boolean, everbeenadoptedflag integer, cferesourcehomechild boolean, clientflag integer, activeremovalservicecase character varying, userroles character varying, rolehistory json, birthmatchdetails json)
+ LANGUAGE plpgsql
+AS $function$\r
+--------------------------------------------------------------------------------------------\r
+-- 03-01-2022 Veera Nadimpalli - Persons API failing for Adoption Cases\r
+\r
+--------------------------------------------------------------------------------------------\r
+ declare \r
+_offset integer;\r
+jsondatas json;\r
+narativeval json;\r
+obj json;\r
+incidentdate timestamp without time zone;\r
+incidentdateval character varying;\r
+begin\r
+_offset := (_page - 1) * _limit;\r
+\r
+ \r
+incidentdate := null;\r
+ \r
+\r
+RETURN QUERY \r
+ \r
+select\r
+ "Person".totalcount,\r
+ "Person"."intakeservicerequestpersontypekey",  \r
+ (select \r
+  (ag.finalizationdate at time zone 'utc' at time zone 'est')\r
+ from adoptioncase ac\r
+ inner join adoptionplanning ap on ap.servicecaseid=ac.servicecaseid and ap.activeflag=1 and ac.activeflag=1\r
+ inner join adoptionagreement ag on ag.adoptionplanningid=ap.adoptionplanningid and ag.activeflag=1\r
+ where ac.adoptioncaseid=v_adoptiocaseid LIMIT 1\r
+ ) :: timestamp without time zone  as finalizationdate,\r
+ "Person".dcn,\r
+ "Person".personid,\r
+ "Person".fullname,\r
+ "Person".firstname,\r
+ "Person".lastname,\r
+ "Person".suffix,\r
+ "Person".gendertypekey,\r
+ "Person".dob,\r
+ (CASE WHEN EXTRACT(YEAR FROM age(now(), "Person".dob)) <= 0 THEN \r
+   CASE WHEN EXTRACT(MONTH FROM age(now(), "Person".dob)) <= 0 THEN \r
+    CONCAT (EXTRACT(DAY FROM age(now(), "Person".dob)) :: CHARACTER varying, ' ', 'Day(s)') \r
+    ELSE CONCAT (EXTRACT(MONTH FROM age(now(), "Person".dob)) :: CHARACTER varying, ' ', 'Month(s)') \r
+   END \r
+  ELSE CONCAT (EXTRACT(YEAR FROM age(now(), "Person".dob)) :: CHARACTER varying,' ', 'Yrs') end)::character varying AS age,\r
+ \r
+  '' ::character varying  as incidentage,\r
+ null ::timestamp  with time zone,\r
+ "Person".dateofdeath  ::timestamp,\r
+ "Person".isapproxdod,\r
+ "Person".isapproxdob,\r
+ "Person".address,\r
+ null ::boolean  as dangeraddress,\r
+ "Person".address2,\r
+ "Person".state,\r
+ "Person".city,\r
+ "Person".zipcode,\r
+ "Person".county,\r
+ "Person".height,\r
+ "Person".weight,\r
+ "Person".haircolortypekey,\r
+  "Person".hairtexturetypekey,\r
+  "Person".eyecolortypekey,\r
+  "Person".physicalbuildtypekey,\r
+  "Person".skintonetypekey,\r
+  "Person".hairtextureotherdesc,\r
+      "Person".haircolorotherdesc,\r
+      "Person".isglasses,\r
+      "Person".employername,\r
+      "Person".clienttitle,\r
+   (select json_agg(x) from (select prt.racetypekey,rv.value_text from personracetypemap prt \r
+   join referencevalues rv on rv.ref_key=prt.racetypekey and rv.referencetypeid=171\r
+   where prt.personid="Person".personid\r
+   ) x)\r
+  as race,\r
+ (\r
+  select ph.phonenumber\r
+ from\r
+  personphonenumber ph\r
+ where\r
+  ph.personid = "Person".personid\r
+  --and ph.personphonetypekey = 'P'\r
+  and activeflag = 1\r
+ order by\r
+  insertedon desc\r
+ limit 1),\r
+ (\r
+  select\r
+   json_agg(f) as phonedetails\r
+  from\r
+   (  \r
+  select  \r
+  ph.personphonenumberid, ph.personphonetypekey, ph.phonenumber, ph.phoneextension, ph.reversephonenumber\r
+ ,ph.ismobile, ph.startdate, ph.enddate,\r
+ (select rv.description as personphonetype  from referencevalues rv \r
+ where rv.ref_key = ph.personphonetypekey and rv.referencetypeid = 173 and rv.activeflag = 1 limit 1)\r
+ from\r
+  personphonenumber ph\r
+ where\r
+  ph.personid = "Person".personid\r
+  --and ph.personphonetypekey = 'P'\r
+  and activeflag = 1\r
+ order by\r
+  insertedon desc  \r
+  ) as f )::json,\r
+   (\r
+  select\r
+   json_agg(f) as emaildetails\r
+  from\r
+   (  \r
+  select   * from\r
+  personemail ph\r
+ where\r
+  ph.personid = "Person".personid\r
+  --and ph.personphonetypekey = 'P'\r
+  and activeflag = 1\r
+ order by\r
+  insertedon desc  \r
+  ) as f ) ::json,\r
+  (\r
+  select\r
+   json_agg(f) as addressinfo\r
+  from\r
+   (  \r
+  select  \r
+  pas.personaddressid, pas.activeflag, pas.personaddresstypekey, pas.address, pas.zipcode, pas.city, pas.state,\r
+  pas.country, pas.county,  pas.currentlocationflag,\r
+   pas.address2, pas.directions, pas.danger, pas.dangerreason,\r
+  pas.adrstreetsuffixtypekey, pas.streetname, pas.changereason, pas.acknowledgement, pas.acknowledgementflag, pas.adrboxno, \r
+  pas.formattedcityname, pas.formattedstreetname, pas.incidentlocation, pas.incidentlocationflag, \r
+  pas.mergeid, pas.personaddresssubtypekey, pas.personadrstartdate, \r
+  pas.personadrenddate, pas.addressstatus, pas.durationday, pas.ishouseholdmember, pas.addressstartdate,\r
+    (select pat.typedescription as addresstype from personaddresstype pat where pat.personaddresstypekey= pas.personaddresstypekey  limit 1)\r
+ from\r
+  personaddress pas\r
+ \r
+ where\r
+  pas.personid = "Person".personid\r
+  --and ph.personphonetypekey = 'P'\r
+  and activeflag = 1\r
+ order by\r
+  insertedon desc  \r
+  ) as f ) ::json,\r
+ null:: json as dangerous,\r
+ "Person".actorid,\r
+ "Person".adoptioncaseactorid intakeservicerequestactorid,\r
+  0::int isvictim,\r
+  \r
+ 0::bigint as "priorscount",\r
+ "Person".reported,\r
+ "Person".RefuseSSN,\r
+ "Person".RefuseDOB,\r
+ "Person".userphoto ::text,\r
+ "Person".primarylanguageid,\r
+ (select description as primarylanguage from referencevalues where ref_key = "Person".primarylanguageid and activeflag = 1 order by insertedon desc limit 1),\r
+ "Person".secondarylanguageid,\r
+ (select description as secondarylanguage from referencevalues  where ref_key = "Person".secondarylanguageid),\r
+ "Person".otherprimarylanguagetypekey,\r
+ "Person".otherreligion,\r
+ "Person".email:: character varying,\r
+ "Person".roles ::json,\r
+ "Person".relationship :: character varying,\r
+ "Person".relationshiparray :: json,\r
+ "Person".relationshipdescription :: character varying,\r
+ 1::int ishousehold,\r
+ 0:: int iscollateralcontact,\r
+ "Person".schoolname :: json,\r
+ (select pi.personidentifiervalue from personidentifier pi where pi.personid = "Person".personid and pi.activeflag = 1\r
+  and pi.personidentifiertypekey = 'SSN' order by insertedon desc limit 1),\r
+ "Person".assistpid,\r
+ "Person".cjamspid,\r
+ "Person".strengths,\r
+ "Person".needs,\r
+ "Person".medicalinformation ::json,\r
+ "Person".medicationinformation ::json,\r
+ "Person".addendum ::json,\r
+ "Person".medicalcondition ::json,\r
+ "Person".emergency ::json,\r
+ "Person".guardianinfo::json,\r
+ "Person".guardianpropertyinfo::json,\r
+ "Person".guardianattornyinfo::json,\r
+ "Person".guardianworkerinfo::json,\r
+ "Person".guardiafuneralinfo::json,\r
+ "Person".guardiacodeinfo::json,\r
+ "Person".personpayeeinfo::json,\r
+ "Person".ethinicity,\r
+ "Person".gendertypedesc,\r
+ "Person".religion,\r
+ "Person".maritalstatus,\r
+ (\r
+ select \r
+  (CONCAT(a.prefixtypekey , ' ',a.firstname, ' ', a.middlename, ' ', a.lastname, ' ', a.sfxname) ) \r
+  as aliasname\r
+ from\r
+  alias a\r
+ where \r
+  a.personid = "Person".personid\r
+  and a.activeflag = 1\r
+ limit 1) :: character varying,\r
+ "Person".racetypekey,\r
+ 0::int fetalalcoholspctrmdisordflag,\r
+ 0::int drugexposednewbornflag,\r
+ 0::int probationsearchconductedflag,\r
+ 0::int sexoffenderregisteredflag,\r
+ 0::int citizenalenageflag,\r
+ "Person".isqualifiedalien,\r
+ "Person".alienregistrationtext,\r
+ "Person".verificationremarks,\r
+ "Person".alienstatustypekey,\r
+ 1 safe,\r
+ "Person".programarea::json,\r
+ "Person".isheadofhousehold,\r
+ "Person".biologicalmothermarriedsw,\r
+ "Person".ivedeterminationdetails,\r
+ "Person".is_mdm_sync,\r
+ "Person".everbeenadoptedflag,\r
+ "Person".cferesourcehomechild,\r
+ "Person".clientflag,\r
+ null::varchar,\r
+        (case when "Person".roles is not null\r
+                then (with roletable as (\r
+                            select 1 id, "Person".roles  js\r
+                                )\r
+                                select string_agg(j.v ->> 'typedescription', ', ') vals\r
+                                from roletable t\r
+                                cross join lateral jsonb_array_elements( (js::jsonb)) j(v)\r
+                                where j.v ->> 'typedescription'  is not null\r
+                                group by t.id\r
+                ) else null end)::character varying,\r
+ "Person".rolehistory,\r
+ (select json_agg(f) as birthmatchdetails from\r
+   (select * from personbirthmatch ph where ph.personid = "Person".personid and activeflag = 1 order by insertedon desc) as f \r
+ ) ::json \r
+from\r
+ (\r
+ select\r
+  count(1) over() as totalcount,\r
+  iar.actortypekey as "intakeservicerequestpersontypekey",\r
+  false  isheadofhousehold,\r
+  p.biologicalmothermarriedsw,\r
+  (\r
+   SELECT\r
+    json_agg(e) AS ivedeterminationdetails\r
+   FROM\r
+   (select\r
+    tbpv.description_tx as IVEstatustype, tpe.eligibility_period_id as IVEtransactionid, tpe.sqnm_sw\r
+   from tb_client_eligibility tbce  \r
+   inner join tb_eligibility_period tpe on  tpe.eligibility_id = tbce.eligibility_id and tpe.delete_sw = 'N' and tpe.approvalstatus in ('PENDING','APPROVED')\r
+   inner join tb_picklist_values tbpv on  TRIM(tbpv.picklist_value_cd) = TRIM(tpe.status_cd) and tbpv.picklist_type_id = 262  \r
+   where tbce.delete_sw = 'N' and tbce.client_id = p.cjamspid\r
+   order by tpe.eligibility_period_id desc limit 1\r
+   ) AS e\r
+  ) ::json,   \r
+  (select mpd.is_mdm_sync from mdmgoldenpersondetails mpd where mpd.personid=p.personid and mpd.activeflag=1 order by mpd.insertedon desc limit 1) as is_mdm_sync,\r
+  p.everbeenadoptedflag,\r
+  p.cferesourcehomechild,\r
+  p.clientflag,   \r
+  (\r
+  select personidentifiervalue  from personidentifier pid \r
+  where  pid.personid = p.personid\r
+   and personidentifiertypekey = 'DCN'\r
+   and activeflag = 1\r
+  limit 1) as dcn,\r
+  p.personid,\r
+     concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as fullname,\r
+ \r
+     p.firstname,\r
+  p.lastname,\r
+  p.suffix,\r
+  p.gendertypekey,\r
+  p.dob,\r
+  p.dateofdeath,\r
+  p.isapproxdod,\r
+  p.isapproxdob,\r
+  p.userphoto,\r
+  p.primarylanguageid,\r
+  p.secondarylanguageid,\r
+  p.otherprimarylanguagetypekey,\r
+  p.otherreligion,\r
+  pa.address,\r
+  pa.address2,\r
+  pa.state,\r
+  pa.city,\r
+  pa.zipcode,\r
+  pa.county,\r
+  ppa.attributevalue as height,\r
+  ppat.attributevalue as weight,\r
+  p.haircolortypekey,\r
+  p.hairtexturetypekey,\r
+  p.eyecolortypekey,\r
+  p.physicalbuildtypekey,\r
+  p.skintonetypekey,\r
+  p.hairtextureotherdesc,\r
+      p.haircolorotherdesc,\r
+      p.isglasses,\r
+      p.employername,\r
+      p.clienttitle,\r
+  null reporterincidentdate,\r
+  iar.adoptioncaseactorid actorid,\r
+  max(iar.adoptioncaseactorid:: character varying) :: uuid as adoptioncaseactorid,\r
+   null isvictim,\r
+  false ::bool reported ,\r
+  false::bool refusessn,\r
+  false ::bool refusedob,\r
+  (\r
+   select max(personemail.email)\r
+  from\r
+   personemail\r
+  where\r
+   personemail.personid = P.personid\r
+   and personemail.activeflag = 1 ) email,\r
+  (\r
+  select\r
+   json_agg(e) as roles\r
+  from\r
+   (\r
+   select\r
+    isrpn.actortypekey intakeservicerequestpersontypekey,\r
+    ISRPN.adoptioncaseactorid intakeservicerequestactorid,\r
+    null rcexpungementflag,null spexpungementflag,\r
+    rv.value_text as typedescription\r
+   from\r
+    adoptioncaseactor ISRPN   \r
+   inner join referencevalues rv on rv.ref_key = isrpn.actortypekey AND  rv.referencetypeid = 176 AND rv.activeflag =1\r
+   where  (isrpn.adoptioncaseid = v_adoptiocaseid  )\r
+    and isrpn.activeflag = 1 \r
+    AND isrpn.personid = p.personid\r
+   ) as e ) ::json,\r
+   '' as relationship, \r
+   null :: json as relationshiparray, \r
+  '' relationshipdescription,\r
+  null as ishousehold,\r
+  null as iscollateralcontact,\r
+  (\r
+  \r
+  select\r
+   json_agg(f) as schoolname\r
+  from\r
+   (\r
+   select\r
+    e.personeducationid, e.personid, e.educationname, e.educationtypekey, e.schoolsettingtypekey, e.transportmodetypekey, \r
+   e.transportmodetypedetail, e.adrcityname, e.adresscounty, e.statecode, e.startdate, e.enddate, \r
+   e.contactname, e.adrworkphone, e.adrworkxtn, e.schoolschedule, e.schooladjustment, e.isspecialeducation, \r
+   e.specialeducationtypekey, e.lastiepdate, e.ifsplastdate, e.numberofabsences, e.isreceived, e.isverified, \r
+   e.isexcuesed, e.extracurricular,\r
+   e.firstqtrabsence, e.firstqtrabsenceexcused, e.firstqtrabsencenotexcused, e.firstqtrabsencetardy, \r
+   e.secondqtrabsence, e.secondqtrabsenceexcused, e.secondqtrabsencenotexcused, e.secondqtrabsencetardy, \r
+   e.thirdqtrabsence, e.thirdqtrabsenceexcused, e.thirdqtrabsencenotexcused, e.thirdqtrabsencetardy, \r
+   e.fourthqtrabsence, e.fourthqtrabsenceexcused, e.fourthqtrabsencenotexcused, e.fourthqtrabsencetardy, \r
+   e.summerschoolname, e.highestgradetypekey, e.currentgradetypekey, e.lastgradetypekey,\r
+   e.classtypetypekey, e.currentgradelevel, e.functioninggradelevel, e.lastgradelevel, \r
+   e.firstqtrperformancetypekey, e.secondqtrperformancetypekey, e.thirdqtrperformancetypekey, e.fourthqtrperformancetypekey, \r
+   e.speacialeducationrestrictivekey, e.lastattendeddate, e.schoolexitcomments, e.disciplinaryactioncomments, e.sasidno,\r
+   (select rv.description as adresscountydesc  from referencevalues rv where rv.ref_key = e.adresscounty and rv.referencetypeid = 306 and rv.activeflag = 1 limit 1)\r
+    \r
+   from\r
+    personeducation e\r
+   where\r
+    e.personid = p.personid\r
+      ) as f \r
+  ) ::json,\r
+  p.cisclientid as assistpid,\r
+  p.cjamspid,\r
+  p.strengths,\r
+  p.needs,\r
+  (\r
+  select\r
+   json_agg(e) as medicalinformation\r
+  from\r
+   (\r
+   select\r
+    isra.adoptioncaseid intakeserviceid,\r
+    isra.adoptioncaseactorid actorid,\r
+    phi.ismedicaidmedicare,\r
+    phi.insurancetype,\r
+    phi.policyname,\r
+    ppi.name ,\r
+    ppi.phone,\r
+    ppi.address1,\r
+    ppi.address2,\r
+    ppi.city,\r
+    ppi.state,\r
+    ppi.zip,\r
+    pbh.currentdiagnoses,\r
+    pbh.clinicianname,\r
+    pbh.phone as behavioralphone,\r
+    pbh.address1 as behavioraladdress1,\r
+    pbh.address2 as behavioraladdress2,\r
+    pbh.city as behavioralcity,\r
+    pbh.state as behavioralstate,\r
+    pbh.zip as behavioralzip,\r
+    phi.personid,\r
+    ppi.isprimaryphycisian,\r
+    pbh.isbehavioralhealth,\r
+    pbh.reportname,\r
+    phi.medicarenumber\r
+   from  adoptioncaseactor isra \r
+   INNER JOIN person per on\r
+    per.personid = isra.personid\r
+   left JOIN personhealthinsurance as phi on\r
+    phi.personid = per.personid\r
+    and phi.activeflag = 1\r
+   left JOIN personphycisianinfo as ppi on\r
+    ppi.personid = per.personid\r
+    and ppi.activeflag = 1\r
+   left JOIN personbehavioralhealth as pbh on\r
+    pbh.personid = per.personid\r
+    and pbh.activeflag = 1\r
+   where    (isra.adoptioncaseid = v_adoptiocaseid  )\r
+    and per.activeflag = 1\r
+      ) as e ) ::json,\r
+  (\r
+  select\r
+   json_agg(e) as medicationinformation\r
+  from\r
+   (\r
+   select\r
+    isra.adoptioncaseid intakeserviceid,\r
+    isra.adoptioncaseactorid actorid,\r
+    pmpt.dosage,\r
+    pmpt.medicationname,\r
+    pmpt.frequency,\r
+    pmpt.compliant,\r
+    pmpt.personid,\r
+    pmpt.medicationcomments,\r
+    pmpt.prescribingdoctor,\r
+    pmpt.lastdosetakendate,\r
+    pmpt.monitoring,\r
+    prt.description as prescriptionreason ,\r
+    ist.description as informationsource,\r
+    pmpt.medicationeffectivedate,\r
+    pmpt.medicationexpirationdate,\r
+    pmpt.medicationname\r
+   from\r
+    adoptioncaseactor isra \r
+   INNER JOIN person per on\r
+    per.personid = isra.personid\r
+    and per.activeflag = 1\r
+   left JOIN personmedicpshychotropic as pmpt on\r
+    pmpt.personid = per.personid\r
+    and pmpt.activeflag = 1\r
+   left JOIN prescriptionreasontype prt on\r
+    prt.prescriptionreasontypekey = pmpt.prescriptionreasontypekey\r
+    and prt.activeflag = 1\r
+   left JOIN informationsourcetype ist on\r
+    ist.informationsourcetypekey = pmpt.informationsourcetypekey\r
+    and ist.activeflag = 1\r
+   where\r
+    (isra.adoptioncaseid = v_adoptiocaseid  )\r
+     ) as e ) ::json,\r
+  (\r
+  select\r
+   json_agg(e) as addendum\r
+  from\r
+   (\r
+   select\r
+     isra.adoptioncaseid intakeserviceid,\r
+    isra.adoptioncaseactorid actorid,\r
+    pas.isusealcohol,\r
+    pas.isusedrug,\r
+    pas.isusetobacco,\r
+    pas.alcoholfrequencydetails,\r
+    pas.drugfrequencydetails ,\r
+    pas.personid\r
+   from\r
+    adoptioncaseactor isra \r
+   INNER JOIN person per on\r
+    per.personid = isra.personid\r
+    and per.activeflag = 1\r
+   left JOIN personabusesubstance as pas on\r
+    pas.personid = per.personid\r
+   where\r
+    pas.activeflag = 1\r
+    and (isra.adoptioncaseid = v_adoptiocaseid  )\r
+    and isra.activeflag = 1 ) as e ) ::json,\r
+  (\r
+  select\r
+   json_agg(e) as medicalcondition\r
+  from\r
+   (\r
+   select\r
+    isra.adoptioncaseid intakeserviceid,\r
+    isra.adoptioncaseactorid actorid,\r
+     \r
+    pmci.medicalconditiontypekey,\r
+    mct.description,\r
+    pmc.begindate,\r
+    pmc.enddate,\r
+    pmc.recordedby\r
+   from\r
+    adoptioncaseactor isra\r
+   \r
+   INNER JOIN person per on\r
+    per.personid = isra.personid\r
+    and per.activeflag = 1\r
+   left JOIN personmedicalcondition as pmc on\r
+    pmc.personid = per.personid\r
+    and pmc.activeflag = 1\r
+   left JOIN personmedicalconditioninfo as pmci on\r
+    pmc.personmedicalconditionid = pmci.personmedicalconditionid\r
+    and pmci.activeflag = 1\r
+   left JOIN medicalconditiontype as mct on\r
+    mct.medicalconditiontypekey = pmci.medicalconditiontypekey\r
+    and mct.activeflag = 1\r
+   where\r
+    (isra.adoptioncaseid = v_adoptiocaseid )\r
+      ) as e ) ::json,\r
+   null   ::json emergency,\r
+   null   ::json guardianinfo,\r
+   null   ::json guardianpropertyinfo,\r
+    null   ::json guardianattornyinfo,\r
+   null   ::json guardianworkerinfo, \r
+   null   ::json guardiafuneralinfo, \r
+   null   ::json guardiacodeinfo, \r
+   null   ::json personpayeeinfo, \r
+   \r
+   egt.typedescription as ethinicity,\r
+   grt.typedescription as gendertypedesc,\r
+   rt.typedescription as religion,\r
+   MT.typedescription as maritalstatus,\r
+   RAT.typedescription as racetypekey,\r
+   null fetalalcoholspctrmdisordflag ,\r
+   null drugexposednewbornflag,\r
+   null probationsearchconductedflag,\r
+   null sexoffenderregisteredflag,\r
+   p.citizenalenageflag,\r
+   p.isqualifiedalien,\r
+   p.alienregistrationtext,\r
+   p.verificationremarks,\r
+   p.alienstatustypekey,\r
+   null timerecieved,\r
+  (\r
+  SELECT\r
+    json_agg(e) AS programarea\r
+   FROM\r
+            (\r
+    SELECT\r
+     ppa.programkey,\r
+     ppa.subprogramkey,\r
+     (SELECT rv.description  FROM referencevalues rv \r
+     WHERE rv.ref_key = ppa.subprogramkey AND rv.referencetypeid = 12 AND rv.activeflag =1 LIMIT 1) subprogramname,\r
+     (SELECT ap.programname FROM agencyprogramarea ap \r
+     WHERE ap.programkey = ppa.programkey AND ap.activeflag =1 LIMIT 1) programname\r
+    FROM personprogramarea ppa \r
+    WHERE ppa.personid = p.personid and ppa.sourcetype = 'CW'\r
+    --AND ppa.objectid=v_adoptiocaseid ::character varying \r
+     AND ppa.activeflag=1  AND ppa.enddate IS NULL \r
+   ) AS e\r
+  ) ::json,\r
+  (\r
+   select coalesce(json_agg(e), '[]') as roles\r
+   from\r
+    (select u.fullname as username, ph.updatedby, ph.updatedon, ph."comments" \r
+    from personrole_history ph\r
+    inner join userprofile u on u.securityusersid =  ph.updatedby\r
+    where ph.personid = p.personid\r
+    order by ph.updatedon desc\r
+    ) as e \r
+  ) ::json as rolehistory  \r
+ from adoptioncase  irs\r
+ INNER JOIN (\r
+  SELECT * FROM  adoptioncaseactor \r
+  WHERE adoptioncaseid = v_adoptiocaseid \r
+  -- @Simar Data migration from chessie a person can have multiple 'roles' in an adoption case\r
+  -- adding this check for restricting the join to be on only thse 2 roles as CJAMS can only have one actor entry\r
+  -- We have a sub-query that will retrieve all the other roles of these actors\r
+  AND actortypekey IN ('CHILD', 'ADOPTIVEPARENT', 'PVTADPCHILD') \r
+  ) as iar ON iar.adoptioncaseid =irs.adoptioncaseid AND irs.activeflag =1   \r
+ LEFT JOIN person as p on\r
+  p.personid = iar.personid\r
+  and p.activeflag = 1\r
+ left JOIN (\r
+  select\r
+   paa.personid,\r
+   (max(paa.personaddressid::character varying))::uuid personaddressid\r
+  from\r
+   personaddress as paa\r
+  where\r
+   --paa.personaddresstypekey='C' AND \r
+ paa.activeflag = 1\r
+ and paa.currentlocationflag = 1\r
+  group by\r
+   paa.personid ) pa1 on\r
+  pa1.personid = p.personid\r
+ \r
+ left JOIN personaddress as pa on\r
+  pa.activeflag = 1\r
+  and pa.personaddressid = pa1.personaddressid\r
+  --pa.personaddresstypekey='C' AND \r
+ left JOIN personphysicalattribute as ppa on\r
+  ppa.personid = P.personid\r
+  and ppa.physicalattributetypekey = 'Ht'\r
+  and ppa.activeflag = 1\r
+ left JOIN personphysicalattribute as ppat on\r
+  ppat.personid = P.personid\r
+  and ppat.physicalattributetypekey = 'Wt'\r
+  and ppat.activeflag = 1\r
+ left JOIN ethnicgrouptype egt on\r
+  egt.ethnicgrouptypekey = p.ethnicgrouptypekey\r
+  and egt.activeflag = 1\r
+ LEFT JOIN gendertype grt on grt.gendertypekey = p.gendertypekey and grt.activeflag=1\r
+ left JOIN religiontype RT on\r
+  rt.religiontypekey = p.religiontypekey\r
+  and rt.activeflag = 1\r
+ left JOIN racetype RAT on\r
+  RAT.racetypekey = P.racetypekey\r
+  and RAT.activeflag = 1\r
+  \r
+ left JOIN maritalstatustype MT on\r
+  MT.maritalstatustypekey = p.maritalstatustypekey\r
+  and MT.activeflag = 1\r
+ where\r
+  ( iar.adoptioncaseid = v_adoptiocaseid \r
+    and iar.activeflag = 1\r
+  ) \r
+ group by\r
+  iar.actortypekey,\r
+  irs.adoptioncaseid,\r
+  p.personid,\r
+  iar.adoptioncaseactorid,\r
+  pa.address,\r
+  pa.address2,\r
+  pa.state,\r
+  pa.city,\r
+  pa.zipcode,\r
+  pa.county,\r
+  ppa.attributevalue,\r
+  ppat.attributevalue,\r
+  egt.typedescription ,\r
+  rt.typedescription,\r
+  rat.typedescription,\r
+  grt.typedescription, \r
+  MT.typedescription \r
+ )as "Person"\r
+limit _limit offset _offset;\r
+end;\r
+\r
+\r
+$function$
+

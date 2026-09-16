@@ -1,0 +1,3 @@
+alter table personaccomplishment drop constraint fk_personaccomplishment_gradetype;
+
+alter table personeducationtesting drop constraint fk_personeducationtesting_testingtype; 

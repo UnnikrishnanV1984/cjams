@@ -1,0 +1,1 @@
+alter table tb_vendor_applicant add column if not exists jurisdiction varchar(50) null; 

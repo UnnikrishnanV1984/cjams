@@ -1,0 +1,1 @@
+update personemployment set activeflag = 0, updatedon = now(), updatedby = 'CDM-13902' where personemploymentid = 'c0a807be-4538-470d-a5a7-ba4a4531335e';

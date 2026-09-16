@@ -1,0 +1,30 @@
+-- FUNCTION: cjams.f_supervisor_new(ai_staff_id character varying)
+
+-- DROP FUNCTION cjams.f_supervisor_new(ai_staff_id character varying);
+
+CREATE OR REPLACE FUNCTION cjams.f_supervisor_new(ai_staff_id character varying)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+	VN_STAFF_ID				integer;
+
+BEGIN
+
+VN_STAFF_ID = 
+	(SELECT up.cjamspid::int4
+	FROM userprofile up
+	WHERE up.activeflag = 1 AND 
+			up.securityusersid IN (SELECT tma.securityusersid
+									FROM teammember tm, teammemberassignment tma
+									WHERE tm.teammemberid = tma.teammemberid AND tm.activeflag = 1 AND 
+											tma.activeflag = 1 AND tm.roletypekey = 'CWSP' AND 
+											tma.securityusersid = ai_staff_id));
+
+RETURN VN_STAFF_ID;
+
+END;
+
+$function$

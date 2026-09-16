@@ -1,0 +1,1 @@
+update routing set activeflag = 0, updatedon = now(), updatedby = 'CDM-14013' where routingid = 'cb8a9a9d-c40c-43bd-b7d5-871fea940327';

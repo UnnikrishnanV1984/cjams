@@ -1,0 +1,279 @@
+CREATE OR REPLACE FUNCTION as_sp_ifc_ssa_approval_edits(al_placement_id bigint, ad_placement_entry_dt date, ad_placement_exit_dt date, ad_service_start_dt date, ad_service_end_dt date, OUT al_year integer, OUT al_month integer, OUT as_success_sw character, OUT al_ssa_app_cnt integer, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+
+----------------------------------------------------------------------------------------------
+-- Author          : Vineet Tirodkar
+-- Date            : 11/25/2013
+-- Description     : Stored Procedure for IFC DOC annual SSA Approval edits
+--       : Called from following screens/ SP:
+--                   1. SP_PLACEMENT_AUTO_VALIDATION
+--      2. Placement Validation (AP0150C)   
+
+-- Request #       : PRJ-04753 - Fiscal-Related Enhancements - Phase I (BDSD Req # 32,33,34)
+-- Argument(s):
+-- 1) IN al_placement_id (Primary Key of TB_PLACEMENT)
+-- 2) IN ad_placement_entry_dt (Placement Entry Date)
+-- 3) IN ad_placement_exit_dt (Placement Exit Date)
+-- 4) IN ad_service_start_dt (Service Start Date of Placement Validation Month) 
+-- 5) IN ad_service_end_dt (Service End Date of Placement Validation Month) 
+-- 6) OUT al_year (No of year(s) based on Plc Validation from Placement Entry date)
+-- 7) OUT al_month (No of month based on Plc Validation from Placement Entry date)
+-- 8) OUT as_success_sw (If IFC DOC SSA Approval found then 'Y' (pass) else 'N' (fail) )
+-- 9) OUT al_ssa_app_cnt (Total No of SSA approvals) 
+-- 10) OUT al_sqlcode (SQL code for error handling)
+-- 11) OUT as_error (SQL error description for error handling) 
+
+-- Revision:
+
+----------------------------------------------------------------------------------------------
+
+--P1: BEGIN
+DECLARE SQLCODE                 INT     DEFAULT 0;
+DECLARE SQLSTATE                CHAR(5) DEFAULT '00000';
+--DECLARE p_sp_error CONDITION    FOR     SQLSTATE '99999';
+ p_sp_error CHAR(5);--
+DECLARE vs_message_text         VARCHAR(3000) DEFAULT '';
+DECLARE vl_ret_status           INTEGER DEFAULT 0;
+DECLARE vs_Procedure_nm         VARCHAR(100) DEFAULT 'SP_IFC_SSA_APPROVAL_EDITS';
+
+DECLARE vs_user_id     VARCHAR(10) DEFAULT 'finance';
+DECLARE vs_service_end_dt   VARCHAR(10);
+DECLARE vs_placement_entry_dt VARCHAR(10);
+
+DECLARE vl_client_id   BIGINT; 
+DECLARE vl_placement_id   BIGINT; 
+
+DECLARE vl_years    INTEGER;
+DECLARE vl_months    INTEGER;
+DECLARE vl_ifc_app_cnt   INTEGER;
+DECLARE vl_total_ifc_app_cnt INTEGER;
+DECLARE vl_count    INTEGER;
+
+DECLARE ld_plc_year_dt   DATE;
+DECLARE vd_first_entry_dt  DATE;
+DECLARE vd_entry_dt    DATE;
+DECLARE vd_exit_dt    DATE;
+DECLARE vd_last_entry_dt  DATE;
+Cur_ifcdoc_placements record;
+ Cur_ifcdoc_placements_refcur REFCURSOR;
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+BEGIN
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;
+ EXCEPTION WHEN OTHERS THEN
+ GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+     al_sqlcode := -1 ;
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;
+     as_error := COALESCE(as_error ,'') || '::RO ' || 'Placement ID' || ' :: ' || COALESCE(to_char(al_placement_id),'');
+  as_error := COALESCE(as_error ,'') || '::RO ' || 'Service Start Date' || ' :: ' || COALESCE(to_char(ad_service_start_dt),'');
+  as_error := COALESCE(as_error ,'') || '::RO ' || 'Service End Date' || ' :: ' || COALESCE(to_char(ad_service_end_dt),'');
+  as_error := as_error || COALESCE(vs_message_text ,'');
+ 
+ /*CALL CHESSIE.SP_BATCH_ERROR_LOG (vs_Procedure_nm,
+                                     NULL,  
+                                     NULL,
+                                     NULL,
+                                     NULL,
+                                     NULL,
+                                     SQLCODE,
+                                     as_error,
+                                     vs_user_id,
+                                     vl_ret_status);*/
+       
+    SELECT SP_BATCH_ERROR_LOG ( vs_Procedure_nm::character varying ,
+                           NULL::bigint,
+                           NULL::bigint,
+                           NULL::character varying,
+                           NULL::INTEGER,
+            NULL::character varying,
+            SQLSTATE::character varying,
+                           as_error::character varying,
+                           vs_user_id::character varying) INTO
+                           vl_ret_status;
+ as_error := '';
+END;
+
+CREATE TEMP TABLE IF NOT EXISTS Temp_placements
+  ( PLACEMENT_ID INTEGER );
+  
+ 
+
+--WITH REPLACE ;
+
+-- Identify consecutive IFC DOC Placements and get Entry Date of 1st Placement - START
+-- 11409 - Intermediate Foster Care Difficulty of Care
+SELECT CLIENT_ID 
+ INTO vl_client_id
+FROM TB_PLACEMENT 
+WHERE PLACEMENT_ID = al_placement_id 
+ AND DELETE_SW = 'N' ;
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode < 0 THEN
+  as_error := 'Error in getting Client ID .';
+ --SIGNAL p_sp_error;
+END IF ;
+
+-- INITIAL VALUE
+ vd_first_entry_dt := ad_placement_entry_dt;
+ vl_count := 1;
+INSERT INTO SESSION.Temp_placements
+ ( PLACEMENT_ID ) 
+VALUES ( al_placement_id ); 
+  
+
+--FOR Cur_ifcdoc_placements AS
+OPEN Cur_ifcdoc_placements_refcur FOR
+ SELECT PLACEMENT_ID,
+     ENTRY_DT,
+           EXIT_DT
+  FROM TB_PLACEMENT 
+ WHERE DELETE_SW = 'N'
+  AND APPROVAL_STATUS_CD = '3047'
+  AND COALESCE(VOID_SW,'N') <> 'Y'
+  AND CLIENT_ID = vl_client_id
+  AND PLACEMENT_ID <> al_placement_id
+  AND PLACEMENT_STRUCTURE_ID = 11409
+  AND ENTRY_DT IS NOT NULL
+  AND ENTRY_DT <= ad_placement_entry_dt
+ ORDER BY ENTRY_DT DESC;
+--DO
+<<EXIT_LOOP>>
+ loop
+ fetch Cur_ifcdoc_placements_refcur into Cur_ifcdoc_placements;
+           exit when not found;
+
+  vl_placement_id := Cur_ifcdoc_placements.PLACEMENT_ID;
+  vd_entry_dt := Cur_ifcdoc_placements.ENTRY_DT;
+  vd_exit_dt := Cur_ifcdoc_placements.EXIT_DT;
+ 
+ IF vl_count = 1 THEN
+   vd_last_entry_dt := ad_placement_entry_dt;
+ END IF;
+ 
+ IF vd_last_entry_dt = vd_exit_dt THEN
+   vd_first_entry_dt := vd_entry_dt; 
+  INSERT INTO SESSION.Temp_placements
+    ( PLACEMENT_ID ) 
+  VALUES ( vl_placement_id ); 
+ ELSE
+  -- Fail
+  --LEAVE EXIT_LOOP;
+  EXIT EXIT_LOOP;
+ END IF;
+ 
+  vd_last_entry_dt := vd_entry_dt;
+  vl_count := vl_count + 1;
+ -- Reset
+  vl_placement_id := NULL;
+  vd_entry_dt := NULL;
+  vd_exit_dt := NULL;
+--END FOR; 
+end loop;
+-- Identify consecutive IFC DOC Placements and get Entry Date of 1st Placement - END
+ 
+ vs_service_end_dt := RTRIM(TO_CHAR(ad_service_end_dt,'YYYY-MM-DD'));
+ vs_placement_entry_dt := RTRIM(TO_CHAR(vd_first_entry_dt,'YYYY-MM-DD'));
+
+--SELECT TIMESTAMPDIFF(256, CHAR(TIMESTAMP(vs_service_end_dt || ' 00:00:00.0') - TIMESTAMP(vs_placement_entry_dt || ' 00:00:00.0'))) 
+--INTO vl_years
+--FROM SYSIBM.SYSDUMMY1;
+
+SELECT DATE_PART('year', vs_service_end_dt::date) - DATE_PART('year', vs_placement_entry_dt::date)
+INTO vl_years; 
+ al_year := vl_years;
+IF vl_years > 1 THEN
+ --SELECT vd_first_entry_dt + vl_years year - 1 year 
+ SELECT vd_first_entry_dt::date +interval 'vl_years year' - interval '1 year'
+  INTO ld_plc_year_dt;
+ --FROM SYSIBM.SYSDUMMY1; 
+END IF;
+
+--SELECT TIMESTAMPDIFF(64, CHAR(TIMESTAMP(vs_service_end_dt || ' 00:00:00.0') - TIMESTAMP(vs_placement_entry_dt || ' 00:00:00.0'))) 
+
+select EXTRACT(YEAR from AGE(TIMESTAMP 'vs_service_end_dt'::date, TIMESTAMP 'vs_placement_entry_dt'::date))*12 + EXTRACT(MONTH from AGE(TIMESTAMP 'vs_service_end_dt'::date, TIMESTAMP 'vs_placement_entry_dt'::date))
+    INTO vl_months;
+ 
+--FROM SYSIBM.SYSDUMMY1;
+
+-- INITIAL VALUE
+ as_success_sw := 'Y';
+ al_month := vl_months;
+
+-- Verify IFC DOC approval(s) count
+IF vl_years <= 1 THEN
+ SELECT COUNT(*)
+   INTO vl_ifc_app_cnt
+  FROM TB_IFC_APPROVAL_HISTORY
+ WHERE PLACEMENT_ID IN ( SELECT PLACEMENT_ID FROM SESSION.Temp_placements )
+  AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+  AND DELETE_SW = 'N' ;
+
+  al_sqlcode := SQLCODE;
+ IF al_sqlcode < 0 THEN
+   as_error := 'Error in getting IFC DOC Approval count for placement beyond 1st year.';
+  --SIGNAL p_sp_error;
+ END IF ;
+  
+ IF vl_ifc_app_cnt = 0 THEN
+   as_success_sw := 'N';
+ END IF; 
+ELSE
+ SELECT COUNT(*)
+   INTO vl_ifc_app_cnt
+  FROM TB_IFC_APPROVAL_HISTORY
+ WHERE PLACEMENT_ID IN ( SELECT PLACEMENT_ID FROM SESSION.Temp_placements )
+  AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+  AND SSA_IFC_APPROVAL_DT >= ld_plc_year_dt
+  AND DELETE_SW = 'N' ;
+  
+  al_sqlcode := SQLCODE;
+ IF al_sqlcode < 0 THEN
+   as_error := 'Error in getting IFC DOC Approval count for placement beyond ' || LTRIM(RTRIM(to_CHAR(vl_years))) || ' year.';
+  --SIGNAL p_sp_error;
+ END IF ;
+
+ IF vl_ifc_app_cnt = 0 THEN
+   as_success_sw := 'N';
+ ELSE
+  -- Verify IFC DOC approval counts based on the # of years from Placement Start Date
+  SELECT COUNT(*)
+    INTO vl_total_ifc_app_cnt
+   FROM TB_IFC_APPROVAL_HISTORY
+  WHERE PLACEMENT_ID IN ( SELECT PLACEMENT_ID FROM SESSION.Temp_placements )
+   AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+   AND DELETE_SW = 'N' ;
+  
+   al_sqlcode := SQLCODE;
+  IF al_sqlcode < 0 THEN
+    as_error := 'Error in getting Total IFC DOC Approval count.';
+   --SIGNAL p_sp_error;
+  END IF ;
+ 
+  IF vl_total_ifc_app_cnt < vl_years THEN
+    as_success_sw := 'N';
+  END IF; 
+ END IF; 
+END IF;
+
+SELECT COUNT(*)
+  INTO al_ssa_app_cnt
+ FROM TB_IFC_APPROVAL_HISTORY
+WHERE PLACEMENT_ID IN ( SELECT PLACEMENT_ID FROM SESSION.Temp_placements )
+ AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+ AND DELETE_SW = 'N' ;
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode < 0 THEN
+  as_error := 'Error in getting Total IFC DOC Approval count.';
+ --SIGNAL p_sp_error;
+END IF ;
+
+END;
+
+
+$function$
+

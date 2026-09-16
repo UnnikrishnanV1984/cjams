@@ -1,0 +1,72 @@
+CREATE OR REPLACE FUNCTION getservicecase(userid character varying, page integer, pagelimit integer, casenumber character varying, l_status character varying)
+ RETURNS TABLE(totalcount bigint, caseid uuid, servicecasenumber character varying, legalguardian json, startdate timestamp without time zone, status character varying, open_closed character varying, enddate timestamp without time zone, programarea json, restrictstatus text, county character varying, responsibilitytypekey text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_pageoffset int;
+v_pagenumber int;
+searchstring character varying(1000);
+v_status character varying;
+
+DECLARE totalcount integer;
+
+BEGIN
+
+v_pagenumber := (page-1) * 10;
+v_status := coalesce(l_status,null);
+
+-- This require code changes in UI once done we can remove this below check
+IF v_status = 'All' THEN 
+v_status := 'Open';
+END IF;
+
+RETURN QUERY
+
+SELECT  count(1) over(), * FROM 
+(   
+ SELECT 
+  SC.servicecaseid,
+  SC.servicecasenumber,
+  (select getcasepersonname as legalguardian from getcasepersonname ('servicecase',SC.servicecaseid::character varying)),
+  COALESCE(( select scd.statusdate FROM servicecasedisposition scd
+  LEFT JOIN routing r ON r.objectid = scd.servicecasedispositionid::CHARACTER VARYING
+  WHERE scd.servicecaseid = sc.servicecaseid AND scd.activeflag = 1
+  AND (r.routingstatustypeid is NULL OR r.routingstatustypeid = 16) AND scd.intakeserreqstatustypekey = 'Open'
+  ORDER BY scd.insertedon DESC LIMIT 1),SC.startdate )::timestamp,
+  SC.statustypekey,
+  coalesce((
+  SELECT case when scd.intakeserreqstatustypekey = 'Closed' then 'Closed' else 'Open' end::varchar AS open_closed 
+  FROM servicecasedisposition scd
+  LEFT JOIN routing r ON r.objectid = scd.servicecasedispositionid::CHARACTER VARYING
+  WHERE scd.servicecaseid = sc.servicecaseid AND scd.activeflag = 1
+  AND (r.routingstatustypeid is NULL OR r.routingstatustypeid = 16)
+  ORDER BY scd.insertedon DESC LIMIT 1)
+  , 'Open') as open_closed,
+  SC.enddate,
+  (SELECT json_agg(e) AS programarea 
+  FROM
+  (
+   SELECT
+    DISTINCT ppa.programkey,
+    (SELECT ap.programname FROM agencyprogramarea ap 
+    WHERE ap.programkey = ppa.programkey AND ap.activeflag =1 LIMIT 1 ) programname
+   FROM personprogramarea ppa 
+   WHERE ppa.objectid=SC.servicecaseid::character varying AND ppa.activeflag=1 AND ppa.sourcetype = 'CW'
+  ) AS e),
+  (SELECT * FROM getRestrictedCaseStatus(SC.servicecaseid::text,userid)) AS restrictStatus,
+  (
+   select distinct countyname from county where activeflag=1 and countyid = ca.toldssid limit 1 
+  ) as county,
+  ca.responsibilitytypekey::text
+ FROM servicecase SC
+ INNER JOIN caseassignment ca on ca.objectid = SC.servicecaseid and ca.toworkeridno = userid AND ((ca.enddate IS NULL) OR ca.enddate > now())   
+ WHERE SC.activeflag = 1 and ca.activeflag = 1  
+ AND (casenumber is null or casenumber = '' or SC.servicecasenumber like '%' ||   LOWER(casenumber)  ||  '%' )
+ ORDER BY sc.insertedon DESC 
+)AS datav WHERE  datav.restrictStatus IN('INCL','INCLRES') AND ( v_status IS NULL OR datav.open_closed=v_status );
+
+END;
+
+$function$
+

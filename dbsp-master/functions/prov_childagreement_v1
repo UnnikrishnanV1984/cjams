@@ -1,0 +1,97 @@
+CREATE OR REPLACE FUNCTION prov_childagreement_v1(v_securityusersid character varying, v_childspecificagreementid character varying, v_providerid integer, v_siteid integer, v_contractid integer, v_personid json, v_agreementtype character varying, v_csafiscalyearenddt character varying, v_csanarrative text, v_csaattachments json, isdeletable boolean, v_csastatus character varying, v_licensetyperates json, v_license_type text, v_license_level character varying, v_program_id integer)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+
+currentRow json;
+returnstatus text;
+v_csaid uuid;
+v_csadetailid uuid;
+v_perdiemrate numeric;
+v_annualrate numeric;
+v_monthlyrate numeric;
+v_startdate timestamp without time zone;
+v_enddate timestamp without time zone;
+BEGIN
+v_perdiemrate := '30.20'::numeric;
+v_startdate = null;
+v_enddate = null;
+if (v_agreementtype = 'Non-TFC Exception' or v_agreementtype = 'Non-TFC Siblings') then
+ v_perdiemrate := '30.20'::numeric;
+elsif (v_license_level = 'OOS') then
+ v_perdiemrate := NULL::numeric;
+elsif (v_agreementtype = 'Co-committed') then
+ if (v_licensetyperates is not null) then
+  v_perdiemrate = (v_licensetyperates ->>'per_diem_rate')::numeric/2;
+  v_startdate = (v_licensetyperates ->>'start_dt')::timestamp without time zone;
+  v_enddate = (v_licensetyperates ->>'end_dt')::timestamp without time zone;
+ else
+  v_perdiemrate = '0.00'::numeric;
+  v_startdate = null;
+  v_enddate = null;
+  
+ end if;
+ 
+end if;
+v_annualrate := (v_perdiemrate)*365;
+v_monthlyrate := v_annualrate/12;
+
+RAISE NOTICE 'v_perdiemrate %', v_perdiemrate; 
+RAISE NOTICE 'v_startdate %', v_startdate; 
+RAISE NOTICE 'v_enddate %', v_enddate; 
+
+if (isdeletable = true)
+then
+ update childspecificagreement csa set activeflag = 0 where csa.childspecificagreementid = v_childspecificagreementid::uuid;
+
+elsif (v_childspecificagreementid is not null or trim(v_childspecificagreementid) <> '') then
+
+ update childspecificagreement csa set agreementtype = v_agreementtype,csafiscalyear_enddt = v_csafiscalyearenddt, csanarrative = v_csanarrative,
+ csaattachments  = v_csaattachments,csastatus = v_csastatus,updatedby =v_securityusersid ,updatedon = now()
+ where csa.childspecificagreementid = v_childspecificagreementid::uuid;
+
+ update childspecificagreementdetails csad
+ set activeflag = 0 , updatedby =v_securityusersid ,updatedon = now()
+ where  csad.childspecificagreementid = v_childspecificagreementid::uuid;
+ 
+ FOR currentRow IN SELECT * FROM json_array_elements(v_personid)
+ LOOP
+
+ INSERT INTO childspecificagreementdetails
+ (childspecificagreementid,contract_id,personid,activeflag,insertedby,insertedon,updatedby ,updatedon)
+ VALUES(v_childspecificagreementid::uuid,v_contractid ,currentRow->>'personid' ,1 ,v_securityusersid,now(),v_securityusersid,now()) RETURNING childspecificagreementdetailid INTO v_csadetailid;
+ RAISE NOTICE 'v_csadetailid %', v_csadetailid; 
+
+ END LOOP;
+
+ELSE
+
+ insert into childspecificagreement ( provider_id, site_id, agreementtype,csafiscalyear_enddt, contract_id, activeflag,csastatus, insertedby, insertedon, updatedby, updatedon,csanarrative,csaattachments, program_id)
+ values (v_providerid,v_siteid,v_agreementtype,v_csafiscalyearenddt,v_contractid,1,v_csastatus,v_securityusersid,now(),v_securityusersid,now(),v_csanarrative,v_csaattachments, v_program_id)
+ RETURNING childspecificagreementid into v_csaid  ;
+ RAISE NOTICE 'v_csaid %', v_csaid; 
+
+ FOR currentRow IN SELECT * FROM json_array_elements(v_personid)
+ LOOP
+
+ INSERT INTO childspecificagreementdetails
+ (childspecificagreementid,contract_id,personid,activeflag,insertedby,insertedon,updatedby ,updatedon)
+ VALUES(v_csaid,v_contractid ,currentRow->>'personid' ,1 ,v_securityusersid,now(),v_securityusersid,now()) RETURNING childspecificagreementdetailid INTO v_csadetailid;
+ RAISE NOTICE 'v_csadetailid %', v_csadetailid; 
+
+  if (currentRow->>'disable' = 'false') then
+  INSERT INTO childspecificagreementrates
+  (childspecificagreementid,childspecificagreementdetailid, perdiemrate, monthlyrate, annualrate, startdate, enddate, 
+  csaratestatus, activeflag,insertedby,insertedon,updatedby ,updatedon )
+  VALUES(v_csaid,v_csadetailid,v_perdiemrate, v_monthlyrate, v_annualrate, v_startdate, v_enddate, 'Active', 1, v_securityusersid,now(),v_securityusersid,now());
+  end if;
+ END LOOP;
+
+END IF;
+
+RETURN 'SUCCESS';        
+END;
+$function$
+

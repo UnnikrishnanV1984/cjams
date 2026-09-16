@@ -1,0 +1,44 @@
+
+drop FUNCTION IF EXISTS providerhomeapprovelist (character varying);
+
+CREATE OR REPLACE FUNCTION cjams.providerhomeapprovelist(p_providerid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_providerdata json;
+
+BEGIN   
+  
+
+
+
+select json_agg(a) from ( 
+
+select tp.*, pic.providerinfoconfigid,pic.providerid,pic."program",pic.programtype,
+tpa.adr_city_nm,tpa.adr_country_tx,tpa.adr_county_cd,tpa.adr_state_cd,
+tpa.adr_zip5_no	,
+(select PV.value_tx from tb_picklist_values PV where 
+TRIM(PV.PICKLIST_VALUE_CD)=tpa.adr_state_cd
+AND PV.PICKLIST_TYPE_ID='211'),psm.create_ts < now() - '3 years'::interval as is3yrsold
+from tb_provider tp
+left  join providerinfoconfig pic on tp.provider_id::int=pic.providerid::int and  pic.activeflag=1
+left join tb_provider_addresses tpa on tp.provider_id::int=tpa.parent_key_id::int
+left join publicproviderstatusmanagement psm on psm.object_id::int=tp.provider_id and psm.active_flag=1 and psm.provider_status='Closed' and approval_status='Approved'
+where tp.provider_id=p_providerid::int limit 1
+) a INTO v_providerdata;
+
+
+
+RETURN v_providerdata;	
+
+END;
+
+$function$;
+
+
+
+
+

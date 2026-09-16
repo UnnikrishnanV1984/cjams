@@ -1,0 +1,1 @@
+update intakeservreqcourtorderdetails isrcod  set isrcod.isselected = 0 , isrcod.updatedon = now(), isrcod.updatedby = 'DATA fix as per CDM-8933' WHERE isrcod.intakeservreqcourtorderid= '1f9d64b2-a50b-461a-aee3-a5f889380b5e' AND isrcod.intakeservreqcourtorderdetailsid in ('3d870296-4119-47b9-a723-4a3ad55f6d26','9a503876-920d-469e-abe4-48d2b15e6c5e') and isrcod.isselected = 1;

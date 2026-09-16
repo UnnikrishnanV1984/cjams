@@ -1,0 +1,48 @@
+CREATE OR REPLACE FUNCTION validateagreementrate(v_gapagreementid uuid, v_startdate timestamp without time zone, v_enddate timestamp without time zone)
+ RETURNS TABLE(statuscode integer, status_description character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+l_count int;
+statuscode integer;
+status_description character varying;
+v_dob date;
+
+BEGIN
+
+IF (v_gapagreementid IS NOT NULL) THEN
+
+ SELECT 
+  (ps.dob :: date + interval '18 year') :: date  INTO v_dob  
+ FROM gapagreement gar
+ INNER JOIN guardianship gap ON gar.gapid = gap.gapid AND gap.activeflag = 1
+    INNER JOIN permanencyplan pp ON pp.permanencyplanid=gap.permanencyplanid AND pp.activeflag=1
+    LEFT JOIN intakeservicerequestactor isr ON gap.servicecaseid = isr.servicecaseid 
+    AND isr.activeflag =1 AND isr.intakeservicerequestpersontypekey = 'RC' AND isr.intakeservicerequestactorid = pp.intakeservicerequestactorid
+ INNER JOIN person ps ON ps.personid = isr.personid AND ps.activeflag = 1
+ --INNER JOIN placement pl ON pl.placementid = pp.placementid AND pl.activeflag = 1  
+ WHERE gar.gapagreementid = v_gapagreementid AND gar.activeflag = 1;
+    
+ SELECT 
+  count(1) into l_count 
+ FROM gapagreementrate 
+ WHERE gapagreementid = v_gapagreementid AND activeflag = 1 AND(startdate::date, enddate::date) OVERLAPS (v_startdate::date, v_enddate::date) AND enddate::date < v_dob;
+
+END IF;
+ 
+IF (l_count >= 1) THEN
+ statuscode:= 500;
+ status_description := 'Invalid date selection';
+ELSE 
+ statuscode:= 200;
+ status_description := 'Valid Date';
+END IF;
+
+RETURN  QUERY 
+SELECT statuscode,status_description;
+
+END;
+
+$function$
+

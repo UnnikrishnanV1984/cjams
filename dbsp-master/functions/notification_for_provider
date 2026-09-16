@@ -1,0 +1,111 @@
+CREATE OR REPLACE FUNCTION notification_for_provider()
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                 
+ DECLARE                                                                                                                                                       
+ v_activity  record;                                                                                                                                           
+ v_subject character varying;                                                                                                                                  
+ v_msg character varying;                                                                                                                                      
+ v_status character varying;                                                                                                                                   
+ v_status1 character varying;                                                                                                                                  
+                                                                                                                                                               
+ begin                                                                                                                                                         
+ FOR  v_activity  in                                                                                                                                           
+ select persontypekey,pap.dobdate,pap.firstname,pap.lastname,                                                                                                  
+ pap.dobdate,                                                                                                                                                  
+ date_part('year',age(now()::date-30, cast(pap.dobdate as date))) as age,                                                                                      
+ date_part('month',age(now()::date-30, cast(pap.dobdate as date))),                                                                                            
+ date_part('day',age(now()::date-30, cast(pap.dobdate as date))),tbao.tosecurityusersid,                                                                       
+ tpa.provider_id,                                                                                                                                              
+ tbao.fromsecurityusersid,                                                                                                                                     
+ tp.provider_first_nm,                                                                                                                                         
+ tp.provider_last_nm,                                                                                                                                          
+ pa.nextrecondate                                                                                                                                              
+ from providerapproval  pa                                                                                                                                     
+ inner join provapprovalperson pap on pa.providerapprovalid=pap.providerapprovalid                                                                             
+ inner join tb_provider_assignment_ownership tbao on tbao.objectid::text=pa.providerid::text                                                                   
+ left outer join tb_provider_approval tpa on tpa.providerapprovalid=pap.providerapprovalid                                                                     
+ left outer join tb_provider tp on tpa.provider_id=tp.provider_id                                                                                              
+ where persontypekey='3612' and                                                                                                                                
+ (date_part('year',age(now()::date-30, cast(pap.dobdate as date))) = 16                                                                                        
+  or date_part('year',age(now()::date-30, cast(pap.dobdate as date))) = 18                                                                                     
+ )                                                                                                                                                             
+ and                                                                                                                                                           
+ date_part('month',age(now()::date-30, cast(pap.dobdate as date)))= 0                                                                                          
+ and                                                                                                                                                           
+ date_part('day',age(now()::date-30, cast(pap.dobdate as date)))= 0                                                                                            
+ union                                                                                                                                                         
+ select null,null,null,null,                                                                                                                                   
+ null,                                                                                                                                                         
+ 0 as age,                                                                                                                                                     
+ 0,                                                                                                                                                            
+ 0,                                                                                                                                                            
+ tbao.tosecurityusersid,                                                                                                                                       
+ tpa.provider_id,                                                                                                                                              
+ tbao.fromsecurityusersid,                                                                                                                                     
+ tp.provider_first_nm,                                                                                                                                         
+ tp.provider_last_nm,                                                                                                                                          
+ pa.nextrecondate                                                                                                                                              
+ from providerapproval  pa                                                                                                                                     
+ inner join tb_provider_assignment_ownership tbao on tbao.objectid::text=pa.providerid::text                                                                   
+ left outer join tb_provider_approval tpa on tpa.providerapprovalid=pa.providerapprovalid                                                                      
+ left outer join tb_provider tp on tpa.provider_id=tp.provider_id                                                                                              
+                                                                                                                                                               
+ LOOP                                                                                                                                                          
+                                                                                                                                                               
+ /* MVA Clearance needed */                                                                                                                                    
+ IF v_activity.age = 16 THEN                                                                                                                                   
+ v_msg:=   'MVA Clearance needed for child - '|| v_activity.firstname :: character varying || v_activity.lastname :: character varying ||                      
+ 'provider : ' || v_activity.provider_first_nm || v_activity.provider_last_nm                                                                                  
+ || 'providerid :' || v_activity.provider_id || 'child DOB :' || v_activity.dobdate;                                                                           
+ v_subject := 'MVA Clearance needed';                                                                                                                          
+ SELECT send_notification INTO v_status FROM send_notification(v_activity.tosecurityusersid, v_activity.fromsecurityusersid, v_activity.tosecurityusersid,     
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+                                                                                                                                                               
+ SELECT send_notification INTO v_status1 FROM send_notification(v_activity.fromsecurityusersid, v_activity.fromsecurityusersid, v_activity.fromsecurityusersid,
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+ END IF;                                                                                                                                                       
+ /* Clearances and Background Checks */                                                                                                                        
+ IF v_activity.age = 18 THEN                                                                                                                                   
+ v_msg:=   'Clearances and Background Checks for child - '|| v_activity.firstname :: character varying || v_activity.lastname :: character varying ||          
+ 'provider : ' || v_activity.provider_first_nm || v_activity.provider_last_nm                                                                                  
+ || 'providerid :' || v_activity.provider_id || 'child DOB :' || v_activity.dobdate;                                                                           
+ v_subject := 'Clearances and Background Checks';                                                                                                              
+ SELECT send_notification INTO v_status FROM send_notification(v_activity.tosecurityusersid, v_activity.fromsecurityusersid, v_activity.tosecurityusersid,     
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+                                                                                                                                                               
+ SELECT send_notification INTO v_status1 FROM send_notification(v_activity.fromsecurityusersid, v_activity.fromsecurityusersid, v_activity.fromsecurityusersid,
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+ END IF;                                                                                                                                                       
+ /* Reconsideration Notification Letter */                                                                                                                     
+ IF v_activity.nextrecondate<>NULL AND v_activity.nextrecondate::date - now()::date = 120 THEN                                                                 
+ v_msg:=   'Reconsideration Notification - '||                                                                                                                 
+ 'provider : ' || v_activity.provider_first_nm || v_activity.provider_last_nm                                                                                  
+ || 'providerid :' || v_activity.provider_id || 'Reconsideration date :' ||v_activity.nextrecondate ;                                                          
+ v_subject := 'Reconsideration Notification Letter';                                                                                                           
+ SELECT send_notification INTO v_status FROM send_notification(v_activity.tosecurityusersid, v_activity.fromsecurityusersid, v_activity.tosecurityusersid,     
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+                                                                                                                                                               
+ SELECT send_notification INTO v_status1 FROM send_notification(v_activity.fromsecurityusersid, v_activity.fromsecurityusersid, v_activity.fromsecurityusersid,
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+ END IF;                                                                                                                                                       
+ /*  Upcoming Reconsideration  */                                                                                                                              
+ IF v_activity.nextrecondate<>NULL AND v_activity.nextrecondate::date - now()::date = 60 THEN                                                                  
+ v_msg:=   'Upcoming Reconsideration - '||                                                                                                                     
+ 'provider : ' || v_activity.provider_first_nm || v_activity.provider_last_nm                                                                                  
+ || 'providerid :' || v_activity.provider_id || 'Reconsideration date :' ||v_activity.nextrecondate;                                                           
+ v_subject := ' Upcoming Reconsideration';                                                                                                                     
+ SELECT send_notification INTO v_status FROM send_notification(v_activity.tosecurityusersid, v_activity.fromsecurityusersid, v_activity.tosecurityusersid,     
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+                                                                                                                                                               
+ SELECT send_notification INTO v_status1 FROM send_notification(v_activity.fromsecurityusersid, v_activity.fromsecurityusersid, v_activity.fromsecurityusersid,
+ 'System', 'High', v_subject, v_msg , v_activity.provider_id::character varying);                                                                              
+ END IF;                                                                                                                                                       
+                                                                                                                                                               
+                                                                                                                                                               
+ END  LOOP;                                                                                                                                                    
+                                                                                                                                                               
+ return 'Success';                                                                                                                                             
+ END;                                                                                                                                                          
+ $function$
+

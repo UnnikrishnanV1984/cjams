@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION managevendorapplicant(searchobj json)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  v_timestamp timestamp;
+  v_returnstatus character varying;
+  v_vendorid character varying;
+  v_securityuserid character varying;
+ v_vendorapplicantid uuid;
+ v_providerid character varying;
+ v_decisionkey character varying;
+ v_paymentaffiliate character varying;
+ v_paymentaddress boolean;
+ v_approvalcomments character varying;
+ v_narrative character varying;
+ v_updateservicessearch character varying;
+   
+
+BEGIN 
+v_vendorapplicantid := searchobj ->> 'vendorapplicantid';
+v_vendorid := searchobj ->> 'vendorid';
+v_decisionkey := searchobj ->> 'ref_key';
+v_securityuserid := searchobj ->> 'securityuserid';
+v_approvalcomments := searchobj ->> 'approvalcomments';
+v_narrative := searchobj ->> 'narrative';
+
+v_timestamp := now()::timestamp with time zone;
+
+select providerid into v_providerid from tb_vendor_applicant where vendorapplicantid =  (v_vendorapplicantid)::uuid;
+
+IF (v_providerid is not null) then 
+if(v_decisionkey = 'APR')then 
+update tb_vendor_applicant set status='Active',approvaldate=v_timestamp,approvalcomments=v_approvalcomments,narrative=coalesce(v_narrative,narrative) where vendorapplicantid=v_vendorapplicantid and delete_sw='N';
+
+update tb_provider_services set delete_sw='Y' where provider_id=(v_providerid)::int;
+
+
+INSERT INTO tb_provider_services
+( provider_id, service_id, start_dt, end_dt, paid_cd
+, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+(select (v_providerid)::int,ts.service_id,tvs.startdate,tvs.enddate,ts.paid_non_paid_cd,
+v_timestamp,v_securityuserid,v_timestamp,v_securityuserid,'N' from tb_vendor_applicant tva 
+inner join tb_vendor_applicant_services tvs on tvs.vendorapplicantid = tva.vendorapplicantid and tvs.delete_sw='N'
+inner join tb_services ts on ts.service_id=tvs.service_id and ts.delete_sw='N'
+where tva.vendorapplicantid=(v_vendorapplicantid)::uuid and tva.delete_sw='N');
+
+
+--select updateservicessearch into v_updateservicessearch from updateservicessearch();
+
+select issamepaymentaddress into v_paymentaddress from tb_vendor_applicant where vendorapplicantid=(v_vendorapplicantid)::uuid and delete_sw='N';
+
+v_paymentaffiliate := '3366';
+if(v_paymentaddress) then 
+v_paymentaffiliate := '3367';
+end if;
+
+raise notice 'before update provider%',v_providerid;
+update tb_provider set provider_category_cd='3304',
+        provider_status_cd='1791',
+        pay_to_affiliate_cd=v_paymentaffiliate,
+        update_ts=v_timestamp,
+        update_user_id=v_securityuserid,
+        provider_first_nm=applicant.primary_first_nm,
+        provider_last_nm=applicant.primary_last_nm,
+        provider_middle_nm=applicant.primary_middle_nm,
+        prov_tax_type_cd=applicant.taxidtype,
+        tax_id_no=applicant.taxid,
+         co_first_nm=applicant.admin_first_nm,
+        co_last_nm=applicant.admin_last_nm,
+        provider_nm=applicant.org_nm from 
+        (select primary_first_nm,
+        primary_last_nm,primary_middle_nm,taxidtype,taxid,admin_first_nm,admin_last_nm,org_nm from tb_vendor_applicant 
+        where vendorapplicantid=v_vendorapplicantid ) as applicant where provider_id=v_providerid::int;
+elsif (v_decisionkey = 'REJ') then 
+update tb_vendor_applicant set status='Rejected',approvalcomments=v_approvalcomments,narrative=coalesce(v_narrative,narrative) where vendorapplicantid=(v_vendorapplicantid)::uuid and delete_sw='N';
+end if;
+
+v_returnstatus:=v_providerid;
+
+else
+
+
+v_returnstatus:='Failure';
+end if;
+ 
+
+return v_returnstatus;
+
+END;
+
+$function$
+

@@ -1,0 +1,40 @@
+CREATE OR REPLACE FUNCTION as_getiveapprovallist(userid character varying, v_roleid character varying, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(requestedfrom text, requestedon timestamp without time zone, requestedto text, placement_type text, client_id bigint, removal_id bigint, placement_id uuid, approval_status character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+ v_pageoffset int;
+ v_pagenumber int;
+DECLARE 
+ totalcount integer;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+ 
+raise notice 'test %',v_roleid;
+RETURN QUERY 
+select (select concat(up.firstname , ' ' , up.lastname) from userprofile up where up.securityusersid = r.fromsecurityusersid) as requestedby, r.insertedon ,(select concat(up2.firstname,' ', up2.lastname) from userprofile up2 where up2.securityusersid = r.tosecurityusersid) as requestedto,
+(case when r.routingstatustypeid::text = '68' then 'Adoption'  when r.routingstatustypeid::text = '71' then 'Fostercare' when r.routingstatustypeid::text = '74' then 'Gap' end) as placement_type,
+(case when r.routingstatustypeid::text = '68' then (select tadp.cjamspid from tb_ive_adoption_audit tadp where tadp.approvalid:: character varying = r.objectid limit 1)  
+when r.routingstatustypeid::text = '71' then (select tfa.cjamspid from tb_ive_fostercare_audit tfa where tfa.approvalid::character varying = r.objectid limit 1) 
+when r.routingstatustypeid::text = '74' then (select tga.cjamspid from tb_ive_gapaudit tga where tga.approvalid::character varying = r.objectid limit 1) end) as client_id,
+(case when r.routingstatustypeid::text = '68' then (select tadp.removalid from tb_ive_adoption_audit tadp where tadp.approvalid:: character varying = r.objectid limit 1)  
+when r.routingstatustypeid::text = '71' then (select tfa.removalid from tb_ive_fostercare_audit tfa where tfa.approvalid::character varying = r.objectid limit 1) 
+when r.routingstatustypeid::text = '74' then (select tga.removalid from tb_ive_gapaudit tga where tga.approvalid::character varying = r.objectid limit 1) end) as removal_id,
+(case when r.routingstatustypeid::text = '68' then  null :: uuid
+when r.routingstatustypeid::text = '71' then (select pl.placementid from tb_ive_fostercare_audit tfa join intakeservreqchildremoval isrcr on isrcr.removalid = tfa.removalid join placement pl on pl.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid  where tfa.approvalid::character varying = r.objectid order by pl.updatedon desc limit 1) 
+when r.routingstatustypeid::text = '74' then null :: uuid end) as placement_id,
+(case when r.routingstatustypeid::text = '68' then (select tadp.approvalstatus from tb_ive_adoption_audit tadp where tadp.approvalid:: character varying = r.objectid limit 1)  
+when r.routingstatustypeid::text = '71' then (select tfa.approvalstatus from tb_ive_fostercare_audit tfa where tfa.approvalid::character varying = r.objectid limit 1) 
+when r.routingstatustypeid::text = '74' then (select tga.approvalstatus from tb_ive_gapaudit tga where tga.approvalid::character varying = r.objectid limit 1) end) as approval_status
+FROM routing r
+WHERE (r.toroleid=v_roleid or r.fromroleid=v_roleid)  AND r.activeflag=1 and r.eventcode in ('PLTR', 'ABLR', 'GAAR') and r.fromroleid = 'IVESP' and r.routingstatustypeid in (68,71,74)
+order by r.insertedon desc;
+--LIMIT pagesize OFFSET v_pageoffset;
+
+
+END;
+
+$function$
+

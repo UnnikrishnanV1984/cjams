@@ -1,0 +1,130 @@
+ CREATE OR REPLACE FUNCTION public.getcase_summary(v_intakeserviceid uuid, v_summarytype character varying)                                                                                               
+  RETURNS TABLE(general json, intakeworkerinfo json, workerdetails json, supervisorinfo json, maltreatment json, assessment json, arsummary json, irsummary json)                                         
+  LANGUAGE plpgsql                                                                                                                                                                                        
+ AS $function$                                                                                                                                                                                          
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+ DECLARE                                                                                                                                                                                                
+ v_investigationid uuid;                                                                                                                                                                                
+ l_general json;                                                                                                                                                                                        
+ l_caseworkerdetails json;                                                                                                                                                                              
+ l_maltreatment json;                                                                                                                                                                                   
+ l_assessment json;                                                                                                                                                                                     
+ l_supervisordetails json;                                                                                                                                                                              
+ l_intakeworkerdetails json;                                                                                                                                                                            
+ l_ARsummary json;                                                                                                                                                                                      
+ l_IRsummary json;                                                                                                                                                                                      
+                                                                                                                                                                                                        
+ l_intakenumber character varying;                                                                                                                                                                      
+                                                                                                                                                                                                        
+ BEGIN                                                                                                                                                                                                  
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+             SELECT  investigationid INTO v_investigationid                                                                                                                                             
+                 FROM investigation WHERE intakeserviceid  = v_intakeserviceid;                                                                                                                         
+                                                                                                                                                                                                        
+                 SELECT  intakenumber INTO l_intakenumber                                                                                                                                               
+                 FROM intakeservicerequest WHERE intakeserviceid  = v_intakeserviceid;                                                                                                                  
+                                                                                                                                                                                                        
+                 SELECT caseworkerdetails,supervisordetails INTO l_caseworkerdetails,l_supervisordetails from getldssusers(v_intakeserviceid);                                                          
+                                                                                                                                                                                                        
+         SELECT                                                                                                                                                                                         
+ (SELECT json_agg(casew) into l_intakeworkerdetails FROM (SELECT cw.firstname ||' ' || cw.lastname caseworkername,cw.email,cw.address,cw.zipcode,cw.city,cw.state,cw.userprofiletypekey,cw.phonenumber) 
+ as casew):: json intakeworkerdetails                                                                                                                                                                   
+                                                                                                                                                                                                        
+ FROM intakedastaging ISR                                                                                                                                                                               
+ INNER JOIN routing R on R.objectid = ISR.intakenumber                                                                                                                                                  
+ INNER JOIN (SELECT up.firstname, up.lastname,up.email,upa.address,upa.zipcode,upa.city,upa.state,up.securityusersid,up.activeflag,upp.userprofiletypekey,upp.phonenumber                               
+         FROM userprofile up  LEFT JOIN userprofileaddress upa on upa.securityusersid = up.securityusersid                                                                                              
+         and upa.activeflag =1                                                                                                                                                                          
+         LEFT JOIN userprofilephonenumber upp on upp.securityusersid = up.securityusersid                                                                                                               
+         and upp.activeflag=1                                                                                                                                                                           
+         )cw on cw.securityusersid = r.fromsecurityusersid and cw.activeflag =1                                                                                                                         
+                                                                                                                                                                                                        
+ WHERE isr.intakenumber = 'I201900148677' and ISR.activeflag = 1 and routingstatustypeid =2 ;                                                                                                           
+                                                                                                                                                                                                        
+                 SELECT Json_agg(gen) INTO l_general FROM   ( SELECT isr.reporteddate,                                                                                                                  
+                        isr.servicerequestnumber,                                                                                                                                                       
+                        isr.narrative,                                                                                                                                                                  
+                        isr.actiontype,                                                                                                                                                                 
+                            r.typedescription as routingstatus                                                                                                                                          
+                           ,r.Description as dispstatus,                                                                                                                                                
+                           isr.reporterfirstname,                                                                                                                                                       
+                           isr.reporterlastname,                                                                                                                                                        
+                           isr.referalcomments,                                                                                                                                                         
+                           isr.reporteddate,                                                                                                                                                            
+                           isr.reportedtime                                                                                                                                                             
+                         FROM   intakeservicerequest isr                                                                                                                                                
+                                      left join  (SELECT rs.typedescription,sd.intakeserviceid,st.Description from IntakeServiceRequestDispositionCode sd                                               
+                                      left join routing r on r.objectid  =  sd.intakeservicerequestdispositioncodeid:: character varying and r.eventcode = 'INDR'and r.activeflag = 1                   
+                                         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                                                  
+                                         left join IntakeSerReqStatusType st on st.IntakeSerReqStatusTypeid = sd.IntakeSerReqStatusTypeid                                                               
+                                         order by sd.insertedon desc  ) r                                                                                                                               
+                                         on r.intakeserviceid = isr.intakeserviceid                                                                                                                     
+                         WHERE isr.intakeserviceid = v_intakeserviceid) gen ;                                                                                                                           
+                                                                                                                                                                                                        
+                  SELECT getmaltreatment_invsummary INTO l_maltreatment FROM getmaltreatment_invsummary(v_investigationid);                                                                             
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                  SELECT Json_agg(asst) INTO l_assessment from                                                                                                                                          
+                 (SELECT                                                                                                                                                                                
+                 amt.name,                                                                                                                                                                              
+                 asm.assessmentstatustypekey,                                                                                                                                                           
+                 amt.updatedon                                                                                                                                                                          
+                 FROM                                                                                                                                                                                   
+                 assessment asm                                                                                                                                                                         
+                 JOIN assessmenttemplate amt ON amt.assessmenttemplateid=asm.assessmenttemplateid AND amt.activeflag=1                                                                                  
+                 and amt.titleheadertext in ('CANS-F','SAFE-C','MARYLAND FAMILY INITIAL  RISK ASSESSMENT','SAFETY PLAN')                                                                                
+                 WHERE asm.objectid=v_intakeserviceid)asst ;                                                                                                                                            
+ IF (v_summarytype = 'AR') then                                                                                                                                                                         
+                                                                                                                                                                                                        
+  SELECT Json_agg(ar) INTO l_ARsummary from                                                                                                                                                             
+                 (                                                                                                                                                                                      
+                         select (select updatedon from routing where objectid = l_intakenumber and routingstatustypeid =2 )  as approveddate,                                                           
+                         (select insertedon from routing where objectid = l_intakenumber and routingstatustypeid =2 )  as reviewdate,                                                                   
+                         (select insertedon from routing where objectid = v_intakeserviceid :: character varying and routingstatustypeid =4) as cpsreceiveddate,                                        
+                                                                                                                                                                                                        
+                         (select Json_agg(am)                                                                                                                                                           
+                                 from (select p.firstname,p.lastname, p.dob from intakeservicerequest isr                                                                                               
+                                 inner join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'AM'                              
+                                 inner join person p on isra.personid = p.personid                                                                                                                      
+                                         where isr.intakeserviceid =v_intakeserviceid)am                                                                                                                
+                         ) allegedmaltreator,                                                                                                                                                           
+                                                                                                                                                                                                        
+                         ( select Json_agg(av) from (select p.firstname,p.lastname, p.dob from intakeservicerequest isr                                                                                 
+                         inner join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'AV'                                      
+                         inner join person p on isra.personid = p.personid                                                                                                                              
+                         where isr.intakeserviceid =v_intakeserviceid) av                                                                                                                               
+                         )allegedvictim                                                                                                                                                                 
+                         from IntakeServiceRequest where intakeserviceid = v_intakeserviceid) ar;                                                                                                       
+                                                                                                                                                                                                        
+ elsif (v_summarytype = 'IR') then                                                                                                                                                                      
+                                                                                                                                                                                                        
+  SELECT Json_agg(ir) INTO l_IRsummary from                                                                                                                                                             
+                 (                                                                                                                                                                                      
+                         select(select updatedon from routing where objectid = l_intakenumber and routingstatustypeid =2 )  as approveddate,                                                            
+                         (select insertedon from routing where objectid = l_intakenumber and routingstatustypeid =2 )  as reviewdate,                                                                   
+                         (select insertedon from routing where objectid = v_intakeserviceid :: character varying and routingstatustypeid =4) as cpsreceiveddate,                                        
+                                                                                                                                                                                                        
+                         (select Json_agg(am)                                                                                                                                                           
+                                 from (select p.firstname,p.lastname, p.dob from intakeservicerequest isr                                                                                               
+                                         inner join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'AM'                      
+                                         inner join person p on isra.personid = p.personid                                                                                                              
+                                                 where isr.intakeserviceid =v_intakeserviceid)am) allegedmaltreator,                                                                                    
+                                                                                                                                                                                                        
+                         ( select Json_agg(av) from (select p.firstname,p.lastname, p.dob from intakeservicerequest isr                                                                                 
+                                         inner join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'AV'                      
+                                         inner join person p on isra.personid = p.personid                                                                                                              
+                                                 where isr.intakeserviceid =v_intakeserviceid) av)allegedvictim                                                                                         
+                         from IntakeServiceRequest where intakeserviceid = v_intakeserviceid) ir;                                                                                                       
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+ end if;                                                                                                                                                                                                
+                                                                                                                                                                                                        
+ RETURN QUERY                                                                                                                                                                                           
+ select  l_general,l_intakeworkerdetails,l_caseworkerdetails,l_supervisordetails,l_maltreatment,l_assessment,l_ARsummary,l_IRsummary;                                                                   
+                                                                                                                                                                                                        
+  END;                                                                                                                                                                                                  
+                                                                                                                                                                                                        
+ $function$                                                                                                                                                                                               
+

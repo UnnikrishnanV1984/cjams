@@ -1,0 +1,89 @@
+CREATE OR REPLACE FUNCTION prov_midyrgetnoncompliance_djs(v_monitoring_id character varying, v_record_type character varying, v_module_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ v_provider_id character varying;
+ v_prgram character varying;
+ 
+ v_reporting_start_date timestamp without time zone;
+ v_reporting_end_date timestamp without time zone;
+
+ begin
+ 
+  select provider_id, prgram, 
+  monitoring_period_start_date, monitoring_period_end_date 
+  into v_provider_id,v_prgram, v_reporting_start_date,v_reporting_end_date 
+  from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+
+  
+ SELECT JSON_AGG(pla) INTO jsondata FROM ( select distinct tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,prq.question_addtional_fields,pr.record_id ,pr.records_type ,prq.displayorder,
+                  (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                  (case when tp.provider_nm is null then (select * from prov_get_formatted_applicantaddresses(pv.applicant_id))  else (select * from prov_get_formatted_addresses(tp.provider_id)) end) as site_address,
+                  (case when tp.provider_id::character varying is null then pv.applicant_id else tp.provider_id::character varying end) as site_id,
+                  pv.reference_value_id,
+                  pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+                  pv.referencetype,
+                  pv.reference_id,
+                  pv.violation_id,
+                  pv.deficiency_number,
+                  mec.cap_number_djs,
+                  pv.comments,
+                  pv.isdraft,
+                  pv.cap_status,
+                  pv.cap_status_description,
+                  pv.planofcorrection,
+                  pv.personresponsible,
+                  pv.title,
+                  pv.disputecomarcitation,
+                  pv.targetdate,
+                  pv.isdispute,
+                  pv.isacknowledged,
+                  pv.reference_value_id as monitoring_id,
+                  pv.isnotificationsent,
+                  pv.duedate,
+                  pv.cap_needed,
+                  pv.cap_resolved,
+                  pv.rationale,
+                  mec.exit_conf_number, 
+                  mec.summary, 
+                  mec.program_changes, 
+                  mec.exit_dt, 
+                  mec.ec_comments, 
+                  mec.rationale_comments,
+                    regexp_replace(regexp_replace(tbp.narrative,'<p>',''),'</p>','') as narrative,
+                  mec.ec_status ,
+                  mec.ec_isacknowledged,
+                  mec.ec_isnotificationsent,
+                  mec.ec_prv_signimage,
+                  mec.ec_prv_signdate,
+                  mec.cap_submitted_by, 
+                  mec.cap_submitted_dt,
+                  mec.cap_created_dt,
+                  mec.provider_id,
+                  prq.type_of_regulation,
+                  prq.question_comments,
+                  pv.adhoc_regulation_sw
+        from  prov_violation pv
+        inner join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+        left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+        left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+        left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+        left join tb_provider tp                      on tp.provider_id = pv.site_id and tp.delete_sw = 'N'
+        left join prov_monitoring mm                  on mm.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and mm.delete_sw = 'N'
+                left join tb_provider_applicant_narrative tbp on tbp.applicant_id = mec.exit_conf_number
+        where  pv.delete_sw = 'N'
+            and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+            and (case when pv.referencetype = 'Monitoring' then mm.delete_sw = 'N' else true end)
+    and pv.deficiency_number is not null 
+  and pr.records_type = v_record_type
+  and pv.reference_value_id = v_monitoring_id 
+  
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

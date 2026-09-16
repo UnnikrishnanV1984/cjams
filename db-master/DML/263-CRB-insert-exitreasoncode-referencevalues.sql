@@ -1,0 +1,13 @@
+            insert into crbreferencevalues values ( 174 , 'PLCCAD', '1825', null , 'exitreasontypekey', 1 ) ;--            
+            insert into crbreferencevalues values ( 175 , 'PLCCCNR', '1826', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 176 , 'PLCCGNR', '1826', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 177 , 'PLCCGSNR', '1828', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 178 , 'PLCCDOC', '1827', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 179 , 'PLCCE', '1829', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 180 , 'PLCCGR', '1831', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 181 , 'PLCCRS', '1832', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 182 , 'PLCCR', '1833', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 183 , 'PLCCRA', '1834', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 184 , 'PLCCTTO', '1835', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 185 , 'PLCCAF', '4529', null , 'exitreasontypekey', 1 ) ;--
+            insert into crbreferencevalues values ( 186 , 'PLCCCORH', '10480', null , 'exitreasontypekey', 1 ) ;--

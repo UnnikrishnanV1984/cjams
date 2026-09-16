@@ -1,0 +1,148 @@
+drop function if exists cjams.get_ancillaryadjustment_payment(json);
+CREATE OR REPLACE FUNCTION cjams.get_ancillaryadjustment_payment(request json)
+ RETURNS TABLE(totalcount bigint, provider_id integer, provider_nm character varying, provider_first_nm character varying, provider_middle_nm character varying, provider_last_nm character varying, mail_code_tx character varying, tax_id_no numeric, taxidtype character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 05/28/2021 Vineet Tirodkar - Modifications to add the missing delete_sw in where clause of Payment tables (CDM-13300)
+-- Parshal Chitrakar - 09/12/2024 CIDM-9412 Provider Name Suffix is not updated in CW Application
+------------------------------------------------------------------------------------------------------------	
+DECLARE	
+	v_pageSize INT;
+	v_pageNumber INT;
+	v_pageNum INT; 
+	v_pageOffset INT;
+
+	v_payment_id INT;
+	v_payee_nm CHARACTER VARYING(50);
+	v_provider_id INT;
+	v_client_id INT;
+	v_client_name CHARACTER VARYING(100);
+	v_DateFrom TIMESTAMP(3);                        
+	v_DateTo TIMESTAMP(3);
+	v_adr_type_cd CHARACTER VARYING(50);
+	v_adr_city_nm CHARACTER VARYING(50);
+	v_adr_zip5_no INT;
+	v_adr_county_cd CHARACTER VARYING(50);
+	v_adr_work_phone_tx CHARACTER VARYING(10);
+
+	v_DOBDateFrom   TIMESTAMP(3);                
+	v_DOBDateTo TIMESTAMP(3);
+	v_ayear character varying(30);
+	v_taxid int;
+BEGIN  
+	v_pageNumber   := request ->> 'pagenumber' ;
+	v_pageNum := v_pageNumber - 1;
+	v_pageSize     := request ->> 'pagesize' ;
+	v_pageOffset = v_pageNum  * v_pageSize; 
+
+	v_payee_nm := request ->> 'providername';
+	v_payment_id 	 := request ->> 'paymentid';
+	v_provider_id 	:= request ->> 'providerid';
+	v_client_id := request ->> 'clientid';
+	v_client_name := request ->> 'clientname';
+	v_DateFrom 	 := request ->> 'daterangefrom';                       
+	v_DateTo 		 := request ->> 'daterangeto';
+	v_adr_type_cd := request ->> 'address';
+	v_adr_city_nm := request ->> 'city';
+	v_adr_zip5_no := request ->> 'zip';
+	v_adr_county_cd := request ->> 'county';
+	v_adr_work_phone_tx := request ->> 'phonenumber';
+
+	v_DOBDateFrom 	 := request ->> 'dobdaterangefrom';                       
+	v_DOBDateTo 		 := request ->> 'dobdaterangeto';
+	v_ayear := request ->> 'ayear';
+	v_taxid := request ->> 'taxid';
+ 
+RETURN QUERY 
+	select  count(1) over() as totalcount, x.* 
+	from ( select distinct payhead.provider_id,
+	/*CASE WHEN (prov.provider_nm is null OR prov.provider_nm='') 
+		THEN CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) ELSE prov.provider_nm END AS provider_nm,*/
+		cjams.f_ename('2953', prov.provider_id::bigint) as provider_nm,		
+		prov.provider_first_nm,prov.provider_middle_nm,prov.provider_last_nm,
+		prov.mail_code_tx AS     mail_code_tx
+		,prov.tax_id_no AS         tax_id_no,(select value_tx from tb_picklist_values where 
+		TRIM(PICKLIST_VALUE_CD)=prov.prov_tax_type_cd
+		AND PICKLIST_TYPE_ID='216') as taxidtype
+	from tb_payment_header payhead 
+		left join tb_payment_detail paydet on paydet.payment_id=payhead.payment_id and paydet.delete_sw='N'
+		inner join person client on client.cjamspid=paydet.client_id and client.activeflag=1
+		INNER JOIN tb_provider as prov ON payhead.provider_id = prov.provider_id and prov.delete_sw='N'
+		left JOIN tb_payment_status paystat ON payhead.payment_id=paystat.payment_id
+			and paystat.delete_sw = 'N'
+	where payhead.payment_type_cd = '4' 
+		and (v_payment_id is null or payhead.payment_id = v_payment_id)
+		--AND (COALESCE(lower( prov.provider_nm) ,'') LIKE COALESCE(lower(v_payee_nm) ,'')||'%')
+		and  (case when prov.provider_nm is not null then (COALESCE(lower(prov.provider_nm) ,'') LIKE  '%' || COALESCE(lower(v_payee_nm) ,'')||'%')  
+				  when prov.provider_nm is  null  then  ((COALESCE(lower(prov.provider_first_nm) ,'') like '%' ||  COALESCE(lower(v_payee_nm) ,'')||'%')
+				  or  (COALESCE(lower(prov.provider_last_nm) ,'') LIKE COALESCE(lower(v_payee_nm) ,'')||'%')) or 
+				  (COALESCE(lower(concat (prov.provider_first_nm,' ',prov.provider_last_nm)) ,'') LIKE '%' ||  COALESCE(lower(v_payee_nm) ,'')||'%') end 
+			 OR v_payee_nm is null  
+			 OR soundex(lower(trim(prov.provider_nm))) = soundex(lower(trim(v_payee_nm)))   
+			 OR soundex(lower(trim(prov.provider_first_nm))) = soundex(lower(trim(v_payee_nm)))
+			 OR soundex(lower(trim(prov.provider_last_nm))) = soundex(lower(trim(v_payee_nm)))   )
+
+		AND (v_provider_id is null or payhead.provider_id = v_provider_id)
+		AND (v_client_id is null or paydet.client_id = v_client_id)
+		--AND (v_client_name is null or client.firstname = v_client_name)
+		and ((COALESCE(lower(client.firstname) ,'') LIKE COALESCE(lower(v_client_name) ,'')||'%')
+		OR	 lower(trim(v_client_name)) is null 
+			OR	soundex(lower(trim(client.firstname))) = soundex(lower(trim(v_client_name)))
+			OR	soundex(lower(trim(client.LastName)))  = soundex(lower(trim(v_client_name)))
+			OR  soundex(lower(trim(client.MiddleName))) = soundex(lower(trim(v_client_name))) )
+		AND (v_adr_type_cd is null or payhead.adr_type_cd = v_adr_type_cd)
+		AND (v_adr_city_nm is null or payhead.adr_city_nm = v_adr_city_nm)
+		AND (v_adr_zip5_no is null or payhead.adr_zip5_no = v_adr_zip5_no)
+		AND (v_adr_county_cd is null or payhead.adr_county_cd = v_adr_county_cd)
+		AND (v_adr_work_phone_tx is null or payhead.adr_work_phone_tx = v_adr_work_phone_tx)
+		and
+		case
+				--when (v_DateFrom is not null and v_DateTo is not null)  then to_date(cast(payhead.create_ts as text), 'YYYY-MM-DD')
+				when (v_DateFrom is not null and v_DateTo is not null)  then to_char((payhead.create_ts ), 'YYYY-MM-DD')
+				--between to_date(cast(v_DateFrom as text), 'YYYY-MM-DD') and to_date(cast(v_DateTo as text), 'YYYY-MM-DD')
+				between to_char(DATE(v_DateFrom::varchar), 'YYYY-MM-DD') and to_char(DATE(v_DateTo ::varchar), 'YYYY-MM-DD')
+				else true
+			end
+			and
+			case
+				--when (v_DateFrom is not null and v_DateTo is null)  then to_date(cast(payhead.create_ts as text), 'YYYY-MM-DD')
+				when (v_DateFrom is not null and v_DateTo is null)  then to_char((payhead.create_ts), 'YYYY-MM-DD')
+				--between to_date(cast(v_DateFrom as text), 'YYYY-MM-DD') and to_date(cast(now() as text), 'YYYY-MM-DD')
+				between to_char(DATE(v_DateFrom::varchar ), 'YYYY-MM-DD') and to_char(DATE(now()::varchar ), 'YYYY-MM-DD')
+				else true
+			end
+			and
+		case
+				--when (v_DOBDateFrom is not null and v_DOBDateTo is not null) then to_date(cast(client.dob ::date as text), 'YYYY-MM-DD') between to_date(cast(v_DOBDateFrom as text), 'YYYY-MM-DD') and to_date(cast(v_DOBDateTo as text), 'YYYY-MM-DD'
+				when (v_DOBDateFrom is not null and v_DOBDateTo is not null) then to_char((client.dob ), 'YYYY-MM-DD') 
+				between to_char(DATE(v_DOBDateFrom::varchar ), 'YYYY-MM-DD') and to_char(DATE(v_DOBDateTo::varchar ), 'YYYY-MM-DD')
+				else true
+			end
+			and
+			case
+				when (v_DOBDateFrom is not null and v_DOBDateTo is null) then to_char((client.dob), 'YYYY-MM-DD')
+				between to_char(DATE(v_DOBDateFrom::varchar), 'YYYY-MM-DD') and to_char(DATE(now()::varchar ), 'YYYY-MM-DD')
+				else true
+			end
+		--AND case WHEN v_DateFrom IS NOT NULL THEN to_date(cast(payhead.create_ts as TEXT), 'YYYY-MM-DD') 
+		--BETWEEN to_date(cast(v_DateFrom as TEXT), 'YYYY-MM-DD') 
+		--AND to_date(cast(v_DateTo as TEXT), 'YYYY-MM-DD') ELSE TRUE end
+		--AND case WHEN v_DOBDateFrom IS NOT NULL THEN to_date(cast(client.dob ::date as TEXT), 'YYYY-MM-DD') 
+		--BETWEEN to_date(cast(v_DOBDateFrom as TEXT), 'YYYY-MM-DD') 
+		--AND to_date(cast(v_DOBDateTo as TEXT), 'YYYY-MM-DD') ELSE TRUE end
+		AND case WHEN v_ayear IS NOT NULL then payhead.payment_dt   > now() - interval '1 year'  ELSE TRUE end 
+		AND (v_taxid is null or prov.tax_id_no = v_taxid)
+		and payhead.delete_sw='N'
+	) as x
+	order by (case when (v_payee_nm is not null or trim(v_payee_nm) !='') then 
+	levenshtein((case when x.provider_nm is not null then x.provider_nm else (concat_ws(' ',x.provider_first_nm,x.provider_last_nm) )end),(lower( trim( v_payee_nm) )),1,0,4)
+				end )
+
+	LIMIT v_pageSize OFFSET v_pageOffset;
+
+END;
+
+$function$
+;

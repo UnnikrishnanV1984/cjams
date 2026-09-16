@@ -1,0 +1,67 @@
+CREATE OR REPLACE FUNCTION prov_persontrngduration(trgorientation json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+ jsondata json;
+ v_sessiontype string;
+ v_personid string;
+ v_personrole string;
+ v_training_type string;
+ v_objectid string;
+ v_objecttype string;
+v_referral_id string;
+v_applicantid string;
+v_providerid string;
+begin
+ 
+ RAISE NOTICE '__________________________________________________';   
+v_sessiontype=trgorientation->>'session_type';
+v_objectid=trgorientation->>'object_id' ;
+v_training_type = trgorientation->>'training_type';
+v_objecttype=trgorientation->>'object_type';
+
+
+select referral_id,applicant_id,provider_id into v_referral_id,v_applicantid,v_providerid 
+ from providerapprovalphaserecord 
+ where delete_sw='N' and  case  when v_objecttype='application' then applicant_id =v_objectid
+      when v_objecttype='provider' then provider_id =v_objectid end 
+     order by create_ts desc limit 1;  
+    
+ RAISE NOTICE 'b4v_referral_id:%', v_referral_id;   
+RAISE NOTICE 'b4v_providerid:%', v_providerid;   
+RAISE NOTICE 'b4v_applicantid:%', v_applicantid; 
+if (char_length(v_providerid)=0) then
+ v_providerid:=null;
+ raise notice 'v_providerid inside if providerid is null:%', v_providerid; 
+else
+
+ raise notice 'applid inside else providerid is null:%',  char_length(v_providerid);
+end if;
+if ((v_referral_id is null ) and (v_applicantid is null) and (v_providerid is null)) then
+ v_referral_id=v_objectid;
+end if;
+RAISE NOTICE 'v_sessiontype:%', v_sessiontype;   
+RAISE NOTICE 'v_training_type:%', v_training_type;   
+RAISE NOTICE 'v_referral_id:%', v_referral_id;   
+RAISE NOTICE 'v_providerid:%', v_providerid;   
+RAISE NOTICE 'v_applicantid:%', v_applicantid; 
+SELECT JSON_AGG(trgobj) INTO jsondata FROM (
+ select sum(duration) as trgduration,personid,personrole
+ from providerorientationtrainingattendance pota
+    join providerorientationtraining pot on pota.training_number= pot.training_number
+    where (pota.delete_sw='N' or pota.delete_sw is null) and pota.is_attended=true
+      and case when v_training_type is not null then
+        (case when v_training_type='Information Meeting' then (pot.training_type =v_training_type and pota.object_id=v_referral_id)  else pot.training_type =v_training_type end) ELSE true end 
+      and case when (v_providerid is not null) then (pota.object_id is not null) and ((pota.object_id in (select applicant_id from providerapprovalphaserecord where provider_id=v_providerid)) or pota.object_id=v_providerid  or pota.object_id=v_referral_id) ELSE true end
+      and case when (v_providerid is null  and v_applicantid IS NOT null) then (pota.object_id is not null) and  (pota.object_id=v_applicantid or pota.object_id=v_referral_id) ELSE true END      
+      and case when (v_sessiontype IS NOT null) then lower(pot.session_type) ilike lower(v_sessiontype) ELSE true END         
+     group by personid,personrole  
+ ) AS trgobj;
+
+
+  return jsondata;
+END;
+
+$function$
+

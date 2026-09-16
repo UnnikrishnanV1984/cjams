@@ -1,0 +1,1 @@
+update cjams.servicecase set activeflag = 0, updatedon = now(), updatedby = 'CDM-7617' where servicecasenumber = '2020033904576';

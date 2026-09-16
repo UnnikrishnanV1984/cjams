@@ -1,0 +1,27 @@
+-- FUNCTION: cjams.f_sname_new(ai_staff_id uuid)
+
+-- DROP FUNCTION cjams.f_sname_new(ai_staff_id uuid);
+
+CREATE OR REPLACE FUNCTION cjams.f_sname_new(ai_staff_id uuid)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE	
+	VS_STAFF_NM					VARCHAR;
+
+BEGIN
+ 
+	VS_STAFF_NM = (SELECT 
+						coalesce(firstname || ' ','') ||
+						coalesce(middlename || ' ','') ||
+						coalesce(lastname || ' ','')
+			      	FROM userprofile  
+			      	WHERE cjamspid = ai_staff_id 
+			      		AND activeflag = 1);
+			      	
+	RETURN VS_STAFF_NM;	
+
+END;
+
+$function$

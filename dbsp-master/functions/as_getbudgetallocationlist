@@ -1,0 +1,101 @@
+CREATE OR REPLACE FUNCTION as_getbudgetallocationlist(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_countyid uuid;
+ v_pagenumber int;
+ v_pageoffset int;
+ sortorder varchar ;
+ sortcolumn varchar ;
+ ls_budgetlist json;
+ v_fiscalyear varchar(10);
+BEGIN 
+v_countyid := searchobj ->> 'countyid';
+v_fiscalyear := searchobj ->> 'fiscalyear'; 
+sortorder := lower(searchobj ->> 'sortorder');
+sortcolumn := lower(searchobj ->> 'sortcolumn');
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+   
+  SELECT json_agg(e) INTO ls_budgetlist FROM(
+  SELECT count(1)  over() as totalcount,
+  apb.annualprogrambudgetid,
+  apb.countyid,
+  c.countyname,
+  c.statecountycode,
+  apb.programtyperefkey,
+(select value_text from referencevalues where referencetypeid=25 and trim(ref_key)=trim(apb.programtyperefkey) and activeflag=1 limit 1 ) as programname,
+apb.subprogramtyperefkey,
+(select value_text from referencevalues where referencetypeid=3000 and trim(ref_key)=trim(apb.subprogramtyperefkey) and activeflag=1 limit 1 ) as subprogramname,
+apb.fiscalyear,
+apb.startdate,
+apb.enddate,
+apb.annualbudgetamount,
+apb.availableamount,
+apb.obligatedamount,
+apb.additionalbudgetamount,
+apb.creditdebitsw,
+(select jsonb_agg(a) from (select * from (
+ select sum(ba.annualbudgetamount) as totalannualbudgetamount,sum(ba.availableamount) as totalavailableamount,
+ sum(ba.obligatedamount) as obligatedamount
+from annualprogrambudget ba where ba.countyid = v_countyid
+AND (v_fiscalyear is null or ba.fiscalyear =v_fiscalyear)
+ 
+limit  1) as b) as a) as budgetamountdetails,
+(select jsonb_agg(a) from (select * from (
+ SELECT 
+ apbh.annualprogrambudgethistoryid,
+ apbh.annualprogrambudgetid,
+(select value_text from referencevalues where referencetypeid=25 and trim(ref_key)=trim(apbh.programtyperefkey) and activeflag=1 limit 1 ) as programname,
+apbh.subprogramtyperefkey,
+(select value_text from referencevalues where referencetypeid=3000 and trim(ref_key)=trim(apbh.subprogramtyperefkey) and activeflag=1 limit 1 ) as subprogramname,
+apbh.fiscalyear,
+apbh.annualbudgetamount,
+apbh.availableamount,
+apbh.obligatedamount,
+apbh.additionalbudgetamount,
+apbh.creditdebitsw,
+apbh.insertedon::date,
+up.displayname 
+from annualprogrambudgethistory apbh
+left join userprofile up on apbh.insertedby = up.securityusersid
+where apbh.annualprogrambudgetid = apb.annualprogrambudgetid order by apbh.updatedon desc) as b) as a) as budgetAllocationHistory
+from annualprogrambudget apb
+join county c on c.countyid = apb.countyid
+and apb.countyid=v_countyid 
+AND (v_fiscalyear is null or apb.fiscalyear =v_fiscalyear)
+order by apb.programtyperefkey
+ LIMIT v_liPageSize OFFSET v_pageoffset
+      )e ;
+RETURN ls_budgetlist; 
+ 
+-- order by (case sortorder when 'asc' then 
+--         case sortcolumn when 'transaction_id' then cast(ACTR.transaction_id as character varying) 
+--             when 'reference_transaction_id' then cast(ACTR.reference_transaction_id as character varying) 
+--             when 'transaction_dt' then cast(ACTR.transaction_dt as character varying)
+--             when 'transaction_type' then cast((SELECT value_tx FROM tb_picklist_values where picklist_type_id=39 and delete_sw='N' and TRIM(picklist_value_cd)=ACTR.transaction_type_cd::text) as character varying)
+--             when 'credit_debit_sw' then cast(ACTR.credit_debit_sw as character varying)
+--             when 'transaction_source' then cast(((SELECT value_tx FROM tb_picklist_values where picklist_type_id=38 and delete_sw='N' and TRIM(picklist_value_cd)=ACTR.transaction_source_cd::text)) as character varying)
+--         else cast(ACTR.benefit_start_dt as character varying) 
+--         end
+--    END) ASC NULLS LAST,
+--    (case sortorder when 'desc' then 
+--         case sortcolumn when 'transaction_id' then cast(ACTR.transaction_id as character varying)
+--             when 'reference_transaction_id' then cast(ACTR.reference_transaction_id as character varying)
+--             when 'transaction_dt' then cast(ACTR.transaction_dt as character varying)
+--             when 'transaction_type' then cast((SELECT value_tx FROM tb_picklist_values where picklist_type_id=39 and delete_sw='N' and TRIM(picklist_value_cd)=ACTR.transaction_type_cd::text) as character varying)
+--             when 'credit_debit_sw' then cast(ACTR.credit_debit_sw as character varying)
+--             when 'transaction_source' then cast(((SELECT value_tx FROM tb_picklist_values where picklist_type_id=38 and delete_sw='N' and TRIM(picklist_value_cd)=ACTR.transaction_source_cd::text)) as character varying)
+--         else cast(ACTR.benefit_start_dt as character varying) 
+--         end
+--    END) DESC NULLS LAST
+ 
+END;
+
+$function$
+

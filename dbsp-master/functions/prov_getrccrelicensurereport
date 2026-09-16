@@ -1,0 +1,235 @@
+CREATE OR REPLACE FUNCTION prov_getrccrelicensurereport(v_monitoring_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_provider_info json;
+v_entrance_conf json;
+v_exit_conf json;
+v_provider_id integer;
+v_staff_questions json;
+v_pplant_questions json;
+v_licenserecomm_info json;
+v_child_record json;
+v_child_questions json;
+v_parent_questions json;
+v_staff_record json;
+v_parent_record json;
+v_complaint_info json;
+v_child_interview json;
+v_staff_interview json;
+v_parent_interview json;
+v_program_operations json;
+v_monitoring_details  json;
+v_site_details  json;
+v_plant_details  json;
+v_monitor_info json;
+v_site_list json;
+v_officers_info json;
+v_activity_info json;
+v_board_interview json;
+v_pplant_record json;
+v_noncomplience_list_staff json;
+v_noncomplience_list_parent json;
+v_noncomplience_list_current json;
+v_noncomplience_list_pplant json;
+v_noncomplience_list_birth_parent json;
+v_noncomplience_list_apartment json;
+v_noncomplience_list json;
+v_personsign json;
+v_monitoring json;
+v_pminfo_info json;
+v_sofficers_info json;
+v_license_info json;
+v_exit_conf_details json;
+v_corp_info json;
+v_incident_info json;
+v_apartment_record json;
+v_apartment_questions json;
+v_birth_parent_record json;
+v_birth_parent_questions json;
+v_monitoring_st_dt date;
+v_monitoring_end_dt date;
+v_startdate date;
+v_enddate date;
+v_prgram character varying;
+v_records_type character varying;
+v_reporting_start_date timestamp without time zone;
+v_reporting_end_date timestamp without time zone;
+begin
+ raise notice 'monitoring: %', v_monitoring_id;
+select provider_id,monitoring_dt,
+to_char( end_dt),prgram,periodic into v_provider_id,v_startdate,v_enddate,
+v_prgram,v_records_type from prov_monitoring where monitoring_id = v_monitoring_id limit 1;
+
+select monitoring_period_start_date, monitoring_period_end_date into v_reporting_start_date,v_reporting_end_date from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+ 
+select provider_id, monitoring_dt,end_dt into v_provider_id,v_monitoring_st_dt,v_monitoring_end_dt 
+from prov_monitoring where monitoring_id = v_monitoring_id limit 1;
+ select json_agg(monitorinfo) into v_monitor_info from 
+ (select * from prov_monitoring where monitoring_id in 
+ (select monitoring_id from  prov_monitoring where  (monitoring_dt between
+  v_startdate::date and v_enddate::date or end_dt is null) and provider_id=v_provider_id and prgram=v_prgram and
+((periodic=v_records_type) and  (monitoring_id =v_monitoring_id))))monitorinfo;
+
+    select json_agg(providerinfo) into v_provider_info from (
+  select pi.agency,(select json_agg(a)  from(select tps.first_nm,tps.last_nm from providerstaff tps where tps.object_id = pi.provider_id  
+   and tps.employee_type='Program Administrator' and tps.delete_sw = 'N')a)as providerstaff ,pi.adm_contact_first_nm,pi.adm_contact_last_nm,pi.adr_email_tx ,pi.provider_nm, (select * from prov_get_formatted_addresses(pi.provider_id)) as address
+     from tb_provider pi where pi.provider_id=v_provider_id
+ )providerinfo;
+ select json_agg(activityinfo) into v_activity_info from (
+  select * from tb_provider_applicant_checklist where category = 'Monitoring'
+   and monitoring_id in (select monitoring_id from  prov_monitoring where  
+   monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id 
+   and prgram=v_prgram and
+((periodic=v_records_type) or  (monitoring_id =v_monitoring_id))))activityinfo;
+
+   select json_agg(licenseinfo) into v_license_info from 
+  (select tpl.license_no, tpl.license_level, tpl.license_type, tpl.license_issue_dt ,tpl.license_expiry_dt ,
+  (select value_tx from tb_picklist_values where picklist_type_id=286 and trim(picklist_value_cd)=trim(tpl.license_status_cd)) as license_status_cd,
+  tpl.site_id, tp.provider_nm, tp.provider_category_cd, tp.adr_work_phone_tx,p.inspectedwith,
+  (select * from prov_get_formatted_addresses(pms.site_id)) as address,
+  (select json_agg(a)  from (
+   select count( puid.precipitating_event),
+   (select value_text from referencevalues  where ref_key=puid.precipitating_event limit 1), 
+   incident_type 
+   from provider_uir pu 
+   join provider_uir_incident_detail puid on pu.uir_no = puid.uir_no  
+   where pu.site_id =pms.site_id
+   and (case when v_reporting_start_date is null then pu.effective_date between '1900-1-1'::date and '2023-05-13'::date
+                        else pu.effective_date::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end) 
+   group by incident_type,puid.precipitating_event
+  ) a) as uirdetails,
+  (select count(a)  from (select 1 from provider_uir pu 
+   where pu.site_id =pms.site_id
+   and (case when v_reporting_start_date is null then pu.effective_date between '1900-1-1'::date and '2023-05-13'::date
+                        else pu.effective_date::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end) 
+  ) a) as uircount,
+  (select json_agg(a)  from (
+   select (CASE WHEN tb_provider_complaint_deficiencyid is not null THEN  'Yes'  ELSE 'No'  end) as status, 
+   complaint_number,complaint_date,complaint_source,narrative 
+          from tb_provider_complaint TPC  
+          left join tb_provider_complaint_deficiency tpcd on tpcd.provider_complaintid=tpc.provider_complaintid
+          where tpc.site_id = pms.site_id
+  ) a) as complaint_info,
+  (select json_agg(a)  from(select distinct recordreviewdate from prov_monitoring_record_site prms where prms.site_id = pms.site_id and prms.recordreviewdate is not null)a) as reviewdate
+  from 
+  prov_monitoring_site pms 
+  join prov_monitoring p on pms.monitoring_id = p.monitoring_id 
+  join tb_provider_licensing tpl on tpl.site_id = pms.site_id and active_sw ='Y'
+  join tb_provider tp on tpl.site_id = tp.provider_id
+  where pms.monitoring_id = v_monitoring_id 
+ ) licenseinfo;
+
+ select json_agg(exit_conf_details) into v_exit_conf_details from
+  (select distinct tpa.program_type, prq.question ,prq.question_hint,pv.comments,pv.cap_needed,
+   prq.record_question_id ,pr.record_id ,pr.records_type,
+                    (case when tp.provider_nm is null then
+      tpa.program_name  else tp.provider_nm end) as provider_nm,
+                    (case when tp.provider_nm is null then
+      (select * from prov_get_formatted_applicantaddresses(pm.applicant_id))  else (select * from prov_get_formatted_addresses(tp.provider_id)) end) as site_address,
+                    (case when tp.provider_id::character varying is null then pm.applicant_id else tp.provider_id::character varying end) as site_id
+                from prov_record_question prq 
+                inner join prov_monitoring_record_data pmrd   on prq.record_question_id = pmrd.record_question_id 
+                inner join prov_monitoring_record_site pm     on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                inner join prov_monitoring m                  on pm.monitoring_id = m.monitoring_id
+                left  join prov_monitoring_exit_conf mec      on mec.monitoring_id = m.monitoring_id
+                inner join prov_violation pv                  on pv.record_question_id = pmrd.record_question_id and (pv.site_id = pm.site_id or pv.applicant_id = pm.applicant_id) and pv.reference_value_id = pm.monitoring_id
+                inner join prov_record pr                     on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pm.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = pm.site_id
+                where  pm.delete_sw = 'N' 
+                    and pv.deficiency_number is not null and m.monitoring_id = v_monitoring_id
+                    and pmrd.monitoring_record_value = 'Non-Compliance')exit_conf_details;
+
+    select json_agg(entrance_conf) into v_entrance_conf from (select * from prov_listentranceconf(v_monitoring_id)) entrance_conf;
+ select json_agg(exit_conf) into v_exit_conf from (select * from prov_listexitconf(v_monitoring_id)) exit_conf;
+
+ 
+ select * from prov_getmonitordetails(v_monitoring_id, 'Child','Record') into v_child_record;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Child','Record') into v_child_questions;
+ select * from prov_midyrgetnoncompliance(v_monitoring_id, 'Child', 'Record') into v_noncomplience_list;
+
+ select * from prov_getmonitordetails(v_monitoring_id, 'Staff','Record') into v_staff_record;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Staff','Record') into v_staff_questions;
+ select * from prov_midyrgetnoncompliance(v_monitoring_id, 'Staff', 'Record') into v_noncomplience_list_staff;
+
+ select * from prov_getmonitordetails(v_monitoring_id, 'Parent','Record') into v_parent_record;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Parent','Record') into v_parent_questions;
+ select * from prov_midyrgetnoncompliance(v_monitoring_id, 'Parent', 'Record') into v_noncomplience_list_parent;
+
+ select * from prov_getmonitordetails(v_monitoring_id, 'Birth Parent','Record') into v_birth_parent_record;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Birth Parent','Record') into v_birth_parent_questions;
+ select * from prov_midyrgetnoncompliance(v_monitoring_id, 'Birth Parent', 'Record') into v_noncomplience_list_birth_parent;
+
+ select * from prov_midyrgetnoncompliancecurrent(v_monitoring_id) into v_noncomplience_list_current;
+
+ select * from prov_getmonitordetails(v_monitoring_id, 'Physical Plant','Record') into v_pplant_record;
+ select * from prov_midyrgetnoncompliance(v_monitoring_id, 'Physical Plant', 'Record') into v_noncomplience_list_pplant;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Physical Plant', 'Record') into v_pplant_questions;
+
+ select * from prov_getmonitordetails(v_monitoring_id, 'Apartment','Record') into v_apartment_record;
+ select * from prov_midyrgetnoncompliance(v_monitoring_id, 'Apartment', 'Record') into v_noncomplience_list_apartment;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Apartment', 'Record') into v_apartment_questions;
+
+
+ select * from prov_getmonitorinterviews(v_monitoring_id, 'Board member','Interview') into v_board_interview;
+ select * from prov_getmonitorinterviews(v_monitoring_id, 'Child','Interview') into v_child_interview;
+ select * from prov_getmonitorinterviews(v_monitoring_id, 'Staff','Interview') into v_staff_interview;
+ select * from prov_getmonitorinterviews(v_monitoring_id, 'Parent','Interview') into v_parent_interview;
+ select * from prov_getmonitorinterviews(v_monitoring_id, v_records_type,'Report') into v_program_operations;
+ select * from prov_getmonitorinterviews(v_monitoring_id, v_records_type,'Details') into v_monitoring_details;
+ -- Added for B-113406
+ select * from prov_getmonitorinterviews(v_monitoring_id, 'Site Details','Details') into v_site_details;
+ select * from prov_getmonitorinterviews(v_monitoring_id, 'Physical Plant','Details') into v_plant_details;
+ 
+ 
+return (json_build_object('activity_info',v_activity_info,
+'officers_info',v_officers_info,
+'site_list',v_site_list,
+'monitor_info',v_monitor_info,
+'license_info',v_license_info,
+'exit_conf_details', v_exit_conf_details,
+'provider_info', v_provider_info,
+'exit_conf',v_exit_conf,
+'entrance_conf',v_entrance_conf,
+'child_record',v_child_record,
+'staff_record',v_staff_record,
+'parent_record',v_parent_record,
+'apartment_record',v_apartment_record,
+'birth_parent_record',v_birth_parent_record,
+'pplant_record',v_pplant_record,
+'child_interview',v_child_interview,
+'staff_interview',v_staff_interview,
+'parent_interview',v_parent_interview,
+'program_operations',v_program_operations,
+'monitoring_details',v_monitoring_details,
+'site_details',v_site_details,
+'plant_details',v_plant_details,
+'board_interview',v_board_interview,
+'noncomplience_list',v_noncomplience_list,
+'noncomplience_list_staff',v_noncomplience_list_staff,
+'noncomplience_list_parent',v_noncomplience_list_parent,
+'noncomplience_list_birth_parent',v_noncomplience_list_birth_parent,
+'noncomplience_list_current',v_noncomplience_list_current,
+'noncomplience_list_pplant', v_noncomplience_list_pplant,
+'noncomplience_list_apartment',v_noncomplience_list_apartment,
+'pminfo_info',v_pminfo_info,
+'sofficers_info',v_sofficers_info,
+'corp_info',v_corp_info,
+'incident_info',v_incident_info,
+'complaint_info',v_complaint_info,
+'child_questions',v_child_questions,
+'staff_questions',v_staff_questions,
+'apartment_questions',v_apartment_questions,
+'pplant_questions',v_pplant_questions,
+'parent_questions',v_parent_questions,
+'birth_parent_questions',v_birth_parent_questions,
+'license_recomm',v_licenserecomm_info,
+'person_signature',v_personsign));
+
+END;
+$function$
+

@@ -1,0 +1,94 @@
+CREATE OR REPLACE FUNCTION serviceplanvendorsearch(searchobj json)
+ RETURNS TABLE(totalcount bigint, serviceplanvendorid uuid, vendorname character varying, rates numeric, rank integer, bponumber character varying, servicesubtypekeys character varying, providercounty character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+    v_lvService VARCHAR(50);
+    v_lvServiceType VARCHAR(50);                              
+    v_lvServiceSubType VARCHAR(50);                         
+    v_lvPaymentType VARCHAR(50);     
+    v_lvChildCharacter json;                                                     
+    v_liZipCode INT;       
+    v_liCounty uuid;
+ v_lvProvider VARCHAR(50);
+    v_liPageNumber INT;                              
+    v_liPageSize INT;
+ v_liCount INT;                              
+    v_lvSortCol VARCHAR(50);                              
+    v_lvSortDir VARCHAR(10); 
+    v_pagenumber int;
+ v_pageoffset int;
+ v_fodertype text[];
+ v_isoperatedbydjs bool;
+ v_lvProviderSubType VARCHAR(50); 
+ v_lvProviderType VARCHAR(50);
+ v_lvProviderCounty uuid;
+ v_lvSortOrder VARCHAR(50);
+ 
+ 
+BEGIN 
+v_lvServiceType := searchobj ->> 'servicetype';
+v_lvService := searchobj ->> 'service'; 
+v_lvServiceSubType := searchobj ->> 'servicesubtype';   
+v_lvPaymentType := searchobj ->> 'paymenttype'; 
+v_liZipCode := searchobj ->> 'zipcode';
+v_liCounty := searchobj ->> 'county';
+v_lvProvider := searchobj ->> 'provider';
+v_lvChildCharacter := searchobj ->> 'childcharacteristic';
+v_liPageNumber := searchobj ->> 'pagenumber';
+v_liPageSize := searchobj ->> 'pagesize'; 
+v_fodertype := searchobj ->> 'foldertype'; 
+v_isoperatedbydjs := (searchobj ->> 'isoperatedbydjs')::bool; 
+v_lvProviderSubType := searchobj ->> 'providersubtype';
+v_lvProviderType := searchobj ->> 'providertype';
+v_lvProviderCounty := searchobj ->> 'providercounty';
+v_lvSortOrder := searchobj ->> 'sortorder';
+
+
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+ 
+SELECT 
+COUNT(1) OVER() totalcount, spv.serviceplanvendorid,spv.vendorname, spvs.rate as rates,spv.rank,
+spv.bponumber,spvs.vendorsubtypekey as servicesubtypekeys,cou.countyname as providercounty
+
+FROM serviceplanvendor spv 
+
+LEFT JOIN serviceplanvendorsubtypeconfig spvs ON spvs.serviceplanvendorid = spv.serviceplanvendorid  and spvs.activeflag = 1 
+LEFT join referencevalues rv on rv.ref_key=spvs.vendorsubtypekey and rv.activeflag=1
+LEFT join servicetype STAS on rv.parentkey=STAS.servicetypekey 
+LEFT JOIN county cou ON cou.countyid = spvs.countyid 
+WHERE spv.activeflag = 1 
+AND (v_lvProviderSubType IS NULL OR spvs.vendorsubtypekey = v_lvProviderSubType)
+AND (v_lvProviderType IS NULL OR STAS.servicetypekey = v_lvProviderType)
+AND (v_lvProviderCounty IS NULL OR cou.countyid = v_lvProviderCounty)
+
+
+GROUP BY spv.serviceplanvendorid,spv.vendorname,  rates,spv.rank,
+spv.bponumber,servicesubtypekeys,providercounty
+ORDER by-- p.providername asc
+
+
+(case v_lvSortOrder when 'asc' then  cast(  spv.rank as  character  varying) else 
+             cast ( spv.vendorname as  character  varying) end ) asc               
+                 
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+
+END;
+
+$function$
+

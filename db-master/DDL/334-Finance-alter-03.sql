@@ -1,0 +1,1 @@
+ALTER TABLE cjams.tb_payment_receipt ALTER COLUMN create_ts SET DEFAULT now();

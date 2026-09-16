@@ -1,0 +1,439 @@
+DROP FUNCTION cjams.sp_ive_adoption_audit(json);
+
+CREATE OR REPLACE FUNCTION cjams.sp_ive_adoption_audit(reqobj json)
+ RETURNS TABLE(v_transactionid uuid)
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+	v_adoptionauditid bigint;
+	v_transactionid uuid;
+	v_counter json;
+	dateandtimeofdocumentationforeffortstoplacewithoutsubsidy varchar(50);
+	adoptionassistancefutureneedsagreementdateadoptiveparents2 varchar(50);
+	adoptionassistancefutureneedsagreementdateadoptiveparents1 varchar(50);
+	adoptionassistanceagreementfutureneedsagreementdateagency  varchar(50);
+	adoptionfinalizationdate varchar(50);
+	childapplicableassessmentdate date;
+	adoptionpetitionfileddate date;
+	exceptiongranteddate varchar(50);
+	adoptionassistancestartdate date;
+	tprgrantedtobothparent varchar(10);
+	anotherreasonforchildnotreturninghome varchar(10);
+	isreasonforexceptionrecorded varchar(10);
+	qualifiedalien varchar(10);
+	reasonfornotgrantingtprforparent varchar(50);
+	uscitizen varchar(10);
+	clientid bigint;
+
+	childhasfosterparentemotionalties varchar(10);
+	incomeandassetsmetafdcstandards varchar(10);
+	childadoptionunsuccessfuleffortstoplace varchar(10);
+	childraceethnicity varchar(250);
+	gender varchar(20);
+	childhashighriskofdisability varchar(10);
+	childname varchar(250);
+	childremovaldate date;
+	childremovedfromspecifiedrelative varchar(10);
+	childdeprivedOfparentalsupport varchar(10);
+	childcanreturntohome varchar(10);
+	childexpectedadoptiveproviderid varchar(50);
+	childhasemotionaldisturbance varchar(10);
+	childcurrentivefostercareeligibilitystatus varchar(50);
+	dateofbirth date;
+	
+	removalcourtorderdate date;
+	childpreviousadoptiveparenttprdate date;
+	childphysicaladdress varchar(500);
+	childmeetsssimedicaldisabledeligreqts varchar(10);
+	voluntaryrelinquishment varchar(10);
+	childssieligibilitystatusonorbeforedateofadoption varchar(10);
+	childpreviousadoptiveparentdeathdate date;
+	childhasphysicalmentalemotionaldisability varchar(10);
+	countyofjurisdictionldss varchar(50);
+	
+	startdateofreceivingssi date;
+	childpreviousadoptionivestatus varchar(50);
+	childexpectedadoptiondate date;
+	childreceivingssiatremoval varchar(10);
+	childpreviouslyadopted varchar(10);
+	childnotreturnhomeexplanation varchar(250);
+	childisssieligible varchar(10);
+	childmeetsssimedicaldisabilityreqts varchar(10);
+	childhasbeenincare60months varchar(10);
+
+	dideffortstoplacechildweremade varchar(10);
+	singleparentadoptioncheck varchar(10);
+	dateoftprofparent_2 date;
+	dateoftprofparent_1 date;
+	
+	adoptionassistance varchar(50);
+	adoptionapplicable varchar(10);
+	adoptionnonapplicable varchar(10);
+	adoptiondataincomplete varchar(10);
+
+	category varchar(10);
+ 	cjamspid bigint;
+ 	removalid bigint;
+	v_approvalid uuid;
+ 
+ 	adoptionauditmessages json;
+ 	v_severity VARCHAR(20);
+	v_text varchar(3000);
+	v_component varchar(1000);
+	v_message varchar(3000);
+
+	adoptionsiblingdetails json;
+	siblingadoptiondecreedate date;	
+	siblingadoptionapplicable varchar(50); 
+	siblingapplicablechildassessmentdate date;
+	siblingadoptiveproviderid varchar(100);
+	siblingname varchar(250);
+
+	adoptionminorparentdetails json;
+	minorparentremovaldate date;
+	minorparentname varchar(250);
+	minorparentcurrentplacementtype varchar(50);
+	minorparentdateofbirth date;
+	minorparentremovalcourtorderdate date;
+	minorparentiveeligibilityforfostercarestatus varchar(50);
+	minorparentiveeligibilityforfostercarestartdate date;
+	dateoflatestpaymentofminorparentiveeligibilityforfostercare date;
+	minorparentphysicaladdress varchar(500);
+
+	childapplicabilitystatus varchar(500);
+	adoptionassistanceagreement varchar(500);
+	childspecialneedsdifficulttoplace varchar(500);
+	childspecialneedseffortstoplacewithoutassistance varchar(500);
+	childspecialneedscannotshouldnotreturntoparents varchar(500);
+	uscitizenqualifiedalien varchar(500);
+	age varchar(500);
+	childpreviousadoption varchar(500);
+	ssi varchar(500);
+	minorparent varchar(500);
+	childplacement varchar(500);
+	childremovedfromspecifiedrelativeresult varchar(500);
+	childdeprivedofparentalsupportresult varchar(500);
+	removalhouseholdincomeandassets varchar(500);
+	finalresult varchar(500);
+
+	childmeetcontinueeligibilitycriteria varchar(20);
+	childdisabilityevaluationdocumentiondate date;
+	startdateofsecondaryeducationorequivalentprogram date;
+	nameofpostsecondaryorvocationaleducation varchar(50);
+	nameofpromotetoemploymentprogram varchar(50);
+	childdisabilitytype varchar(50); 
+	startdateofpromotetoemploymentprogram date; 
+	hourspermonthemployed decimal; 
+	startdateofemployment date;
+	childdisabilitystartdate date; 
+	startdateofpostsecondaryorvocationaleducation date;
+	nameofsecondaryeducationorequivalentprogram varchar(50);
+	nameofemployer varchar(50); 
+	isdocumentedphysicalandmentaldisability varchar(20);
+	extadoption varchar(50);
+
+	missinginfo varchar(500);
+	disability varchar(500);
+	eadoption varchar(500);
+	nonapplsplneedscriteriainsecic12aorband3aorb varchar(10);
+	prioradoptorfc varchar(10);
+	appchildmeetchildstatuscriteriaofsectionia12or3 varchar(10);
+	appthespecialneedscriteriainsecic12aorband3aorb varchar(10);
+	nonappplacementormedicalcriteriaofsecib12or3 varchar(10);
+	appplacementormedicalcriteriaofsectionib12or3 varchar(10);
+	haschildbeenassessedtonotbeanappchild varchar(10);
+	applicableandnonapplicable varchar(10);
+	neitheranappnornonappchildfortitleivepurposes  varchar(10);
+	inputjson json;
+	outputjson json;
+	pagesnapshot json;
+	incompletespecalistname  text;
+	incompletedate date; 
+	incompletespecalistsignature text;
+	decisionsubmissionspecalistname text;
+	decisionsubmissiondate date; 
+	decisionsubmissionspecalistsignature text;
+	decisionresubmissionspecalistname text;
+	decisionresubmissiondate date; 
+	decisionresubmissionspecalistsignature text;
+	resubmissioncount integer;
+	v_type_cd  varchar;
+	v_eligibility_period_id  int;
+	v_eligibility_id  int;
+	v_eli_start_dt  date;
+	v_eli_end_dt   date;
+	v_picklist_value_cd varchar(50);
+
+begin
+	v_transactionid := reqobj ->> 'transactionid';
+	dateandtimeofdocumentationforeffortstoplacewithoutsubsidy := reqobj ->> 'dateandtimeofdocumentationforeffortstoplacewithoutsubsidy';
+	adoptionassistancefutureneedsagreementdateadoptiveparents2 := reqobj ->> 'adoptionassistancefutureneedsagreementdateadoptiveparents2';
+	adoptionassistancefutureneedsagreementdateadoptiveparents1 := reqobj ->> 'adoptionassistancefutureneedsagreementdateadoptiveparents1';
+	adoptionassistanceagreementfutureneedsagreementdateagency := reqobj ->> 'adoptionassistanceagreementfutureneedsagreementdateagency';
+	adoptionfinalizationdate := reqobj ->> 'adoptionfinalizationdate';
+	childapplicableassessmentdate := reqobj ->> 'childapplicableassessmentdate';
+	adoptionpetitionfileddate := reqobj ->> 'adoptionpetitionfileddate';
+	exceptiongranteddate := reqobj ->> 'dateandtimeofdocumentationforexceptiongrantedinchildsbestinterests';
+	adoptionassistancestartdate := reqobj ->> 'adoptionassistancestartdate';
+	tprgrantedtobothparent := reqobj ->> 'tprgrantedtobothparent';
+	anotherreasonforchildnotreturninghome := reqobj ->> 'anotherreasonforchildnotreturninghome';
+	isreasonforexceptionrecorded := reqobj ->> 'isreasonforexceptionrecorded';
+	qualifiedalien := reqobj ->> 'qualifiedalien';
+	reasonfornotgrantingtprforparent := reqobj ->> 'reasonfornotgrantingtprforparent';
+	uscitizen := reqobj ->> 'uscitizen';
+	clientid := reqobj ->> 'clientid';
+
+	childhasfosterparentemotionalties := reqobj ->> 'childhasfosterparentemotionalties';
+	incomeandassetsmetafdcstandards := reqobj ->> 'incomeandassetsmetafdcstandards';
+	childadoptionunsuccessfuleffortstoplace := reqobj ->> 'childadoptionunsuccessfuleffortstoplace';
+	childraceethnicity := reqobj ->> 'childraceethnicity';
+	gender := reqobj ->> 'gender';
+
+	childhashighriskofdisability := reqobj ->> 'childhashighriskofdisability';
+	childname := reqobj ->> 'childname';
+	childremovaldate := reqobj ->> 'childremovaldate';
+	childremovedfromspecifiedrelative := reqobj ->> 'childremovedfromspecifiedrelative';
+	childdeprivedOfparentalsupport := reqobj ->> 'childdeprivedOfparentalsupport';
+	childcanreturntohome := reqobj ->> 'childcanreturntohome';
+	childexpectedadoptiveproviderid := reqobj ->> 'childexpectedadoptiveproviderid';
+	childhasemotionaldisturbance := reqobj ->> 'childhasemotionaldisturbance';
+	childcurrentivefostercareeligibilitystatus := reqobj ->> 'childcurrentivefostercareeligibilitystatus';
+	dateofbirth := reqobj ->> 'dateofbirth';
+	removalcourtorderdate := reqobj ->> 'removalcourtorderdate';
+	childpreviousadoptiveparenttprdate := reqobj ->> 'childpreviousadoptiveparenttprdate';
+	childphysicaladdress := reqobj ->> 'childphysicaladdress';
+	childmeetsssimedicaldisabledeligreqts := reqobj ->> 'childmeetsssimedicaldisabledeligreqts';
+	voluntaryrelinquishment := reqobj ->> 'voluntaryrelinquishment';
+	childssieligibilitystatusonorbeforedateofadoption := reqobj ->> 'childssieligibilitystatusonorbeforedateofadoption';
+	childpreviousadoptiveparentdeathdate := reqobj ->> 'childpreviousadoptiveparentdeathdate';
+	childhasphysicalmentalemotionaldisability := reqobj ->> 'childhasphysicalmentalemotionaldisability';
+	countyofjurisdictionldss := reqobj ->> 'countyofjurisdictionldss';
+	childnotreturnhomeexplanation := reqobj ->> 'childnotreturnhomeexplanation';
+	childisssieligible := reqobj ->> 'childisssieligible';
+	childmeetsssimedicaldisabilityreqts := reqobj ->> 'childmeetsssimedicaldisabilityreqts';
+	childhasbeenincare60months := reqobj ->> 'childhasbeenincare60months';
+
+	startdateofreceivingssi := reqobj ->> 'startdateofreceivingssi';
+	childpreviousadoptionivestatus := reqobj ->> 'childpreviousadoptionivestatus';
+	childexpectedadoptiondate := reqobj ->> 'childexpectedadoptiondate';
+	childreceivingssiatremoval := reqobj ->> 'childreceivingssiatremoval';
+	childpreviouslyadopted := reqobj ->> 'childpreviouslyadopted';
+
+	dideffortstoplacechildweremade := reqobj ->> 'dideffortstoplacechildweremade';
+	singleparentadoptioncheck := reqobj ->> 'singleparentadoptioncheck';
+	dateoftprofparent_2 := reqobj ->> 'dateoftprofparent_2';
+	dateoftprofparent_1 := reqobj ->> 'dateoftprofparent_1';
+
+	adoptionassistance := reqobj ->> 'adoptionassistance';
+	adoptionapplicable := reqobj ->> 'adoptionapplicable';
+	adoptionnonapplicable := reqobj ->> 'adoptionnonapplicable';
+	adoptiondataincomplete := reqobj ->> 'adoptiondataincomplete';
+
+	category := reqobj ->> 'category'; 
+	cjamspid := reqobj ->> 'cjamsPid';
+	removalid := reqobj ->> 'removalid';
+	v_approvalid := reqobj ->> 'approvalid';
+
+	childapplicabilitystatus := reqobj ->> 'childapplicabilitystatus';
+	adoptionassistanceagreement := reqobj ->> 'adoptionassistanceagreement';
+	childspecialneedsdifficulttoplace := reqobj ->> 'childspecialneedsdifficulttoplace';
+	childspecialneedseffortstoplacewithoutassistance := reqobj ->> 'childspecialneedseffortstoplacewithoutassistance';
+	childspecialneedscannotshouldnotreturntoparents := reqobj ->> 'childspecialneedscannotshouldnotreturntoparents';
+	uscitizenqualifiedalien := reqobj ->> 'uscitizenqualifiedalien';
+	age := reqobj ->> 'age';
+	childpreviousadoption := reqobj ->> 'childpreviousadoption';
+	ssi := reqobj ->> 'ssi';
+	minorparent := reqobj ->> 'minorparent';
+	childplacement := reqobj ->> 'childplacement';
+	childremovedfromspecifiedrelativeresult := reqobj ->> 'childremovedfromspecifiedrelativeresult';
+	childdeprivedofparentalsupportresult := reqobj ->> 'childdeprivedofparentalsupportresult';
+	removalhouseholdincomeandassets := reqobj ->> 'removalhouseholdincomeandassets';
+	finalresult := reqobj ->> 'finalresult';
+
+	adoptionauditmessages := reqobj ->> 'adoptionauditmessages';
+	adoptionsiblingdetails := reqobj ->> 'person_adoptionsiblingdetails';
+	adoptionminorparentdetails := reqobj ->> 'person_adoptionminorparentdetails';
+
+	childmeetcontinueeligibilitycriteria := reqobj ->> 'childmeetcontinueeligibilitycriteria';
+	childdisabilityevaluationdocumentiondate := reqobj ->> 'childdisabilityevaluationdocumentiondate';
+	startdateofsecondaryeducationorequivalentprogram := reqobj ->> 'startdateofsecondaryeducationorequivalentprogram';
+	nameofpostsecondaryorvocationaleducation := reqobj ->> 'nameofpostsecondaryorvocationaleducation';
+	nameofpromotetoemploymentprogram := reqobj ->> 'nameofpromotetoemploymentprogram';
+	childdisabilitytype := reqobj ->> 'childdisabilitytype';
+	startdateofpromotetoemploymentprogram := reqobj ->> 'startdateofpromotetoemploymentprogram';
+	hourspermonthemployed := reqobj ->> 'hourspermonthemployed';
+	startdateofemployment := reqobj ->> 'startdateofemployment';
+	childdisabilitystartdate := reqobj ->> 'childdisabilitystartdate';
+	startdateofpostsecondaryorvocationaleducation := reqobj ->> 'startdateofpostsecondaryorvocationaleducation';
+	nameofsecondaryeducationorequivalentprogram := reqobj ->> 'nameofsecondaryeducationorequivalentprogram';
+	nameofemployer := reqobj ->> 'nameofemployer';
+	isdocumentedphysicalandmentaldisability := reqobj ->> 'isdocumentedphysicalandmentaldisability';
+	extadoption := reqobj ->> 'extadoption';
+
+	missinginfo := reqobj ->> 'missinginfo';
+	disability := reqobj ->> 'disability';
+	eadoption := reqobj ->> 'eadoption';
+
+	nonapplsplneedscriteriainsecic12aorband3aorb := reqobj ->> 'nonapplsplneedscriteriainsecic12aorband3aorb';
+	prioradoptorfc := reqobj ->> 'nonappltitleivestandardsofsecid1prioradptionaorbor2ivefcorssiaorb';
+	appchildmeetchildstatuscriteriaofsectionia12or3 := reqobj ->> 'appchildmeetchildstatuscriteriaofsectionia12or3';
+	appthespecialneedscriteriainsecic12aorband3aorb := reqobj ->> 'appthespecialneedscriteriainsecic12aorband3aorb';
+	nonappplacementormedicalcriteriaofsecib12or3 := reqobj ->> 'nonappplacementormedicalcriteriaofsecib12or3';
+	appplacementormedicalcriteriaofsectionib12or3 := reqobj ->> 'appplacementormedicalcriteriaofsectionib12or3';
+	haschildbeenassessedtonotbeanappchild := reqobj ->> 'haschildbeenassessedtonotbeanappchild';
+	applicableandnonapplicable := reqobj ->> 'applicableandnonapplicable';
+	neitheranappnornonappchildfortitleivepurposes := reqobj ->> 'neitheranappnornonappchildfortitleivepurposes';
+	inputjson := reqobj ->> 'inputjson';
+	outputjson := reqobj ->> 'outputjson';
+	pagesnapshot := reqobj ->> 'pagesnapshot'; 
+	incompletespecalistname  := reqobj ->> 'incompletespecalistname'; 
+	incompletedate  := reqobj ->> 'incompletedate'; 
+	incompletespecalistsignature := reqobj ->> 'incompletespecalistsignature'; 
+	decisionsubmissionspecalistname  := reqobj ->> 'decisionsubmissionspecalistname'; 
+	decisionsubmissiondate  := reqobj ->> 'decisionsubmissiondate'; 
+	decisionsubmissionspecalistsignature  := reqobj ->> 'decisionsubmissionspecalistsignature'; 
+	decisionresubmissionspecalistname  := reqobj ->> 'decisionresubmissionspecalistname'; 
+	decisionresubmissiondate  := reqobj ->> 'decisionresubmissiondate'; 
+	decisionresubmissionspecalistsignature  := reqobj ->> 'decisionresubmissionspecalistsignature'; 
+	resubmissioncount := reqobj ->> 'resubmissioncount'; 
+
+INSERT INTO tb_ive_adoption_audit(transactionid, dateandtimeofdocumentationforeffortstoplacewithoutsubsidy, adoptionassistancefutureneedsagreementdateadoptiveparents2,
+adoptionassistancefutureneedsagreementdateadoptiveparents1, adoptionfinalizationdate, childapplicableassessmentdate, adoptionpetitionfileddate, 
+--dateandtimeofdocumentationforexceptiongrantedinchildsbestinterests, 
+adoptionassistancestartdate, tprgrantedtobothparent, anotherreasonforchildnotreturninghome, 
+isreasonforexceptionrecorded, qualifiedalien, reasonfornotgrantingtprforparent, uscitizen, clientid, childhasfosterparentemotionalties, incomeandassetsmetafdcstandards, 
+childadoptionunsuccessfuleffortstoplace, childraceethnicity, gender, childhashighriskofdisability, childname, childremovaldate, childremovedfromspecifiedrelative, 
+childdeprivedOfparentalsupport, childcanreturntohome, childexpectedadoptiveproviderid, childhasemotionaldisturbance, 
+childcurrentivefostercareeligibilitystatus, dateofbirth, removalcourtorderdate, childpreviousadoptiveparenttprdate, childphysicaladdress, childmeetsssimedicaldisabledeligreqts, 
+voluntaryrelinquishment, childssieligibilitystatusonorbeforedateofadoption, childpreviousadoptiveparentdeathdate, childhasphysicalmentalemotionaldisability, 
+countyofjurisdictionldss, startdateofreceivingssi, childpreviousadoptionivestatus, childexpectedadoptiondate, childreceivingssiatremoval, childpreviouslyadopted, 
+dideffortstoplacechildweremade, singleparentadoptioncheck, dateoftprofparent_2, dateoftprofparent_1, adoptionassistance, adoptionapplicable, adoptionnonapplicable, 
+category, cjamspid, removalid, childapplicabilitystatus, adoptionassistanceagreement, childspecialneedsdifficulttoplace, childspecialneedseffortstoplacewithoutassistance, 
+childspecialneedscannotshouldnotreturntoparents, uscitizenqualifiedalien, age, childpreviousadoption, ssi, minorparent, childplacement, childremovedfromspecifiedrelativeresult, 
+childdeprivedofparentalsupportresult, removalhouseholdincomeandassets, finalresult, childmeetcontinueeligibilitycriteria, childdisabilityevaluationdocumentiondate, startdateofsecondaryeducationorequivalentprogram, nameofpostsecondaryorvocationaleducation,
+nameofpromotetoemploymentprogram, childdisabilitytype, startdateofpromotetoemploymentprogram, hourspermonthemployed, startdateofemployment,
+childdisabilitystartdate, startdateofpostsecondaryorvocationaleducation, nameofsecondaryeducationorequivalentprogram,
+nameofemployer, isdocumentedphysicalandmentaldisability, adoptionassistanceagreementfutureneedsagreementdateagency, extadoption, missinginfo, disability, eadoption, adoptiondataincomplete, childnotreturnhomeexplanation,
+childisssieligible, childmeetsssimedicaldisabilityreqts, childhasbeenincare60months, nonapplsplneedscriteriainsecic12aorband3aorb, nonappltitleivestandardsofsecid1prioradptionaorbor2ivefcorssiao, nonappplacementormedicalcriteriaofsecib12or3,
+appchildmeetchildstatuscriteriaofsectionia12or3, appplacementormedicalcriteriaofsectionib12or3, appthespecialneedscriteriainsecic12aorband3aorb, applicableandnonapplicable, haschildbeenassessedtonotbeanappchild , neitheranappnornonappchildfortitleivepurposes, inputjson, outputjson, pagesnapshot,incompletespecalistname, incompletedate, incompletespecalistsignature, 
+decisionsubmissionspecalistname, decisionsubmissiondate, decisionsubmissionspecalistsignature, 
+decisionresubmissionspecalistname, decisionresubmissiondate, decisionresubmissionspecalistsignature, resubmissioncount)
+
+VALUES(v_transactionid, dateandtimeofdocumentationforeffortstoplacewithoutsubsidy, adoptionassistancefutureneedsagreementdateadoptiveparents2,
+adoptionassistancefutureneedsagreementdateadoptiveparents1, adoptionfinalizationdate, childapplicableassessmentdate, adoptionpetitionfileddate, 
+--exceptiongranteddate, 
+adoptionassistancestartdate, tprgrantedtobothparent, anotherreasonforchildnotreturninghome, 
+isreasonforexceptionrecorded, qualifiedalien, reasonfornotgrantingtprforparent, uscitizen, clientid, childhasfosterparentemotionalties, incomeandassetsmetafdcstandards, 
+childadoptionunsuccessfuleffortstoplace, childraceethnicity, gender, childhashighriskofdisability, childname, childremovaldate, childremovedfromspecifiedrelative, 
+childdeprivedOfparentalsupport, childcanreturntohome, childexpectedadoptiveproviderid, childhasemotionaldisturbance, 
+childcurrentivefostercareeligibilitystatus, dateofbirth, removalcourtorderdate, childpreviousadoptiveparenttprdate, childphysicaladdress, childmeetsssimedicaldisabledeligreqts, 
+voluntaryrelinquishment, childssieligibilitystatusonorbeforedateofadoption, childpreviousadoptiveparentdeathdate, childhasphysicalmentalemotionaldisability, 
+countyofjurisdictionldss, startdateofreceivingssi, childpreviousadoptionivestatus, childexpectedadoptiondate, childreceivingssiatremoval, childpreviouslyadopted, 
+dideffortstoplacechildweremade, singleparentadoptioncheck, dateoftprofparent_2, dateoftprofparent_1, adoptionassistance, adoptionapplicable, adoptionnonapplicable, 
+category, cjamspid, removalid, childapplicabilitystatus, adoptionassistanceagreement, childspecialneedsdifficulttoplace, childspecialneedseffortstoplacewithoutassistance, 
+childspecialneedscannotshouldnotreturntoparents, uscitizenqualifiedalien, age, childpreviousadoption, ssi, minorparent, childplacement, childremovedfromspecifiedrelativeresult, 
+childdeprivedofparentalsupportresult, removalhouseholdincomeandassets, finalresult, childmeetcontinueeligibilitycriteria, childdisabilityevaluationdocumentiondate, startdateofsecondaryeducationorequivalentprogram, nameofpostsecondaryorvocationaleducation,
+nameofpromotetoemploymentprogram, childdisabilitytype, startdateofpromotetoemploymentprogram, hourspermonthemployed, startdateofemployment,
+childdisabilitystartdate, startdateofpostsecondaryorvocationaleducation, nameofsecondaryeducationorequivalentprogram,
+nameofemployer, isdocumentedphysicalandmentaldisability,adoptionassistanceagreementfutureneedsagreementdateagency, extadoption, missinginfo, disability, eadoption, adoptiondataincomplete, childnotreturnhomeexplanation,
+childisssieligible, childmeetsssimedicaldisabilityreqts, childhasbeenincare60months , nonapplsplneedscriteriainsecic12aorband3aorb, prioradoptorfc, nonappplacementormedicalcriteriaofsecib12or3,
+appchildmeetchildstatuscriteriaofsectionia12or3, appplacementormedicalcriteriaofsectionib12or3, appthespecialneedscriteriainsecic12aorband3aorb, applicableandnonapplicable, haschildbeenassessedtonotbeanappchild , neitheranappnornonappchildfortitleivepurposes, inputjson, outputjson, pagesnapshot, incompletespecalistname, incompletedate, incompletespecalistsignature, 
+decisionsubmissionspecalistname, decisionsubmissiondate, decisionsubmissionspecalistsignature, 
+decisionresubmissionspecalistname, decisionresubmissiondate, decisionresubmissionspecalistsignature, resubmissioncount);
+
+select tce.eligibility_id, tce.start_dt, tce.end_dt into v_eligibility_id, v_eli_start_dt, v_eli_end_dt from tb_client_eligibility tce where tce.client_id = cjamspid and tce.eligibility_type_cd = '2934' ;
+select adoptionauditid into v_adoptionauditid FROM tb_ive_adoption_audit where transactionid = v_transactionid;
+Update tb_eligibility_period set delete_sw = 'Y' where eligibility_id = v_eligibility_id and sqnm_sw = category;
+
+IF (v_approvalid IS NOT NULL) THEN
+		UPDATE routing SET activeflag = 0, updatedon=now()
+		WHERE objectid = v_approvalid:: CHARACTER VARYING and activeflag = 1 and eventcode = 'ABLR';
+END IF;
+
+IF(category in ('I','R')) THEN
+	v_type_cd = '2923';
+
+	IF(category = 'R') THEN
+		adoptionassistance := extadoption;
+		v_type_cd = '2924';
+	END IF;
+
+	IF(adoptionassistance = 'InComplete_Application') THEN
+		adoptionassistance := 'Incomplete'; 
+	END IF;	
+
+	SELECT tpv.picklist_value_cd INTO v_picklist_value_cd FROM tb_picklist_values tpv 
+	WHERE tpv.picklist_type_id = 262 AND upper(tpv.value_tx) = upper(adoptionassistance);
+
+	INSERT INTO tb_eligibility_period
+	(eligibility_period_id, start_dt, end_dt, status_cd, eligibility_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw, sqnm_sw, finalresult, ivenarrativesection)
+	VALUES(nextval('seq_tb_eligibility_period')::integer, v_eli_start_dt, v_eli_end_dt, v_picklist_value_cd, v_eligibility_id, now(), 'admin', now(), 'admin', 'N'::bpchar, category, adoptionassistance, 'YES') returning eligibility_period_id into v_eligibility_period_id;
+
+	INSERT INTO tb_eligibility_events (event_id, type_cd, event_dt, eligibility_period_id, resulting_status_cd, create_ts, update_ts, create_user_id, update_user_id, delete_sw, event_start_dt, event_end_dt, active_sw) 
+	VALUES (nextval('seq_tb_eligibility_events')::integer, v_type_cd, now(), v_eligibility_period_id, v_picklist_value_cd, now(), now(), 'admin', 'admin','N', v_eli_start_dt, v_eli_end_dt, 'Y');
+
+	UPDATE tb_ive_adoption_audit SET eligibility_period_id = v_eligibility_period_id WHERE adoptionauditid=v_adoptionauditid;
+END IF;
+
+FOR v_counter IN SELECT * FROM json_array_elements(adoptionauditmessages)	 
+	 LOOP	 	
+	 	v_severity := v_counter ->> 'severity';
+		v_text := v_counter ->> 'message';	
+		v_component := (select substring(v_text from '(?<=\[).+?(?=\])'));
+		v_message := (select regexp_replace(v_text, '\[(.*?)\]', ''));
+	
+	 	INSERT INTO tb_adoptionaudit_messages(adoptionauditmessagesid, adoptionauditid, severity, message, component, cjamspid, insertedby, updatedby, insertedon, updatedon)
+	 	
+	 	VALUES(gen_random_uuid(), v_adoptionauditid, v_severity, v_message, v_component, cjamspid, 'admin', 'admin', now(), now());
+--	    RAISE NOTICE 'output from space %', v_rdcounter ->> 'eventreason';
+	 END LOOP;
+
+FOR v_counter IN SELECT * FROM json_array_elements(adoptionsiblingdetails)	 
+	 LOOP	 	
+	 	siblingadoptiondecreedate := v_counter ->> 'siblingadoptiondecreedate';
+		siblingadoptionapplicable := v_counter ->> 'siblingadoptionapplicable';
+		siblingapplicablechildassessmentdate := v_counter ->> 'siblingapplicablechildassessmentdate';
+		siblingadoptiveproviderid := v_counter ->> 'siblingadoptiveproviderid';
+		siblingname := v_counter ->> 'siblingname';
+	
+	 	INSERT INTO tb_adoptionaudit_siblingdetails(adoptionsiblingdetailsid, adoptionauditid, siblingadoptiondecreedate, siblingadoptionapplicable, siblingapplicablechildassessmentdate, siblingadoptiveproviderid, siblingname)
+	 	
+	 	VALUES(gen_random_uuid(), v_adoptionauditid, siblingadoptiondecreedate, siblingadoptionapplicable, siblingapplicablechildassessmentdate, siblingadoptiveproviderid, siblingname);
+--	    RAISE NOTICE 'output from space %', v_counter ->> 'unearnedincometype';
+	 END LOOP;	
+
+FOR v_counter IN SELECT * FROM json_array_elements(adoptionminorparentdetails)	 
+	 LOOP	 	
+	 	minorparentremovaldate := v_counter ->> 'minorparentremovaldate';
+		minorparentname := v_counter ->> 'minorparentname';
+		minorparentcurrentplacementtype := v_counter ->> 'minorparentcurrentplacementtype';
+		minorparentdateofbirth := v_counter ->> 'minorparentdateofbirth';
+		minorparentremovalcourtorderdate := v_counter ->> 'minorparentremovalcourtorderdate';	
+		minorparentiveeligibilityforfostercarestatus := v_counter ->> 'minorparentiveeligibilityforfostercarestatus';
+		minorparentiveeligibilityforfostercarestartdate := v_counter ->> 'minorparentiveeligibilityforfostercarestartdate';
+		dateoflatestpaymentofminorparentiveeligibilityforfostercare := v_counter ->> 'dateoflatestpaymentofminorparentiveeligibilityforfostercare';
+		minorparentphysicaladdress := v_counter ->> 'minorparentphysicaladdress';
+	
+	 	INSERT INTO tb_adoptionaudit_minorparentdetails(adoptionminorparentdetailsid, adoptionauditid, minorparentremovaldate, minorparentname, 
+	 	minorparentcurrentplacementtype, minorparentdateofbirth, minorparentremovalcourtorderdate, minorparentiveeligibilityforfostercarestatus, 
+		minorparentiveeligibilityforfostercarestartdate, dateoflatestpaymentofminorparentiveeligibilityforfostercare, minorparentphysicaladdress)
+	 	
+	 	VALUES(gen_random_uuid(), v_adoptionauditid, minorparentremovaldate, minorparentname, 
+	 	minorparentcurrentplacementtype, minorparentdateofbirth, minorparentremovalcourtorderdate, minorparentiveeligibilityforfostercarestatus, 
+		minorparentiveeligibilityforfostercarestartdate, dateoflatestpaymentofminorparentiveeligibilityforfostercare, minorparentphysicaladdress);
+--	    RAISE NOTICE 'output from space %', v_counter ->> 'unearnedincometype';
+	 END LOOP;	
+
+RETURN QUERY
+select
+ --tb_audit_periods
+ aa.transactionid													AS		v_transactionid
+ 
+ 
+ 
+ FROM tb_ive_adoption_audit AS aa
+ where aa.transactionid = v_transactionid;
+ 
+end
+ $function$

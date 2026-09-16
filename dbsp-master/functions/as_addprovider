@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION as_addprovider(insertobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+declare
+v_providerId character varying;
+v_securityuserid character varying;
+v_statuscode text;
+v_categorycd text;
+i json;
+v_prgram text;
+v_rcc text;
+v_cpa text;
+v_appid character varying;
+v_affiliatedproviderid int;
+v_addressarr json;
+v_adrtype text;
+v_adrid uuid;
+v_adrtypecd text;
+
+begin
+v_providerId := insertobj->>'provider_id';
+v_appid := insertobj->>'applicant_id';
+v_securityuserid := insertobj->>'securityuserid';
+v_statuscode :='1791';
+v_rcc := 'RCC';
+v_cpa := 'CPA';
+
+Select prgram, provider_id into v_prgram , v_affiliatedproviderid from tb_provider_applicant where applicant_id = v_appid;
+
+select array_to_json(array_agg(row_to_json(d)))
+      from (
+        select * from tb_provider_address_mapping where object_id = v_appid 
+      ) d into v_addressarr;
+
+if(v_prgram = v_rcc)
+then 
+v_categorycd := '3274';
+end if ;
+if(v_prgram = v_cpa)
+then 
+v_categorycd := '3302';
+end if;
+
+IF LENGTH(v_providerId) > 1
+then
+
+INSERT INTO tb_provider(provider_id, provider_category_cd, provider_status_cd, affiliate_provider_id, create_ts, create_user_id, update_ts, update_user_id, adr_email_tx , adr_cell_phone_tx, adr_fax_tx, provider_first_nm , provider_last_nm , provider_nm)
+select (v_providerId)::int, v_categorycd, v_statuscode , (pr.provider_id)::int, now(),v_securityuserid, now(), v_securityuserid , pr.contact_email, pr.contact_phonenumber , pr.contact_fax , pr.contact_first_nm , pr.contact_last_nm , pr.program_name from tb_provider_applicant pr where pr.applicant_id = v_appid;
+
+update tb_provider set provider_status_cd = v_statuscode where provider_id = v_affiliatedproviderid;
+
+update tb_provider_applicant set site_id = (v_providerId)::int where applicant_id = v_appid;
+
+for i IN SELECT * FROM json_array_elements(v_addressarr)
+loop
+
+select i->>'address_type', i->>'address_id' into v_adrtype , v_adrid from tb_provider_address_mapping where (i->>'address_mapping_id')::uuid = address_mapping_id;
+
+if (v_adrtype = 'Main')
+then
+v_adrtypecd := '3357';
+end if;
+
+if (v_adrtype = 'Payment')
+then
+v_adrtypecd := '3356';
+end if;
+
+INSERT INTO tb_provider_addresses
+(parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx,create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx,adr_county_cd_tx)
+select v_providerId, v_adrtypecd, pra.adr_format_cd, pra.adr_street_no,pra.adr_box_no,pra.adr_pre_dir_cd, pra.adr_street_nm, pra.adr_street_suffix_cd,pra.adr_post_dir_cd,pra.adr_unit_type_cd, pra.adr_unit_no_tx,pra.adr_city_nm, pra.adr_county_cd, pra.adr_state_cd, pra.adr_zip5_no, pra.adr_country_tx, now(),v_securityuserid,now(),v_securityuserid,'N',pra.adr_street_tx,pra.adr_county_cd_tx
+FROM tb_provider_applicant_addresses pra
+WHERE pra.address_id = v_adrid;
+
+END LOOP;
+
+return 'success';
+
+else
+return 'failure';
+end if; 
+end;
+$function$
+

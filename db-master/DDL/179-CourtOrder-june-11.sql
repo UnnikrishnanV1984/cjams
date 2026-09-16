@@ -1,0 +1,1 @@
+ALTER TABLE cjams.Intakeservreqcourtorder ADD COLUMN if not exists  intakeservicerequestactorid uuid NULL;

@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION prov_getsanctionslist_djs(v_provider_id character varying, v_sanction_no character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+v_sanctiondata json;
+     
+
+BEGIN  
+   
+
+select  jsonb_agg(x) as sanctiondata into v_sanctiondata from
+(
+select tps.*, pa.appeal_number,pa.appeal_id, tp.provider_nm ,(select SUM(TOTALCOUNT) from (( select count(1) over() as totalcount from tb_placement pl 
+        inner join person p on  pl.personid = p.personid
+        where 
+        pl.delete_sw='N' 
+        and pl.provider_id = tps.site_id 
+        and  pl.exit_dt IS NULL AND coalesce(pl.void_sw, 'N') <> 'Y'
+        
+        union 
+        
+         select count(1) over() as totalcount FROM djs_services.placement pl
+    JOIN djs_master.person p on pl.personid = p.personid 
+        where 
+        pl.activeflag='1' 
+        and pl.altproviderid = tps.site_id 
+       
+        and  pl.enddatetime IS NULL
+        
+        union 
+        
+        select count(1) over() as totalcount 
+   FROM prov.prov_adhoc_site_placements pl
+        where 
+        pl.delete_sw='N' 
+        and pl.site_id =  tps.site_id and pl.exit_dt is null ))) as placement_cnt,
+(select * from prov_get_formatted_addresses(tp.provider_id)) as site_address  
+from tb_provider_sanctions tps 
+left join provider_appeal pa on tps.sanction_no = pa.object_id and pa.delete_sw ='N'
+left join tb_provider tp on tp.provider_id = tps.site_id and tp.delete_sw = 'N'
+where  
+ (v_provider_id is null or tps.provider_id =  v_provider_id) and 
+ (v_sanction_no is null or tps.sanction_no =  v_sanction_no) 
+ order by tps.create_ts desc
+)x;
+
+return v_sanctiondata;
+END;
+$function$
+

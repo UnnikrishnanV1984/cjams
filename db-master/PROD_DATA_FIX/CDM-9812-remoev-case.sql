@@ -1,0 +1,1 @@
+update intakeservicerequest set activeflag = 0, updatedon = now(), updatedby = 'CDM-9812' where servicerequestnumber = '20200174022014';

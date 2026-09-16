@@ -1,0 +1,43 @@
+CREATE OR REPLACE FUNCTION prov_getrecordquestion(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+  DECLARE
+  jsondata json;
+  
+  BEGIN
+   
+  SELECT JSON_AGG(pla) INTO jsondata FROM (
+   select prq.question,prq.question_data_type,prq.question_hint,prq.question_options,prq.question_type,prq.record_question_id ,prq.question_addtional_fields,
+   prq.question_mandatory,prq.record_id,
+   prq.is_group,prq.on_expand, prq.tooltipkey
+   ,(select json_agg(x) from (
+    select prq1.question,prq1.question_data_type,prq1.question_hint,prq1.question_options,prq.question_addtional_fields,
+    prq1.question_type,prq1.is_group,prq1.on_expand,
+    prq1.record_question_id ,prq1.record_id
+    from prov_record_question prq1 where prq1.parent_record_question_id =  prq.record_question_id 
+    order by prq1.displayorder nulls last 
+   ) x ) as questions 
+   from prov_record pr 
+   join prov_record_question prq on prq.record_id = pr.record_id and pr.delete_sw = 'N'
+   where  pr.module_name= reqobj ->> 'module_name' 
+   and (case 
+     when coalesce((reqobj ->> 'prgram_type'),null) is null then true  
+     when coalesce((reqobj ->> 'prgram_type'),null) is not null then 
+      (case 
+       when coalesce((reqobj ->> 'prgram_type'),null) = 'BLANK' then  pr.prgram_type is null 
+       else  coalesce(pr.prgram_type,'') = coalesce(RTRIM((reqobj ->> 'prgram_type'),','),'')  
+      end)
+     else  true  end)
+   and (coalesce((reqobj ->> 'prgram'),null) is null or coalesce(pr.prgram,'') = coalesce((reqobj ->> 'prgram'),''))
+   and (coalesce((reqobj ->> 'records_type'),null) is null or coalesce(pr.records_type,'') = coalesce((reqobj ->> 'records_type'),''))
+   and (coalesce((reqobj ->> 'record_id'),null) is null or coalesce(pr.record_id::character varying,'') = coalesce((reqobj ->> 'record_id'),''))
+   and (coalesce((reqobj ->> 'agency'),null) is null or coalesce(pr.agency,'') = coalesce((reqobj ->> 'agency'),''))
+   and coalesce (prq.parent_record_question_id :: character varying,'') = ''
+   and prq.delete_sw = 'N' and (prq.monitoring_id is null or prq.monitoring_id = (reqobj ->> 'monitoring_id'))
+  order by prq.displayorder nulls last, prq.question_hint asc nulls last
+  ) AS pla;
+  RETURN jsondata;
+  END;
+$function$
+

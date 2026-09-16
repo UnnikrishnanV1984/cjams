@@ -1,0 +1,93 @@
+CREATE OR REPLACE FUNCTION getcaseplanlegacy(v_caseid uuid, v_personid uuid)
+ RETURNS TABLE(caseplan1 json, caseplan2 json, caseplan3servagreement json, caseplan3appla json, caseplan4servagreement json, childinfo json)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE l_caseplan1 json;
+  l_caseplan2 json;
+  l_caseplan3 json;
+  l_caseplan3appla json;
+  l_caseplan4 json;
+  l_childinfo json;
+BEGIN  
+ SELECT json_agg(case_plan1)  INTO l_caseplan1
+ FROM (
+   SELECT   
+       caseplan1date plandate
+     , f_pdesc(timeframetypekey,298) timeframe
+     , 'Completed' status
+     , caseplan1id caseplanid 
+     , caseid 
+   FROM  caseplan1 
+   WHERE  activeflag =1 
+     AND  caseid = v_caseid AND personid = v_personid 
+  )case_plan1;
+   
+ SELECT json_agg(case_plan2)  INTO l_caseplan2
+ FROM ( SELECT    
+       caseplan2date plandate
+     , f_pdesc(timeframetypekey,298) timeframe
+     , 'Completed' status
+     , caseplan2id caseplanid 
+     , caseid 
+   FROM  caseplan2 
+     LEFT JOIN (SELECT entity_link FROM tb_saved_reports) s ON s.entity_link = caseplan2.old_id
+   WHERE  activeflag =1
+       AND  caseid = v_caseid AND personid = v_personid 
+   ) case_plan2;
+   
+ SELECT json_agg(case_plan3)  INTO l_caseplan3
+ FROM(
+   SELECT    
+       case3plandate plandate
+     , begindate
+     , enddate
+     , f_pdesc( (approvalstatustypekey),279) status
+     , caseplan3servagreementid   
+     , caseid 
+   FROM  caseplan3servagreement 
+   WHERE  activeflag =1
+     AND  caseid = v_caseid  AND (personid = v_personid 
+     OR personid in (select person1id from actorrelationship where person2id = v_personid and relationshiptypekey in ('BGMTHR', 'BGFTHR')))    
+  ) case_plan3; 
+  
+ SELECT json_agg(case_plan3appla)  INTO l_caseplan3appla
+ FROM(
+   SELECT  
+       appladate
+     , CASE completedflag WHEN 1 THEN 'Completed' ELSE 'Pending' END status
+     , caseplan3id caseplanid   
+     , caseid 
+   FROM  caseplan3  
+   WHERE  activeflag =1
+     AND  caseid = v_caseid   AND personid = v_personid 
+  ) case_plan3appla;   
+  
+ SELECT json_agg(case_plan4) INTO l_caseplan4
+ FROM(
+   SELECT  
+       caseplan4date plandate
+     ,  'Completed' status
+     , caseplan4id caseplanid 
+     , caseid 
+   FROM  caseplan4 
+   WHERE  activeflag =1
+     AND  caseid = v_caseid   AND personid = v_personid 
+  ) case_plan4;
+  
+  SELECT  
+    JSON_BUILD_OBJECT( 'personname' , (firstname || COALESCE(' ' || middlename,'')  || ' ' || lastname)
+    , 'Age' , date_part('year',age(dob))
+    , 'dob' ,  to_char(dob::date,'MM/dd/yyyy')
+    , 'personid', v_personid
+    , 'gender' , CASE gendertypekey WHEN 'M' THEN 'Male' WHEN 'F' THEN 'Female' ELSE '-' END 
+    ,  'cjamspid',cjamspid )::json INTO l_childinfo
+  FROM  person  
+  WHERE  activeflag =1  AND personid = v_personid LIMIT 1;
+ 
+ RETURN QUERY
+  SELECT l_caseplan1, l_caseplan2, l_caseplan3 json, l_caseplan3appla,l_caseplan4,l_childinfo;
+END;
+
+
+$function$
+

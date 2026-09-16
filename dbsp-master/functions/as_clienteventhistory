@@ -1,0 +1,59 @@
+CREATE OR REPLACE FUNCTION as_clienteventhistory(i_personid uuid, i_foldersearch character varying, i_status character varying, youth_status character varying, pagenumber bigint, pagesize bigint, v_nolimit boolean)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, foldertype character varying, foldertypekey character varying, teamtypekey character varying, businessunit text, status text, currentworker character varying, worker bigint, opendate timestamp without time zone, closeddate timestamp without time zone, youthstatus character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+ 
+ declare foldersearch character varying;
+ statussearch  character varying;
+ queryforexecute text ;
+ youthstatussearch  character varying;
+ begin
+   
+ RETURN QUERY 
+select count(1) over()  as totalcount, * from (
+  (select distinct INTSR.intakeserviceid,INTSR.servicerequestnumber, FT.description as foldertype,INTSR.foldertypekey,INTSR.teamtypekey,TT.description as businessunit
+          , INST.description as status,UP.displayname as currentworker,UP.cjamspid as worker,INTSR.insertedon as opendate ,
+           ( select ISRD.insertedon as closeddate from intakeservicerequestdispositioncode ISRD
+    join intakeserreqstatustype ISS on ISS.intakeserreqstatustypeid = ISRD.intakeserreqstatustypeid and ISS.intakeserreqstatustypekey='Closed'
+          left join servicerequesttypeconfigdispositioncode SCP 
+    on ISRD.servicerequesttypeconfigiddispostionid=SCP.servicerequesttypeconfigiddispostionid and ISRD.activeflag=1
+    where ISRD.intakeserviceid=INTSR.intakeserviceid order by ISRD.insertedon limit 1 
+           ) as closeddate,fp.focuspersonstatustypekey
+   from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1
+   join person p on p.personid=ACC.personid 
+   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1  
+   and fp.intakeserviceid=INTSR.intakeserviceid
+   left join foldertype FT on FT.foldertypekey=INTSR.foldertypekey and FT.activeflag=1
+   left join teamtype TT on TT.teamtypekey = INTSR.teamtypekey
+   left join intakeserreqstatustype INST on INST.intakeserreqstatustypeid = INTSR.intakeserreqstatustypeid 
+   join routing RU on RU.objectid=INTSR.intakeserviceid ::character varying and RU.toroleid='JSCW' and RU.activeflag=1 
+   left join userprofile UP on UP.securityusersid=RU.tosecurityusersid and UP.activeflag=1
+   where ACC.personid =i_personid and INTSR.activeflag=1 and INTSR.teamtypekey='DJS')
+ UNION ALL
+   (select distinct '00000000-0000-0000-0000-000000000000' ::uuid,INTSR.intakenumber,  FT.description as foldertype,FA.foldertypekey,INTSR.teamtypekey,TT.description as businessunit
+          ,FA.status as status,UP.displayname as currentworker,UP.cjamspid as worker,FA.opendate as opendate ,
+           FA.closedate  as closeddate,fp.focuspersonstatustypekey
+   from intakeservicerequest INTSR 
+   join intakedastaging IDS on IDS.intakenumber=INTSR.intakenumber and IDS.activeflag=1
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1
+   join person p on p.personid=ACC.personid 
+   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1  
+   and fp.intakenumber=INTSR.intakenumber
+   left join teamtype TT on TT.teamtypekey = INTSR.teamtypekey
+   left join intakeserreqstatustype INST on INST.intakeserreqstatustypeid = INTSR.intakeserreqstatustypeid  
+   left join userprofile UP on UP.securityusersid=IDS.insertedby and UP.activeflag=1
+   left join folderassignment FA on FA.objectid=INTSR.intakenumber 
+   left join foldertype FT on FT.foldertypekey=FA.foldertypekey and FT.activeflag=1
+   where ACC.personid = i_personid and INTSR.activeflag=1 and INTSR.teamtypekey='DJS'))  as clientevent where 
+   case when (i_foldersearch != '' and i_foldersearch != null) then clientevent.foldertypekey = i_foldersearch else 1=1 end and 
+   case when (i_status != '' and i_status != null) then clientevent.status = i_status else 1=1 end and 
+   case when (youth_status != '' and youth_status != null) then clientevent.focuspersonstatustypekey = youth_status else 1=1 end 
+   LIMIT case when v_nolimit = false  then pagesize end offset case when v_nolimit = false  then pagenumber end;
+end;
+
+$function$
+

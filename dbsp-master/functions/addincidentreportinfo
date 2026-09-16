@@ -1,0 +1,79 @@
+CREATE OR REPLACE FUNCTION addincidentreportinfo(insertobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+DECLARE
+v_securityuserid character varying;
+v_incidenttype json;
+v_phones json;
+v_emails json;
+i text;
+v_youthinfo json;
+v_randomuuid uuid;
+v_youthid character varying;
+v_incidentno character varying;
+
+BEGIN
+v_securityuserid := insertobj ->> 'securityuserid'; 
+v_incidenttype := insertobj ->> 'incident_types';
+v_phones := insertobj ->> 'phones';
+v_emails := insertobj ->> 'emails';
+v_youthinfo := insertobj ->> 'youth_info';
+v_incidentno := insertobj ->> 'incident_no';
+
+if length(v_incidentno)>0
+then
+INSERT INTO providerincident
+(incident_no, site_id, provider_id, license_no, program_nm, incident_category, youth_narrative, incident_date, incident_time, program_director_first_nm, program_director_last_nm, program_director_phone, law_enforcement_notify_date,
+law_enforcement_notify_time, law_enforcement_police_report_no, law_enforcement_first_nm, law_enforcement_last_nm, law_enforcement_phone, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(v_incidentno, (insertobj ->> 'site_id')::int, (insertobj ->> 'provider_id')::int, insertobj ->> 'license_no', insertobj ->> 'program_nm', insertobj ->> 'incident_category', insertobj ->> 'youth_narrative',(insertobj ->> 'incident_date')::date, insertobj ->> 'incident_time', 
+insertobj ->> 'program_director_first_nm',insertobj ->> 'program_director_last_nm', insertobj ->> 'program_director_phone', (insertobj ->> 'law_enforcement_notify_date')::date, insertobj ->> 'law_enforcement_notify_time',
+insertobj ->> 'law_enforcement_police_report_no', insertobj ->> 'law_enforcement_first_nm',  insertobj ->> 'law_enforcement_last_nm', insertobj ->> 'law_enforcement_phone', now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+
+for i IN SELECT * FROM json_array_elements_text(v_incidenttype)
+loop
+INSERT INTO providerincidenttypes
+(incident_no, incident_category, incident_type, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(v_incidentno, insertobj ->> 'incident_category', i, now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+END LOOP;
+
+for i IN SELECT * FROM json_array_elements(v_youthinfo)
+loop
+INSERT INTO provideryouthinfo
+(object_id, youth_first_name, youth_last_name, youth_dob, youth_identifier_no, youth_admitting_charge, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(v_incidentno,  i ->> 'youth_first_name',  i ->> 'youth_last_name',  i ->> 'youth_dob', i ->> 'youth_identifier_no', i ->> 'youth_admitting_charge', now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar) returning youth_id into v_youthid;
+
+select gen_random_uuid() into v_randomuuid;
+ 
+INSERT INTO tb_provider_applicant_addresses
+(address_id, adr_street_no,adr_street_nm, create_ts, create_user_id, update_ts, update_user_id, delete_sw,
+adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx)
+VALUES(v_randomuuid, (i->>'adr_street_no')::int, i->>'adr_street_nm',now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar, i->>'adr_city_nm', i->>'adr_county_cd',
+i->>'adr_state_cd', (i->>'adr_zip5_no')::numeric,(i->>'adr_zip4_no')::numeric, i->>'adr_direction_tx', i->>'adr_foreign_tx', i->>'adr_foreign_state_tx', i->>'adr_country_tx');
+
+INSERT INTO tb_provider_address_mapping
+(address_mapping_id, object_id, address_id, address_type, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(gen_random_uuid(), v_youthid, v_randomuuid, 'Youth', now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+
+END LOOP;
+
+for i IN SELECT * FROM json_array_elements_text(v_phones)
+loop
+INSERT INTO tb_provider_applicant_phone
+(phone_id, object_id, phone_no, phone_type, activeflag, insertedby, insertedon, updatedby, updatedon)
+VALUES(gen_random_uuid(), v_incidentno, i, 'UIR', 1, v_securityuserid, now(), v_securityuserid, now());
+END LOOP;
+ 
+for i IN SELECT * FROM json_array_elements_text(v_emails)
+loop
+INSERT INTO tb_provider_applicant_email
+(email_unique_id, object_id, email, activeflag, insertedby, insertedon, updatedby, updatedon, email_type)
+VALUES(gen_random_uuid(), v_incidentno, i, 1, v_securityuserid, now(), v_securityuserid, now(), 'UIR');
+END LOOP;
+
+return 'success';
+end if;
+end;
+
+$function$
+

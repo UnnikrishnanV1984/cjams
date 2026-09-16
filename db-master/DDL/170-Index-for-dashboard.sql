@@ -1,0 +1,13 @@
+CREATE INDEX intakeservicerequest_intakenumber_idx ON cjams.intakeservicerequest (intakenumber);
+CREATE INDEX intakedastatus_intakenumber_idx ON cjams.intakedastatus (intakenumber);
+CREATE INDEX intakeservicerequest_foldertypekey_idx ON cjams.intakeservicerequest (foldertypekey);
+CREATE INDEX person_dateofdeath_idx ON cjams.person (dateofdeath);
+CREATE INDEX intakeservicerequestactor_intakeservicerequestpersontypekey_idx ON cjams.intakeservicerequestactor (intakeservicerequestpersontypekey);
+CREATE INDEX intakeservicerequesttype_intakeservreqtypeid_idx ON cjams.intakeservicerequesttype (intakeservreqtypeid);
+CREATE INDEX restricteditems_accessuserid_idx ON cjams.restricteditems (accessuserid);
+CREATE INDEX intakeservicerequest_intakeservicerequestclassid_idx ON cjams.intakeservicerequest (intakeservicerequestclassid);
+CREATE INDEX servicerequestsubtype_activeflag_idx ON cjams.servicerequestsubtype (activeflag);
+CREATE INDEX servicerequesttypeconfig_servicerequestsubtypeid_idx ON cjams.servicerequesttypeconfig (servicerequestsubtypeid,activeflag);
+CREATE INDEX servicerequesttypeconfig_intakeservreqtypeid_idx ON cjams.servicerequesttypeconfig (intakeservreqtypeid,activeflag);
+CREATE INDEX investigationallegation_isproviderinvolved_idx ON cjams.investigationallegation (isproviderinvolved,activeflag);
+CREATE INDEX investigation_investigationid_idx ON cjams.investigation (investigationid,activeflag,intakeserviceid);

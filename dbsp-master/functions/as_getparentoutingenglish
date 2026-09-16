@@ -1,0 +1,34 @@
+CREATE OR REPLACE FUNCTION as_getparentoutingenglish(p_intakenumber character varying, p_intakeserviceid uuid)
+ RETURNS TABLE(parentphonenumber character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+     RETURN QUERY 
+      select inr.parentphonenumber from (
+       select distinct 
+        cast(coalesce(pph.phoneextension,'000')||' '||pph.phonenumber as character varying) as parentphonenumber,
+        row_number() over(partition by isr.intakeserviceid order by rel.seq) as recno
+   from intakeservicerequest isr  
+   left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on isr.intakeserviceid = pl.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   left join county jc on jc.countyid = pl.county
+   left join region rg on rg.regionid = jc.regionid
+   left join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid  and  isra.activeflag = 1 
+   left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+   join actor a on a.actorid = isra.actorid and a.activeflag =1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   join (select 1 as seq,'father' as relation union 
+          select 2 as seq,'mother' as relation union
+          select 3 as seq,'fosterparent' as relation union 
+          select 4 as seq,'stepparent' as relation union
+          select 5 as seq,'adoptiveparent' as relation)rel on rel.relation = ac.relationshiptypekey
+   left join personphonenumber pph on pph.personid = p.personid
+   where isr.activeflag = 1 
+   and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+   and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end))inr
+   where inr.recno = 1 ;
+END;
+$function$
+

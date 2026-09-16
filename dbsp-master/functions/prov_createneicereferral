@@ -1,0 +1,141 @@
+CREATE OR REPLACE FUNCTION prov_createneicereferral(v_neicereferral100aid uuid, v_jurisdiction uuid, v_securityusersid character varying, v_notes character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+v_refid text;
+v_referral_id text;
+v_neicereferral100a json;
+v_referralcount int;
+v_return text;
+v_app_id uuid;
+v_coapp_id uuid;
+v_app_role_id uuid;
+v_coapp_role_id uuid;
+v_app_roletype_id uuid;
+v_coapp_roletype_id uuid;
+v_app_actor_id uuid;
+v_coapp_actor_id uuid;
+v_provider_program_type text;
+v_success text;
+v_tosecurityuserid uuid;
+v_subject character varying = null;
+v_touseremail character varying = null;
+v_displayname character varying = null;
+BEGIN
+
+select referral_id into v_referral_id from neiceproviderreferral where neicereferral100aid = v_neicereferral100aid and delete_sw='N';
+IF (v_referral_id is null)  then
+
+    select row_to_json(a) into v_neicereferral100a from (  select * from neicereferral100a where neicereferral100aid =  v_neicereferral100aid)a;
+ update neicereferral100a set apporvalstatus = 'In Progress',updatedby=v_securityusersid,updatedon=now() where neicereferral100aid =  v_neicereferral100aid;
+ v_provider_program_type = 'ICPC Relative / Parent Home Approval';
+ if(v_neicereferral100a::json ->>'typeofcarerelationship' is not null and 
+  v_neicereferral100a::json ->>'typeofcarerelationship' = 'AdoptiveHomeFinalizingInSendingState' or
+  v_neicereferral100a::json ->>'typeofcarerelationship' = 'AdoptiveHomeFinalizingInReceivingState' or
+  v_neicereferral100a::json ->>'typeofcarerelationship' = 'AdoptiveHomePending' or
+  v_neicereferral100a::json ->>'typeofcarerelationship' = 'FosterFamilyHome' ) then
+   v_provider_program_type = 'ICPC Foster / Adoptive Home Approval';
+ end if;
+
+    select * into v_refid from getNextNumber('providerreferral');
+
+    select to_char('R'|| to_char(now(),'YYYY')||substr(to_char('000' || EXTRACT(isodow from date (NOW()::date))),-3)||substr(to_char('00000' || v_refid),-5)) into v_referral_id;
+
+
+    INSERT INTO prov.tb_public_provider_referral
+    (referral_id, prgram, create_ts, create_user_id, update_ts, delete_sw, update_user_id, referral_status, organization_first_nm, organization_tax_id, individual_applicant_first_nm, individual_applicant_ssn, individual_applicant_dob, individual_applicant_background_check, co_applicant_first_nm, co_applicant_ssn, co_applicant_dob, co_applicant_background_check, medical_info_license_no, medical_info_speciality, payment_info_medicaid_provider, payment_info_payee_first_nm, payment_info_1099_indicator, individual_applicant_middle_nm, individual_applicant_last_nm, organization_middle_nm, organization_last_nm, co_applicant_middle_nm, co_applicant_last_nm, payment_info_payee_middle_nm, payment_info_payee_last_nm, communication_medium, date_of_contact, referral_decision, provider_program_type, individual_applicant_prefix, individual_applicant_suffix, co_applicant_prefix, co_applicant_suffix, home_info_children_no, home_info_bedroom_no, is_home_water, is_home_swimming_pool, home_info_pool_location, home_is_other_agency, home_info_agency_nm, is_child_care_provider, home_info_child_care_details, individual_applicant_hm_phone, individual_applicant_cell_nm, individual_applicant_email, individual_applicant_employer_nm, individual_applicant_phone_nm, individual_applicant_us_citizen, co_applicant_hm_phone, co_applicant_cell_nm, co_applicant_email, co_applicant_employer_nm, co_applicant_phone_nm, co_applicant_us_citizen, age_group, inquiry_source, inquiry_source_details, jurisdiction, signed_application_date)
+    VALUES(v_referral_id, 'ICPC', now(), v_securityusersid, now(), 'N', v_securityusersid, 'Pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'Interface', now(), NULL, v_provider_program_type, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'null'::jsonb::jsonb, NULL, NULL, v_jurisdiction, NULL);
+
+
+    INSERT INTO neiceproviderreferral
+    (neicereferral100aid, referral_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+    VALUES(v_neicereferral100aid, v_referral_id, now(), v_securityusersid, now(), v_securityusersid, 'N');
+
+    INSERT INTO prov.tb_provider_referral_addresses
+    (parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, adr_default_sw, adr_start_dt, adr_end_dt, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx, formatted_city_nm, formatted_street_nm, adr_county_cd_tx, adr_line2, etl_userid, etl_load_date)
+    VALUES(v_referral_id, '3357', 'F', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, v_neicereferral100a::json ->> 'appcityname'::text, NULL, 'XX', NULL, NULL, NULL,(( v_neicereferral100a::json  ->> 'appaddressline1' ::text) ||' , '||(v_neicereferral100a::json  ->> 'appaddressline2' ::text) ||' , '||(v_neicereferral100a::json  ->> 'appcounty' ::text)||' , '||(v_neicereferral100a::json  ->> 'appstate'::text)), 'XX', 'USA', v_neicereferral100a::json  ->> 'appzip5no'::text, 'Y', now(), NULL, now(), v_securityusersid, now(), v_securityusersid, 'N', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+   
+   if (v_notes is not null and v_notes != '') then
+  select displayname into v_displayname from userprofile u where securityusersid = v_securityusersid;
+     INSERT INTO prov.tb_provider_applicant_narrative
+  (applicant_id, narrative, narravtivefrom, activeflag, insertedby, insertedon, updatedby, updatedon)
+  VALUES( v_referral_id, v_notes, v_displayname, 1, v_securityusersid, now(), v_securityusersid, now());
+ end if;
+
+   if(v_neicereferral100a::json ->>'appfirstname' is not null) then
+     insert into Person ( activeflag,firstname,lastname,middlename,dob,gendertypekey,insertedby,insertedon,updatedby,updatedon,effectivedate,ssnno,clientflag)values
+      (1,v_neicereferral100a::json ->>'appfirstname',v_neicereferral100a::json ->>'applastname',v_neicereferral100a::json ->>'appmiddlename',(v_neicereferral100a::json ->>'appdob')::date,v_neicereferral100a::json ->>'appgender',v_securityusersid,now(),v_securityusersid,now(),now(),v_neicereferral100a::json ->>'placementssn1',2)
+      returning personid into v_app_id;
+     
+  INSERT INTO personrole
+      ( activeflag, personid, ishouseholdmember, insertedby, insertedon, updatedby, updatedon, intakenumber)
+   VALUES( 1, v_app_id, 1,v_securityusersid , now(),v_securityusersid, now(), v_referral_id)
+   returning personroleid into v_app_role_id;
+  
+  INSERT INTO personroletype
+    (personroleid, roletype, activeflag, insertedby, insertedon, updatedby, updatedon, isprimary)
+   VALUES(v_app_role_id, 'APLCNT', 1,v_securityusersid, now(),v_securityusersid, now(), '1')
+   returning personroletypeid into v_app_roletype_id;
+  
+  INSERT INTO actor
+    ( activeflag, personid, actortype, insertedby, insertedon, updatedby, updatedon, manualupdateflag,  ishouseholdmember,personroletypeid, intakenumber,  objectid, objecttype)
+   VALUES( 1, v_app_id, 'APLCNT',v_securityusersid, now(), v_securityusersid, now(),  'N',1, v_app_roletype_id, v_referral_id, v_referral_id, 'prov_referral')
+   returning actorid into v_app_actor_id;
+ 
+  INSERT INTO intakeservicerequestactor
+    ( actorid, intakeservicerequestpersontypekey, insertedby, insertedon, updatedby, updatedon, activeflag,isprimary, personid,rcactiveflag,aractiveflag,practiveflag, intakenumber,objectid, objecttype)
+   VALUES( v_app_actor_id, 'APLCNT',v_securityusersid, now(), v_securityusersid, now(),1,  true, v_app_id, 1, 1,1,v_referral_id,v_referral_id, 'prov_referral');
+  
+ end if;
+
+ if(v_neicereferral100a::json ->>'coappfirstname' is not null) then
+  insert into Person ( activeflag,firstname,lastname,middlename,dob,gendertypekey,insertedby,insertedon,updatedby,updatedon,effectivedate,ssnno,clientflag)values
+     (1,v_neicereferral100a::json ->>'coappfirstname',v_neicereferral100a::json ->>'coapplastname',v_neicereferral100a::json ->>'coappmiddlename',(v_neicereferral100a::json ->>'coappdob')::date,v_neicereferral100a::json ->>'coappgender',v_securityusersid,now(),v_securityusersid,now(),now(),v_neicereferral100a::json ->>'placementssn2',2)
+     returning personid into v_coapp_id;
+    
+  INSERT INTO personrole
+     ( activeflag, personid, ishouseholdmember, insertedby, insertedon, updatedby, updatedon, intakenumber)
+  VALUES( 1, v_coapp_id, 1,v_securityusersid , now(),v_securityusersid, now(), v_referral_id)
+  returning personroleid into v_coapp_role_id;
+ 
+ INSERT INTO personroletype
+   (personroleid, roletype, activeflag, insertedby, insertedon, updatedby, updatedon, isprimary)
+  VALUES(v_coapp_id, 'COAPLCNT', 1,v_securityusersid, now(),v_securityusersid, now(), '1')
+  returning personroletypeid into v_coapp_roletype_id;
+ 
+ INSERT INTO actor
+   ( activeflag, personid, actortype, insertedby, insertedon, updatedby, updatedon, manualupdateflag,  ishouseholdmember,personroletypeid, intakenumber,  objectid, objecttype)
+  VALUES( 1, v_coapp_id, 'COAPLCNT',v_securityusersid, now(), v_securityusersid, now(),  'N',1, v_coapp_roletype_id, v_referral_id, v_referral_id, 'prov_referral')
+  returning actorid into v_coapp_actor_id;
+ 
+ INSERT INTO intakeservicerequestactor
+   ( actorid, intakeservicerequestpersontypekey, insertedby, insertedon, updatedby, updatedon, activeflag,isprimary, personid,rcactiveflag,aractiveflag,practiveflag, intakenumber,objectid, objecttype)
+  VALUES( v_coapp_actor_id, 'COAPLCNT',v_securityusersid, now(), v_securityusersid, now(),1,  true, v_coapp_id, 1, 1,1,v_referral_id,v_referral_id, 'prov_referral');
+
+ 
+ end if;
+ --Hardcoded this v_tosecurityuserid to brian.lara@com's securityuserid for testing , the logic
+ -- to get the liasion worker will be implemented later
+ v_tosecurityuserid = '99cb2fb5-72a4-4f6b-967b-fc95df4a94dd';
+ v_subject =  'ICPC Inquiry '|| (v_neicereferral100a::json ->>'neicecaseid') ||' for '||(v_neicereferral100a::json ->>'appfirstname')||' '||(v_neicereferral100a::json ->>'applastname')||' from '||(v_neicereferral100a::json ->>'sendingstate') || ' has been created.';
+ SELECT prov_send_notification into v_success
+      FROM  prov_send_notification(v_tosecurityuserid::text, 'NEICE', v_tosecurityuserid::text, 'System', 'High', v_subject, v_subject, v_referral_id,  false, false,'referral');
+ 
+ --Hardcoded this v_touseremail for testing , the logic
+ -- to get the liasion worker will be implemented later
+ v_touseremail = 'archana.balasubramanian@maryland.gov;kurt.thorne1@maryland.gov;brian.lara@com';
+   
+
+    v_return := v_referral_id;
+else
+    v_return := v_referral_id;
+end if;
+
+    RETURN json_build_object('referral_id',v_referral_id,'message',v_subject,'toemail',v_touseremail);
+                                                      
+END;
+
+$function$
+

@@ -1,0 +1,28 @@
+    update cjams.usernotification 
+               set activeflag = 0
+               where usernotificationid in ('083a7ee8-3485-4a69-97f6-0564946d6812',
+							'28a37f9d-9319-405c-8e9a-c8000b23c563',
+							'6fb61761-7d68-49c7-a507-2709685643d8',
+							'eee8e6b7-4eb8-4126-9a92-ac1e8cb18243',
+							'7af42b30-74cf-4aeb-ac57-938075e71f73',
+							'4c3c4f3f-b6f9-4cf7-a738-ff9d5ad53328',
+							'a75df24a-7be3-4173-b5eb-1e60f7c15637',
+							'41667b9e-42da-4c92-99f1-a03ee429380d',
+							'4a9a41a4-687c-4dd8-b314-1519f4be1d01',
+							'2d000560-9ecb-41b4-a9a2-651ec6ed188e',
+							'4dc91397-57b6-431b-a77a-1b79b7d56bfd',
+							'67d31d23-43d6-4ea2-9b0c-c2b5a774237b',
+							'8f66bda1-a283-4b8b-873a-1b09c4f797a6',
+							'1c672f7a-cd87-49ed-997a-5acfafad6b04',
+							'0f3e1787-7da1-40ed-ba5f-90f304adce88',
+							'b0159eae-a87a-4c51-af7c-f054bda2058e',
+							'43a5acf2-dfc0-4f36-b045-705fe02a57ac',
+							'9f573342-d59f-455a-a630-c052e0b25548',
+							'03aa34c9-0d32-4776-9233-f815f50eb84f',
+							'dfaedeb6-6cdf-404d-96fc-456dc921d7b9',
+							'9e07782a-c440-491d-ae2c-49d524c73082',
+							'ee893658-9123-434f-8caf-60f76ea9f3c6',
+							'568c4ba5-9a66-4bc9-9e0b-3194edef88a2',
+							'4b538ff2-5806-4445-a172-f876e116f245',
+							'f81c4138-a628-47a9-8631-1fd89bfbb4b1'); 
+               

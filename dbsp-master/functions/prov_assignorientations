@@ -1,0 +1,64 @@
+CREATE OR REPLACE FUNCTION prov_assignorientations(trainingobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+                                                                                                                                                                                                                                                                                                                                                                                         
+declare                                                                                                                                                                                                                                                                                                                                                                                              
+--v_approvaltypecode character varying;   
+v_cnt number;                                                                                 
+v_objectype character varying;
+v_objectid character varying;
+v_securityuserid character varying;
+v_persons json;
+v_traininglist json;
+personobj json;
+trgobj json;
+responsetxt text;
+repeatassinged text;
+ begin    
+  responsetxt:='success';
+ repeatassinged:='';
+--v_approvaltypecode := approvalobj->>'approval_type_cd';
+v_objectid=trainingobj->>'object_id';
+v_objectype=trainingobj->>'object_type';
+v_persons=trainingobj->>'personid';
+v_traininglist=trainingobj->>'training';
+v_securityuserid=trainingobj->>'securityusersid';
+
+raise notice '%v_objectid',v_objectid;
+raise notice '%v_objectype',v_objectype;
+raise notice '%v_persons',v_persons;
+raise notice '%v_traininglist',v_traininglist;
+for personobj in select * from json_array_elements(v_persons)
+loop
+raise notice '%s',  personobj;
+raise notice 'personid:%', personobj ->> 'personid';
+raise notice 'personrole:%', personobj ->> 'personrole';
+ for trgobj in select * from json_array_elements(v_traininglist)
+ loop
+  raise notice 'orientation_training_id:%', trgobj ->> 'orientation_training_id';
+  raise notice 'training_number:%', trgobj ->> 'training_number';
+     select count(1)  into v_cnt from providerorientationtrainingattendance where  object_id=v_objectid
+       and personid=(personobj ->> 'personid') and training_number=(trgobj ->> 'training_number') and delete_sw = 'N';
+    if (v_cnt=0) then
+  INSERT INTO providerorientationtrainingattendance (orientation_training_id, training_number, 
+   object_id, narrative, phase, create_ts, create_user_id,
+   update_ts, update_user_id, delete_sw, active_flag, is_attended, is_intent_to_attend, attendee_first_nm, 
+   attendee_last_nm, personid, personrole) VALUES( (trgobj ->> 'orientation_training_id')::uuid, (trgobj ->> 'training_number'),
+   v_objectid, '', v_objectype, now(), v_securityuserid,
+   now(), v_securityuserid, 'N'::bpchar, 1, false, false, (personobj ->> 'firstname'), (personobj ->> 'lastname'), (personobj ->> 'personid'), (personobj ->> 'personrole'));
+ else
+  repeatassinged:=repeatassinged || (trgobj ->> 'training_number') || ' Already assigned to ' || (personobj ->> 'lastname') || ', '||(personobj ->> 'firstname')|| ' ;';
+ end if;
+
+ end loop;
+END LOOP;
+ if (char_length(repeatassinged)>0)  then
+ responsetxt:=repeatassinged;
+ end if;
+return (json_build_object('trgassinged',responsetxt));
+
+                                                                                                                                                                                                                                                                                                                                                                                             
+end;
+$function$
+

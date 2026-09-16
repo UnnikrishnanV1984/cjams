@@ -1,0 +1,1 @@
+ALTER TABLE cjams.intakeservicerequestsdm ADD COLUMN IF NOT EXISTS isnegrh_treatmenthealthrisk bool NULL DEFAULT false;

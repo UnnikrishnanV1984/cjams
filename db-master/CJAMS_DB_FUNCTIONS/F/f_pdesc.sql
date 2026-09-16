@@ -1,0 +1,19 @@
+ CREATE OR REPLACE FUNCTION public.f_pdesc(as_pcode character varying, ai_pid integer)
+  RETURNS character varying                                                           
+  LANGUAGE plpgsql                                                                    
+ AS $function$                                                                        
+                                                                                      
+ BEGIN                                                                                
+     RETURN                                                                           
+          (SELECT                                                                     
+                value_tx                                                              
+                FROM TB_PICKLIST_VALUES                                               
+                WHERE PICKLIST_TYPE_ID = ai_pid AND                                   
+                PICKLIST_VALUE_CD = as_pcode AND                                      
+                DELETE_SW <> 'Y' AND ACTIVE_SW = 'Y'                                  
+           );                                                                         
+ END;                                                                                 
+                                                                                      
+                                                                                      
+ $function$                                                                           
+

@@ -1,0 +1,63 @@
+CREATE OR REPLACE FUNCTION prov_violation_notifications(v_securityuserid character varying, v_reference_no character varying)
+ RETURNS TABLE(status text, msgdata jsonb, username character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+v_providernm character varying;
+v_notifymsg character varying;
+v_msg character varying;
+v_username character varying;
+v_toemailid character varying;
+v_provideruserid character varying;
+v_prov_id integer;
+v_hasattachments boolean default false;
+v_deficiency character varying;
+v_notifystatus text;
+i json;
+v_msgdata jsonb;
+v_provider_complaintid uuid;
+
+BEGIN  
+-- Subject and Body for Email
+ 
+SELECT coalesce(lastname,'') ||', '|| coalesce(firstname,'') into v_username                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+     FROM userprofile WHERE securityusersid = v_securityuserid;
+    
+select  jsonb_agg(x) as msgdata into v_msgdata from ( 
+select distinct  pv.provider_id::character varying as securityusersid,pv.provider_id::character varying,pv.cap_number,
+(CASE WHEN (tp.provider_nm is null OR tp.provider_nm ='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) ELSE tp.provider_nm END) AS provider_nms
+from prov_violation pv
+join tb_provider tp on tp.provider_id = pv.provider_id  and   tp.delete_sw = 'N'
+where pv.reference_value_id = v_reference_no and pv.delete_sw='N' )x;
+
+FOR i in select jsonb_array_elements(v_msgdata)
+loop
+v_msg :=  'CAP Notification '||coalesce(i ->> 'cap_number' ,'')||' sent by '||coalesce(v_username,'')||' for Deficiency/Violation found for provider "'|| coalesce(i->>'provider_nms','') || ' - ' || coalesce(i->>'provider_id','') ||'"'  ;
+v_notifymsg = v_msg;
+RAISE NOTICE 'v_msg(v_msg)---:%',v_msg;
+RAISE NOTICE 'v_notifymsg-:%',v_notifymsg;
+RAISE NOTICE 'v_providernm()---:%',i->>'securityusersid';
+
+SELECT prov_send_notification INTO v_notifystatus FROM prov_send_notification(i->>'securityusersid',v_securityuserid,i->>'securityusersid',
+                         'System', 'High', v_msg,  v_notifymsg , i ->> 'cap_number',false , v_hasattachments);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+
+end loop;
+
+--select provider_complaintid into v_provider_complaintid from tb_provider_complaint tpc where tpc.complaint_number = v_reference_no;
+
+update prov_violation set isnotificationsent = true ,notificationsecurityuserid = v_securityuserid
+where reference_value_id = v_reference_no and delete_sw='N';
+
+--update prov_violation set notificationsecurityuserid = v_securityuserid
+--where provider_complaintid = v_provider_complaintid and activeflag =1;
+
+v_notifystatus:='SUCCESS';
+
+return query
+
+select v_notifystatus,v_msgdata,v_username ;
+
+END;
+$function$
+

@@ -1,0 +1,96 @@
+CREATE OR REPLACE FUNCTION prov_sendassignmentalert(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+currentRow record;
+v_fromsecurityuserid character varying;
+v_tocurityuserid  character varying;
+v_object_id   character varying;
+v_provider_id character varying;
+v_object_type character varying;
+v_subject character VARYING;
+v_provsubject character varying;
+v_success character VARYING;
+v_prov_alert character varying;
+v_eventcode character varying;
+response CHARACTER varying;
+v_tousers json;
+v_tousers4 json;
+v_tousers5 json;
+v_assigned_by  character varying;
+v_assigned_to  character varying;
+v_phone character varying;
+
+begin
+v_tocurityuserid := objectls->>'tosecurityusersid';
+v_fromsecurityuserid  := objectls->>'fromsecurityusersid';
+v_object_id := objectls->>'object_id';
+v_prov_alert := objectls->>'prov_alert';
+v_provider_id := objectls->>'provider_id';
+v_object_type := objectls->>'object_type';
+v_eventcode := objectls->>'eventcode';
+
+select mu.username into v_assigned_by 
+from muser mu 
+where mu.securityusersid = v_fromsecurityuserid 
+and mu.activeflag =1;
+
+select mu.displayname, upp.phonenumber into v_assigned_to , v_phone
+from userprofile mu 
+left join userprofilephonenumber upp on upp.securityusersid = mu.securityusersid
+where mu.securityusersid = v_tocurityuserid 
+and mu.activeflag =1;
+
+v_subject := v_object_type || ' has been assigned to you by ' || v_assigned_by;
+
+SELECT prov_send_notification into v_success
+FROM  prov_send_notification(v_tocurityuserid, v_fromsecurityuserid, v_tocurityuserid, 'System', 'High',  v_subject, v_subject, v_object_id,  false, false, v_object_type, v_provider_id);
+
+select json_agg(a) into v_tousers from ( 
+    SELECT distinct mu.securityusersid as toworkeridno 
+    , mu.email 
+        from muser mu 
+        where securityusersid = v_tocurityuserid
+        and mu.activeflag =1
+
+)a;
+
+
+
+
+if v_prov_alert = 'Y' then 
+    v_provsubject := v_object_type || ' has been assigned to ' || v_assigned_to || ', ' || v_phone;
+
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification(v_provider_id, v_fromsecurityuserid, v_provider_id, 'System', 'High',  v_provsubject, v_provsubject, v_object_id,  false, false, v_object_type, v_provider_id);
+
+    select json_agg(a) into v_tousers4 from ( 
+    SELECT distinct tpu.securityusers_id as toworkeridno 
+    , up.email as email
+            from tb_provider_userconfig tpu 
+            join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying
+            where provider_id::character varying = v_provider_id
+    )a;
+    select json_agg(a) into v_tousers5 from ( 
+        select m.email as email
+        from tb_provider t
+        cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id::character varying = v_provider_id
+    )a;
+
+end if;
+
+
+RETURN json_build_object('response',v_success, 
+    'PROV_CONFIG_USERS',v_tousers4, 
+    'PROV_ADMIN_USERS', v_tousers5, 
+    'provsubject', v_provsubject, 
+    'provbody', v_provsubject,  
+    'SELECTED_WORKER', v_tousers,
+    'workersubject', v_subject, 
+    'workerbody', v_subject);
+end;
+$function$
+

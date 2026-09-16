@@ -1,0 +1,1 @@
+update snapshothist set approvalstatus = 'Approved', updatedby = 'CDM-10845', updatedon = now() where id = 'de1a0478-deb9-4322-bdc8-54b2a15a0d60';

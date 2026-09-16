@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION sp_fc_worksheet_initial_criteria_info(al_client_id bigint)
+ RETURNS TABLE(client_id bigint, specifiedrelatives json, fostercareeligibilitystatus character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  vs_Procedure_nm         VARCHAR(100) DEFAULT 'sp_fc_worksheet_initial_criteria_info';
+  vs_spc_rltvs         JSON;
+  vs_tb_clnt_elig         VARCHAR(50);
+  
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_initial_criteria_info ( 
+  client_id             BIGINT,
+  specifiedrelatives          JSON,
+  fostercareeligibilitystatus        VARCHAR(50)
+ );
+
+
+SELECT json_agg(json_build_object(
+ 'specifiedrelativeclientid', sr.specifiedrelativeclientid , 
+ 'specifiedrelativedatechildlastlivedwith', sr.specifiedrelativedatechildlastlivedwith,
+ 'specifiedrelativename', sr.specifiedrelativename,
+ 'specifiedrelativephysicaladdress', sr.specifiedrelativephysicaladdress,
+ 'specifiedrelativerelationshipid', sr.specifiedrelativerelationshipid,
+ 'specifiedrelativeid', sr.specifiedrelativeid,
+ 'clientid', sr.toclientid 
+))
+ INTO vs_spc_rltvs
+   FROM specifiedrelative sr, relationshiptype rt, person crgvr     
+WHERE rt.activeflag = 1 AND rt.sequencenumber = sr.specifiedrelativerelationshipid
+ AND sr.specifiedrelativeclientid::BIGINT = crgvr.cjamspid AND crgvr.activeflag = 1
+ AND sr.toclientid::BIGINT = al_client_id AND sr.activeflag = 1;
+
+-- Foster Care Eligibility Status
+SELECT tce.eligibility_status_cd 
+ INTO vs_tb_clnt_elig
+   FROM tb_client_eligibility tce     
+WHERE tce.client_id::BIGINT = al_client_id;
+
+INSERT INTO Temp_worksheet_initial_criteria_info
+SELECT 
+  al_client_id,
+  vs_spc_rltvs,
+  vs_tb_clnt_elig;
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_initial_criteria_info;
+              
+DROP TABLE Temp_worksheet_initial_criteria_info;
+
+   END
+    $function$
+

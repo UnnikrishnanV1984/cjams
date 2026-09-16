@@ -1,0 +1,511 @@
+CREATE OR REPLACE FUNCTION as_sp_fmis_vendor_interface(OUT vs_message character varying, OUT vl_output_sqlcode integer, OUT a timestamp without time zone, OUT b timestamp without time zone)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created: 09/11/2020
+-- Description: Generate Adult Services Vendor Master data to Interface with FMIS.
+
+-- Revisions:
+------------------------------------------------------------------------------------------------
+-- Declare variables
+DECLARE SQLCODE INTEGER DEFAULT 0;
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';
+DECLARE VS_OUTPUT_STATE CHAR(5) DEFAULT '00000';
+DECLARE vs_user_id VARCHAR(10) DEFAULT 'as_interfc';
+DECLARE vts_previous_run_ts timestamp;
+DECLARE vts_current_run_ts timestamp ;
+DECLARE li_provider_id INTEGER DEFAULT 0;
+Declare li_temp_provider_id Integer default 0;
+DECLARE ls_successful_sw Varchar(1) default 'N';
+DECLARE li_fmis_Count Integer Default 0;
+DecLare li_cursor_count Integer Default 0;
+DECLARE li_count INTEGER  DEFAULT 0;
+DECLARE li_cnt INTEGER  DEFAULT 0;
+DECLARE ls_payment_type_cd  VARCHAR(5);
+DECLARE ls_message_sp_fmis_ins character varying;
+DECLARE vs_county_nm VARCHAR(50) DEFAULT  '' ;
+DECLARE vs_excep_message1 VARCHAR(150)DEFAULT  '' ;
+DECLARE ls_prov_name VARCHAR(50) DEFAULT  '' ;
+DECLARE vs_prov_county VARCHAR(5); 
+
+--  This Cursor for to get either Adoption or Foster Care Provider Information
+Provider_type_cur REFCURSOR;
+FMIS_VENDOR_CUR   REFCURSOR;
+
+BEGIN
+ --  Initialize variables with the current timestamp
+ vts_previous_run_ts := current_timestamp;
+ vts_current_run_ts := current_timestamp;
+ 
+ IF Exists ( SELECT 1 
+     FROM interfacesruntimeslog
+    WHERE interfaceid = 'AS_FMIS_VENDOR' 
+     and activeflag = 1 ) THEN
+     
+  SELECT COUNT(*)
+   INTO li_count 
+  FROM interfacesruntimeslog
+  WHERE interfaceid = 'AS_FMIS_VENDOR' 
+   and activeflag = 1
+   AND successful_sw = 'Y'; 
+
+  SELECT MAX(currentruntimestamp) 
+   INTO vts_previous_run_ts 
+  FROM interfacesruntimeslog 
+  WHERE interfaceid = 'AS_FMIS_VENDOR' 
+   and activeflag = 1
+   AND successful_sw = 'Y' ;
+  
+  VL_OUTPUT_SQLCODE := SQLCODE;
+  IF SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+   VS_MESSAGE := 'SELECT MAX(CURRENT_RUN_TS) FAILED';
+   -- GOTO ERROR_SECTION;
+   INSERT INTO interfaceserrorlog 
+    ( interfaceid,
+     currentruntimestamp,
+     batchnumber,
+     errorlineno,
+     errordescription,
+     errorsqlcode,
+     old_id,
+     county_cd,
+     insertedon,
+     errorcode
+    )
+   VALUES         
+    ( 'AS_FMIS_VENDOR',
+     CURRENT_TIMESTAMP,
+     '000',
+     0,
+     VS_MESSAGE,
+     VL_OUTPUT_SQLCODE,
+     Null,
+     Null,
+     CURRENT_DATE,
+     VS_EXCEP_MESSAGE1
+    ); 
+  END IF;
+ END IF;
+ 
+ IF EXISTS(SELECT 1 FROM as_tb_fmis_vendor_interface) THEN
+  DELETE FROM as_tb_fmis_vendor_interface ;
+ END IF;
+ 
+ VL_OUTPUT_SQLCODE :=  SQLCODE;
+ IF SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+  VS_MESSAGE := ' DELETE FAILED for FMIS Vendor Interfcae Table (Adult Services)'  ;
+  -- GOTO ERROR_SECTION ;
+  INSERT INTO interfaceserrorlog 
+   ( interfaceid,
+    currentruntimestamp,
+    batchnumber,
+    errorlineno,
+    errordescription,
+    errorsqlcode,
+    old_id,
+    county_cd,
+    insertedon,
+    errorcode
+   )
+  VALUES         
+   ( 'AS_FMIS_VENDOR',
+    CURRENT_TIMESTAMP,
+    '000',
+    0,
+    VS_MESSAGE,
+    VL_OUTPUT_SQLCODE,
+    vl_provider_id::character varying,
+    VS_PROV_COUNTY,
+    CURRENT_DATE,
+    VS_EXCEP_MESSAGE1
+   ); 
+ END IF;
+ 
+ --  Updated Vendor Details only
+ RAISE NOTICE 'li_count  %', li_count;
+ IF li_count > 0 THEN
+        -- CURSOR COUNT --
+        -- get all providers (with conditions) from temp table 
+  -- UNION 
+  -- all sub-providers of the providers in Temp table (with conditions)
+  
+  -- AS Service Plan Provider Category  '9999' -- ???? 
+  SELECT Count(DISTINCT TMP.PROVIDER_ID)
+   into li_cursor_count 
+  FROM tb_temp_fmis_vendor_interface TMP
+   INNER JOIN TB_PROVIDER PR ON PR.PROVIDER_ID = TMP.PROVIDER_ID 
+    AND PR.DELETE_SW = 'N' 
+    AND (PR.EFT_SW <>'Y' OR PR.EFT_SW IS NULL) 
+    AND PR.PROVIDER_STATUS_CD <> '1792'
+    -- AND PR.TAX_ID_NO::BIGINT <> 526002033
+    AND F_PRVPCKLST_CAT(TMP.PROVIDER_ID::bigint,'ASSERVICEPLAN') = '1787' -- Service Plan Provider
+  WHERE TMP.DELETE_SW = 'N' 
+   AND TMP.PROVIDER_ID IS NOT NULL ;
+   
+
+  RAISE NOTICE 'li_cursor_count before  %', li_cursor_count;
+        IF li_cursor_count > 0 THEN
+   OPEN FMIS_VENDOR_CUR FOR
+    SELECT DISTINCT TMP.PROVIDER_ID
+    FROM tb_temp_fmis_vendor_interface TMP
+     INNER JOIN TB_PROVIDER PR ON PR.PROVIDER_ID = TMP.PROVIDER_ID 
+      AND PR.DELETE_SW = 'N' 
+      AND (PR.EFT_SW <>'Y' OR PR.EFT_SW IS NULL) 
+      AND PR.PROVIDER_STATUS_CD <> '1792'
+      -- AND PR.TAX_ID_NO::BIGINT <> 526002033
+      AND F_PRVPCKLST_CAT(TMP.PROVIDER_ID::bigint,'ASSERVICEPLAN') = '1787' -- Service Plan Provider
+    WHERE TMP.DELETE_SW = 'N' 
+     AND TMP.PROVIDER_ID IS NOT NULL 
+     AND EXISTS ( select 1 
+         from ihasprovidermonthlyreport mnrpt 
+         where mnrpt.provider_id = TMP.PROVIDER_ID
+         and mnrpt.totalinvoiceamount > 0 
+         and mnrpt.status = 'Approved'
+         and mnrpt.activeflag = 1
+        ) ;
+   LOOP
+   FETCH FMIS_VENDOR_CUR INTO  li_provider_id;
+    EXIT WHEN NOT FOUND;
+    
+    RAISE NOTICE 'li_provider_id  %', li_provider_id;    
+    
+    -- FMIS_VENDOR:
+    -- WHILE li_cursor_count > 0 LOOP
+    -- loop EXIT WHEN li_cursor_count <= 0::bigint ;
+     RAISE NOTICE 'li_cursor_count  %', li_cursor_count;    
+     li_provider_id := COALESCE(li_provider_id,0);
+     ls_payment_type_cd := lpad('', 4, ' '); -- Space(4);
+     VS_COUNTY_NM := '';
+     VS_PROV_COUNTY := '';
+     VS_EXCEP_MESSAGE1 := '';
+     VS_MESSAGE := '';
+     LS_PROV_NAME := '';
+     
+     IF LI_TEMP_PROVIDER_ID = LI_PROVIDER_ID THEN
+      -- GOTO NEXT_PROVIDER ;
+      -- Do Nothing Skip
+      -- END IF;
+     ELSE
+      SELECT coalesce(COUNTY_CD, '') 
+       INTO VS_PROV_COUNTY 
+       FROM TB_PROVIDER
+      WHERE PROVIDER_ID = LI_PROVIDER_ID 
+       AND DELETE_SW = 'N';
+
+      IF LTRIM(RTRIM(VS_PROV_COUNTY)) = '1451' THEN 
+       VS_COUNTY_NM := 'DHR';
+      ELSE
+       select substr(coalesce(countyname, ''), 1, 50) 
+        INTO VS_COUNTY_NM 
+       from county 
+       where btrim(statecountycode) = VS_PROV_COUNTY ;
+      END IF;
+      
+      IF VS_COUNTY_NM <>  '' OR VS_COUNTY_NM IS NOT NULL THEN
+       VS_EXCEP_MESSAGE1 := 'County Name: ' || LTRIM(RTRIM(VS_COUNTY_NM)) || '; ';
+      END IF;
+      
+      SELECT Substr(COALESCE(TB_PROVIDER.PROVIDER_NM, ''),1,50) 
+       INTO LS_PROV_NAME 
+      FROM TB_PROVIDER 
+      WHERE PROVIDER_ID = LI_PROVIDER_ID 
+       AND DELETE_SW = 'N';
+  
+      IF LS_PROV_NAME = '' THEN
+       SELECT (TB_PROVIDER. Provider_last_nm ||' ' || TB_PROVIDER. Provider_first_nm)     
+        INTO LS_PROV_NAME 
+       FROM TB_PROVIDER 
+       WHERE PROVIDER_ID = LI_PROVIDER_ID 
+        AND DELETE_SW = 'N';
+      END IF;
+
+      IF LS_PROV_NAME <> '' OR LS_PROV_NAME IS NOT NULL THEN
+       VS_EXCEP_MESSAGE1 := VS_EXCEP_MESSAGE1 ||'Provider Name: ' || LTRIM(RTRIM(LS_PROV_NAME)) || '; ';
+      END IF;
+      VS_EXCEP_MESSAGE1 := substr((VS_EXCEP_MESSAGE1),1,length(VS_EXCEP_MESSAGE1)-2) ||' - ' ;
+
+      SELECT as_sp_fmis_vendor_interface_ins( li_provider_id, 
+                ls_payment_type_cd
+               )
+       INTO ls_message_sp_fmis_ins;
+       
+      IF EXISTS( SELECT 1 
+          FROM TB_TEMP_FMIS_VENDOR_INTERFACE 
+         WHERE DELETE_SW = 'N'
+          AND PROVIDER_ID = LI_PROVIDER_ID) THEN
+          
+       UPDATE TB_TEMP_FMIS_VENDOR_INTERFACE 
+        SET DELETE_SW = 'Y',
+         UPDATE_TS = CURRENT_TIMESTAMP, 
+         UPDATE_USER_ID = VS_USER_ID
+       WHERE DELETE_SW = 'N' 
+        AND PROVIDER_ID = LI_PROVIDER_ID ;
+
+       VL_OUTPUT_SQLCODE := SQLCODE;
+       IF  VL_OUTPUT_SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000') THEN
+        VS_MESSAGE := 'UPDATE OF DELETE_SW FAILED : TB_TEMP_FMIS_VENDOR_INTERFACE (Adult Services)'   ;
+        -- GOTO ERROR_SECTION ;
+        INSERT INTO interfaceserrorlog 
+         ( interfaceid,
+          currentruntimestamp,
+          batchnumber,
+          errorlineno,
+          errordescription,
+          errorsqlcode,
+          old_id,
+          county_cd,
+          insertedon,
+          errorcode
+         )
+        VALUES         
+         ( 'AS_FMIS_VENDOR',
+          CURRENT_TIMESTAMP,
+          '000',
+          0,
+          VS_MESSAGE,
+          VL_OUTPUT_SQLCODE,
+          vl_provider_id::character varying,
+          VS_PROV_COUNTY,
+          CURRENT_DATE,
+          VS_EXCEP_MESSAGE1
+         ); 
+       END IF;
+      END IF;
+     END IF; 
+     -- NEXT_PROVIDER:
+     
+                    li_cursor_count := li_cursor_count -1;
+     LI_temp_PROVIDER_ID := li_provider_id ;
+     li_provider_id := NULL ;
+    -- END WHILE ;
+                -- END LOOP;
+   END LOOP; 
+   CLOSE FMIS_VENDOR_CUR;
+        END IF;
+ END IF; --Li_count > 0 i,e Second time run
+
+ ---------------------
+ -- 1st Vendor Interface Run or Every year January Run
+ ---------------------
+ IF li_count = 0 THEN
+        SELECT Count(*) 
+   INTO li_cnt 
+  FROM TB_PROVIDER
+        WHERE DELETE_SW  = 'N' 
+   and provider_status_cd <>'1792'  
+   AND (EFT_SW  <> 'Y' OR EFT_SW IS  NULL)
+   AND F_PRVPCKLST_CAT(PROVIDER_ID::bigint,'ASSERVICEPLAN') = '1787' -- Service Plan Provider
+  ;
+
+        -- OPEN Provider_type_cur;--
+        -- PROVIDER_TYPE:
+  
+        -- WHILE li_cnt > 0 DO
+        --       FETCH Provider_type_cur  INTO li_provider_id;--
+        --        IF li_cnt  = 0 THEN
+        --                LEAVE PROVIDER_TYPE ;--
+        --       END IF;--
+  OPEN Provider_type_cur FOR
+   SELECT Provider_id 
+    FROM TB_PROVIDER
+   WHERE DELETE_SW  = 'N' 
+    and provider_status_cd <>'1792'
+    AND (EFT_SW  <> 'Y' OR EFT_SW IS  NULL) 
+    AND F_PRVPCKLST_CAT(PROVIDER_ID::bigint, 'ASSERVICEPLAN') = '1787' -- Service Plan Provider
+   ORDER BY Provider_id;
+
+   RAISE NOTICE 'line no: 386';
+  LOOP
+  FETCH Provider_type_cur INTO li_provider_id;
+   EXIT WHEN NOT FOUND;
+   
+   RAISE NOTICE 'li_temp_provider_id  %', li_temp_provider_id;    
+   RAISE NOTICE 'li_provider_id  %', li_provider_id; 
+   
+   IF li_provider_id <> li_temp_provider_id THEN
+    ls_payment_type_cd := lpad('', 4, ' '); -- Space(4);
+    VS_MESSAGE   := lpad('', 4, ' '); -- Space(4);
+
+    VS_COUNTY_NM := '';
+    VS_PROV_COUNTY := '';
+    
+    SELECT coalesce(COUNTY_CD, '') 
+     INTO VS_PROV_COUNTY 
+    FROM TB_PROVIDER
+    WHERE PROVIDER_ID = LI_PROVIDER_ID 
+     AND DELETE_SW = 'N';
+    
+    IF LTRIM(RTRIM(VS_PROV_COUNTY)) = '1451' THEN 
+     VS_COUNTY_NM := 'DHR';
+    ELSE
+     select substr(coalesce(countyname, ''), 1, 50) 
+      INTO VS_COUNTY_NM 
+     from county 
+     where btrim(statecountycode) = VS_PROV_COUNTY ;
+    END IF;   
+
+    LS_PROV_NAME := '';
+       
+    select substr(coalesce(TB_PROVIDER.PROVIDER_NM, ''),1,50) 
+     into LS_PROV_NAME 
+    FROM TB_PROVIDER 
+    WHERE PROVIDER_ID = LI_PROVIDER_ID 
+     AND DELETE_SW = 'N';
+
+    IF LS_PROV_NAME = '' THEN
+     select ( TB_PROVIDER. Provider_last_nm ||' ' || TB_PROVIDER. Provider_first_nm)     
+      into LS_PROV_NAME 
+     FROM TB_PROVIDER 
+     WHERE PROVIDER_ID = LI_PROVIDER_ID 
+      AND DELETE_SW = 'N'; 
+    END IF;  
+    VS_EXCEP_MESSAGE1 := '';
+    VS_MESSAGE  := '' ;
+
+    IF VS_COUNTY_NM <> '' OR VS_COUNTY_NM  IS NOT NULL THEN
+     VS_EXCEP_MESSAGE1 := 'County Name: ' || LTRIM(RTRIM(VS_COUNTY_NM)) || '; ';
+    END IF;
+
+    IF LS_PROV_NAME <> '' OR LS_PROV_NAME IS NOT NULL THEN
+     VS_EXCEP_MESSAGE1 := VS_EXCEP_MESSAGE1 ||'Provider Name: ' || LTRIM(RTRIM(LS_PROV_NAME)) || '; ';
+    END IF;
+
+    VS_EXCEP_MESSAGE1 := substr((VS_EXCEP_MESSAGE1),1,length(VS_EXCEP_MESSAGE1)-2) ||' - ' ;
+     
+    
+    SELECT as_sp_fmis_vendor_interface_ins( li_provider_id, 
+              ls_payment_type_cd
+             )
+     INTO ls_message_sp_fmis_ins;
+    
+    SELECT Count(*) 
+     INTO li_fmis_Count 
+    FROM TB_TEMP_FMIS_VENDOR_INTERFACE
+    WHERE Delete_sw = 'N' 
+     AND (Provider_id = li_provider_id);
+   
+    IF li_fmis_Count > 0 THEN
+     Update TB_TEMP_FMIS_VENDOR_INTERFACE 
+      SET Delete_sw = 'Y',
+       Update_ts = CURRENT_TIMESTAMP, 
+       Update_user_id = VS_USER_ID
+     WHERE Delete_sw = 'N' 
+      AND (Provider_id = li_provider_id);
+    END IF;
+  
+    VL_OUTPUT_SQLCODE := SQLCODE;
+    IF VL_OUTPUT_SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000') THEN
+     VS_MESSAGE := 'Update Faild  TB_TEMP_FMIS_VENDOR_INTERFACE (Adult Services)' ;
+     -- GOTO ERROR_SECTION ;
+     INSERT INTO interfaceserrorlog 
+      ( interfaceid,
+       currentruntimestamp,
+       batchnumber,
+       errorlineno,
+       errordescription,
+       errorsqlcode,
+       old_id,
+       county_cd,
+       insertedon,
+       errorcode
+      )
+     VALUES         
+      ( 'AS_FMIS_VENDOR',
+       CURRENT_TIMESTAMP,
+       '000',
+       0,
+       VS_MESSAGE,
+       VL_OUTPUT_SQLCODE,
+       vl_provider_id::character varying,
+       VS_PROV_COUNTY,
+       CURRENT_DATE,
+       VS_EXCEP_MESSAGE1
+      ); 
+    END IF;
+    
+    li_temp_provider_id  := li_provider_id;
+   END IF; --  Provider ID different
+  
+   li_cnt  := li_cnt -1;
+  END LOOP;
+     CLOSE Provider_type_cur;
+ END IF; --  Li_count  = 0
+ 
+ 
+ ls_SUCCESSFUL_SW := 'Y';
+ ---  Insert Into Interface log
+ INSERT INTO interfacesruntimeslog
+  ( interfaceid, 
+   currentruntimestamp, 
+   previousruntimestamp, 
+   batchnumber, 
+   runstatus, 
+   insertedon, 
+   insertedby, 
+   updatedon, 
+   updatedby, 
+   activeflag, 
+   old_id, 
+   successful_sw
+  )
+ VALUES
+  ( 'AS_FMIS_VENDOR', 
+   vts_current_run_ts, 
+   vts_previous_run_ts, 
+   0, 
+   ls_SUCCESSFUL_SW,
+   current_timestamp, 
+   VS_USER_ID, 
+   current_timestamp,
+   VS_USER_ID, 
+   1, 
+   Null, 
+   ls_SUCCESSFUL_SW
+  );
+  
+ VL_OUTPUT_SQLCODE :=  SQLCODE;
+ IF VL_OUTPUT_SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+        VS_MESSAGE := 'INSERT INTO interfacesruntimeslog FAILED (Adult Services)' ;
+        -- GOTO ERROR_SECTION ;
+  INSERT INTO interfaceserrorlog 
+   ( interfaceid,
+    currentruntimestamp,
+    batchnumber,
+    errorlineno,
+    errordescription,
+    errorsqlcode,
+    old_id,
+    county_cd,
+    insertedon,
+    errorcode
+   )
+  VALUES         
+   ( 'AS_FMIS_VENDOR',
+    CURRENT_TIMESTAMP,
+    '000',
+    0,
+    VS_MESSAGE,
+    VL_OUTPUT_SQLCODE,
+    vl_provider_id::character varying,
+    VS_PROV_COUNTY,
+    CURRENT_DATE,
+    VS_EXCEP_MESSAGE1
+   ); 
+ END IF;
+ 
+ IF vs_message is null or Btrim(vs_message) = '' THEN
+  vs_message := 'Success (Adult Services)';
+ END IF; 
+ IF vl_output_sqlcode is null THEN
+  vl_output_sqlcode := 0::integer;
+ END IF; 
+ a := vts_current_run_ts;  
+ b := vts_previous_run_ts;
+ 
+END; 
+
+$function$
+

@@ -1,0 +1,5 @@
+update placement p set startdatetime =  '2018-11-13 00:00:00', updatedby = 'CDM-8952', updatedon = now() where placementid = 'cb3592e1-7c37-4329-9ae2-c4e913bf40db' and personid = '0d5c79f4-0467-455d-90f9-8fb466d40277';
+update placement p set enddatetime =  '2018-11-13 00:00:00', updatedby = 'CDM-8952', updatedon = now() where placementid = '972daf8e-3a2c-4709-946f-8fe588237577' and personid = '0d5c79f4-0467-455d-90f9-8fb466d40277';
+update placementrevision p set entrydate =  '2018-11-13 00:00:00', updatedby = 'CDM-8952', updatedon = now() where placementid = 'cb3592e1-7c37-4329-9ae2-c4e913bf40db';
+update placementrevision p set exitdate =  '2018-11-13 00:00:00', updatedby = 'CDM-8952', updatedon = now() where placementid = '972daf8e-3a2c-4709-946f-8fe588237577';
+update tb_placement_validation set placement_entry_dt = '2018-11-13 00:00:00'  where placement_id  = 334939;

@@ -1,0 +1,306 @@
+CREATE OR REPLACE FUNCTION as_sp_batch_log(as_batch_nm character varying, ad_run_dt date, as_action_sw character, al_updt_batch_log_id bigint, as_status character, as_comments character varying)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+----------------------------------------------------------------------------------------------
+-- Author          : Vineet Tirodkar
+-- Date            : 06/15/2012
+-- Description     : This SP is to capture the MD cjams batch jobs statistics such as run date, start time, end time,
+--                   success/failure, and so forth in the TB_BATCH_LOG table. 
+-- Request #       : PRJ-02667 - MD cjams Batch Process Redesign
+
+-- Arguments:
+-- 1) IN as_batch_nm (BATCH_NM from table TB_BATCH_MASTER)
+-- 2) IN ad_run_dt (Batch Run Date)
+-- 3) IN as_action_sw ('I' to Insert & 'U' to Update record in TB_BATCH_LOG)
+-- 4) IN al_updt_batch_log_id (BATCH_LOG_ID PK of TB_BATCH_LOG for Update the record)
+-- 5) IN as_status (Y/N to update SUCCESS_SW based on the run of all SPs from the script)
+-- 6) IN as_comments (Provision for additional comments)
+
+-- SP will return new BATCH_LOG_ID to the script when action is 'I' & for any error SP will return -1
+-- Note: 'The data type of the RETURN statement value in an SQL procedure must be INTEGER' 
+-- & INTEGER can hold value up to 2147483647; so need to reset the data in TB_BATCH_LOG after BATCH_LOG_ID = 2147483647
+
+-- Revision:
+-- 2/26/2016         Samir Patil                  PRJ-05314 increase size as_comments from 500 to 9999.
+----------------------------------------------------------------------------------------------
+
+         DECLARE
+                 vs_message_text                   VARCHAR DEFAULT '';
+                 vl_ret_status                            INTEGER DEFAULT 0;
+                 vs_Procedure_nm                   VARCHAR DEFAULT 'SP_BATCH_LOG';
+                 al_sqlcode                                    VARCHAR DEFAULT '00000';
+                 as_error                                     VARCHAR DEFAULT '';
+                 vl_batch_master_id                  BIGINT; 
+                 vl_batch_log_id                           INTEGER DEFAULT 0;          
+                 vl_failed_cnt                           INTEGER DEFAULT 0;
+     curr_scripts        record;
+         
+         
+         
+BEGIN
+RAISE NOTICE '1';
+         -- Action - Insert
+         IF as_action_sw  = 'I' THEN
+                  -- Verify if record exist in TB_BATCH_LOG (inserted by parent script)
+BEGIN    
+RAISE NOTICE '2';     
+         SELECT MAX(BATCH_LOG_ID) 
+                           INTO vl_batch_log_id
+                  FROM TB_BATCH_LOG
+                  WHERE RUN_DT = CURRENT_DATE
+                           AND START_TS is NULL
+                           AND BATCH_MASTER_ID IN ( SELECT BATCH_MASTER_ID 
+                                                                                          FROM TB_BATCH_MASTER 
+                                                                                  WHERE ACTIVE_SW = 'Y' 
+                                                                                             AND UPPER(BATCH_NM) = UPPER(as_batch_nm) 
+                                                                                             AND DEPENDENT_MASTER_ID IS NOT NULL 
+                                                                           );
+       
+                  
+ EXCEPTION WHEN OTHERS THEN                  
+                   al_sqlcode := SQLSTATE;          
+                   vs_message_text :=SQLERRM;
+                   as_error := 'Error in getting BATCH_LOG_ID for BATCH_NM: ' || RTRIM(as_batch_nm);
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text; 
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                   return -1;
+                  
+                   
+END ;                                                                                                              
+RAISE NOTICE '3'; 
+RAISE NOTICE '%',vl_batch_master_id;                 
+                  IF vl_batch_log_id > 0 THEN 
+                           -- Call from Parent script - Update START_TS
+BEGIN         
+         UPDATE TB_BATCH_LOG
+                              SET START_TS = CURRENT_TIMESTAMP
+                           WHERE BATCH_LOG_ID = vl_batch_log_id;
+                           
+                           
+                           
+                           EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode := SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error := 'Error in updating Start Time in table TB_BATCH_LOG.';
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text; 
+       RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                    return -1;
+                   
+
+END  ;                  
+                         
+                  ELSE -- Call from Cron entry
+BEGIN                           
+RAISE NOTICE '4';  
+RAISE NOTICE '%',vl_batch_master_id;  
+  SELECT BATCH_MASTER_ID
+                                    INTO vl_batch_master_id
+                             FROM TB_BATCH_MASTER
+                           WHERE UPPER(BATCH_NM) = UPPER(as_batch_nm)
+                                    AND DEPENDENT_MASTER_ID IS NULL
+                                    AND ACTIVE_SW = 'Y';
+                           EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode := SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error = 'Error in getting BATCH_MASTER_ID for BATCH_NM: ' || RTRIM(as_batch_nm);
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text; 
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                   return -1;
+                   
+
+END  ;                  
+                                                      
+RAISE NOTICE 'vl_batch_master_id';
+RAISE NOTICE '%',vl_batch_master_id;
+                           -- Cursor to Insert records for parent script, level 1 & level 2 scripts
+                           IF vl_batch_master_id > 0 THEN
+                                    FOR curr_scripts IN
+                                             SELECT BATCH_MASTER_ID 
+                                                      FROM TB_BATCH_MASTER 
+                                             WHERE ACTIVE_SW = 'Y' 
+                                                        AND BATCH_MASTER_ID = vl_batch_master_id
+                                             UNION ALL
+                                             SELECT BATCH_MASTER_ID 
+                                                      FROM TB_BATCH_MASTER 
+                                             WHERE ACTIVE_SW = 'Y' 
+                                                        AND DEPENDENT_MASTER_ID = vl_batch_master_id
+                                             UNION ALL
+                                             SELECT BATCH_MASTER_ID 
+                                                      FROM TB_BATCH_MASTER 
+                                             WHERE ACTIVE_SW = 'Y' 
+                                                       AND DEPENDENT_MASTER_ID IN ( SELECT BATCH_MASTER_ID 
+                                                                                                                              FROM TB_BATCH_MASTER 
+                                                                                                                       WHERE ACTIVE_SW = 'Y' 
+                                                                                                                                  AND DEPENDENT_MASTER_ID = vl_batch_master_id )
+                                    LOOP
+                                             -- Insert record in TB_BATCH_LOG with Start Time
+                                             -- BATCH_LOG_ID (Not required - Auto Increment)
+            
+                  BEGIN  
+RAISE NOTICE '6';      
+                                             IF vl_batch_master_id = curr_scripts.BATCH_MASTER_ID THEN -- parent script
+                                                      INSERT INTO TB_BATCH_LOG ( BATCH_MASTER_ID, 
+                                                                                    RUN_DT,
+                                                                                    START_TS,
+                                                                                    COMMENTS_TX
+                                                                                  )
+                                                               VALUES ( curr_scripts.BATCH_MASTER_ID,
+                                                                                  ad_run_dt,
+                                                                                  CURRENT_TIMESTAMP,
+                                                                                  as_comments
+                                                                                 );  
+                                             ELSE -- level 1 & level 2 scripts
+                                                      INSERT INTO TB_BATCH_LOG ( BATCH_MASTER_ID, 
+                                                                                    RUN_DT,
+                                                                                    COMMENTS_TX
+                                                                                  )
+                                                               VALUES ( curr_scripts.BATCH_MASTER_ID,
+                                                                                  ad_run_dt,
+                                                                                  as_comments
+                                                                                 );  
+                                             END IF; 
+RAISE NOTICE '7';            
+                                     EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode = SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error = 'Error in inserting Start Time into TB_BATCH_LOG for BATCH_MASTER_ID: ' ||  RTRIM(CAST(curr_scripts.BATCH_MASTER_ID AS VARCHAR));
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text;  
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                    return -1;
+                   
+
+END  ;                  
+                                    
+                                    END LOOP;
+RAISE NOTICE 'END LOOP';         
+                           END IF;
+                           
+                           -- Get the Newly generated BATCH_LOG_ID
+BEGIN  
+RAISE NOTICE 'GENERATING BATCH_LOG_ID';       
+         SELECT MAX(BATCH_LOG_ID) 
+                                    INTO vl_batch_log_id
+                           FROM TB_BATCH_LOG
+                           WHERE BATCH_MASTER_ID = vl_batch_master_id ;
+         EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode = SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error = 'Error in getting Newly generated BATCH_LOG_ID.';
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text; 
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                    return -1;
+                   
+RAISE NOTICE '%',vl_batch_log_id;
+END  ;                                     
+                                                      
+                  END IF;
+         END IF;
+         
+         -- Action - Update 
+         IF as_action_sw  = 'U' THEN
+BEGIN                  
+                  SELECT BATCH_MASTER_ID
+                           INTO vl_batch_master_id
+                  FROM TB_BATCH_LOG
+                  WHERE BATCH_LOG_ID = al_updt_batch_log_id ;
+         EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode := SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error := 'Error in getting Batch Master Id.';
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text;
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                    return -1;         
+END         ;         
+                   vl_batch_log_id := vl_batch_master_id;
+
+                  -- Additional verification of all child scripts success
+BEGIN         
+         SELECT COUNT(*)
+                           INTO vl_failed_cnt
+                  FROM TB_BATCH_LOG BL
+                  WHERE COALESCE(BL.SUCCESS_SW, 'N') = 'N'
+                        AND BL.BATCH_LOG_ID > al_updt_batch_log_id
+                             AND BL.RUN_DT = (SELECT BL1.RUN_DT 
+                                                                  FROM TB_BATCH_LOG BL1 
+                                                                  WHERE BL1.BATCH_LOG_ID = al_updt_batch_log_id)
+                             AND BL.BATCH_MASTER_ID IN ( SELECT BATCH_MASTER_ID 
+                                                                                               FROM TB_BATCH_MASTER 
+                                                                                            WHERE DEPENDENT_MASTER_ID = vl_batch_master_id
+                                                                                            UNION ALL 
+                                                                                            SELECT BATCH_MASTER_ID 
+                                                                                               FROM TB_BATCH_MASTER 
+                                                                                            WHERE DEPENDENT_MASTER_ID IN (SELECT BATCH_MASTER_ID 
+                                                                                                                                                                           FROM TB_BATCH_MASTER 
+                                                                                                                                                                  WHERE DEPENDENT_MASTER_ID = vl_batch_master_id )
+                                                                                          );
+EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode := SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error := 'Error in getting child scripts success count.';
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text;   
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                    return -1;         
+END         ;
+                                             
+                  
+                  -- Override the success sw value 
+                  IF vl_failed_cnt > 0 THEN                  
+                            as_status := 'N';
+                  END IF;
+                  
+             -- Update TB_BATCH_LOG with End Time
+BEGIN                  
+                  UPDATE TB_BATCH_LOG 
+                     SET SUCCESS_SW = as_status,
+                              END_TS = CURRENT_TIMESTAMP,
+                              COMMENTS_TX = as_comments
+                  WHERE BATCH_LOG_ID = al_updt_batch_log_id ;
+EXCEPTION WHEN OTHERS THEN                  
+                  
+                   al_sqlcode := SQLSTATE;
+                   vs_message_text :=SQLERRM;
+                   as_error := 'Error in updating End Time into TB_BATCH_LOG.';
+                   as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                   as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(vl_batch_master_id as VARCHAR) ;
+                   as_error := as_error || vs_message_text;  
+                   RAISE NOTICE '%',as_error;         
+                   SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id,NULL,NULL,NULL,NULL,al_sqlcode,as_error,'Script',vl_ret_status);
+                    return -1;         
+END         ;
+                  
+         END IF;
+         
+         Return vl_batch_log_id;
+END ;
+
+$function$
+

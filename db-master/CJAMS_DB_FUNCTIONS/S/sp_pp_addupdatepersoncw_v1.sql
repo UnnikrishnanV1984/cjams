@@ -1,0 +1,863 @@
+DROP FUNCTION IF EXISTS cjams.sp_pp_addupdatepersoncw_v1(v_personid uuid, persondetails json, v_intakeserviceid uuid, v_securityuserid character varying, v_notiveuser boolean, OUT v_status character varying, OUT savedpersonid uuid);
+
+CREATE OR REPLACE FUNCTION cjams.sp_pp_addupdatepersoncw_v1(
+	v_personid uuid,
+	persondetails json,
+	v_intakeserviceid uuid,
+	v_securityuserid character varying,
+	v_notiveuser boolean,
+	OUT v_status character varying,
+	OUT savedpersonid uuid)
+RETURNS record
+    LANGUAGE 'plpgsql'
+    VOLATILE 
+    COST 100
+AS $function$
+-------------------------------------------------------------------------------------------------------
+-- 02/01/22 Veera Nadimpalli Quick Card changes
+-- 03-04 - VN - creating personprogram only CPS cases
+-- 04/07/2022 Vineet Tirodkar - Modifcations for Birth Match Identification (CIDM-4409/B-124608)
+-- 05/31/2022 Mounika Gudise - AFCARS USER STORY CHANGES (CIDM-4647/B-125245)
+-- 07/15/2022 - Vijaya Laxmi Devunoori - Add preadoptiondate, intercountryadoption , priorlegalguardianship and preplacementguardianshipdate  - (CIDM-5099)
+-- 11/04/2022 - Vigneshwar Kumar - CIDM-6014 - Persons with missing MDM ID
+-- 12/30/2022 - Vijaya Laxmi Devunoori - Get ARType from intake (CDM-25485) instead of hardcoded IR as value
+ --4/28/2023 -Smitha Somasekharan -Adding columns for CIDM-7055,additional children in homeresponse timer
+ --07/16/2024- Umasankar Raavi --CIDM-9029-Person profile -Added new column othergendertypekey
+ --6/16/2025 -Umasankar Raavi --CIDM-10541-Child Fatality Radio Button-Added new column sdmpersonapprovalflag
+ ---01/08/2026 --CIDM-10981--Umasankar Raavi --Added additional Person table columns for the Limited English Proficiency (LEP) user story
+-------------------------------------------------------------------------------------------------------
+ --03/02/2026 - Sreekanth Marrikanti - CIDM-11175 - Fix to allow add person when MDM doesn't have CJAMS PID in their DB but matching person found in CJAMS
+ -------------------------------------------------------------------------------------------------------
+-- 01-06-2026 - Veera Nadimpalli -- CIDM-10982 - To save Sen Criteria Identification
+
+-------------------------------------------------------------------------------------------------------
+
+ declare 
+v_personjsondata json;
+v_person json;
+l_generatedactorid uuid;
+l_generatedintakeservicereqactorid uuid;
+l_genereatedactorrelationshipid uuid;
+v_personrolejs json;
+v_date timestamp without time zone;
+returnmsg character varying;
+v_intakeservicerequestactorid uuid;
+v_actorid uuid;
+v_personroleid uuid;
+v_personroletypeid uuid;
+v_maritalstatus json;
+v_personrole json;
+v_role json;
+v_personalise json;
+v_alsoknownas json ; 
+v_racejson json;
+v_racekey json;
+v_racetypekey character varying;
+v_intakenumber character varying;	
+empcount bigint;
+empdetailcount bigint;
+empdetailid uuid;
+v_personemployerdetailsid uuid;
+v_isheadofhousehold boolean default false;
+v_headofhouseholdcount integer;
+l_servicecaseid uuid;
+l_caseid uuid;
+v_qpersontype character varying;
+v_qpersonid uuid;
+v_lastname character varying;
+v_firstname character varying;
+v_drugexposednewbornflag boolean default false;
+v_qp_drugexposednewbornflag int;
+v_notifystatus character varying; 
+
+-- CIDM-4409
+v_birthmatchupdateflag character varying; 
+v_birthmatchflag integer;
+v_notificationdate timestamp;
+v_deselectreason text; 
+v_personbirthmatchid uuid;
+v_personalreadyexistcount integer;
+
+begin
+v_date := now();
+v_person := persondetails;
+
+v_actorid := v_person ->>'actorid';
+v_intakenumber :=  v_person ->>'intakenumber';
+v_maritalstatus := v_person ->'maritalstatus'; 
+v_personrole := v_person ->> 'personRole';
+v_personalise := v_person-> 'alias';
+v_racejson := v_person-> 'Race';
+v_isheadofhousehold := v_person ->> 'isheadofhousehold';
+v_qpersontype := v_person->> 'qptype';
+v_qpersonid := (v_person->> 'qpid')::uuid;
+v_firstname := v_person-> 'Firstname';
+v_lastname := v_person-> 'Lastname';
+v_drugexposednewbornflag := v_person ->> 'drugexposednewbornflag';
+v_qp_drugexposednewbornflag := (v_person ->> 'drugexposednewbornflag')::int;
+raise notice 'everbeenadopbted %',v_person ->>'everbeenadoptedflag';
+raise notice 'alias %',  v_person ->> 'alias';
+raise notice 'v_personrole %',v_personrole;
+raise notice 'v_personid %',  v_personid;
+
+l_servicecaseid = (v_person  ->> 'servicecaseid' ):: uuid;
+IF l_servicecaseid IS NULL  and 'servicecase' = (v_person  ->> 'objecttype' ) THEN
+  l_servicecaseid  = (v_person  ->> 'objectid') :: uuid;
+END IF;
+                                                                                                                                                                                                                                     
+IF v_securityuserid IS NULL THEN                                                                                                                                                                                                                                                       
+	v_securityuserid:='00000000-0000-0000-0000-000000000000';                                                                                                                                                                                                                   
+END IF;                                         
+
+IF (l_servicecaseid is not null) THEN
+    select count(1) over() into v_headofhouseholdcount	
+	from intakeservicerequestactor as isra where isra.servicecaseid = l_servicecaseid and isra.isheadofhousehold = true and (case when v_personid is not null then isra.personid <> v_personid else true end)
+	and (case when v_intakeserviceid is not null then isra.intakeserviceid = v_intakeserviceid else true end)
+	and isra.activeflag = 1 group by isra.actorid, isra.isheadofhousehold;
+ELSIF (v_intakeserviceid is not null) THEN
+    select count(1) over() into v_headofhouseholdcount	
+	from intakeservicerequestactor as isra where isra.intakeserviceid = v_intakeserviceid and isra.isheadofhousehold = true and (case when v_personid is not null then isra.personid <> v_personid else true end)
+	and isra.activeflag = 1 group by isra.actorid, isra.isheadofhousehold;
+ELSE
+    select count(1) over() into v_headofhouseholdcount	
+	from intakeservicerequestactor as isra where isra.intakenumber = v_intakenumber and isra.isheadofhousehold = true and (case when v_personid is not null then isra.personid <> v_personid else true end)
+	and isra.activeflag = 1 group by isra.actorid, isra.isheadofhousehold;
+END IF;
+
+select count(*) into v_personalreadyexistcount from person 
+where firstname = TRIM(v_person ->>'Firstname') and lastname = TRIM(v_person ->>'Lastname') and (case when v_person ->>'SSN' is not null and trim(v_person ->>'SSN') != '' then ssnno = v_person ->>'SSN' else false end)
+and gendertypekey = v_person ->>'gendertypekey' and dob::date = (v_person ->>'Dob')::date and activeflag = 1
+and (clientflag is null or clientflag = 1);
+
+if(v_headofhouseholdcount > 0 and (v_person ->> 'roles') not in ('CHILD') and v_isheadofhousehold and v_notiveuser) then
+	v_status := 'Head of Household Person already added';
+	savedpersonid := v_personid;
+
+ElSIF((v_personalreadyexistcount > 0) and (v_personid is null)) then
+	if (v_personalreadyexistcount = 1) THEN
+		select personid into v_personid from person 
+			where firstname = TRIM(v_person ->>'Firstname') 
+				and lastname = TRIM(v_person ->>'Lastname') 
+				and (case when v_person ->>'SSN' is not null 
+				and trim(v_person ->>'SSN') != '' then ssnno = v_person ->>'SSN' else false end)
+				and gendertypekey = v_person ->>'gendertypekey' 
+				and dob::date = (v_person ->>'Dob')::date and activeflag = 1
+				and (clientflag is null or clientflag = 1)
+			LIMIT 1;
+
+		select  *  from sp_pp_personupdatebasicinfocw_v1(v_personid, persondetails, v_intakeserviceid, v_securityuserid) into returnmsg;
+		
+		--## PUBLISH DATA ACROSS TO CHESSIE FOR CHECKING CLIENT ACTIVITY WITH IN CJAMS
+		l_servicecaseid= (v_person  ->> 'servicecaseid')::uuid;
+		IF (l_servicecaseid IS NOT NULL ) THEN 
+			SELECT publishpersonparticipation(l_servicecaseid::UUID,'servicecase'::character varying,v_personid::UUID) INTO v_status;
+		ElSIF (v_intakeserviceid IS NOT NULL) THEN
+			SELECT publishpersonparticipation(v_intakeserviceid::UUID,'servicerequest'::character varying,v_personid::UUID) INTO v_status;
+		END IF;
+		
+		IF l_servicecaseid is not null and COALESCE((v_person ->> 'substanceexposednewbornflag')::INT, 0) = 1 then
+	
+			INSERT INTO personprogramarea 
+				(personid, programkey,subprogramkey,objecttypekey,objectid,startdate,insertedby,updatedby,entityid, datatransferflag, sourcetype, isdefault)
+			select
+				v_personid, 'IHSFP','SFCI','servicecase',servicecaseid , now(), v_securityuserid, v_securityuserid, servicecasenumber, 'A', 'CW', true
+			from servicecase
+			where servicecaseid = l_servicecaseid
+			and not exists (select 1 from personprogramarea where personid =v_personid and programkey = 'IHSFP' and subprogramkey ='SFCI' );
+	
+		end if;
+
+		v_status := 'Person Record Saved Sucessfully';
+		savedpersonid := v_personid;
+	ELSE
+		v_status := 'Person already Added';
+		savedpersonid := v_personid;
+	END IF;
+
+Else 
+
+if(v_personid is not null) then select  *  from
+	sp_pp_personupdatebasicinfocw_v1(v_personid,
+	persondetails,
+	v_intakeserviceid,
+	v_securityuserid) into
+		returnmsg;
+raise notice 'returnmsg %', returnmsg;		
+else
+raise notice 'Firstname %', v_person ->>'Firstname';
+raise notice 'substanceexposednewbornflag %', v_person ->>'substanceexposednewbornflag';
+
+insert
+	into
+		Person ( 
+		activeflag,
+		firstname,
+		lastname,
+		middlename,
+		dob,
+		gendertypekey,
+		othergendertypekey,
+		sdmpersonapprovalflag,
+		insertedby,
+		insertedon,
+		dateofdeath,
+		isapproxdod,
+		isapproxdob,
+		stateid,
+		--racetypekey,
+		ethnicgrouptypekey,
+		occupation,
+		tribalassociation,
+		physicalattributes,
+		effectivedate,
+		userphoto,
+		livingsituationdesc,
+		primarylanguageid,
+		secondarylanguageid,
+		isuscitizen,
+		ssnno,
+        ssnverified,
+		prefx,
+		suffix,
+		everbeenadoptedflag,
+		cferesourcehomechild,
+		limitedenglishproficiency,
+		needtranslatorinterpreter,
+		readingproficiency,
+        writingproficiency,
+        speakingproficiency,
+		livingsituationkey,
+		maritalstatustypekey,
+		religiontypekey,
+		citizenalenageflag,
+		primarycitizenshiptypekey,
+		seccitizenshiptypekey,
+		nationalitytypekey,
+		alienregistrationtext,
+		alienstatustypekey,
+		safehavenbabyflag,
+		dangertoself,
+		haircolortypekey,
+		hairtexturetypekey,
+		eyecolortypekey,
+		physicalbuildtypekey,
+		skintonetypekey,
+		hairtextureotherdesc,
+     	haircolorotherdesc,
+     	isglasses,
+     	employername,
+     	clienttitle,
+     	biologicalmothermarriedsw,
+		cisclientid,
+		clientflag,
+		livingarrangementkey,
+		livingarrangementdesc,
+		icwastatusinquiry,
+		icwaeligibleformembership,
+		icwatribename,
+		icwaunderdefinition,
+		icwanotification,
+		icwatribelegalnotice,
+		preadoptiondate,
+		intercountryadoption,
+		priorlegalguardianship,
+		preplacementguardianshipdate,
+		substanceexposednewbornflag,
+		senstatusflag,
+		substanceexposednewbornsourceid,
+		substanceexposednewbornsourcetypekey,
+		substanceexposednewborntimetamp,
+		substanceclasses,
+		sencriteria,
+        birthinghospital,
+		othersubstances 
+		)
+	values( 
+	1,
+	TRIM(v_person ->>'Firstname'),
+	TRIM(v_person ->>'Lastname'),
+	TRIM(v_person ->>'Middlename'),
+	(v_person ->>'Dob')::timestamp,
+	v_person ->>'gendertypekey',
+	(v_person ->>'othergendertypekey')::int,
+	(v_person ->>'sdmpersonapprovalflag')::int,
+	v_securityuserid,
+	v_date,
+	(v_person ->>'dateofdeath')::timestamp ,
+	(v_person ->>'isapproxdod')::int,
+	(v_person ->>'isapproxdob')::int,
+	v_person ->>'stateid',
+	--v_person ->>'Race',
+	v_person ->>'ethnicgrouptypekey',
+	v_person ->>'occupation',
+	v_person ->>'tribalassociation',
+	v_person ->>'physicalattributes',
+	v_date,
+	v_person ->>'userphoto',
+	v_person ->>'livingsituationdesc',
+	v_person ->>'primarylanguage',
+	v_person ->>'secondarylanguage',
+	(v_person ->>'citizenalenageflag'):: character varying,
+	v_person ->>'SSN',
+    (v_person ->>'ssnverified')::bool,
+	v_person ->>'prefix',
+	v_person ->>'nameSuffix',
+	(v_person ->>'everbeenadoptedflag')::int,
+	(v_person ->>'cferesourcehomechild')::boolean,
+	(v_person ->>'limitedenglishproficiency')::boolean,
+	(v_person ->>'needtranslatorinterpreter')::boolean,	
+	(v_person ->>'readingproficiency')::boolean,	
+	(v_person ->>'writingproficiency')::boolean,	
+	(v_person ->>'speakingproficiency')::boolean,	
+	v_person ->>'livingsituationkey',
+	v_person ->>'maritalstatustypekey',
+	v_person ->>'religiontypekey',
+	(v_person ->>'citizenalenageflag')::int,
+	v_person ->>'primarycitizenship',
+	v_person ->>'secondarycitizenship',
+	v_person ->>'nationality',
+	v_person ->>'arnumber',
+	v_person ->>'astatus',
+	case when (v_person  ->> 'safehavenbabyflag') = 'true' THEN 1 else 0 END,
+	(v_person ->>'dangertoself')::int ,
+	v_person ->>'haircolortypekey',
+	v_person ->>'hairtexturetypekey',
+	v_person ->>'eyecolortypekey',
+	v_person ->>'physicalbuildtypekey',
+	v_person ->>'skintonetypekey',
+	v_person ->>'hairtextureotherdesc',
+	v_person ->>'haircolorotherdesc',
+	(v_person ->>'isglasses'):: boolean,
+	v_person ->>'employername',
+	v_person ->>'clienttitle',
+	(v_person ->>'biologicalmothermarriedsw')::int4,
+	v_person ->>'cisclientid',
+	(v_person ->>'clientflag')::int,
+	v_person ->>'livingarrangementkey',
+	v_person ->>'livingarrangementdesc',
+	v_person ->>'icwastatusinquiry',
+	v_person ->>'icwaeligibleformembership',
+	v_person ->>'icwatribename',
+	v_person ->>'icwaunderdefinition',
+	(v_person ->>'icwanotification')::date,
+	v_person ->>'icwatribelegalnotice',
+	(v_person->>'preadptdate')::timestamp,
+	(v_person ->>'intercountryadoption')::int,
+	(v_person ->>'priorlegalguardianship')::int,
+	(v_person ->>'preplacementguardianshipdate')::timestamp,
+	(v_person ->> 'substanceexposednewbornflag')::INT,
+	(v_person ->> 'senstatusflag')::INT,
+	(v_person ->> 'substanceexposednewbornsourceid')::character varying,
+	(v_person ->> 'substanceexposednewbornsourcetypekey')::INT,
+	(v_person ->> 'substanceexposednewborntimetamp')::timestamp,
+	(v_person ->> 'substanceclasses')::json,
+	(v_person ->> 'sencriteria')::character varying,
+    (v_person ->> 'birthinghospital')::character varying,
+	(v_person ->> 'othersubstances')::character varying
+) returning personid into v_personid;
+	
+raise notice 'v_racejson%',v_racejson;
+raise notice 'jsonb_array_length( v_racejson::jsonb ) = 0%',jsonb_array_length( v_racejson::jsonb );
+
+raise notice 'v_personid%',v_personid;
+raise notice 'v_intakeserviceid%',v_intakeserviceid;
+
+IF v_personid IS NOT NULL AND COALESCE((v_person ->> 'substanceexposednewbornflag')::INT, 0) = 1 AND v_intakeserviceid IS NOT NULL AND (v_person ->> 'substanceexposednewbornsourceid')::character varying = v_intakeserviceid::character varying THEN
+	IF((select count(*) from intakeservicerequestsdm where intakeserviceid = v_intakeserviceid and activeflag = 1) > 0) THEN
+		UPDATE intakeservicerequestsdm SET updatedby = v_securityuserid, updatedon = now(), drugexposednewbornflag = 1 where intakeserviceid = v_intakeserviceid and activeflag = 1; 
+	ELSE 
+		INSERT INTO cjams.intakeservicerequestsdm(intakeserviceid, drugexposednewbornflag, activeflag, updatedby, updatedon, insertedby, insertedon)
+		VALUES(v_intakeserviceid, 1, 1, v_securityuserid, now(), v_securityuserid, now());
+	END IF;
+END IF;
+
+IF v_personid IS NOT NULL AND COALESCE((v_person ->> 'substanceexposednewbornflag')::INT, 0) = 1 AND (v_person ->> 'substanceexposednewbornsourcetypekey')::character varying = '2954' AND (v_person ->> 'substanceexposednewbornsourceid')::character varying = v_intakenumber THEN
+	UPDATE intakedastaging
+	SET jsondata = jsonb_set(jsondata, '{sdm}', jsonb_set(jsondata->'sdm', '{isnegrh_exposednewborn}', 'true'))
+		, updatedby = v_securityuserid
+		, updatedon = now()
+	WHERE intakenumber = (v_person ->> 'substanceexposednewbornsourceid')::character varying AND activeflag=1;
+
+	UPDATE intakedastaging 
+	SET jsondata = replace(jsondata::text, '"isnegrh_exposednewborn": false', '"isnegrh_exposednewborn": true')::json
+		, updatedby = v_securityuserid
+		, updatedon = now()
+	WHERE intakenumber = (v_person ->> 'substanceexposednewbornsourceid')::character varying AND activeflag = 1;
+END IF;
+
+IF v_personid IS NOT NULL THEN
+	UPDATE person SET primarycitizenshiptypekey=NULL WHERE primarycitizenshiptypekey = 'C' AND personid = v_personid;
+END IF;
+	
+if jsonb_array_length( v_racejson::jsonb ) > 0 then
+
+for v_racekey in select
+	*
+from
+	json_array_elements(v_racejson)
+		
+
+	loop
+	
+	raise notice 'v_racekey%',v_racekey;
+	  v_racetypekey:= v_racekey ->>'racetypekey';
+
+insert
+	into
+		PersonRaceTypeMap(PersonRaceTypeMapId,
+		personid,
+		RaceTypeKey,
+		updatedby,
+		updatedon,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (
+	gen_random_uuid(),  
+	v_personid,
+	v_racetypekey,
+	v_securityuserid,
+	v_date,
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end loop;
+
+end if;
+
+if LENGTH(lower(v_person->>'SSN')) > 0 then insert
+	into
+		personidentifier(personid,
+		personidentifiertypekey,
+		personidentifiervalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'SSN',
+	v_person->>'SSN',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+if LENGTH(lower(v_person->>'mdm_id')) > 0 then insert
+	into
+		personidentifier(personid,
+		personidentifiertypekey,
+		personidentifiervalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'MDM_ID',
+	v_person->>'mdm_id',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+if LENGTH(lower(v_maritalstatus->>'statustypekey')) > 0 then
+
+INSERT INTO personmaritalstatus( personmaritalstatusid, statustypekey, marriageplace, divorceplace, startdate, 
+			enddate, childrenno, informallivingcomments, prefixtypekey, firstname, middlename, lastname, suffixtypekey, 
+			adrhomephone, adrworkphone, adrworkxtn, insertedby, insertedon,updatedon, activeflag, personid )
+			
+			VALUES ( 
+			gen_random_uuid(), 
+			v_maritalstatus ->> 'statustypekey',
+			v_maritalstatus ->> 'marriageplace',
+			v_maritalstatus ->> 'divorceplace',
+		   (v_maritalstatus ->> 'maritalstartdate')::timestamp,
+		   (v_maritalstatus ->> 'maritalenddate')::timestamp,
+		   (v_maritalstatus ->> 'childrenno')::int,
+			v_maritalstatus ->> 'maritalcomments',
+			v_maritalstatus ->> 'spouseprefix',	
+			v_maritalstatus ->> 'spousefirstname',
+			v_maritalstatus ->> 'spousemiddlename',
+			v_maritalstatus ->> 'spouselastname',
+			v_maritalstatus ->> 'spousesuffix',	
+			v_maritalstatus ->> 'spousehomenumber',
+			v_maritalstatus ->> 'spouseofficenumber',
+			v_maritalstatus ->> 'spouseofficeextension',
+			v_securityuserid,
+			v_date,	
+			v_date,	
+			1,
+			v_personid );
+end if;
+
+if LENGTH(lower(v_maritalstatus->>'spouseaddress1')) > 0 then
+
+INSERT INTO personspouseaddress( personspouseaddressid, personid, adr1, adr2, city, county, state, zip5no, insertedon, 
+			insertedby, activeflag )
+			VALUES ( 
+			gen_random_uuid(), 
+			v_personid,
+			(v_maritalstatus ->> 'spouseaddress1')::VARCHAR,
+			(v_maritalstatus ->> 'spouseAddress2')::VARCHAR,
+			v_maritalstatus->> 'spousecity',
+			v_maritalstatus->> 'spousecounty',
+			v_maritalstatus->> 'spousestate',
+			(v_maritalstatus ->> 'spousezipcode')::numeric,
+			v_date,		
+			v_securityuserid,	
+			1 );
+end if;
+
+if Length(lower(v_person ->> 'dl')) > 0 then insert
+	into
+		personidentifier (personid,
+		personidentifiertypekey,
+		personidentifiervalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'DL',
+	v_person ->> 'dl',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+if Length(lower(v_person ->> 'PhyMark')) > 0 then insert
+	into
+		personphysicalattribute (personid,
+		physicalattributetypekey,
+		attributevalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'PhyMark',
+	v_person ->> 'PhyMark',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+if Length(lower(v_person ->> 'height')) > 0 then insert
+	into
+		personphysicalattribute (personid,
+		physicalattributetypekey,
+		attributevalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'Ht',
+	v_person ->> 'height',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+if Length(lower(v_person ->> 'weight')) > 0 then insert
+	into
+		personphysicalattribute (personid,
+		physicalattributetypekey,
+		attributevalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'Wt',
+	v_person ->> 'weight',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+if (lower(v_person ->> 'tattoo')) is not null then insert
+	into
+		personphysicalattribute (personid,
+		physicalattributetypekey,
+		attributevalue,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (v_personid,
+	'Tattoo',
+	v_person ->> 'tattoo',
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end if;
+
+raise notice 'marrrr %',v_maritalstatus;
+raise notice 'marrrr %',v_maritalstatus ->> 'marriageplace';
+ 
+
+	-- Person Role Add	
+	IF ( v_person ->> 'personroleid' IS NULL ) THEN 	
+        v_personroleid = gen_random_uuid();
+	 	
+	 	INSERT INTO personrole ( personroleid, activeflag, personid, ishouseholdmember, iscollateralcontact, drugexposednewbornflag, drugexposedtypekey,
+		otherdrugs, safehavenbabyflag, probationsearchconductedflag, sexoffenderregisteredflag, dangertoself, dangertoselfreason, isdangertoworker, 
+		dangertoworkerreason, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, updatedby, updatedon , intakenumber , intakeserviceid, servicecaseid,initialresponse,initialresponseupdatedby,initialresponseupdatedon)
+
+		VALUES (
+		v_personroleid,
+		1,
+		v_personid,
+--		1,
+		(v_person  ->> 'ishousehold')::int,
+		(v_person  ->> 'iscollateralcontact')::int4,
+		(v_person  ->> 'drugexposednewbornflag')::int4,
+		v_person  -> 'drugexposedtypekey',
+		v_person  ->> 'otherdrugs',
+		case when v_person  ->> 'safehavenbabyflag' = 'true' THEN 1 else 0 END,
+		(v_person  ->> 'probationsearchconductedflag')::int4,
+		case when v_person  ->> 'sexoffenderregisteredflag' = 'true' THEN 1 else 0 END,		
+		(v_person  ->> 'dangerousself')::int4,
+		v_person  ->> 'dangerousselfreason',
+		(v_person  ->> 'Dangerousworker')::int4,	
+		v_person  ->> 'DangerousWorkerReason',
+		(v_person  ->> 'ismentalillness')::int4,
+		v_person  ->> 'ismentalillnessReason',
+		(v_person  ->> 'ismentalimpair')::int4,
+		v_person  ->> 'ismentalimpairReason',
+		v_securityuserid, 
+		v_date ,
+		v_intakenumber,
+		v_intakeserviceid,
+		(v_person  ->> 'servicecaseid')::uuid,
+		(v_person  ->> 'initialresponse')::int4,
+		v_person ->> 'initialresponseupdatedby',
+		(v_person ->> 'initialresponseupdatedon')::timestamp
+		
+
+	);
+		
+		UPDATE person
+		SET  dangertoself=(v_person  ->> 'dangerousself')::int4,dangertoselfreason=v_person  ->> 'dangerousselfreason', updatedby=v_securityuserid, updatedon=now(), safehavenbabyflag = case when v_person  ->> 'safehavenbabyflag' = 'true' THEN 1 else 0 END
+		WHERE personid=v_personid;
+
+		select * from insertupdatepersonrole(v_personrole, v_intakeserviceid, v_intakenumber, v_personid, v_person , v_personroleid, v_securityuserid, v_isheadofhousehold) into
+					returnmsg;
+	 
+    END IF;
+
+--added for alise name by venky -18-4 -19
+raise notice 'testest %',v_alsoknownas;
+for v_alsoknownas in select
+	*
+from
+	json_array_elements(v_personalise) loop
+	
+	raise notice 'testest %',v_alsoknownas;
+raise notice 'aliasid %',v_alsoknownas;
+if(((v_alsoknownas ->>'aliasid') :: uuid) is null ) then 
+	
+INSERT INTO alias
+(aliasid, activeflag, personid, firstname, lastname, middlename, sfxname,  akatypetypekey, prefixtypekey,insertedby,insertedon)
+VALUES(
+gen_random_uuid(),
+1,
+v_personid,
+v_alsoknownas ->> 'firstname' :: character varying,
+v_alsoknownas ->> 'lastname' :: character varying,
+v_alsoknownas ->> 'middlename' :: character varying,
+v_alsoknownas ->> 'sfxname' :: character varying,
+v_alsoknownas ->> 'akatypetypekey' :: character varying,
+v_alsoknownas ->> 'prefixtypekey' :: character varying,
+v_securityuserid,now()
+);
+
+	end if;
+	end loop;
+--added for audit log entry by venky
+INSERT INTO personauditlog
+(personauditlogid, personid, personjson,typekey, insertedon, insertedby, updatedby, updatedon, activeflag)
+VALUES(gen_random_uuid(), v_personid , v_person , 'new':: character varying, now(), v_securityuserid , v_securityuserid, now(), 1);
+
+
+select  count(1) into empdetailcount from personemployerdetail  where personid = v_personid and activeflag =1;
+select ped.personemployerdetailid into empdetailid from personemployerdetail ped where personid = v_personid and ped.activeflag=1 order by ped.insertedon desc limit 1;
+if((v_person ->> 'employername') != '' and (v_person ->> 'employername') is not null)
+then
+if(empdetailcount > 0)
+then
+update personemployerdetail set employername = v_person ->> 'employername', updatedon = now(), updatedby = v_securityuserid where personemployerdetailid 
+in (select ped.personemployerdetailid from personemployerdetail ped where personid = v_personid and ped.activeflag=1 order by ped.insertedon desc limit 1);
+else
+insert into personemployerdetail
+    	(personemployerdetailid,personid,employername,activeflag,updatedby,updatedon,insertedby,insertedon)
+		values (gen_random_uuid(),v_personid,v_person->>'employername',1,v_securityuserid,now(),v_securityuserid,now())
+		returning personemployerdetailid into
+		empdetailid;
+end if;
+end if;
+
+if((v_person ->> 'clienttitle') != '' and (v_person ->> 'clienttitle') is not null)
+then
+select  count(1) into empcount from personemployment  where personid = v_personid and activeflag =1;
+if(empcount > 0)
+then
+update personemployment set clienttitle = v_person ->> 'clienttitle',personemployerdetailsid = empdetailid,promotedemploymentflag = 0, updatedon = now(), updatedby = v_securityuserid where  personemploymentid 
+in (select ped.personemploymentid from personemployment ped where personid = v_personid and ped.activeflag=1 order by ped.insertedon desc limit 1);
+else
+insert into personemployment
+			(personemploymentid,personid,personemployerdetailsid,promotedemploymentflag,clientmergeid,clienttitle,activeflag,updatedby,updatedon,insertedby,insertedon)
+    		values (gen_random_uuid(),v_personid,empdetailid,0,v_personid,v_person->>'clienttitle',1,v_securityuserid,now(),v_securityuserid,now());
+end if;
+end if;
+
+--empcount
+--personemployerdetail
+----employername
+--select * from personemployment
+----clienttitle
+
+end if;
+
+--## PUBLISH DATA ACROSS TO CHESSIE FOR CHECKING CLIENT ACTIVITY WITH IN CJAMS
+l_servicecaseid= (v_person  ->> 'servicecaseid')::uuid;
+IF (l_servicecaseid IS NOT NULL ) THEN 
+	SELECT publishpersonparticipation(l_servicecaseid::UUID,'servicecase'::character varying,v_personid::UUID) INTO v_status;
+ELSE
+	SELECT publishpersonparticipation(v_intakeserviceid::UUID,'servicerequest'::character varying,v_personid::UUID) INTO v_status;
+END IF;
+
+--CIDM-4110 Change
+if ((v_qpersontype = 'QP')  and savedpersonid is null)  then 
+     savedpersonid := v_personid; 
+
+	IF (l_servicecaseid IS NOT NULL ) THEN 
+        v_status := CONCAT ('Quick Add Card ', v_firstname, ' ', v_lastname , ' is confirmed and the Quick Add Card is now deleted from the Case. ');  	
+	end if;
+	if v_intakeserviceid is not null then  
+	v_status := CONCAT ('Quick Add Card ', v_firstname, ' ', v_lastname , ' is confirmed and the Quick Add Card is now deleted from the Case. ');  	
+	else
+		v_status := CONCAT ('Quick Add Card ', v_firstname, ' ', v_lastname , ' is confirmed and the Quick Add Card is now deleted from the Intake. ');
+	raise notice 'v_notifystatus %',v_notifystatus;
+	end if;
+  
+  if(v_drugexposednewbornflag or v_qp_drugexposednewbornflag = 1) then
+  raise notice 'notification %',v_intakenumber;
+	   	--send notification
+	   	IF (l_servicecaseid IS NOT NULL ) THEN 
+			SELECT send_notification_for_qpsen INTO v_notifystatus    
+			FROM cjams.send_notification_for_qpsen(v_securityuserid::character varying, l_servicecaseid::character varying, CONCAT(v_firstname, ' ', v_lastname )::character varying, 'servicecase', null, false);
+		end if;
+	   	if v_intakeserviceid is not null then  
+		    SELECT send_notification_for_qpsen INTO v_notifystatus    
+			FROM cjams.send_notification_for_qpsen(v_securityuserid::character varying, v_intakeserviceid::character varying, CONCAT(v_firstname, ' ', v_lastname )::character varying, 'servicerequest', null, false);
+	   	else
+		   	v_status := CONCAT ('Quick Add Card ', v_firstname, ' ', v_lastname , ' is confirmed and the Quick Add Card is now deleted from the Intake. ');
+	   		SELECT send_notification_for_qpsen INTO v_notifystatus    
+			FROM send_notification_for_qpsen(v_securityuserid::character varying, v_intakenumber::character varying, CONCAT(v_firstname, ' ', v_lastname )::character varying, 'intake', null, false);
+		
+		raise notice 'v_notifystatus %',v_notifystatus;
+	   	end if;
+   end if;
+  
+  	if (v_intakeserviceid is not null OR l_servicecaseid is not null) then 
+
+	  	v_status := CONCAT ('Quick Add Card ', v_firstname, ' ', v_lastname , ' is confirmed and the Quick Add Card is now deleted from the Case. ');  	
+	    if( l_servicecaseid is not null) then
+			l_caseid = l_servicecaseid;
+		else 
+			l_caseid = v_intakeserviceid;
+		end if;
+        raise notice 'v_personid 616 %',  v_status;
+
+		if (v_intakeserviceid is not null and l_servicecaseid is null ) then
+  		 INSERT INTO cjams.personprogramarea
+		 (personprogramid, personid, startdate, enddate, insertedon, insertedby, updatedon, updatedby, activeflag, datavalidflag, clientmergeid, endreasonkey, ifpsatriskflag, old_id, programkey, subprogramkey, 
+		 	objecttypekey, objectid, entityid, alternateid, datatransferflag, datasentdate, etl_userid, etl_load_date, sourcetype)
+		  VALUES(gen_random_uuid(), savedpersonid, 
+		 	(case when l_servicecaseid IS NOT null then (select insertedon from cjams.servicecase where servicecaseid::UUID = l_servicecaseid::UUID and activeflag = 1) 
+		 		else (select insertedon from intakeservicerequest where intakeserviceid::UUID = v_intakeserviceid::UUID and activeflag = 1) end), 
+			NULL, now(), v_securityuserid, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, 'CPS', 
+			(SELECT actiontype from intakeservicerequest where intakeserviceid::UUID = v_intakeserviceid::UUID and activeflag = 1),
+			'servicecase', v_intakeserviceid::UUID, 
+			(select servicerequestnumber from intakeservicerequest where intakeserviceid::UUID = v_intakeserviceid::UUID and activeflag = 1) , null, NULL, NULL, NULL, NULL, 'CW');
+        end if;
+   end if;
+
+   SELECT * from updatequickperson(v_personid,v_qpersonid,v_securityuserid,l_caseid) into returnmsg;
+   
+else
+
+v_status := 'Person Record Saved Sucessfully';
+ savedpersonid := v_personid; 
+end if;
+
+-- CIDM-4409
+-- send birthmatchupdateflag = 'Y' or 'N' from the UI
+IF ( LENGTH(v_person->>'birthmatchupdateflag') > 0 ) THEN 
+	v_birthmatchupdateflag = (v_person->>'birthmatchupdateflag')::character varying; 
+	v_birthmatchflag = (v_person->>'birthmatchflag')::integer;
+	v_notificationdate = (v_person->>'notificationdate')::timestamp;
+	v_deselectreason = (v_person->>'deselectreason')::text; 
+	
+	select personbirthmatchid
+		into v_personbirthmatchid
+	from personbirthmatch
+	where personid = v_personid
+		and activeflag = 1 ;
+		
+	IF v_personbirthmatchid is not null THEN
+		-- Update
+		update cjams.personbirthmatch
+		set birthmatchflag = v_birthmatchflag,
+			notificationdate = v_notificationdate,
+			deselectreason = v_deselectreason,
+			updatedby = v_securityuserid,
+			updatedon = now()
+		where personbirthmatchid = v_personbirthmatchid	;
+	ELSE
+		-- Insert
+		INSERT INTO cjams.personbirthmatch
+			(	personbirthmatchid, personid, birthmatchflag, notificationdate, deselectreason, 
+				birthmatchupdatedon, birthmatchlockdate, caseclosedflag, 
+				objecttypekey, objectid, 
+				insertedby, insertedon, updatedby, updatedon, activeflag
+			)
+		VALUES
+			(	gen_random_uuid(), v_personid, v_birthmatchflag, v_notificationdate, v_deselectreason, 
+				now(), now() + '60 days'::interval, NULL, 
+				(v_person ->> 'objecttype')::character varying, 
+				(v_person ->> 'objectid')::character varying,
+				v_securityuserid, now(), v_securityuserid, now(), 1
+			);
+	END IF;	
+END IF;
+
+
+IF l_servicecaseid is not null and COALESCE((v_person ->> 'substanceexposednewbornflag')::INT, 0) = 1 then
+
+		INSERT INTO personprogramarea 
+			(personid, programkey,subprogramkey,objecttypekey,objectid,startdate,insertedby,updatedby,entityid, datatransferflag, sourcetype, isdefault)
+		select
+			v_personid, 'IHSFP','SFCI','servicecase',servicecaseid , now(), v_securityuserid, v_securityuserid, servicecasenumber, 'A', 'CW', true
+		from servicecase
+		where servicecaseid = l_servicecaseid
+	    and not exists (select 1 from personprogramarea where personid =v_personid and programkey = 'IHSFP' and 
+	   subprogramkey ='SFCI' );
+
+end if;
+
+END IF;
+
+end;
+
+$function$;

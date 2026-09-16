@@ -1,0 +1,177 @@
+CREATE OR REPLACE FUNCTION cjams.get_provider_address(v_providerid integer, v_addresstype character varying)
+ RETURNS TABLE(provider_adr character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s)
+-- 03/22/2022 Vineet Tirodkar - To fix the zip5 and zip 4 codes display issue (CDM-21347)
+-- 11/21/2022 - Vineet Tirodkar - To fix Provider Address Dsiplay issue - Aurora DB migration (CIDM-6116) 
+------------------------------------------------------------------------------------------------------------	
+DECLARE	
+v_adrformat character varying;
+
+BEGIN 
+	select tpaa.adr_format_cd 
+		into v_adrformat 
+	from tb_provider_addresses tpaa 
+		where tpaa.parent_key_id = v_providerid::character varying 
+			and tpaa.adr_type_cd = ANY (v_addresstype:: text[])
+			and adr_default_sw = 'Y'
+			and delete_sw = 'N'
+	order by adr_type_cd asc;
+
+	if(v_adrformat = 'S') then
+		return query
+		select (
+					coalesce(provadd.adr_street_tx,'') || ' ' ||
+					coalesce((	select coalesce(value_tx,'') 
+							from tb_picklist_values 
+						where trim(picklist_value_cd) in (trim(provadd.adr_pre_dir_cd)) 
+							and picklist_type_id = '69'),'') || ' ' ||
+					coalesce(provadd.adr_street_nm,'') || ' ' ||
+					coalesce((	select coalesce(value_tx,'') 
+							from tb_picklist_values 
+						where trim(picklist_value_cd) in ( trim(provadd.adr_street_suffix_cd) ) 
+							and picklist_type_id = '212'
+					),'') || ' ' ||
+					coalesce((	select coalesce(value_tx,'') 
+							from tb_picklist_values 
+						where trim(picklist_value_cd) in (trim(provadd.adr_post_dir_cd)) 
+							and picklist_type_id = '69'
+					),'') || ' ' ||
+					coalesce((	select value_tx 
+							from tb_picklist_values 
+						where trim(picklist_value_cd) in (trim(provadd.adr_unit_type_cd) )
+						and picklist_type_id = '250'
+					),'') || ' ' ||
+					coalesce(provadd.adr_unit_no_tx,'') || chr(10) ||
+					coalesce(provadd.adr_city_nm,'') 
+					|| (case when provadd.adr_city_nm is not null then 
+							', '
+						end) || ' ' ||
+					coalesce((	select value_tx 
+									from tb_picklist_values 
+								where trim(picklist_value_cd) in (trim(provadd.adr_state_cd) ) 
+									and picklist_type_id = '211'),'') || ' ' ||
+					(case when provadd.adr_zip4_no is not null then
+						coalesce(lpad(provadd.adr_zip5_no::character varying, 5, '0') ,'')
+						|| '-' ||  coalesce(lpad(provadd.adr_zip4_no::character varying, 4, '0'), '')
+					else
+						coalesce(lpad(provadd.adr_zip5_no::character varying, 5, '0') ,'')		
+					end) || chr(10) ||
+					coalesce((case when provadd.adr_county_cd  is not null and btrim(provadd.adr_county_cd) <> '3825' then
+						'(County: ' 
+						|| coalesce((select coalesce(cnty.countyname,'') 
+								from county cnty 
+							where cnty.statecountycode = provadd.adr_county_cd 
+								and activeflag = 1
+						),'') || ')'
+					 when btrim(provadd.adr_county_cd) = '3825'	then
+						'(Out of State)'	
+					 else 
+						''
+					 end),'')	
+			):: character varying
+		from tb_provider_addresses provadd 
+		where provadd.adr_default_sw = 'Y' 
+			and	provadd.parent_key_id = v_providerid::character varying 
+			and provadd.adr_type_cd =  ANY (v_addresstype:: text[])
+			and provadd.delete_sw = 'N' 
+		order by provadd.adr_type_cd nulls last limit 1 ;
+
+	elsif(v_adrformat = 'R') then 
+		return query
+		select (
+					coalesce('Rural Rte','') || ' ' ||
+					coalesce(provadd.adr_street_tx,'') || ' ' ||
+					(case when provadd.adr_box_no is not null then
+						'Box Number ' || coalesce(provadd.adr_box_no :: character varying,'')
+					end)  || chr(10) ||
+					coalesce(provadd.adr_city_nm,'') || ', ' ||
+					coalesce((	select value_tx 
+									from tb_picklist_values 
+								where trim(picklist_value_cd) in (trim(provadd.adr_state_cd) ) 
+									and picklist_type_id='211'),'') || ' ' ||
+					(case when provadd.adr_zip4_no is not null then
+						coalesce(lpad(provadd.adr_zip5_no::character varying, 5, '0') ,'')
+						|| '-' ||  coalesce(lpad(provadd.adr_zip4_no::character varying, 4, '0') ,'')
+					else
+						coalesce(lpad(provadd.adr_zip5_no::character varying, 5, '0') ,'')		
+					end) || chr(10) ||
+					coalesce((case when provadd.adr_county_cd  is not null and btrim(provadd.adr_county_cd) <> '3825' then
+						'(County: ' 
+						|| coalesce((select coalesce(cnty.countyname,'') 
+								from county cnty 
+							where cnty.statecountycode = provadd.adr_county_cd 
+								and activeflag = 1
+						),'') || ')'
+					 when btrim(provadd.adr_county_cd) = '3825'	then
+						'(Out of State)'
+					 else 
+						''
+					 end),'')	
+				):: character varying
+		from tb_provider_addresses provadd 
+		where provadd.adr_default_sw = 'Y' 
+			and	provadd.parent_key_id = v_providerid::character varying 
+			and provadd.adr_type_cd = ANY (v_addresstype:: text[])
+			and provadd.delete_sw = 'N' 
+		order by  provadd.adr_type_cd nulls last limit 1 ;
+
+	elsif(v_adrformat = 'F')then 
+		return query
+		select (
+				coalesce(provadd.adr_foreign_tx,'') || chr(10) || 
+				coalesce(provadd.adr_city_nm,'') || ', ' ||
+				-- coalesce(provadd.adr_state_cd,null),
+				coalesce(provadd.adr_country_tx :: character varying,''):: character varying  || ' ' ||
+				coalesce(provadd. adr_postal_code_tx :: character varying,'')
+			):: character varying
+		from tb_provider_addresses provadd 
+		where provadd.adr_default_sw = 'Y' 
+			and	provadd.parent_key_id = v_providerid::character varying 
+			and provadd.adr_type_cd = ANY (v_addresstype:: text[])
+			and provadd.delete_sw = 'N'  
+		order by  provadd.adr_type_cd nulls last limit 1 ;
+
+	elsif(v_adrformat = 'P') then 
+		return query
+		select (
+				coalesce('PO Box','')  || ' ' ||
+				coalesce(provadd.adr_box_no :: character varying,'') || chr(10) ||
+				coalesce(provadd.adr_city_nm,'') || ', ' ||
+				coalesce((	select value_tx 
+								from tb_picklist_values 
+							where trim(picklist_value_cd) in (trim(provadd.adr_state_cd) ) 
+								and picklist_type_id='211'),'')  || ' ' ||
+				coalesce(provadd.adr_country_tx :: character varying,''):: character varying  || ' ' ||
+				(case when provadd.adr_zip4_no is not null then
+					coalesce(lpad(provadd.adr_zip5_no::character varying, 5, '0') ,'')
+					|| '-' ||  coalesce(lpad(provadd.adr_zip4_no::character varying, 4, '0') ,'')
+				else
+					coalesce(lpad(provadd.adr_zip5_no::character varying, 5, '0') ,'')		
+				end) || chr(10) ||
+				coalesce((case when provadd.adr_county_cd  is not null and btrim(provadd.adr_county_cd) <> '3825' then
+					'(County: ' 
+					|| coalesce((select coalesce(cnty.countyname,'') 
+							from county cnty 
+						where cnty.statecountycode = provadd.adr_county_cd 
+							and activeflag = 1
+					),'') || ')'
+				 when btrim(provadd.adr_county_cd) = '3825'	then
+					'(Out of State)'	
+				 else 
+					''
+				 end), '')	
+			):: character varying
+		from tb_provider_addresses provadd 
+		where provadd.adr_default_sw = 'Y' 
+			and	provadd.parent_key_id = v_providerid::character varying 
+			and provadd.adr_type_cd = ANY (v_addresstype:: text[])
+			and provadd.delete_sw = 'N'  
+		order by  provadd.adr_type_cd nulls last limit 1 ;
+	end if;
+end;
+
+$function$
+;

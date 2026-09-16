@@ -1,0 +1,766 @@
+CREATE OR REPLACE FUNCTION cjams.expungcaserequest(	as_case_type character varying,
+													as_case_id character varying,
+													ad_fordate date,
+													OUT vl_sqlcode integer,
+													OUT vs_err_message character varying
+												   )
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Auhor: Vineet Tirodkar
+-- Date : 03/26/2021
+-- Description: CJAMS Expungement SP for ad-hoc purposes 
+--				Also for Migrated CPS Cases with NO Maltreatment/Allegation & Findings
+
+-- Revision(s)
+-- 11/29/2022 - Vineet Tirodkar - Aurora DB migration fixes for Update tables (CDM-25997/CDM-17304)
+------------------------------------------------------------------------
+DECLARE vu_intakeserviceid uuid;
+DECLARE vs_procees varchar(1) DEFAULT 'Y'; 
+DECLARE vl_count integer;
+
+BEGIN	
+	DROP TABLE IF EXISTS tmp_expungcase;
+	CREATE TEMP TABLE tmp_expungcase
+		( 	cpsid 						character varying
+		, intakeserviceid 			uuid
+		, intakeservicerequestactorid uuid
+		, personid 					uuid
+		, investigationallegationid 	uuid
+		, investigationfindingtypekey character varying
+		, reporteddate 				date
+		, completiondate 			date
+		, rowindex 					bigint
+	);
+
+	DROP TABLE IF EXISTS tmp_expungcaseperson;
+	CREATE TEMP TABLE tmp_expungcaseperson
+		( 	personid 				uuid
+			, intakeserviceid 		uuid
+			, cpsid  				character varying
+			, isinvolvedothercase	int
+			, personname 			character varying 
+			, actorid				uuid
+		);
+		
+		
+	DROP TABLE IF EXISTS tmp_expungcaseinvestigation;
+	CREATE TEMP TABLE tmp_expungcaseinvestigation
+		( 	intakeserviceid uuid
+		  , investigationid uuid
+		  , maltreatments 	bigint
+		  , cisclientid 	character varying
+		  , cjamspid 		bigint
+		);	
+
+	RAISE NOTICE 'as_case_type % ', as_case_type;
+	RAISE NOTICE 'as_case_id % ', as_case_id;
+	
+	IF as_case_type is not null and as_case_id is not null THEN
+		-- verify the input parameters
+		select intakeserviceid
+			into vu_intakeserviceid
+		from cjams.intakeservicerequest i 
+		where servicerequestnumber = as_case_id
+			and lower(btrim(actiontype)) = lower(btrim(as_case_type))
+			and activeflag  = 1 ;
+			
+		IF vu_intakeserviceid is null THEN	
+			vs_procees := 'N' ;
+			vl_sqlcode := -1;
+			vs_err_message := 'Error - Invalid Input paramaters; Case not found. Type ' || btrim(as_case_type) || ' and ID ' || btrim(as_case_id);
+		END IF;
+		
+		RAISE NOTICE 'vu_intakeserviceid % ', vu_intakeserviceid;
+		
+		IF vs_procees = 'Y' THEN
+			-- CPS-AR Expungement - START
+			RAISE NOTICE 'CPS-AR Expungement - START';
+			
+			IF lower(btrim(as_case_type)) = 'ar' THEN -- CPS-AR
+			
+				INSERT INTO tmp_expungcase
+					( 	cpsid, 
+						intakeserviceid, 
+						intakeservicerequestactorid, 
+						personid, 
+						investigationallegationid, 
+						investigationfindingtypekey, 
+						reporteddate, 
+						completiondate
+					)
+				SELECT  ir.servicerequestnumber, 
+					ir.intakeserviceid, 
+					null,
+					null,
+					null,
+					null,
+					COALESCE(ir.intakedaterecieved, ir.reporteddate), 
+					NOW()::DATE completiondate
+				FROM intakeservicerequest ir 
+					INNER JOIN investigation iv ON iv.intakeserviceid = ir.intakeserviceid
+				WHERE ir.intakeserviceid = vu_intakeserviceid	
+					AND lower(btrim(ir.actiontype)) = 'ar' 
+					AND ir.activeflag = 1 ;
+			
+				--## PRESERVE CASEHEAD NAME IN INVESTIGATION TABLE
+				UPDATE intakeservicerequest iv 
+					SET formattedreferralname = v.casehead
+				FROM (	SELECT isa.intakeserviceid, MAX(p.firstname||COALESCE(' '||p.middlename,'')||' '||p.lastname) casehead
+						FROM tmp_expungcase tmp
+							INNER JOIN intakeservicerequestactor isa ON isa.intakeserviceid = tmp.intakeserviceid
+							INNER JOIN person p ON p.personid = isa.personid
+						WHERE isa.intakeservicerequestpersontypekey = 'LG' 
+						GROUP BY isa.intakeserviceid
+					) v 
+				WHERE v.intakeserviceid = iv.intakeserviceid;	
+				
+				INSERT INTO tmp_expungcaseperson
+					( personid ,intakeserviceid, cpsid, isinvolvedothercase, personname, actorid) 
+				SELECT a.personid, a.intakeserviceid, expcs.cpsid, 0, p.firstname||COALESCE(' '||p.middlename,'')||' '||p.lastname, a.actorid 
+				FROM actor a 
+					INNER JOIN person p ON p.personid = a.personid AND p.activeflag = 1
+					INNER JOIN tmp_expungcase expcs ON expcs.intakeserviceid = a.intakeserviceid  and a.activeflag = 1;
+				 
+				--## UPDATE TEMP TABLE IF THE PERSON INVOLVED IN OTHER CASES
+				-- Verify Person's participation in Intake/Investigations prior to expungement
+				UPDATE tmp_expungcaseperson t 
+					SET isinvolvedothercase = 1 
+				FROM actor a 
+				WHERE a.personid = t.personid 
+					AND ( a.intakeserviceid <> t.intakeserviceid 
+							or
+						  a.intakeserviceid is NULL	
+						)  
+					AND a.activeflag = 1; 
+				
+				-- Verify Person's participation in CW Service Cases prior to expungement
+				UPDATE tmp_expungcaseperson t 
+					SET isinvolvedothercase = 1 
+				FROM actor a 
+				WHERE a.personid = t.personid 
+					AND a.servicecaseid IS NOT NULL 
+					AND a.activeflag = 1;
+					
+				-- Verify Person's participation in CW Adoption Cases prior to expungement
+				update tmp_expungcaseperson t 
+					set isinvolvedothercase = 1 
+				from adoptioncaseactor ada 
+				where ada.personid = t.personid 
+					and ada.activeflag = 1;	
+				
+				DELETE FROM tmp_expungcaseperson WHERE isinvolvedothercase = 1; 
+				
+				--## REMOVE ALL PERSONS HAVING PAYMENT INFORMATION
+				DELETE FROM tmp_expungcaseperson t 
+				WHERE t.personid IN
+					(SELECT DISTINCT p.personid 
+						FROM tmp_expungcaseperson tmp
+							INNER JOIN person p ON p.personid = tmp.personid
+							INNER JOIN tb_payment_detail tb ON tb.client_id = p.cjamspid
+					);
+
+				
+				--#### PUBLISH PERSONS FOR EXPUNG REPORT 
+				PERFORM publishexpungreport('SCRNOUT',( SELECT JSON_AGG(T) FROM (SELECT t.cpsid, t.intakeserviceid FROM  tmp_expungcase t ) t));
+
+				PERFORM publishexpungreport('REFCL',( SELECT JSON_AGG(T) FROM (
+													 SELECT t.personid, t.intakeserviceid, t.personname FROM  tmp_expungcaseperson t ) t));
+													 
+												 
+				
+				--## INSERT EXPUNG DATA FOR AUDIT PURPOSE
+				INSERT INTO cjams.expungementstaging
+						(cjamspid
+						, mdm_id
+						, cisclientid
+						, DateOfExpungement
+						, case_number
+						, status_flag
+						, insertedon
+						, ncrypt_firstname
+						, ncrypt_middlename
+						, ncrypt_lastname
+						, ncrypt_dob
+						, ncrypt_ssn
+						)
+				SELECT  p.cjamspid
+						, (select personidentifiervalue mdm_id from personidentifier where personid=p.personid and personidentifiertypekey='MDM_ID' LIMIT 1)
+						, cisclientid
+						, NOW()
+						, t.cpsid
+						, 0
+						, NOW()
+						--, PGP_SYM_ENCRYPT(concat(left(p.firstname,1), 'xxxxxx'), 'AES_KEY')
+						--, PGP_SYM_ENCRYPT(concat(left(p.middlename,1), 'xxxxxx'), 'AES_KEY')
+						--, PGP_SYM_ENCRYPT(concat(left(p.lastname,1), 'xxxxxx'), 'AES_KEY')
+						--, PGP_SYM_ENCRYPT(concat(left(p.dob::text,1), 'xxxxxx'), 'AES_KEY')
+						--, PGP_SYM_ENCRYPT(concat(left(p.ssnno,1), 'xxxxxx'), 'AES_KEY')
+						, PGP_SYM_ENCRYPT(p.firstname, 'AES_KEY')
+						, PGP_SYM_ENCRYPT(p.middlename, 'AES_KEY')
+						, PGP_SYM_ENCRYPT(p.lastname, 'AES_KEY')
+						, PGP_SYM_ENCRYPT(p.dob::text, 'AES_KEY')
+						, PGP_SYM_ENCRYPT(p.ssnno, 'AES_KEY')
+				FROM 	tmp_expungcaseperson t
+						INNER JOIN person p ON p.personid = t.personid AND p.activeflag =  1;	
+
+				
+				--## INSERT DATA FOR OUTBOUND MESSAGING
+				INSERT INTO cjams.expungementoutbound
+						(mdm_id
+						, cjamspid
+						, cisclientid
+						, DateOfExpungement
+						, case_number
+						, status_flag
+						, insertedon
+						, updatedon)
+				SELECT (select personidentifiervalue mdm_id from personidentifier where personid=p.personid and personidentifiertypekey='MDM_ID' LIMIT 1)
+						, p.cjamspid
+						, p.cisclientid
+						, NOW()
+						, t.cpsid
+						, 0
+						, NOW()
+						, NOW()
+				FROM tmp_expungcaseperson t
+					INNER JOIN person p ON p.personid = t.personid  AND p.activeflag =  1;				
+					
+
+				--## EXPUNG ALL INTAKE RELATED RECORDS
+				UPDATE 	intakeservicerequest ir  
+					SET expungementflag=1
+						, lastexpungementdate=NOW()
+						, activeflag=0 
+						, updatedby = 'EXPUNG'
+						, updatedon = now() 
+				FROM tmp_expungcase s 
+				WHERE s.intakeserviceid = ir.intakeserviceid AND ir.activeflag = 1;
+				
+				UPDATE intakedastatus 
+					SET activeflag = 0 
+				WHERE intakenumber IN (SELECT  ir.intakenumber
+										FROM tmp_expungcase so 
+									   INNER JOIN intakeservicerequest ir ON so.intakeserviceid = ir.intakeserviceid);
+
+				UPDATE intakedastaging 
+					SET activeflag = 0 
+				WHERE intakenumber IN (SELECT ir.intakenumber
+										FROM tmp_expungcase so 
+									   INNER JOIN intakeservicerequest ir ON so.intakeserviceid = ir.intakeserviceid);
+
+
+				--## EXPUNG ACTOR INFO
+				UPDATE intakeservicerequestactor isra SET 
+					activeflag = 0
+					, spexpungementflag = 1
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase T 
+				WHERE isra.intakeserviceid =  t.intakeserviceid AND isra.activeflag = 1 AND isra.servicecaseid IS NULL; 
+				
+				UPDATE intakeservicerequestactor isra SET 
+					intakeserviceid = NULL
+					, updatedon = now()
+				FROM tmp_expungcase T 
+				WHERE isra.intakeserviceid =  t.intakeserviceid AND isra.activeflag = 1 AND isra.servicecaseid IS NOT NULL;
+						
+				UPDATE actor a SET 
+					activeflag = 0
+					, spexpungementflag = 1
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase T 
+				WHERE a.intakeserviceid =  t.intakeserviceid AND a.activeflag = 1 AND a.servicecaseid IS NULL;
+
+				UPDATE actor a SET 
+					intakeserviceid = NULL
+					, updatedon = now()
+				FROM tmp_expungcase T 
+				WHERE a.intakeserviceid =  t.intakeserviceid AND a.activeflag = 1 AND a.servicecaseid IS NOT NULL;	
+					
+				--## EXPUNG SDM INFO
+				UPDATE intakeservrequestsdmmaltreatment  sm SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM intakeservicerequestsdm sdm 
+					INNER JOIN tmp_expungcase s ON s.intakeserviceid = sdm.intakeserviceid
+				WHERE sdm.intakeservicerequestsdmid = sm.intakeservicerequestsdmid  AND sm.activeflag = 1;
+
+				UPDATE intakeservicerequestsdm  sm SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase s 
+				WHERE s.intakeserviceid = sm.intakeserviceid AND sm.activeflag = 1;	
+					
+				-- ## EXPUNG CONTACT NOTE 
+				UPDATE Progressnotedetail  pnd SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM progressnote pn
+					INNER JOIN tmp_expungcase s ON s.intakeserviceid = pn.intakeserviceid
+				WHERE pn.progressnoteid = pnd.progressnoteid  AND pn.activeflag = 1;
+				
+				UPDATE Contacttrialvisit  cv SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM progressnote pn
+					INNER JOIN tmp_expungcase s ON s.intakeserviceid = pn.intakeserviceid
+				WHERE pn.progressnoteid = cv.progressnoteid  AND cv.activeflag = 1; 
+				
+				UPDATE contactparticipant cp SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM progressnote pn
+					INNER JOIN tmp_expungcase s ON s.intakeserviceid = pn.intakeserviceid
+				WHERE pn.progressnoteid = cp.progressnoteid  AND cp.activeflag = 1; 
+				
+				UPDATE progressnote pn SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase s  
+				WHERE s.intakeserviceid = pn.intakeserviceid AND pn.activeflag = 1; 	
+				
+				--## EXPUNG PERSON RECORD IF NOT LINKED TO ANY SERVICE CASE
+				UPDATE person pe SET
+					firstname	 = concat(left(pe.firstname,1), 'xxxxxx')
+					, middlename  = concat(left(pe.middlename,1), 'xxxxxx')
+					, lastname 	 = concat(left(pe.lastname,1), 'xxxxxx')
+					, dob 		 = '1900-01-01'
+					, ssnno 	 	 = NULL
+					, activeflag  = 0
+					, updatedby 	 = 'EXPUNG'
+					, updatedon 	 = now()
+				FROM tmp_expungcaseperson t
+				WHERE t.personid = pe.personid;
+			-- CPS-AR Expungement - END				
+			
+			-- CPS-IR Expungement - START
+			ELSE 
+				SELECT  count(*)
+					into vl_count
+				FROM investigationallegationmaltreators im 
+					INNER JOIN investigationallegation ia ON ia.investigationallegationid = im.investigationallegationid 
+						and ia.activeflag = 1
+					INNER JOIN investigationmaltreatmentactor ima ON ima.maltreatmentid = ia.maltreatmentid
+						and ima.activeflag = 1
+					INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = im.intakeservicerequestactorid
+						and isra.activeflag = 1	
+					INNER JOIN intakeservicerequest isr ON isr.intakeserviceid = isra.intakeserviceid
+						and isr.activeflag = 1	
+					INNER join investigationfinding inf on ia.investigationallegationid = inf.investigationallegationid
+						and inf.activeflag = 1	
+					INNER JOIN investigation iv ON iv.intakeserviceid = isr.intakeserviceid 
+						and iv.activeflag = 1	
+				where im.activeflag = 1
+					and isr.intakeserviceid = vu_intakeserviceid ;
+			
+				IF vl_count > 0 THEN -- CPS-IR with Maltreatment/Allegation & Findings 
+					RAISE NOTICE 'CPS-IR with Maltreatment/Allegation & Findings Expungement - START';
+					
+					INSERT INTO tmp_expungcase
+						( 	cpsid, 
+							intakeserviceid, 
+							intakeservicerequestactorid, 
+							personid, 
+							investigationallegationid, 
+							investigationfindingtypekey, 
+							reporteddate, 
+							completiondate
+						)
+					SELECT  DISTINCT isr.servicerequestnumber
+						, isr.intakeserviceid
+						, isra.intakeservicerequestactorid 
+						, isra.personid
+						, ia.investigationallegationid
+						, COALESCE(im.overridefindingtypekey,inf.investigationfindingtypekey) investigationfindingtypekey
+						, iv.insertedon
+						, NOW()::DATE completiondate
+					FROM investigationallegationmaltreators im 
+						INNER JOIN investigationallegation ia ON ia.investigationallegationid = im.investigationallegationid 
+							and ia.activeflag = 1
+						INNER JOIN investigationmaltreatmentactor ima ON ima.maltreatmentid = ia.maltreatmentid
+							and ima.activeflag = 1
+						INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = im.intakeservicerequestactorid
+							and isra.activeflag = 1	
+						INNER JOIN intakeservicerequest isr ON isr.intakeserviceid = isra.intakeserviceid
+							and isr.activeflag = 1	
+						INNER join investigationfinding inf on ia.investigationallegationid = inf.investigationallegationid
+							and inf.activeflag = 1	
+						INNER JOIN investigation iv ON iv.intakeserviceid = isr.intakeserviceid 
+							and iv.activeflag = 1	
+					where im.activeflag = 1
+						and isr.intakeserviceid = vu_intakeserviceid ;	
+				
+				ELSE -- CPS-IR with NO Maltreatment/Allegation & Findings (migrated data)
+					RAISE NOTICE 'CPS-IR with NO Maltreatment/Allegation & Findings (migrated data) Expungement - START';
+					INSERT INTO tmp_expungcase
+						( 	cpsid, 
+							intakeserviceid, 
+							intakeservicerequestactorid, 
+							personid, 
+							investigationallegationid, 
+							investigationfindingtypekey, 
+							reporteddate, 
+							completiondate
+						)
+					SELECT  DISTINCT isr.servicerequestnumber
+						, isr.intakeserviceid
+						, null::uuid as intakeservicerequestactorid 
+						, null::uuid as personid
+						, null::uuid as investigationallegationid
+						, null::character varying as investigationfindingtypekey
+						, iv.insertedon
+						, NOW()::DATE completiondate
+					FROM intakeservicerequest isr 
+						INNER JOIN investigation iv ON iv.intakeserviceid = isr.intakeserviceid 
+							and iv.activeflag = 1
+					where isr.intakeserviceid = vu_intakeserviceid
+						and isr.activeflag = 1;
+						
+				END IF;
+				
+
+				--## EXPUNG ALL CPS RELATED RECORDS
+				UPDATE investigationallegation ia SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase v
+				WHERE v.investigationallegationid = ia.investigationallegationid;
+
+				UPDATE investigationallegationmaltreators im SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase t
+				WHERE im.intakeservicerequestactorid = t.intakeservicerequestactorid
+					AND im.investigationallegationid = t.investigationallegationid;
+
+				UPDATE intakeservicerequestactor isra SET 
+					activeflag = 0
+					, spexpungementflag = 1
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcase t
+				WHERE isra.intakeservicerequestactorid = t.intakeservicerequestactorid
+						AND intakeservicerequestpersontypekey = 'AM'
+						AND 0 =  (SELECT COUNT(1) 
+									FROM tmp_expungcase t2 
+										INNER JOIN investigationallegationmaltreators im 
+											ON im.intakeservicerequestactorid = t2.intakeservicerequestactorid 
+												AND im.activeflag = 1
+								 );
+
+				UPDATE intakeservicerequestactor isra SET isprimary = true
+				WHERE isra.intakeservicerequestactorid 
+					IN (SELECT MAX(isa.intakeservicerequestactorid::character varying)::UUID
+						FROM intakeservicerequestactor isa
+							INNER JOIN tmp_expungcase tmp ON tmp.intakeserviceid = isa.intakeserviceid
+						WHERE isa.activeflag = 1
+						GROUP BY isa.intakeserviceid, isa.personid 
+						HAVING SUM(CASE WHEN isa.isprimary = true THEN 1 ELSE 0 END) = 0
+						);
+			
+				-- ## EXPUNG CONTACT NOTE PARTICIPATION
+				UPDATE contactparticipant cp SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM (SELECT * FROM intakeservicerequestactor isa,
+						(SELECT isra.actorid
+						 FROM intakeservicerequestactor isra, 
+							tmp_expungcase t
+						 WHERE isra.intakeservicerequestactorid = t.intakeservicerequestactorid
+							AND intakeservicerequestpersontypekey = 'AM'
+						) v
+						WHERE v.actorid = isa.actorid) r 
+				WHERE r.intakeservicerequestactorid = cp.intakeservicerequestactorid;	
+				
+					
+				--## EXPUNG ASSESSMENT DATA
+				-- UPDATE 	assessmentsubmission sb SET
+				-- 	datavalue = 'UNKOWN UNKOWN'
+				-- FROM assessment a, 
+				-- 	(SELECT v.intakeserviceid, v.intakeservicerequestactorid, p.firstname||COALESCE(' '||p.middlename,'')||' '||p.lastname caregivername 
+				-- 	 FROM person p,
+				-- 		(SELECT isra.*
+				-- 		 FROM intakeservicerequestactor isra, 
+				-- 			tmp_expungcase t
+				-- 		 WHERE isra.intakeservicerequestactorid = t.intakeservicerequestactorid
+				-- 			AND intakeservicerequestpersontypekey = 'AM'
+				-- 		) v
+				-- 		WHERE p.personid = v.personid) r
+				-- WHERE a.submissionid = sb.submissionid 
+				-- 	AND a.objectid = r.intakeserviceid 
+				-- 	AND sb.datakey IN ('safeccaregivers', 'caseheadsname')
+				-- 	AND sb.datavalue ilike '%'||r.caregivername||'%';	
+
+				-- ## ESTIMATE INVESTIGATION RECORDS TO BE EXPUNGED				
+				INSERT INTO tmp_expungcaseinvestigation 
+					(	intakeserviceid, 
+						investigationid, 
+						maltreatments
+					)
+				SELECT  t.intakeserviceid, 
+					iv.investigationid, 
+					COUNT(ia.investigationallegationid) 
+				FROM tmp_expungcase t
+					INNER JOIN investigation iv ON iv.intakeserviceid = t.intakeserviceid
+					INNER JOIN intakeservicerequest ir ON ir.intakeserviceid = iv.intakeserviceid
+					LEFT JOIN investigationallegation ia ON ia.investigationid = iv.investigationid AND ia.activeflag = 1
+				WHERE ir.actiontype = 'IR'
+				GROUP BY t.intakeserviceid, iv.investigationid ;
+			
+				/*
+				-- DO NOT EXPUNGE
+				DELETE FROM tmp_expungcaseinvestigation 
+				WHERE investigationid 
+					IN (SELECT DISTINCT ia.investigationid
+						FROM investigationallegation ia
+							INNER JOIN investigationfinding inf ON inf.investigationallegationid = ia.investigationallegationid 
+							INNER JOIN expungement ex ON ex.investigationfindingid = inf.investigationfindingid
+							INNER JOIN tmp_expungcaseinvestigation tmp ON tmp.investigationid = ia.investigationid
+						WHERE COALESCE(ex.donotexpunge, false) = true 
+							AND ex.activeflag = 1
+						);
+				*/	
+					
+				--## UPDATE DATA FOR REPORTING
+				UPDATE tmp_expungcaseinvestigation tmp 
+				SET cisclientid = p.cisclientid, 
+					cjamspid = p.cjamspid
+					FROM intakeservicerequestactor isa, person p 
+				WHERE p.personid = isa.personid 
+					AND tmp.intakeserviceid = isa.intakeserviceid 
+					AND isa.intakeservicerequestpersontypekey = 'LG' 
+					AND isa.activeflag = 1;	
+					
+			
+				--## EXPUNG ALL INTAKE RELATED RECORDS
+				UPDATE 	intakeservicerequest ir  SET 
+					expungementflag=1
+					, lastexpungementdate=NOW()
+					, activeflag=0 
+					, updatedby = 'EXPUNG'
+					, updatedon = now() 
+				FROM tmp_expungcaseinvestigation s 
+				WHERE s.intakeserviceid = ir.intakeserviceid 
+					AND ir.activeflag = 1;
+			
+				UPDATE intakedastatus SET activeflag = 0 WHERE intakenumber IN 
+					(SELECT ir.intakenumber
+						FROM tmp_expungcaseinvestigation so 
+							INNER JOIN intakeservicerequest ir ON so.intakeserviceid = ir.intakeserviceid
+					);
+
+				UPDATE intakedastaging SET activeflag = 0 WHERE intakenumber IN 
+					(SELECT ir.intakenumber
+						FROM tmp_expungcaseinvestigation so 
+						INNER JOIN intakeservicerequest ir ON so.intakeserviceid = ir.intakeserviceid
+					);	
+					
+				--## PRESERVE CASEHEAD NAME IN INVESTIGATION TABLE
+				UPDATE investigation iv SET referralname = v.casehead, updatedon = now(), updatedby = 'EXPUNG'
+				FROM (SELECT isa.intakeserviceid, MAX(p.firstname||COALESCE(' '||p.middlename,'')||' '||p.lastname) casehead
+						FROM tmp_expungcaseinvestigation tmp
+							INNER JOIN intakeservicerequestactor isa ON isa.intakeserviceid = tmp.intakeserviceid
+							INNER JOIN person p ON p.personid = isa.personid
+						WHERE isa.intakeservicerequestpersontypekey = 'LG' 
+						GROUP BY isa.intakeserviceid LIMIT 1) v 
+				WHERE v.intakeserviceid = iv.intakeserviceid;	
+				
+				
+				UPDATE intakeservicerequestactor isa SET 
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+					, isheadofhousehold = false
+					, intakeserviceid = '00000000-0000-0000-0000-000000000000'
+				FROM  tmp_expungcaseinvestigation t
+				WHERE isa.intakeserviceid = t.intakeserviceid AND isa.servicecaseid IS NULL;
+				
+				UPDATE intakeservicerequestactor isa SET 
+					intakeserviceid = NULL
+					, updatedon = now()			
+				FROM tmp_expungcaseinvestigation t
+				WHERE isa.intakeserviceid = t.intakeserviceid AND isa.servicecaseid IS NOT NULL;
+
+				UPDATE actor a SET
+					activeflag = 0
+					, updatedby = 'EXPUNG'
+					, updatedon = now()
+				FROM tmp_expungcaseinvestigation t
+				WHERE a.intakeserviceid = t.intakeserviceid AND a.servicecaseid IS NULL;
+				
+				UPDATE actor a SET
+					intakeserviceid = NULL
+					, updatedon = now()
+				FROM tmp_expungcaseinvestigation t
+				WHERE a.intakeserviceid = t.intakeserviceid AND a.servicecaseid IS NOT NULL;
+				
+				
+				--## SET DATATRANSFER FLAG FOR CDBP COMMUNICATION
+				UPDATE 	personprogramarea pa SET 
+					datatransferflag = 'D'
+					, activeflag = 0
+					, updatedon = NOW()
+					, enddate = NOW()
+				FROM tmp_expungcaseinvestigation tmp
+				WHERE pa.objectid = tmp.intakeserviceid:: character varying;
+			
+				-- Person Expungement
+				INSERT INTO tmp_expungcaseperson
+					(	personid,
+						intakeserviceid, 
+						cpsid,
+						isinvolvedothercase, 
+						personname, 
+						actorid
+					) 
+				SELECT a.personid, a.intakeserviceid, null, 0, p.firstname||COALESCE(' '||p.middlename,'')||' '||p.lastname, a.actorid 
+				FROM actor a 
+					INNER JOIN person p ON p.personid = a.personid AND p.activeflag = 1
+					INNER JOIN tmp_expungcaseinvestigation so ON so.intakeserviceid = a.intakeserviceid;
+				
+				--## UPDATE TEMP TABLE IF THE PERSON INVOLVED IN OTHER CASES
+				-- Verify Person's participation in Intake/Investigations prior to expungement
+				UPDATE tmp_expungcaseperson t 
+					SET isinvolvedothercase = 1 
+				FROM actor a 
+				WHERE a.personid = t.personid 
+					AND ( a.intakeserviceid <> t.intakeserviceid 
+							or
+						  a.intakeserviceid is NULL	
+						)  
+					AND a.activeflag = 1;
+			
+				-- Verify Person's participation in CW Service Cases prior to expungement
+				UPDATE tmp_expungcaseperson  t 
+					SET isinvolvedothercase = 1 
+				FROM actor a 
+				WHERE a.personid = t.personid 
+					AND a.servicecaseid IS NOT NULL 
+					AND a.activeflag = 1;
+				
+				-- Verify Person's participation in CW Adoption Cases prior to expungement
+				update tmp_expungcaseperson t 
+					set isinvolvedothercase = 1 
+				from adoptioncaseactor ada 
+				where ada.personid = t.personid 
+					and ada.activeflag = 1;
+			
+				DELETE FROM tmp_expungcaseperson WHERE isinvolvedothercase = 1; 
+
+				--## REMOVE ALL PERSONS HAVING PAYMENT INFORMATION
+				DELETE FROM tmp_expungcaseperson t WHERE t.personid IN
+					(SELECT  DISTINCT p.personid 
+						FROM tmp_expungcaseperson tmp
+							INNER JOIN person p ON p.personid = tmp.personid
+							INNER JOIN tb_payment_detail tb ON tb.client_id = p.cjamspid
+					);	
+
+				--## INSERT EXPUNG DATA FOR AUDIT PURPOSE
+				INSERT INTO cjams.expungementstaging
+					(	cjamspid
+						, mdm_id
+						, cisclientid
+						, DateOfExpungement
+						, case_number
+						, status_flag
+						, insertedon
+						, ncrypt_firstname
+						, ncrypt_middlename
+						, ncrypt_lastname
+						, ncrypt_dob
+						, ncrypt_ssn
+					)
+				SELECT  DISTINCT p.cjamspid
+					, (select personidentifiervalue mdm_id from personidentifier pf where pf.personid=p.personid and pf.personidentifiertypekey='MDM_ID' LIMIT 1)
+					, p.cisclientid
+					, NOW()
+					, ir.servicerequestnumber
+					, 0
+					, NOW()
+					, PGP_SYM_ENCRYPT(p.firstname, 'AES_KEY')
+					, PGP_SYM_ENCRYPT(p.middlename, 'AES_KEY')
+					, PGP_SYM_ENCRYPT(p.lastname, 'AES_KEY')
+					, PGP_SYM_ENCRYPT(p.dob::text, 'AES_KEY')
+					, PGP_SYM_ENCRYPT(p.ssnno, 'AES_KEY')
+				FROM tmp_expungcaseperson t
+					INNER JOIN intakeservicerequest ir ON ir.intakeserviceid = t.intakeserviceid
+					INNER JOIN person p ON p.personid = t.personid;	
+
+				
+				--## INSERT DATA FOR OUTBOUND MESSAGING
+				INSERT INTO cjams.expungementoutbound
+					(	mdm_id
+						, cjamspid
+						, cisclientid
+						, DateOfExpungement
+						, case_number
+						, status_flag
+						, insertedon
+						, updatedon
+					)
+				SELECT DISTINCT (select personidentifiervalue mdm_id from personidentifier pf where pf.personid=p.personid and pf.personidentifiertypekey='MDM_ID' LIMIT 1)
+					, p.cjamspid
+					, p.cisclientid
+					, NOW()
+					, ir.servicerequestnumber
+					, 0
+					, NOW()
+					, NOW()
+				FROM tmp_expungcaseperson t
+					INNER JOIN intakeservicerequest ir ON ir.intakeserviceid = t.intakeserviceid
+					INNER JOIN person p ON p.personid = t.personid;
+					
+
+				--## EXPUNG PERSON RECORD IF NOT LINKED TO ANY SERVICE CASE
+				UPDATE person pe SET
+					  firstname	 = concat(left(pe.firstname,1), 'xxxxxx')
+					, middlename  = concat(left(pe.middlename,1), 'xxxxxx')
+					, lastname 	 = concat(left(pe.lastname,1), 'xxxxxx')
+					, dob 		 = '1900-01-01'
+					, ssnno 	 	 = NULL
+					, activeflag  = 0
+					, updatedby 	 = 'EXPUNG'
+					, updatedon 	 = now()
+				FROM tmp_expungcaseperson t
+				WHERE pe.personid = t.personid;
+				
+				PERFORM  expungperson( (SELECT array_agg(tp.personid::character varying ) FROM tmp_expungcaseperson tp));
+				--### PUBLISH ALLEGATION AND  PERSON DATA AND INVESTIGATION TO EXPUNG REPORT
+				PERFORM publishexpungreport('ALLEG',(SELECT JSON_AGG(T) FROM (SELECT * FROM  tmp_expungcase) T));
+				PERFORM publishexpungreport('REFCL',(SELECT JSON_AGG(T) FROM (SELECT t.personid, t.intakeserviceid, t.personname FROM  tmp_expungcaseperson t) T));
+				PERFORM publishexpungreport('INVT',(SELECT JSON_AGG(T) FROM (SELECT t.* FROM  tmp_expungcaseinvestigation t) T));
+				
+		
+			END IF;
+			-- CPS-IR Expungement - END
+			
+		END IF;
+	ELSE 
+		-- ELSEIF ad_fordate is not null THEN  -- for future use	
+		-- Do nothing
+		vs_procees := 'N';
+		vl_sqlcode := -1;
+		vs_err_message := 'Error - Missing Input paramater(s)';
+	END IF;	
+	
+	IF vl_sqlcode is null THEN
+		vl_sqlcode := 0;
+		vs_err_message := 'Success';
+	END IF;
+
+end;
+
+$function$

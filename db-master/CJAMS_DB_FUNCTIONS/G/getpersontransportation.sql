@@ -1,0 +1,223 @@
+CREATE OR REPLACE FUNCTION cjams.getpersontransportation (
+   IN v_intakeserviceid   uuid,
+   IN v_personid          uuid,
+   IN v_securityusersid   CHARACTER VARYING,
+   IN "_page"             INTEGER,
+   IN "_limit"            INTEGER,
+   IN v_nolimit           BOOLEAN DEFAULT FALSE)
+   RETURNS TABLE
+           (
+              totalcount                BIGINT,
+              persontransportationid    uuid,
+              insertedon                TIMESTAMP WITHOUT TIME ZONE,
+              notes                     TEXT,
+              pickuptime                TIMESTAMP WITHOUT TIME ZONE,
+              dropofftime               TIMESTAMP WITHOUT TIME ZONE,
+              pickuplocation            CHARACTER VARYING,
+              dropofflocation           CHARACTER VARYING,
+              appointmentdate           TIMESTAMP WITHOUT TIME ZONE,
+              workerid                  BIGINT,
+              county                    CHARACTER VARYING,
+              status                    TEXT,
+              dateoftransport           TIMESTAMP WITHOUT TIME ZONE,
+              chargereason              CHARACTER VARYING,
+              courttime                 TIMESTAMP WITHOUT TIME ZONE,
+              courtlocation             CHARACTER VARYING,
+              dob                       TIMESTAMP WITHOUT TIME ZONE,
+              youthname                 CHARACTER VARYING,
+              droptime                  TIMESTAMP WITHOUT TIME ZONE,
+              intakeserviceid           uuid,
+              servicerequestnumber      CHARACTER VARYING,
+              allegationid              uuid,
+              allegationname            CHARACTER VARYING,
+              requestedby               TEXT,
+              requesteddate             TIMESTAMP WITHOUT TIME ZONE
+           )
+   LANGUAGE 'plpgsql'
+   VOLATILE
+   NOT LEAKPROOF
+   SECURITY INVOKER
+   PARALLEL UNSAFE
+   ROWS 1000
+AS
+$$
+
+DECLARE
+   _offset   INTEGER;
+BEGIN
+   _offset := (_page - 1) * _limit;
+
+   IF COALESCE (_limit, 0) < 1
+   THEN
+      _limit := 10;
+   END IF;
+
+   IF COALESCE (_page, 0) < 1
+   THEN
+      _page := 1;
+   END IF;
+
+   IF (   v_personid::CHARACTER VARYING IS NULL
+       OR v_personid::CHARACTER VARYING = '')
+   THEN
+      RETURN QUERY
+         SELECT COUNT (1) OVER () AS totalcount, *
+           FROM (  SELECT DISTINCT
+                          PT.persontransportationid,
+                          PT.insertedon,
+                          PT.notes,
+                          PT.pickuptime AS pickuptime,
+                          PT.droptime AS dropofftime,
+                          CAST (
+                             CASE
+                                WHEN PT.otherlocationfrom IS NULL
+                                THEN
+                                   LFT.description
+                                ELSE
+                                   PT.otherlocationfrom
+                             END AS CHARACTER VARYING) AS pickuplocation,
+                          CAST (
+                             CASE
+                                WHEN PT.otherlocationto IS NULL
+                                THEN
+                                   LTT.description
+                                ELSE
+                                   PT.otherlocationto
+                             END AS CHARACTER VARYING) AS dropofflocation,
+                          PT.appointmentdate,
+                          UP.cjamspid AS workerid,
+                          paa.county,
+                          (SELECT rst.typedescription
+                            FROM routing rt
+                                 INNER JOIN routingstatustype rst
+                                    ON     rst.sequencenumber =
+                                           rt.routingstatustypeid
+                                       AND rst.activeflag = 1
+                           WHERE     rt.activeflag = 1
+                                 AND rt.objectid =
+                                     (PT.persontransportationid::CHARACTER VARYING)
+                           LIMIT 1) AS status,
+                          PT.dateoftransport,
+                          PT.chargereason,
+                          PT.courttime,
+                          PT.courtlocation,
+                          PT.dob,
+                          PT.youthname,
+                          PT.droptime,
+                          PT.intakeserviceid,
+                          INSR.servicerequestnumber,
+                          PT.allegationid,
+                          (SELECT alle.name
+                            FROM allegation alle
+                           WHERE     alle.activeflag = 1
+                                 AND alle.allegationid = PT.allegationid
+                           LIMIT 1) allegationname,
+                          UP.firstname || ' ' || UP.lastname,
+                          PT.insertedon
+                     FROM persontransportation PT
+                          INNER JOIN locationfromtype LFT
+                             ON     LFT.locationfromtypekey =
+                                    PT.locationfromtypekey
+                                AND LFT.activeflag = 1
+                          INNER JOIN locationtotype LTT
+                             ON     LTT.locationtotypekey =
+                                    PT.locationtotypekey
+                                AND LTT.activeflag = 1
+                          LEFT JOIN
+                          (SELECT pa.county, pa.personid
+                             FROM personaddress pa
+                            WHERE personaddresstypekey = 'C' AND activeflag = 1
+                            LIMIT 1) AS PAA
+                             ON PAA.personid = PT.personid
+                          LEFT JOIN userprofile UP
+                             ON     UP.securityusersid = v_securityusersid
+                                AND UP.activeflag = 1
+                          INNER JOIN intakeservicerequest INSR
+                             ON INSR.intakeserviceid = PT.intakeserviceid
+                    WHERE     PT.intakeserviceid = v_intakeserviceid
+                          AND PT.activeflag = 1
+                 ORDER BY PT.insertedon DESC) AS ast
+          LIMIT CASE WHEN v_nolimit = FALSE THEN _limit END
+         OFFSET CASE WHEN v_nolimit = FALSE THEN _offset END;
+   ELSE
+      RETURN QUERY
+         SELECT COUNT (1) OVER () AS totalcount, *
+           FROM (  SELECT DISTINCT
+                          PT.persontransportationid,
+                          PT.insertedon,
+                          PT.notes,
+                          PT.pickuptime AS pickuptime,
+                          PT.droptime AS dropofftime,
+                          CAST (
+                             CASE
+                                WHEN PT.otherlocationfrom IS NULL
+                                THEN
+                                   LFT.description
+                                ELSE
+                                   PT.otherlocationfrom
+                             END AS CHARACTER VARYING) AS pickuplocation,
+                          CAST (
+                             CASE
+                                WHEN PT.otherlocationto IS NULL
+                                THEN
+                                   LTT.description
+                                ELSE
+                                   PT.otherlocationto
+                             END AS CHARACTER VARYING) AS dropofflocation,
+                          PT.appointmentdate,
+                          UP.cjamspid AS workerid,
+                          paa.county,
+                          (SELECT rst.typedescription
+                            FROM routing rt
+                                 INNER JOIN routingstatustype rst
+                                    ON     rst.sequencenumber =
+                                           rt.routingstatustypeid
+                                       AND rst.activeflag = 1
+                           WHERE     rt.activeflag = 1
+                                 AND rt.objectid =
+                                     (PT.persontransportationid::CHARACTER VARYING)
+                           LIMIT 1) AS status,
+                          PT.dateoftransport,
+                          PT.chargereason,
+                          PT.courttime,
+                          PT.courtlocation,
+                          PT.dob,
+                          PT.youthname,
+                          PT.droptime,
+                          PT.intakeserviceid,
+                          INSR.servicerequestnumber,
+                          PT.allegationid,
+                          (SELECT alle.name
+                            FROM allegation alle
+                           WHERE     alle.activeflag = 1
+                                 AND alle.allegationid = PT.allegationid
+                           LIMIT 1) allegationname,
+                          UP.firstname || ' ' || UP.lastname,
+                          PT.insertedon
+                     FROM persontransportation PT
+                          INNER JOIN locationfromtype LFT
+                             ON     LFT.locationfromtypekey =
+                                    PT.locationfromtypekey
+                                AND LFT.activeflag = 1
+                          INNER JOIN locationtotype LTT
+                             ON     LTT.locationtotypekey =
+                                    PT.locationtotypekey
+                                AND LTT.activeflag = 1
+                          LEFT JOIN
+                          (SELECT pa.county, pa.personid
+                             FROM personaddress pa
+                            WHERE personaddresstypekey = 'C' AND activeflag = 1
+                            LIMIT 1) AS PAA
+                             ON PAA.personid = PT.personid
+                          LEFT JOIN userprofile UP
+                             ON     UP.securityusersid = v_securityusersid
+                                AND UP.activeflag = 1
+                          INNER JOIN intakeservicerequest INSR
+                             ON INSR.intakeserviceid = PT.intakeserviceid
+                    WHERE PT.personid = v_personid AND PT.activeflag = 1
+                 ORDER BY PT.insertedon DESC) AS ast
+          LIMIT CASE WHEN v_nolimit = FALSE THEN _limit END
+         OFFSET CASE WHEN v_nolimit = FALSE THEN _offset END;
+   END IF;
+END;
+$$

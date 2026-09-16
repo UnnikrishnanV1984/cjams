@@ -1,0 +1,37 @@
+CREATE OR REPLACE FUNCTION prov_getpublicproviderhomedetails(v_providerid character varying)
+ RETURNS TABLE(providerapprovetypeconfigid uuid, providerid character varying, referralid character varying, applicantid character varying, comments text, communication character varying, requested_date timestamp without time zone, description character varying, insertedon timestamp without time zone, application_type character varying, createdby character varying, application_status character varying, countyname character varying, updatedon timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+RETURN Query
+
+SELECT  
+    patc.provider_approval_record_id,patc.provider_id,patc.referral_id,patc.applicant_id,
+    pat.comments,tbpa.communication_medium,tbpa.application_received_date,tbpa.provider_program_type,
+    patc.create_ts,tbpa.application_typedesc as application_type ,
+      (SELECT displayname  FROM userprofile up WHERE up.securityusersid = patc.create_user_id limit 1) as createdby,
+    tbpa.application_status,
+    (select c.countyname from userprofile upfromuser 
+      join teammemberassignment t1 on t1.securityusersid = patc.create_user_id AND t1.activeflag = 1
+      JOIN teammember t2 ON t1.teammemberid = t2.teammemberid AND t2.activeflag = 1
+      JOIN team t3 ON  t3.teamid  =  t2.teamid 
+      JOIN county c ON c.countyid::CHARACTER VARYING = t3.countyid where upfromuser.securityusersid = patc.create_user_id
+      LIMIT 1
+    ) as countyname,  
+    (select r.insertedon from routing r where r.objectid=patc.applicant_id and r.activeflag=1 limit 1) as updatedon
+ FROM providerapprovalphaserecord patc
+  left join providerapprovetypeconfig pat on pat.applicantid=patc.applicant_id
+ --INNER JOIN referencevalues rv ON rv.ref_key = patc.approval_type 
+ inner join tb_public_provider_applicant tbpa on tbpa.applicant_id=patc.applicant_id 
+ WHERE patc.provider_id in ((select v_providerid::character varying) union  (select provider_id::character varying from tb_public_provider_application_mapping where old_provider_id = v_providerid )) 
+    and patc.delete_sw = 'N'
+    and (tbpa.delete_sw='N' or tbpa.delete_sw is null) 
+    and tbpa.application_status not in ('Incomplete') 
+  order by patc.create_ts desc;
+    
+END;
+
+$function$
+

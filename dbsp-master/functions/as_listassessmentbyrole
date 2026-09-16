@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION as_listassessmentbyrole(i_personid uuid, assessmentstatus character varying, pageno integer, pagesize integer, v_roletypecode character varying DEFAULT ''::character varying, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, assessmenttemplateid uuid, external_templateid character varying, isvisible boolean, duedays character varying, description text, target character varying, targetroletypekey character varying, assignedto text, intakassessment json, routinginfo json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+v_pageoffset int;
+v_pagenumber int;
+
+
+BEGIN
+
+
+v_pagenumber := pageno-1;
+
+v_pageoffset = v_pagenumber * pagesize;
+   
+   if (assessmentstatus ='null'   ) then
+  assessmentstatus:=null;
+ end if;
+    
+    IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(v_pagenumber, 0) < 1 THEN
+  pageno := 1; 
+ END IF;
+ 
+RETURN QUERY  
+
+select count(1) OVER() totalcount,* from 
+   ( select  at.AssessmentTemplateId,  
+             at.external_templateid , 
+    at.isvisible,
+             --case when (coalesce(at.duedays,0)- (extract (day from now() -  v_accpecteddate)))< 0 then 0 else (coalesce(at.duedays,0)- (extract (day from now() -  v_accpecteddate))) end :: character varying,
+             cast(null as character varying) as duedays,
+             cast(at.titleheadertext as text)    as description,
+    ATT.target ,
+    at.targetroletypekey,
+    (select up.firstname||' '|| up.lastname as fullname from assessment ASE   join assignedassessment aas on ASE.AssessmentTemplateId=aas.AssessmentTemplateId
+              join userprofile up on up.securityusersid = aas.securityusersid and up.activeflag=1
+              where  ASE.personid=i_personid and aas.activeflag=1 limit 1
+             ) as assignedto,
+             (select * from as_getassessmentdetailsbyperson(i_personid :: character varying,at.assessmenttemplateid:: character varying,v_roletypecode)) as intakassessment,
+              cast(NULL as JSON) as routinginfo
+      from   AssessmentTemplate at 
+         inner join  AssessmentTemplateCategoryFilterMap  atcm on at.AssessmentTemplateId =atcm.AssessmentTemplateId   
+         INNER JOIN AssessmentTemplateTarget ATT 
+         ON ATT.AssessmentTemplateTargetid = atcm.AssessmentTemplateTargetid
+   and at.name in ('caseRecommendationReportFormTitleIvB','residentialPlacementReviewTitleIvB')
+      --   AND lower(att.target ) IN ('investigation')
+         and att.activeflag =1
+       --  and atcm.teamtypekey  = agencycode
+            and atcm.activeflag =1 
+            and at.activeflag =1
+      --   where  atcm.intakeservicerequesttypeid = '00000000-0000-0000-0000-000000000000' 
+      --   and atcm.intakeservicerequestsubtypeid = '00000000-0000-0000-0000-000000000000' 
+  
+  ) as ast order by ast.description
+    LIMIT   CASE WHEN v_nolimit = false  THEN pagesize END offset 
+        CASE WHEN v_nolimit = false  THEN v_pageoffset END;   
+ 
+
+END;
+
+
+
+$function$
+

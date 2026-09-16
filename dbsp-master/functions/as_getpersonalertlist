@@ -1,0 +1,72 @@
+CREATE OR REPLACE FUNCTION as_getpersonalertlist(v_personid uuid, pagenumber bigint, pagesize bigint, v_activeflag integer, v_securityuserid character varying, v_nolimit boolean DEFAULT false, v_alerttype character varying DEFAULT NULL::character varying, v_alertid uuid DEFAULT NULL::uuid)
+ RETURNS TABLE(totalcount bigint, updatedpid bigint, createdpid bigint, updatedname text, createdname text, alertid uuid, alerttype character varying, status character varying, startdatetime timestamp without time zone, enddatetime timestamp without time zone, notes text, personalertid uuid, createdid character varying, updatedid character varying, createddate timestamp without time zone, updateddate timestamp without time zone, description character varying, historycount bigint, allowedit boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+   v_pageoffset   INT;
+   v_pagenumber   INT;
+begin
+
+ 
+   IF COALESCE (pagesize, 0) < 1
+   THEN
+      pagesize := 10;
+   END IF;
+
+   IF COALESCE (pagenumber, 0) < 1
+   THEN
+      pagenumber := 1;
+   END IF;
+
+   v_pagenumber := pagenumber - 1;
+   v_pageoffset = v_pagenumber * pagesize;
+
+   RETURN QUERY
+
+        select a.totalcount,a.updatedpid,a.createdpid,a.updatedname,a.createdname,a.alertid,a.alerttype,a.status,a.startdatetime,a.enddatetime,a.notes,
+ a.personalertid,a.createdid,a.updatedid,a.createddate,a.updateddate,a.description,a.historycount,a.allowedit from 
+ (
+SELECT count (1) OVER () AS totalcount,
+up.cjamspid AS updatedpid,up1.cjamspid AS createdpid,
+CONCAT (up.firstname, ' ', up.lastname) AS updatedname,
+(select  CONCAT(firstname, ' ',lastname) from userprofile where securityusersid =createddata.insertedby) AS createdname,
+pa.alertid,pa.alerttype,pa.status,
+pa.startdatetime,pa.enddatetime,pa.notes,
+pa.personalertid,
+createddata.insertedby AS createdid,
+pa.updatedby AS updatedid,
+createddata.insertedon AS createddate,
+pa.updatedon as updateddate,
+pat.typedescription AS description,
+--(select count(*) from personalert pl where pl.personid = pa.personid and pl.alerttype=pa.alerttype) as historycount,
+(select count(*) from personalert pl where pl.personid = v_personid and pl.alerttype=pa.alerttype
+and coalesce(pl.alertid,pl.personalertid)=coalesce(pa.alertid,pa.personalertid)
+group by coalesce(pl.alertid,pl.personalertid),pl.alerttype
+) as historycount, 
+(case when pa.enddatetime::date < now()::date then false else true end) as allowedit
+FROM personalert pa
+LEFT JOIN personalerttype pat ON pa.alerttype = pat.personalerttypekey
+LEFT JOIN person p ON p.personid = pa.personid
+LEFT JOIN userprofile up ON pa.updatedby = up.securityusersid
+--LEFT JOIN userprofile up1 ON pa.insertedby = up1.securityusersid
+LEFT JOIN (
+select pat.personalertid,pat.personid,pat.insertedon,pat.insertedby,pat.updatedon,pat.updatedby,pat.status,
+pat.alerttype,pat.activeflag,coalesce(pat.alertid,pat.personalertid) as alertid,pat.notes 
+from personalert as pat where pat.personid =v_personid
+--and alerttype='EATD'
+and (pat.personalertid=pat.alertid or pat.alertid is null)
+order by insertedon) as createddata on pa.personid=createddata.personid and coalesce(pa.alertid,pa.personalertid)=createddata.alertid
+LEFT JOIN userprofile up1 ON createddata.insertedby = up1.securityusersid
+WHERE pa.personid = v_personid
+and case when v_alertid is not null then pa.alertid = v_alertid else true end
+and case when v_alertid is not null then pa.activeflag = 0 else pa.activeflag = 1 end
+ORDER BY pa.insertedon desc
+LIMIT CASE WHEN v_nolimit = FALSE THEN pagesize END
+OFFSET CASE WHEN v_nolimit = FALSE THEN v_pageoffset end
+) a order by createddate desc;
+
+END;
+$function$
+

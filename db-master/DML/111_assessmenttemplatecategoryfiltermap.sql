@@ -1,0 +1,3 @@
+INSERT INTO assessmenttemplatecategoryfiltermap
+(assessmenttemplatecategoryfiltermapid, assessmenttemplateid, assessmenttemplatecategoryfilterid, activeflag, insertedby, insertedon, updatedby, updatedon, effectivedate, expirationdate, old_id, "timestamp", "repeatable", intakeservicerequesttypeid, intakeservicerequestsubtypeid, assessmenttemplatetargetid, teamtypekey)
+VALUES('a6b55a90-c57d-4b08-b16f-c2ddee1fbd99', '2c314922-2285-45e2-b49c-24b31993ac96', NULL, 1, 'admin', now(), 'admin', now(), now(), NULL, NULL, NULL, true, '13be391c-de90-4ab1-bf07-515a431c3e9c', '00000000-0000-0000-0000-000000000000', '30c89758-0cc4-4b4a-92b6-df57819a178b', 'CW');

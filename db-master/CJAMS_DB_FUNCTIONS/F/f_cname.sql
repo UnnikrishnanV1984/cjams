@@ -1,0 +1,15 @@
+ CREATE OR REPLACE FUNCTION public.f_cname(varclient_id integer)
+  RETURNS character varying                                     
+  LANGUAGE plpgsql                                              
+ AS $function$                                                  
+                                                                
+ --BEGIN ATOMIC                                                 
+                                                                
+ declare outtx varchar(200);--                                  
+ BEGIN                                                          
+ --call chessie.sp_cname(varclient_id,outtx);--                 
+ SELECT sp_cname(varclient_id) INTO outtx;--                    
+ return outtx;--                                                
+ end ;                                                          
+ $function$                                                     
+

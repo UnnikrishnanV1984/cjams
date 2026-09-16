@@ -1,0 +1,21 @@
+CREATE OR REPLACE FUNCTION cjams.updateadoptionplanning(v_adoptionplanningid uuid)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+Begin
+
+	UPDATE  adoptionefforts  SET  activeflag  =  0  
+	WHERE  adoptionplanningid  =  v_adoptionplanningid;
+	
+	UPDATE adoptionplanning
+	SET alternateid = nextval('sequence_adoptionplanning'::regclass), updatedon = now()
+	WHERE  adoptionplanningid  =  v_adoptionplanningid
+	AND alternateid IS NULL;
+	
+	Return  'Success';
+		
+End
+
+$function$
+;

@@ -1,0 +1,127 @@
+CREATE OR REPLACE FUNCTION sp_audit_log_placement_changes(v_screenid bigint, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_pagenumber int;
+ v_pageoffset int;
+    placementLog json;
+BEGIN 
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+select json_agg(x) into placementlog from 
+(
+select count(1) over() as total_count,a.* from
+(
+SELECT PR.alternateid AS REVISION_ID,
+ PL.VOID_APPROVAL_DT AS TRANSACTION_DT,
+    coalesce('1004',null) AS CHANGE_TYPE_CD,
+ F_PDESC('1004',10041) AS CHANGE_TYPE,
+ PL.ENTRY_DT,
+ PL.ENTRY_TM,
+ PL.EXIT_DT,
+ PL.exit_tm,
+ (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.exit_type_cd LIMIT 1 )AS EXIT_TYPE,
+ (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.exit_reason_cd LIMIT 1) AS EXIT_REASON,
+ F_ENAME('2956', UP.cjamspid) AS REQUESTED_BY,
+    rr.insertedon ::date as REQUESTED_DATE,
+ F_ENAME('2956',UP1.cjamspid ) AS APPROVED_BY,
+        PL.void_approval_dt AS APPROVAL_DT,
+        PL.provider_id
+FROM 
+ placementrevision PR,
+ TB_PLACEMENT PL,
+     routing r,
+     routing rr,
+     userprofile UP,
+     userprofile UP1 
+--  and r.eventcode in ('PLTR') and r.fromroleid='CWSP'
+        -- TB_SUPERVISOR_APPROVALS SA,
+  --       TB_PLACEMENT_VOID_CHECKLIST PV
+WHERE --PL.PLACEMENT_ID = SA.APPROVAL_KEY_ID
+  -- AND PL.PLACEMENT_ID = PV.PLACEMENT_ID
+    PL.placementid = PR.placementid and PR.approvalstatustypkey = '3047' --and PR.activeflag = 1
+    and r.objectid = PL.placementid :: character varying and r.eventcode in ('PLTR') and r.fromroleid='CWSP'   
+ and  rr.objectid = PL.placementid :: character varying and rr.eventcode in ('PLTR') and rr.toroleid='CWCW'
+   and UP1.securityusersid=rr.fromsecurityusersid
+   and UP.securityusersid=r.fromsecurityusersid
+  -- AND SA.APPROVAL_NATURE_CD = '15993' 
+   AND PL.PLACEMENT_ID = v_screenid --- placement id
+   AND PL.DELETE_SW = 'N'
+  -- AND SA.DELETE_SW = 'N'
+   --AND PV.DELETE_SW = 'N'
+   AND COALESCE(PL.VOID_SW, '') = 'Y' 
+
+UNION ALL
+
+SELECT distinct PR.alternateid AS REVISION_ID,
+ PR.transactiondate as TRANSACTION_DT,
+     coalesce('1001',null) AS CHANGE_TYPE_CD,
+ F_PDESC('1001',10041) AS CHANGE_TYPE,
+ PR.entrydate  ENTRY_DT,
+ PR.entrytime ENTRY_TM,
+ PR.exitdate EXIT_DT,
+ PR.exittime EXIT_TM,
+  (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PR.exittypekey LIMIT 1 )AS EXIT_TYPE,
+ (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PR.exitreasontypkey LIMIT 1) AS EXIT_REASON,
+-- F_ENAME('2956', UP1.cjamspid) AS REQUESTED_BY ,
+--    rr.insertedon ::date as REQUESTED_DATE,
+-- F_ENAME('2956', UP.cjamspid) AS APPROVED_BY,
+--        PR.approvaldate AS APPROVAL_DT,
+(select fullname from userprofile where securityusersid=r.tosecurityusersid limit 1) AS REQUESTED_BY ,
+   r.insertedon ::date as REQUESTED_DATE,
+ (select fullname from userprofile where securityusersid=r.fromsecurityusersid limit 1) AS APPROVED_BY,
+        PR.approvaldate AS APPROVAL_DT,
+        PL.provider_id        
+   FROM tb_placement PL
+ join placementrevision PR on PL.placementid = PR.placementid and PR.approvalstatustypkey = '3047' --and PR.activeflag = 1
+ join routing r ON r.objectid = PL.placementid :: character varying and r.eventcode in ('PLTR') and r.fromroleid='CWSP' and r.routingstatustypeid =16 and r.activeflag=1 
+  --  left  join routing rr   ON  rr.objectid = PL.placementid :: character varying and rr.eventcode in ('PLTR') and rr.toroleid='CWCW' --and rr.routingstatustypeid =15 --and rr.activeflag=1
+
+   -- join userprofile UP on UP.securityusersid=r.fromsecurityusersid
+  --  join userprofile UP1 on  UP1.securityusersid=rr.fromsecurityusersid
+
+where
+-- PL.placementid = PR.placementid and PR.approvalstatustypkey = '3047' --and PR.activeflag = 1
+  -- AND SA.APPROVAL_NATURE_CD = '7059' 
+ --  and r.objectid = PL.placementid :: character varying and r.eventcode in ('PLTR') and r.fromroleid='CWSP'
+ --  and  rr.objectid = PL.placementid :: character varying and rr.eventcode in ('PLTR') and rr.toroleid='CWCW'
+ --  and UP1.securityusersid=rr.fromsecurityusersid
+ --  and UP.securityusersid=r.fromsecurityusersid
+  -- AND SA.APPROVAL_NATURE_CD = '15993' 
+    PL.PLACEMENT_ID = v_screenid --- placement id
+   and r.insertedon = PR.insertedon and r.tosecurityusersid is not null
+ --  AND PR.PLACEMENT_ID = :al_placement_id -- placement id
+   --AND COALESCE(PR.ORIGINAL_SW,'') <> 'Y'
+   --AND COALESCE(PR.APPROVAL_STATUS_CD, '') = '3047'  
+   --AND PR.DELETE_SW = 'N'
+  -- AND SA.DELETE_SW = 'N'
+ORDER BY 1 desc
+) a
+group by 
+  a.REVISION_ID,
+   a.TRANSACTION_DT,
+    a.CHANGE_TYPE_CD,
+  a.CHANGE_TYPE,
+   a.ENTRY_DT,
+  a.ENTRY_TM,
+ a.EXIT_DT,
+ a.EXIT_TM,
+ a.EXIT_TYPE,
+ a.EXIT_REASON,
+ a.REQUESTED_BY ,
+    a.REQUESTED_DATE,
+ a.APPROVED_BY,
+    a.APPROVAL_DT,
+    a.provider_id
+   -- LIMIT v_liPageSize OFFSET v_pageoffset
+) x;
+
+return placementLog; 
+
+END;
+$function$
+

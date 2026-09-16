@@ -1,0 +1,3 @@
+ALTER TABLE cjams.tb_ive_gapaudit ALTER COLUMN sg_applicablechildwelfareagenciesinthepreviousstates TYPE varchar(20) USING sg_applicablechildwelfareagenciesinthepreviousstates::varchar;
+
+

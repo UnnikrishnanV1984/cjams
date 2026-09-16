@@ -1,0 +1,1 @@
+ALTER TABLE cjams.intakeservicerequestcourthearing ALTER COLUMN hearingnotes TYPE text USING hearingnotes::text;

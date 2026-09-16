@@ -1,0 +1,43 @@
+ CREATE OR REPLACE FUNCTION public.getsameracrossrefda(actorids character varying[], p_intakeserviceid character varying, p_role character varying)
+  RETURNS SETOF getsameracrossrefdatype                                                                                                            
+  LANGUAGE plpgsql                                                                                                                                 
+ AS $function$                                                                                                                                   
+                                                                                                                                                 
+ DECLARE actoridform character varying;                                                                                                          
+                                                                                                                                                 
+  BEGIN                                                                                                                                          
+                                                                                                                                                 
+  RAISE NOTICE '%',actorids;                                                                                                                     
+   RETURN QUERY                                                                                                                                  
+   SELECT ISR.IntakeServiceId as intakeserviceid,                                                                                                
+          ISR.ServiceRequestNumber as servicerequestnumber,                                                                                      
+          ISR.Description  as description,                                                                                                       
+          ISR.insertedby as insertedby ,                                                                                                         
+          ISR.insertedon as insertedon,                                                                                                          
+          ISRT.IntakeServReqTypeKey  AS srtype,                                                                                                  
+          SUB.ClassKey AS srsubtype,                                                                                                             
+          (SELECT TRIM(PR.FirstName) || ' ' || TRIM(PR.LastName)                                                                                 
+             FROM IntakeServiceRequestActor INSRA1                                                                                               
+                 JOIN Actor AC ON AC.ActorId  = INSRA1.ActorId AND TRIM(AC.ActorType) = p_role                                                   
+                 JOIN Person PR ON PR.PersonId = AC.PersonId                                                                                     
+             WHERE  INSRA1.IntakeServiceId = ISR.IntakeServiceId Limit 1) AS raname,                                                             
+          (SELECT PRA.county                                                                                                                     
+             FROM IntakeServiceRequestActor INSRA1                                                                                               
+                 JOIN Actor AC ON AC.ActorId  = INSRA1.ActorId AND TRIM(AC.ActorType) = p_role                                                   
+                 JOIN PersonAddress  PRA ON PRA.PersonAddressId = CAST(INSRA1.GuardianName as uuid)                                              
+             WHERE  INSRA1.IntakeServiceId = ISR.IntakeServiceId limit 1                                                                         
+          ) AS county,                                                                                                                           
+          ISR.TargetCompleteDate  AS dueDdate,                                                                                                   
+          CASE WHEN ISR.TargetCompleteDate <= NOW()  THEN 'false' ELSE 'true' END AS pastdue                                                     
+   FROM IntakeServiceRequest ISR                                                                                                                 
+       JOIN  IntakeSerReqStatusType ISST ON ISR.IntakeSerReqStatusTypeId   = ISST.IntakeSerReqStatusTypeId                                       
+       JOIN IntakeServiceRequestInputType ISRIT ON ISRIT.IntakeServReqInputTypeId = ISR.IntakeServReqInputTypeId                                 
+       JOIN IntakeServiceRequestType ISRT ON ISRT.IntakeServReqTypeId = ISR.IntakeServReqTypeId                                                  
+       JOIN ServiceRequestSubType SUB ON SUB.ServiceRequestSubTypeId = ISR.IntakeServiceRequestClassId                                           
+       JOIN  IntakeServiceRequestActor ISRA ON ISRA.IntakeServiceId = ISR.IntakeServiceId                                                        
+   WHERE ISRA.ActorId in (SELECT actorid from actor where actorid::character varying = ANY(actorids) and actortype = p_Role)                     
+   AND ISR.IntakeServiceId <> p_intakeserviceid::uuid;                                                                                           
+                                                                                                                                                 
+ END;                                                                                                                                            
+ $function$                                                                                                                                        
+

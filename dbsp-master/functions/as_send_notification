@@ -1,0 +1,69 @@
+CREATE OR REPLACE FUNCTION as_send_notification(notificationuserid character varying, from_userid character varying, to_userid character varying, usernotificationtypekey character varying, priorityleveltypekey character varying, subject character varying, body text, v_intakeserviceid character varying, isexternalentity boolean DEFAULT false)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+ DECLARE
+ v_usernotificationid uuid;
+ v_date timestamp without time zone;
+ v_isexternalentity boolean;
+ v_objecttype CHARACTER VARYING;
+ v_objectcasenumber CHARACTER VARYING; 
+
+ BEGIN                                             
+ v_date:= now();
+
+ IF v_objecttype IS NULL THEN
+ SELECT 'aps', isr.servicerequestnumber INTO v_objecttype, v_objectcasenumber
+ FROM intakeservicerequest isr WHERE isr.intakeserviceid::character varying  = v_intakeserviceid AND isr.activeflag = 1;
+END IF;
+
+IF v_objecttype IS NULL THEN
+ SELECT 'intake', ids.intakenumber INTO v_objecttype, v_objectcasenumber
+ FROM intakedastaging ids WHERE ids.intakenumber = v_intakeserviceid AND ids.activeflag = 1 and ids.teamtypekey = 'AS';
+END IF;
+
+IF v_objecttype IS NULL THEN
+ SELECT 'aps', tsl.case_id :: CHARACTER VARYING INTO v_objecttype, v_objectcasenumber
+ FROM tb_service_log tsl
+ INNER JOIN intakeservicerequest isr ON isr.servicerequestnumber = tsl.case_id
+ INNER JOIN tb_service_purchase_authorization tspa ON tspa.service_log_id = tsl.service_log_id
+ WHERE tspa.authorization_id :: CHARACTER VARYING = v_intakeserviceid
+ ORDER BY isr.insertedon LIMIT 1;
+END IF;
+
+IF v_objecttype IS NULL THEN
+ SELECT 'aps',  isr.servicerequestnumber INTO v_objecttype, v_objectcasenumber  
+ FROM intakeservicerequest isr 
+ JOIN placement pl ON isr.intakeserviceid = pl.intakeserviceid
+ WHERE pl.placementid :: CHARACTER VARYING = v_intakeserviceid;
+END IF;
+
+IF v_objecttype IS NULL THEN
+ SELECT 'TicketNo', sl.supportno INTO v_objecttype, v_objectcasenumber  
+ FROM supportlog sl  
+ WHERE sl.activeflag = 1 and sl.supportno = v_intakeserviceid;
+ IF notificationuserid IS NULL OR notificationuserid = '' THEN 
+  SELECT assupervisorid INTO notificationuserid FROM userprofile where securityusersid =  from_userid and activeflag=1;  
+ END IF;
+ IF notificationuserid IS NULL OR notificationuserid = '' THEN 
+  notificationuserid =  from_userid ;
+ END IF;
+ to_userid = notificationuserid;
+END IF;
+ 
+ INSERT INTO usernotification (securityusersid,usernotificationtypekey,                                                                                                                                                                                                                                                                                   
+ objectid,activeflag,subject,priorityleveltypekey,body,isexternalentity,updatedby,                                                                                                                                                                                                                                                                        
+ updatedon,insertedby,insertedon,effectivedate,ismailsent, teamtypekey,objecttype,objectcasenumber)                                                                                                                                                                                                                                                                                                
+ VALUES (notificationuserid, usernotificationtypekey, v_intakeserviceid, 1, subject,                                                                                                                                                                                                                                                                        
+         priorityleveltypekey, body,isexternalentity, from_userid,                                                                                                                                                                                                                                                                                        
+         v_date, from_userid,v_date,v_date,false,'AS',v_objecttype,v_objectcasenumber)  RETURNING "usernotificationid" INTO  v_usernotificationid;                                                                                                                                                                                                                                                                                                                                                
+ INSERT INTO usernotificationmap(usernotificationid,fromsecurityusersid,tosecurityusersid,isread,                                                                                                                                                                                                                                                         
+ effectivedate,activeflag,updatedby,                                                                                                                                                                                                                                                                                                                      
+ updatedon,insertedby,insertedon)                                                                                                                                                                                                                                                                                                                         
+ VALUES (v_usernotificationid, from_userid,to_userid, false,                                                                                                                                                                                                                                                                                              
+         v_date, 1, from_userid,
+   v_date, from_userid,v_date);                                                                                                                                                                                                                                                                                       RETURN 'success' ;                                               
+ END;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+ $function$
+

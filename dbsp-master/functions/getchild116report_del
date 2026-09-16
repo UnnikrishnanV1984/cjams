@@ -1,0 +1,179 @@
+CREATE OR REPLACE FUNCTION getchild116report_del(v_clientaccountid integer, v_lipagesize bigint, v_lipagenumber bigint, date_sw character varying DEFAULT NULL::character varying, date_from timestamp without time zone DEFAULT NULL::timestamp without time zone, date_to timestamp without time zone DEFAULT NULL::timestamp without time zone)
+ RETURNS TABLE(totalcount bigint, client_account_id bigint, client_id bigint, account_type_cd character varying, account_type_nm character varying, account_exists_sw character, bank_nm character varying, account_no_tx character varying, total_balance_no numeric, available_balance_no numeric, open_dt text, close_dt text, status_cd character varying, status_nm character varying, comm_account_id integer, case_id bigint, obligated_for_anc numeric, obligated_for_coc numeric, clientfirstname character varying, clientlastname character varying, dob text, transactiondetails json, otherancillaryexcessdetails json, rundate text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+raise notice 'date_trunc %',date_trunc('year',CURRENT_DATE);
+raise notice 'date_trunc %',date_trunc('month',CURRENT_DATE);
+return query
+
+
+ select count(1) over() as totalcount,tca.client_account_id,tca.client_id,tca.account_type_cd,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=tca.account_type_cd
+AND PICKLIST_TYPE_ID='40') account_type_nm,tca.account_exists_sw,tca.bank_nm,tca.account_no_tx,ROUND(AVG(coalesce(tca.total_balance_no,0.00))::numeric,2),ROUND(AVG(coalesce(tca.available_balance_no,0.00))::numeric,2),
+to_char(tca.open_dt,'MM/DD/YYYY') as open_dt,to_char(tca.close_dt,'MM/DD/YYYY') as close_dt,tca.status_cd,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=tca.status_cd
+AND PICKLIST_TYPE_ID='41') status_nm,tca.comm_account_id,tca.case_id,ROUND(AVG(coalesce(tca.obligated_for_anc,0))::numeric,2),ROUND(AVG(coalesce(tca.obligated_for_coc,0.00))::numeric,2),p.firstname,p.lastname,to_char(p.dob,'MM/DD/YYYY') as dob,
+(select json_agg(x) from (select tat.transaction_id,tat.client_account_id,tat.transaction_type_cd,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=tat.transaction_type_cd
+AND PICKLIST_TYPE_ID='39') transaction_type_nm,tat.transaction_source_cd,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=tat.transaction_source_cd
+AND PICKLIST_TYPE_ID='38') transaction_source_nm,to_char(tat.benefit_start_dt,'MM/DD/YYYY') as benefit_start_dt,tat.benefit_end_dt,tat.transaction_amount_no,tat.transaction_dt,
+tat.credit_debit_sw,to_char(tat.benefit_start_dt, 'MM/YYYY') as monthyear from tb_account_transaction tat
+where tat.client_account_id = tca.client_account_id  and tat.benefit_start_dt is not null
+and date_sw is null or case when date_sw = 'M' then (tat.benefit_start_dt >= date_trunc('month',CURRENT_DATE)  ) when date_sw = 'Y' then 
+(tat.benefit_start_dt >= date_trunc('year',CURRENT_DATE)  ) when date_sw = 'D'  then to_date(cast(tat.benefit_start_dt  as TEXT), 'YYYY-MM-DD') 
+BETWEEN to_date(cast(date_from as TEXT), 'YYYY-MM-DD') 
+AND to_date(cast(date_to as TEXT), 'YYYY-MM-DD') end
+order by tat.benefit_start_dt asc
+)
+as x) as transactiondetails,
+(select json_agg(x) from (select 
+to_char(tat.benefit_start_dt, 'Mon-YY') as benefitmonyear,
+ROUND(AVG((select coalesce(
+(select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='589' and trim(transaction_source_cd) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id),0.00))+
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id),0.00))
++(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='D' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')
+and ttt.client_account_id = tat.client_account_id),0.00)) )::numeric,2) as receiptscoc,
+ROUND(AVG(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction  ttt where credit_debit_sw='D' and trim(transaction_type_cd)='3444' 
+and trim(transaction_source_cd) = '5477' and ttt.client_account_id = tat.client_account_id  ),0.00)))::numeric,2) as cocreimbursement,
+case when 
+((ROUND(AVG((select coalesce(
+(select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='589' and trim(transaction_source_cd) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id ),0.00))+
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')),0.00))
++(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='D' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') ),0.00)) )::numeric,2) )-(ROUND(AVG(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction where credit_debit_sw='D' and trim(transaction_type_cd)='3444' 
+and trim(transaction_source_cd) = '5477' ),0)))::numeric,2)))<0 then 0 else ((ROUND(AVG((select coalesce(
+(select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='589' and trim(transaction_source_cd) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') ),0.00))+
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')),0.00))
++(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='D' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') ),0.00)) )::numeric,2) )-(ROUND(AVG(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction where credit_debit_sw='D' and trim(transaction_type_cd)='3444' 
+and trim(transaction_source_cd) = '5477' ),0)))::numeric,2))) end
+ as ancillaryexcess,
+(
+ROUND(AVG(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='C' and trim(transaction_type_cd) in ('589','588')
+and trim(transaction_source_cd) not in ('587','586','585')  and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id ),0))-
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='D' and trim(transaction_type_cd) in ('588')
+and trim(transaction_source_cd) in ('5471','582','583','584','5472')  and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id ),0.00))
+)::numeric,2)) as receiptsavailableforancillary,
+ROUND(AVG(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='D' and trim(transaction_type_cd) in ('5530')
+and trim(transaction_source_cd) in ('5474')  and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id ),0.00)))::numeric,2) as obligations,
+ROUND(AVG(
+(
+(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='C' and trim(transaction_type_cd) in ('589','588')
+and trim(transaction_source_cd) not in ('587','586','585')  and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id ),0.00))-
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='D' and trim(transaction_type_cd) in ('588')
+and trim(transaction_source_cd) in ('5471','582','583','584','5472')  and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id ),0.00))
+)
++
+((select coalesce(
+(select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='589' and trim(transaction_source_cd) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id),0.00))+
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='C' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id),0))
++(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt
+where credit_debit_sw='D' and trim(transaction_type_cd)='588' and trim(transaction_source_cd) in ('5473')
+and (select trim(transaction_source_cd) from tb_account_transaction ttc 
+where ttc.transaction_id = ttt.reference_transaction_id ) in ('587','586','585') 
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id ),0)) )
+)
+-
+(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='D' and trim(transaction_type_cd) in ('5530')
+and trim(transaction_source_cd) in ('5474')  and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id ),0)))
+ )::numeric,2) as balanceavaibleforancillary,
+ ROUND(AVG(
+(select coalesce((select sum(transaction_amount_no) from tb_account_transaction ttt where credit_debit_sw='D' and trim(transaction_type_cd) in ('5531')
+and trim(transaction_source_cd) in ('5474')
+and to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY')   
+and ttt.client_account_id = tat.client_account_id),0)))::numeric,2) as ancillarypayment,
+ROUND(AVG(
+(select coalesce((select sum(final_amount_no) from tb_payment_detail tpd
+join tb_account_transaction ttt on tat.payment_detail_id = tpd.payment_detail_id 
+where  to_char(ttt.benefit_start_dt, 'Mon-YY') = to_char(tat.benefit_start_dt, 'Mon-YY') and ttt.client_account_id = tat.client_account_id
+ ),0.00)))::numeric,2) as actualcoc
+
+from tb_account_transaction tat
+where tat.client_account_id = tca.client_account_id and tat.benefit_start_dt is not null
+and date_sw is null or case when date_sw = 'M' then (tat.benefit_start_dt >= date_trunc('month',CURRENT_DATE)  ) when date_sw = 'Y' then 
+(tat.benefit_start_dt >= date_trunc('year',CURRENT_DATE)  ) when date_sw = 'D'  then to_date(cast(tat.benefit_start_dt  as TEXT), 'YYYY-MM-DD') 
+BETWEEN to_date(cast(date_from as TEXT), 'YYYY-MM-DD') 
+AND to_date(cast(date_to as TEXT), 'YYYY-MM-DD') end
+group by  to_char(tat.benefit_start_dt, 'Mon-YY')) as x) as otherancillaryexcessdetails,to_char(now(),'MM/DD/YYYY') as rundate
+from tb_client_account tca
+inner join person p on p.cjamspid = tca.client_id
+--inner join tb_account_transaction tot on tot.client_account_id = tca.client_account_id
+where tca.client_account_id =v_clientaccountid and tca.delete_sw = 'N'
+group by  tca.client_account_id,tca.client_id,tca.account_type_cd,tca.account_exists_sw,tca.bank_nm,tca.account_no_tx,
+tca.total_balance_no,tca.available_balance_no,p.firstname,p.lastname,p.dob
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+$function$
+

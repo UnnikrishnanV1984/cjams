@@ -1,0 +1,139 @@
+CREATE OR REPLACE FUNCTION as_informalrestitutionafter30notification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+v_intakeserviceid uuid;
+v_securityusersid character varying;
+v_status character varying;
+v_status1 character varying;
+v_informalrestitution30daysrecord  record;
+v_informalrestitution60daysrecord  record;
+v_informalrestitution90daysrecord  record;
+v_msg character varying;
+
+BEGIN
+    -- 30 Day
+    FOR  v_informalrestitution30daysrecord  IN
+ 
+ select tma.securityusersid as tosecurityusersid, isrr.intakeserviceid, ISR.servicerequestnumber
+ from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1 
+ join team t on t.teamid = tm.teamid and t.activeflag = 1
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active' 
+ join intakeservicerequest as ISR on ISR.intakeserviceid = ISRR.intakeserviceid and ISR.activeflag=1
+ Join intakeservicerequestdispositioncode as ISRDC2 on ISRDC2.intakeserviceid = ISR.intakeserviceid and ISRDC2.activeflag=1
+ join (select ISRDC1.servicerequesttypeconfigiddispostionid , max(insertedon) as insertedon from intakeservicerequestdispositioncode as ISRDC1
+ where ISRDC1.activeflag=1 group by ISRDC1.servicerequesttypeconfigiddispostionid) as ISRDC 
+ on ISRDC.servicerequesttypeconfigiddispostionid = ISRDC2.servicerequesttypeconfigiddispostionid and ISRDC.insertedon = ISRDC2.insertedon
+ Join servicerequesttypeconfigdispositioncode as SRTCDC on SRTCDC.servicerequesttypeconfigiddispostionid = ISRDC.servicerequesttypeconfigiddispostionid and SRTCDC.activeflag=1
+ Join servicerequestdispositionsubtypeconfig as SRDSTC 
+ on SRDSTC.servicerequesttypeconfigiddispostionid = ISRDC.servicerequesttypeconfigiddispostionid
+ and SRDSTC.activeflag=1 and lower(SRDSTC.dispositioncode) = 'ia1' 
+ join routing as RT on RT.fromsecurityusersid = mu.securityusersid and RT.routingstatustypeid = 4
+ WHERE r.roletypekey ilike'%JSSP%' and tma.activeflag = 1 and isrr.approvestatus='RSTAPR'
+ and  ISR.insertedon::date = now()::date - '30 day'::interval
+ --and  ISR.insertedon::date = now()::date - '60 day'::interval
+ group by tma.securityusersid , isrr.intakeserviceid, ISR.servicerequestnumber
+ 
+ LOOP
+   
+ -- Informal Outcome for Case#xxxxxxx is due for more than 30 days with Case Worker. Please provide the final outcome.
+
+ v_msg:=   'Informal Outcome for Case ('|| v_informalrestitution30daysrecord.servicerequestnumber ||') is due for more than 30 days with Case Worker. Please provide the final outcome.';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_informalrestitution30daysrecord.tosecurityusersid, 'System'::character varying, v_informalrestitution30daysrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_informalrestitution30daysrecord.intakeserviceid::character varying);
+      
+    END LOOP;
+ 
+    -- 60 Day
+ 
+ FOR  v_informalrestitution60daysrecord  IN
+ 
+ select tma.securityusersid as tosecurityusersid, isrr.intakeserviceid, ISR.servicerequestnumber
+ from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1 
+ join team t on t.teamid = tm.teamid and t.activeflag = 1
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active' 
+ join intakeservicerequest as ISR on ISR.intakeserviceid = ISRR.intakeserviceid and ISR.activeflag=1
+ Join intakeservicerequestdispositioncode as ISRDC2 on ISRDC2.intakeserviceid = ISR.intakeserviceid and ISRDC2.activeflag=1
+ join (select ISRDC1.servicerequesttypeconfigiddispostionid , max(insertedon) as insertedon from intakeservicerequestdispositioncode as ISRDC1
+ where ISRDC1.activeflag=1 group by ISRDC1.servicerequesttypeconfigiddispostionid) as ISRDC 
+ on ISRDC.servicerequesttypeconfigiddispostionid = ISRDC2.servicerequesttypeconfigiddispostionid and ISRDC.insertedon = ISRDC2.insertedon
+ Join servicerequesttypeconfigdispositioncode as SRTCDC on SRTCDC.servicerequesttypeconfigiddispostionid = ISRDC.servicerequesttypeconfigiddispostionid and SRTCDC.activeflag=1
+ Join servicerequestdispositionsubtypeconfig as SRDSTC 
+ on SRDSTC.servicerequesttypeconfigiddispostionid = ISRDC.servicerequesttypeconfigiddispostionid
+ and SRDSTC.activeflag=1 and lower(SRDSTC.dispositioncode) = 'ia2' 
+ join routing as RT on RT.fromsecurityusersid = mu.securityusersid and RT.routingstatustypeid = 4
+ WHERE r.roletypekey ilike'%JSSP%' and tma.activeflag = 1 and isrr.approvestatus='RSTAPR'
+ --and  ISR.insertedon::date = now()::date - '1 day'::interval
+ and  ISR.insertedon::date = now()::date - '60 day'::interval
+ group by tma.securityusersid , isrr.intakeserviceid, ISR.servicerequestnumber
+ 
+ LOOP
+   
+ -- Informal Outcome for Case#xxxxxxx is due for more than 30 days with Case Worker. Please provide the final outcome.
+
+ v_msg:=   'Informal Outcome for Case ('|| v_informalrestitution60daysrecord.servicerequestnumber ||') is due for more than 60 days with Case Worker. Please provide the final outcome.';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_informalrestitution60daysrecord.tosecurityusersid, 'System'::character varying, v_informalrestitution60daysrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_informalrestitution60daysrecord.intakeserviceid::character varying);
+      
+    END LOOP;
+
+    -- 90 Day 
+ 
+ FOR  v_informalrestitution90daysrecord  IN
+ 
+ select tma.securityusersid as tosecurityusersid, isrr.intakeserviceid, ISR.servicerequestnumber
+ from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1 
+ join team t on t.teamid = tm.teamid and t.activeflag = 1
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active' 
+ join intakeservicerequest as ISR on ISR.intakeserviceid = ISRR.intakeserviceid and ISR.activeflag=1
+ Join intakeservicerequestdispositioncode as ISRDC2 on ISRDC2.intakeserviceid = ISR.intakeserviceid and ISRDC2.activeflag=1
+ join (select ISRDC1.servicerequesttypeconfigiddispostionid , max(insertedon) as insertedon from intakeservicerequestdispositioncode as ISRDC1
+ where ISRDC1.activeflag=1 group by ISRDC1.servicerequesttypeconfigiddispostionid) as ISRDC 
+ on ISRDC.servicerequesttypeconfigiddispostionid = ISRDC2.servicerequesttypeconfigiddispostionid and ISRDC.insertedon = ISRDC2.insertedon
+ Join servicerequesttypeconfigdispositioncode as SRTCDC on SRTCDC.servicerequesttypeconfigiddispostionid = ISRDC.servicerequesttypeconfigiddispostionid and SRTCDC.activeflag=1
+ Join servicerequestdispositionsubtypeconfig as SRDSTC 
+ on SRDSTC.servicerequesttypeconfigiddispostionid = ISRDC.servicerequesttypeconfigiddispostionid
+ and SRDSTC.activeflag=1 and lower(SRDSTC.dispositioncode) = 'ia3' 
+ join routing as RT on RT.fromsecurityusersid = mu.securityusersid and RT.routingstatustypeid = 4
+ WHERE r.roletypekey ilike'%JSSP%' and tma.activeflag = 1 and isrr.approvestatus='RSTAPR'
+ and  ISR.insertedon::date = now()::date - '90 day'::interval
+ --and  ISR.insertedon::date = now()::date - '120 day'::interval
+ group by tma.securityusersid , isrr.intakeserviceid, ISR.servicerequestnumber
+ 
+ LOOP
+   
+ -- Informal Outcome for Case#xxxxxxx is due for more than 30 days with Case Worker. Please provide the final outcome.
+
+ v_msg:=   'Informal Outcome for Case ('|| v_informalrestitution90daysrecord.servicerequestnumber ||') is due for more than 90 days with Case Worker. Please provide the final outcome.';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_informalrestitution90daysrecord.tosecurityusersid, 'System'::character varying, v_informalrestitution90daysrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_informalrestitution90daysrecord.intakeserviceid::character varying);
+      
+    END LOOP;
+ 
+RETURN
+
+'Success';
+
+END;
+
+
+$function$
+

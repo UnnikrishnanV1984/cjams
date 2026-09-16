@@ -1,0 +1,37 @@
+CREATE OR REPLACE FUNCTION cjams.getadoptionemotional(v_adoptionplanningid uuid)
+ RETURNS TABLE(adoptionemotionalid uuid, notes text, isfosterparents integer, isadoptivefamily integer, adoptionemotionaldetails json)
+ LANGUAGE plpgsql
+AS $function$   
+
+-------------------------------------------------------------------------
+--  06-14-2022 Adoption Emotional Ties Fixes - Veera 
+-------------------------------------------------------------------------
+
+BEGIN
+
+RETURN query
+
+SELECT ae.adoptionemotionalid :: uuid,ae.notes,ae.isfosterparents,ae.isadoptivefamily,
+json_agg((SELECT x FROM (
+	SELECT p.personid,ar.person1id,cid.personid as p,ar.person2id,aed.intakeservicerequestactorid,aed.childimportance, aed.remarks, rt.description AS relationship,
+	(COALESCE(p.firstname,'') || ' ' ||COALESCE(p.lastname,'')) :: character varying AS name) AS x)) AS adoptionemotionaldetails
+FROM
+adoptionemotional ae
+inner join adoptionplanning adp on adp.adoptionplanningid = ae.adoptionplanningid
+join (select p.personid,isra.intakeservicerequestactorid from intakeservicerequestactor isra 
+INNER JOIN person p ON p.personid=isra.personid AND p.activeflag=1
+--where isra.activeflag=1
+) as cid on cid.intakeservicerequestactorid=adp.intakeservicerequestactorid
+left JOIN adoptionemotionaldetails aed ON aed.adoptionemotionalid=ae.adoptionemotionalid AND aed.activeflag=1 
+left JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid=aed.intakeservicerequestactorid --AND isra.activeflag=1
+left JOIN person p ON p.personid=isra.personid AND p.activeflag=1
+left JOIN actorrelationship ar on ar.person2id = cid.personid and ar.person1id = p.personid  --ar.intakeservicerequestactorid=isra.intakeservicerequestactorid AND ar.activeflag=1
+left JOIN relationshiptype rt ON rt.relationshiptypekey=ar.relationshiptypekey AND rt.activeflag=1
+WHERE ae.adoptionplanningid=v_adoptionplanningid AND ae.activeflag=1
+--and ar.person1id = cid.personid and ar.person2id = p.personid 
+GROUP BY ae.adoptionplanningid,ae.adoptionemotionalid,ae.notes,ae.isfosterparents,ae.isadoptivefamily;
+ 
+END;
+
+ $function$
+;

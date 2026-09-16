@@ -1,0 +1,1 @@
+update tb_provider set county_cd='1427' where provider_id='201900420'

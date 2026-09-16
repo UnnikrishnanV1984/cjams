@@ -1,0 +1,4 @@
+update intakeservicerequestactor set personid = '0836d5ad-7317-4fec-99e9-14a2456062dd', updatedby = 'CDM-11467', updatedon = now() where personid = 'c13f6d70-8b92-4316-bb2a-157673caa3f2';
+update actor set personid = '0836d5ad-7317-4fec-99e9-14a2456062dd', updatedby = 'CDM-11467', updatedon = now() where personid = 'c13f6d70-8b92-4316-bb2a-157673caa3f2';
+update personrole set personid = '0836d5ad-7317-4fec-99e9-14a2456062dd', updatedby = 'CDM-11467', updatedon = now() where personid = 'c13f6d70-8b92-4316-bb2a-157673caa3f2';
+update person set activeflag = 0, updatedby = 'CDM-11467', updatedon = now() where personid = 'c13f6d70-8b92-4316-bb2a-157673caa3f2';

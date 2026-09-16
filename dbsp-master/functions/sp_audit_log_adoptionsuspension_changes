@@ -1,0 +1,74 @@
+CREATE OR REPLACE FUNCTION sp_audit_log_adoptionsuspension_changes(v_screenid bigint, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_pagenumber int;
+ v_pageoffset int;
+    adoptionsuspensionLog json;
+BEGIN 
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+select json_agg(x) into adoptionsuspensionLog from 
+(
+select count(1) over() as total_count,a.* from
+(
+-- Adoption Subsidy Suspension changes
+SELECT ASR.alternateid AS REVISION_ID,   
+ ASR.transactiondate TRANSACTION_DT,   
+ coalesce('1014',null) AS CHANGE_TYPE_CD,
+ F_PDESC('1014',10041) AS CHANGE_TYPE,
+ F_PDESC(ASR.suspensionreasontypekey, 256) AS SUSPENSION_REASON_CD,
+ ASR.suspensionbegindate ENTRY_DT,   
+ ASR.suspensionenddate EXIT_DT,   
+ F_ENAME('2956', UPR.cjamspid) AS REQUESTED_BY ,
+ R.insertedon AS REQUESTED_DATE,
+ F_ENAME('2956', UPA.cjamspid) AS APPROVED_BY,
+ ASR.approvaldate AS APPROVAL_DT,
+ ASR.adoptionsuspensionid SUSPENSION_ID,   
+ ACD.adoptioncaseid ADOPTION_ID
+FROM adoptioncasesuspensionrevision ASR,
+ adoptioncasesuspension ACS,
+ adoptioncase ACD,
+ routing R,
+ userprofile UPR,
+    userprofile UPA 
+WHERE ASR.adoptionsuspensionid = ACS.adoptionsuspensionid
+ and R.objectid = ACS.adoptionsuspensionid::character varying 
+ and R.routingstatustypeid = 16 AND R.eventcode::text = 'ADSR'::text AND R.activeflag = 1
+ and UPR.securityusersid=R.tosecurityusersid
+   and UPA.securityusersid=R.fromsecurityusersid
+   and ACS.adoptioncaseid = ACD.adoptioncaseid
+ AND ACS.alternateid = v_screenid
+ AND COALESCE(ASR.approvalstatustypekey, '') = '3047'  
+ --AND COALESCE(ASR.ORIGINAL_SW,'') <> 'Y'
+-- AND SA.APPROVAL_NATURE_CD = '7066' 
+-- AND ASR.DELETE_SW = 'N'
+-- AND SA.DELETE_SW = 'N'
+ORDER BY 2 desc
+) a
+group by 
+ REVISION_ID,   
+ TRANSACTION_DT,   
+ CHANGE_TYPE_CD,
+ CHANGE_TYPE,
+ SUSPENSION_REASON_CD,
+ a.ENTRY_DT,   
+ a.EXIT_DT,      
+  REQUESTED_BY ,
+ REQUESTED_DATE,
+  APPROVED_BY,
+ APPROVAL_DT,
+ SUSPENSION_ID,   
+ ADOPTION_ID
+ --limit v_lipagesize offset v_pageoffset
+) x;
+
+return adoptionsuspensionLog; 
+
+END;
+$function$
+

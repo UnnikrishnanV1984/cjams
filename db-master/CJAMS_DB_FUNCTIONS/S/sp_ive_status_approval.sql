@@ -1,0 +1,79 @@
+DROP FUNCTION  IF EXISTS cjams.sp_ive_status_approval(a_client_id bigint, a_removal_id bigint, userid character varying, v_status text[], v_roleid character varying, v_placementtype character varying, pagenumber bigint, pagesize bigint, periodtype character varying);
+CREATE OR REPLACE FUNCTION cjams.sp_ive_status_approval(a_client_id bigint, a_removal_id bigint, userid character varying, v_status text[], v_roleid character varying, v_placementtype character varying, pagenumber bigint, pagesize bigint, periodtype character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+----------------------------------------------------------------------
+-- CDM-27020, CDM-27021, CDM-27019 Adoption Send for Approval Issue fixes
+-- CIDM-8279 Foster Care Maintenance Payments User Story (PI24-Q1_S01)
+-- CIDM-8270 (B-186247) - GAP Subsidy Payments User Story (PI24-Q1_S01)
+-- CIDM-8283 (B-186246)- Adoption Subsidy Payment User Story (PI24-Q1_S01)
+-- CIDM-11479-Send-approval-button
+----------------------------------------------------------------------
+declare 
+i record;
+v_approvalid uuid;
+v_approvalstatus character varying;
+v_eligibility_period_id int;
+v_adoptionauditid bigint;
+v_picklist_value_cd character varying;
+v_eligibility_id integer;
+begin
+
+if(v_placementtype = 'Fostercare') then
+		
+		v_approvalid = gen_random_uuid();	
+
+		select tep.approvalstatus, tep.eligibility_period_id  into v_approvalstatus, v_eligibility_period_id 
+		from tb_eligibility_period tep join tb_client_eligibility tce on tep.eligibility_id = tce.eligibility_id 
+		where tce.client_id = a_client_id and tce.removal_id = a_removal_id and sqnm_sw = periodtype and tep.delete_sw = 'N' order by tep.eligibility_period_id desc limit 1;
+	
+	
+		if v_approvalstatus is null then
+			UPDATE tb_eligibility_period
+			SET  approvalstatus='PENDING' , approvalid = v_approvalid , update_ts = now()
+			WHERE eligibility_period_id = v_eligibility_period_id
+			returning eligibility_id, status_cd into v_eligibility_id, v_picklist_value_cd;
+			UPDATE tb_client_eligibility tce SET eligibility_status_cd=v_picklist_value_cd, update_ts = now() WHERE tce.eligibility_id=v_eligibility_id;
+		end if;		
+	
+		RETURN v_approvalid;
+elseif(v_placementtype = 'Gap') then
+	v_approvalid = gen_random_uuid();
+	
+	select tep.approvalstatus, tep.eligibility_period_id into v_approvalstatus, v_eligibility_period_id from tb_eligibility_period tep join tb_client_eligibility tce on tep.eligibility_id = tce.eligibility_id where tce.client_id = a_client_id and tce.eligibility_type_cd = '2935' and sqnm_sw = periodtype and tep.delete_sw = 'N' and tce.guardian_subsidy_id = a_removal_id;
+	
+	if v_approvalstatus is null then
+		UPDATE tb_eligibility_period
+		SET  approvalstatus='PENDING' , approvalid = v_approvalid , update_ts = now()
+		WHERE eligibility_period_id = v_eligibility_period_id and finalresult not in ('Incomplete')
+		returning eligibility_id, status_cd into v_eligibility_id, v_picklist_value_cd;
+		UPDATE tb_client_eligibility tce SET eligibility_status_cd=v_picklist_value_cd, update_ts = now() WHERE tce.eligibility_id=v_eligibility_id;
+	end if;
+	
+	return v_approvalid;
+elseif(v_placementtype = 'Adoption') then
+	v_approvalid = gen_random_uuid();
+	select tep.approvalstatus, tep.eligibility_period_id into v_approvalstatus, v_eligibility_period_id from tb_eligibility_period tep join tb_client_eligibility tce on tep.eligibility_id = tce.eligibility_id where tce.client_id = a_client_id and tce.eligibility_type_cd = '2934' and sqnm_sw = periodtype and tep.delete_sw = 'N';
+	if v_approvalstatus is null then
+		UPDATE tb_eligibility_period
+		SET  approvalstatus='PENDING' , approvalid = v_approvalid , update_ts = now()
+		WHERE eligibility_period_id = v_eligibility_period_id and finalresult not in ('Incomplete')
+		returning eligibility_id, status_cd into v_eligibility_id, v_picklist_value_cd;
+		UPDATE tb_client_eligibility tce SET eligibility_status_cd=v_picklist_value_cd, update_ts = now() WHERE tce.eligibility_id=v_eligibility_id;
+	end if;	
+	
+	return v_approvalid;
+elseif(v_placementtype = 'Adoptionapplicability') then
+	v_approvalid = gen_random_uuid();	
+	select tiaa.approvalstatus, tiaa.adoptionauditid into v_approvalstatus, v_adoptionauditid from tb_ive_adoption_audit tiaa where tiaa.category = 'A' and tiaa.cjamspid = a_client_id order by  tiaa.insertedon desc limit 1;
+
+	if v_approvalstatus is null then
+		UPDATE tb_ive_adoption_audit
+		SET  approvalstatus='PENDING' , approvalid = v_approvalid
+		WHERE adoptionauditid = v_adoptionauditid;
+	end if;
+	return v_approvalid;
+end if;
+end
+$function$

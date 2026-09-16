@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION prov_sendreferralapprovalrequest(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_subject character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_tousersid json;
+v_eventcode character varying;
+v_phase character varying;
+v_sign json;
+v_appstatus character varying;
+response CHARACTER varying;
+currentRow record;
+currentTwo record;
+v_type character varying;
+v_username CHARACTER VARYING;
+v_appstatustext CHARACTER VARYING;
+v_objectname CHARACTER VARYING;
+v_decisiondate character varying;
+v_providerid character varying;
+v_providername character varying;
+v_cpaname character varying;
+v_programname character varying;
+v_tousers json;
+v_provider_referral_nm character varying;
+v_provider_referral_id  character varying;
+v_applications character varying;
+v_subjectemail character varying;
+
+begin
+v_fromsecurityuserid := objectls->>'tosecurityusersid';
+v_eventcode := objectls->>'eventcode';
+v_provider_referral_id := objectls->>'provider_referral_id';
+v_applications := '';
+
+select coalesce((select provider_referral_nm from tb_provider_referral 
+where provider_referral_id=v_provider_referral_id),'') into v_provider_referral_nm;
+
+--v_subject := v_provider_referral_id||'" Initial application is approved  for Provider "'|| v_provider_referral_nm;
+   
+for currentTwo IN SELECT distinct trp.applicant_id as applicationid  
+     from tb_prov_ref_program_type trp 
+     join tb_provider_referral tpr  on tpr.provider_referral_id = trp.referral_id       
+     where tpr.provider_referral_id = v_provider_referral_id
+loop
+    BEGIN
+
+     for currentRow IN SELECT distinct mu.securityusersid as toworkeridno
+        from muser mu 
+        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+        join role r on r.id = rm.roleid and r.activeflag = 1
+        where r.name in  ('Program Manager', 
+                        'Executive') 
+        and mu.activeflag =1
+        and rm.teamtypekey='OLMDJS'
+     loop
+         BEGIN
+ 
+             --v_subject := currentTwo.applicationid||' Initial referral application is approved  for Provider "' || v_provider_referral_nm || '"';
+    v_subject := 'A referral has been approved for a new provider '|| currentTwo.applicationid;
+   
+             SELECT prov_send_notification into v_success
+             FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid,  currentRow.toworkeridno, 'System', 'High',  v_subject, v_subject, currentTwo.applicationid,  false);
+         END;
+     end loop;
+        v_applications := v_applications || ', ' || currentTwo.applicationid;
+
+    END;
+end loop;
+
+select json_agg(a) into v_tousers from ( 
+    SELECT distinct mu.securityusersid as toworkeridno 
+    , mu.email 
+        from muser mu 
+        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+        join role r on r.id = rm.roleid and r.activeflag = 1
+        where r.name in  ('Program Manager', 
+                        'Executive') 
+        and mu.activeflag =1
+        and rm.teamtypekey='OLMDJS'
+)a;
+
+v_subjectemail = 'A referral has been approved for a new provider for application' || v_applications;
+
+
+RETURN json_build_object('response',v_success, 'ROLE_WORKERS', v_tousers,
+    'workersubject', v_subjectemail, 
+    'workerbody', v_subjectemail);
+end;
+$function$
+

@@ -1,0 +1,60 @@
+CREATE OR REPLACE FUNCTION prov_create_address_change_application(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                                                       
+ declare
+  v_license_status_cd character varying;
+  v_application_type_cd character varying;
+  v_license_decision_cd character varying;
+  l_applicant_id character varying;
+  v_providerid character varying;
+  v_securityuserid uuid;
+  v_programtype text;
+  v_licenseno character varying;
+  v_siteid character varying;
+  l_license_application_id bigint;
+  old_applicant_id character varying;
+  v_formatted_current_address character varying;
+  v_adr_start_dt timestamp without time zone;
+  v_program_type_id uuid;
+ 
+ BEGIN
+  v_siteid := insertedtlsobj->>'site_id';
+  v_securityuserid := insertedtlsobj->>'securityuserid';
+  v_licenseno := insertedtlsobj->>'license_no';
+  l_applicant_id := insertedtlsobj->>'application_id_new';
+
+  
+  select applicant_id into old_applicant_id
+  FROM tb_provider_applicant where site_id = v_siteid order by create_ts desc limit 1;
+  
+  
+  select adr_start_dt, (select prov_get_formatted_addresses from prov_get_formatted_addresses(parent_key_id::integer)) into v_adr_start_dt, v_formatted_current_address
+  FROM tb_provider_addresses where parent_key_id = v_siteid and adr_default_sw = 'Y' and delete_sw='N' and adr_type_cd = 3357;
+  
+  INSERT INTO tb_provider_applicant
+  (applicant_id, application_status, application_type, prgram, program_name, contact_first_nm, 
+  mailing_address, contact_phonenumber, contact_email, contact_fax, program_type, program_type_other, prgram_size, current_license, licenced_by_dda, facesheet_dev_by_consultant, create_ts, create_user_id, update_ts, update_user_id, delete_sw, license_no, provider_id, applicant_profile_id, program_tax_id_no, contact_last_nm, contact_middle_nm, contact_suffix_cd, contact_prefix_cd, 
+  requested_license_effective_date, site_id, application_decision, corporation_name, uploadsignature, agency, accreditation, profit, execsignature, license_agency)
+  (SELECT l_applicant_id, 'Pending', 'ADDRESSCHANGE', prgram, program_name, contact_first_nm, 
+  v_formatted_current_address, contact_phonenumber, contact_email, contact_fax, program_type, program_type_other, prgram_size, current_license, licenced_by_dda, facesheet_dev_by_consultant, create_ts, create_user_id, update_ts, update_user_id, delete_sw, license_no, provider_id, applicant_profile_id, program_tax_id_no, contact_last_nm, contact_middle_nm, contact_suffix_cd, contact_prefix_cd, 
+  v_adr_start_dt, site_id, application_decision, corporation_name, uploadsignature, 'OLM', accreditation, profit, null, license_agency
+  FROM tb_provider_applicant where site_id = v_siteid order by create_ts desc limit 1); 
+  
+ 
+  INSERT INTO tb_prov_ref_program_type
+  (referral_id, program_type, activeflag, insertedby, insertedon, updatedby, updatedon, applicant_id)
+  (select referral_id, program_type, 1, v_securityuserid,now(),v_securityuserid,now(),l_applicant_id from tb_prov_ref_program_type where applicant_id = old_applicant_id limit 1 ) returning program_type_id into v_program_type_id;
+
+ 
+  INSERT INTO tb_prov_applicant_accomodation
+  (prov_applicant_accomodation_id,program_type_id,provider_applicant_id,minimum_age_no,maximum_age_no,gender_cd,children_no,create_ts,create_user_id,update_ts,update_user_id,delete_sw,min_age_months_no,max_age_months_no,iq_range_from,iq_range_to,license_no,requested_license_end_date, requested_license_effective_date)
+  (select gen_random_uuid(),v_program_type_id,l_applicant_id,     minimum_age_no,maximum_age_no,gender_cd,children_no,create_ts,create_user_id,update_ts,update_user_id,delete_sw,min_age_months_no,max_age_months_no,iq_range_from,iq_range_to,v_licenseno,requested_license_end_date, requested_license_effective_date
+  from tb_prov_applicant_accomodation taa where taa.provider_applicant_id = old_applicant_id limit 1);
+  
+  
+  
+  RETURN l_applicant_id; 
+ END;
+ $function$
+

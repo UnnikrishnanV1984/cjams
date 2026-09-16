@@ -1,0 +1,1 @@
+update routing set activeflag = 0 , updatedby = 'CDM-13145', updatedon = now() where servicerequestnumber  in (3307882,3123984,3280657) and eventcode = 'CPLAN2' and routingstatustypeid = 15 and activeflag = 1;

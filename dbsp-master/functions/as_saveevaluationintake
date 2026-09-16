@@ -1,0 +1,281 @@
+CREATE OR REPLACE FUNCTION as_saveevaluationintake(v_intakenumber character varying, jsondata json, v_securityuserid character varying, v_intakeservicerequestevaluationid uuid)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+ DECLARE 
+
+ --v_date timestamp without time zone;
+ i_evaluationcount int;
+ i_evaluationconfigcount int;
+ v_intakejson json;
+ j_evaluation json;
+ j_allegedoffense json;
+ i_victims json;
+ v_ispeaceorder boolean;
+ v_complaintid varchar(50);
+ v_peacecomplaintid int;
+ i json;
+ j json;
+ v_intakeservicerequestevaluationconfigid uuid;
+ u_allegationid uuid;
+ isdetention boolean;
+ petitionuuid uuid;
+ v_complaintstatustypekey character varying;
+ v_intakeservreqevalactorconfigid uuid;
+ l_personid uuid;
+ l_datypekey character varying;
+ l_focusstatus character varying;
+ l_refstatus character varying;
+    l_intakestatus character varying;
+ vintakeservicerequestpetitionid uuid;
+  
+ BEGIN
+  RAISE NOTICE '%',v_intakeservicerequestevaluationid;
+  
+  
+  
+  
+  IF(v_intakeservicerequestevaluationid IS NULL) then
+      
+
+     j_evaluation := jsondata;
+     l_datypekey:= j_evaluation ->> 'datypekey';/*for ys*/
+      j_allegedoffense := j_evaluation ->> 'allegedoffense';
+      v_ispeaceorder := j_evaluation ->> 'ispeaceorder';
+      v_complaintid := j_evaluation ->> 'complaintid';
+   i_victims := j_evaluation ->> 'victims';
+
+       -- j_evaluation := i;
+   RAISE NOTICE '%','Test 7';
+      IF(j_evaluation ->> 'iscreatepetition') then
+     
+     v_complaintstatustypekey := 'HS';
+    ELSE
+     
+     v_complaintstatustypekey := null;
+    END IF;
+   
+       v_intakeservicerequestevaluationid :=   gen_random_uuid();
+       
+    Insert Into intakeservicerequestevaluation ( intakeservicerequestevaluationid,  intakenumber, isdetention, isdrai, ismcasp, countyid, 
+    
+    complaintid, evaluationsourcetypeid, evaluationsourceagencyid, yearsofage, complaintreceiveddate, arrestdate, zipcode, unknownrange, 
+    
+    offensedate, begindate, enddate, evaluationsourceid, activeflag, insertedby, updatedby, offencelocationtypekey, ispeaceorder, 
+    
+    peaceordernotes, complaintstatustypekey, lecomplaintid, isotheroffense, otheroffensetext )
+    
+    values 
+    
+    (v_intakeservicerequestevaluationid, v_intakenumber, cast(j_evaluation ->> 'isdetention' as boolean), 
+    
+    cast(j_evaluation ->> 'isdrai' as boolean), cast(j_evaluation ->> 'ismcasp' as boolean), cast(j_evaluation ->> 'countyid' as uuid), 
+    
+    cast(v_complaintid as character varying), cast(j_evaluation ->> 'evaluationsourcetypeid' as uuid), cast(j_evaluation ->> 
+    
+    'evaluationsourceagencyid' as uuid), cast(j_evaluation ->> 'yearsofage' as numeric), 
+    cast(j_evaluation ->> 'complaintreceiveddate' as timestamp without time zone), 
+    
+    cast(j_evaluation ->> 'arrestdate' as timestamp without time zone),cast(j_evaluation ->> 'zipcode' as integer), 
+    
+    cast(j_evaluation ->> 'allegedoffenseknown' as integer), cast(j_evaluation ->> 'allegedoffensedate' as timestamp without time zone), 
+    
+    cast(j_evaluation ->> 'begindate' as timestamp without time zone), cast(j_evaluation ->> 'enddate' as timestamp without time zone),
+    
+    cast(j_evaluation ->> 'evaluationsourceid' as uuid), 1, v_securityuserid, v_securityuserid, 
+    
+    cast(j_evaluation ->> 'offencelocationtypekey' as character varying), v_ispeaceorder,cast(j_evaluation ->> 'narrative' as character varying),
+    
+    v_complaintstatustypekey, cast(j_evaluation ->> 'lecomplaintid' as character varying), cast(j_evaluation ->> 'isotheroffense' as boolean), 
+    
+    cast(j_evaluation ->> 'otheroffensetext' as character varying));
+    
+     --create petition for Transfer from adult court
+     if(j_evaluation ->> 'iscreatepetition') then
+     
+       select gen_random_uuid() into petitionuuid;
+      
+    INSERT INTO intakeservicerequestpetition
+    ( intakeservicerequestpetitionid, intakeservicerequestid, petitionid, activeflag, effectivedate, insertedby, updatedby, insertedon, updatedon, 
+    
+    petitiontypekey, intakenumber,petitionstatustypekey, adultpetitionid )
+    
+    values( petitionuuid, '00000000-0000-0000-0000-000000000000', j_evaluation ->> 'waiverpetitionid' ::character varying, 1, now(),
+
+    v_securityuserid, v_securityuserid, now(), now(), 'Waiver', v_intakenumber, 'SCH',j_evaluation ->> 'adultpetitionid' ::character varying);
+    
+    -- select petitionuuid, ins.intakeserviceid, j_evaluation ->> 'waiverpetitionid' ::character varying , 1, now(), v_securityuserid, v_securityuserid, 
+    
+    -- now(), now(), 'Waiver', v_intakenumber, 'SCH',j_evaluation ->> 'adultpetitionid' ::character varying 
+    -- from intakeservicerequest ins where ins.intakenumber=v_intakenumber limit 1;
+    
+    INSERT INTO intakeservreqevalpetitionconfig
+    ( intakeservreqevalpetitionconfigid, intakeservicerequestevaluationid, intakeservicerequestpetitionid, intakenumber,
+    activeflag, updatedby, updatedon, insertedby, insertedon, effectivedate )
+    
+    select gen_random_uuid(), v_intakeservicerequestevaluationid, petitionuuid, v_intakenumber, 1, v_securityuserid, now(), v_securityuserid, now(),
+    now(); 
+
+     END IF;
+   
+       --  Evaluation Alleged Offense Insert
+     
+        For j in Select * from json_array_elements(j_allegedoffense)
+        LOOP
+          v_intakeservicerequestevaluationconfigid :=   gen_random_uuid();
+          Insert Into intakeservicerequestevaluationconfig (intakeservicerequestevaluationconfigid, intakeservicerequestevaluationid, allegationid, activeflag, insertedby,updatedby)
+          values (v_intakeservicerequestevaluationconfigid, v_intakeservicerequestevaluationid, cast(j ->> 'allegationid' as uuid),
+      1, v_securityuserid, v_securityuserid);
+       
+        END LOOP;
+    
+     For i in Select * from json_array_elements(i_victims)
+     LOOP
+      RAISE NOTICE '%','Test 4';
+      INSERT INTO intakeservreqevalactorconfig
+      (intakeservicerequestevaluationid, activeflag, insertedby, insertedon, effectivedate, personid)
+      VALUES(v_intakeservicerequestevaluationid, 1, v_securityuserid, now(), now(), cast(i ->> 'personid' as uuid));
+ 
+     END LOOP;
+    --END LOOP; 
+   ELSE
+   
+    j_evaluation := jsondata;
+    
+    RAISE NOTICE '%','Test 6';   
+    
+     j_allegedoffense := j_evaluation ->> 'allegedoffense';
+     v_ispeaceorder := j_evaluation ->> 'ispeaceorder';
+     v_complaintid := j_evaluation ->> 'complaintid';
+     i_victims := j_evaluation ->> 'victims';
+     vintakeservicerequestpetitionid = cast(j_evaluation ->> 'intakeservicerequestpetitionid' as uuid);
+   
+    v_intakeservicerequestevaluationconfigid = cast(j_evaluation ->> 'intakeservicerequestevaluationconfigid' as uuid);
+    v_intakeservreqevalactorconfigid = cast(j_evaluation ->> 'intakeservreqevalactorconfigid' as uuid);
+    
+    update intakeservicerequestevaluationconfig set activeflag = 0 where intakeservicerequestevaluationid = v_intakeservicerequestevaluationid;
+    
+    update intakeservreqevalactorconfig set activeflag = 0 where intakeservicerequestevaluationid = v_intakeservicerequestevaluationid;
+    
+    RAISE NOTICE '%',j_evaluation ->> 'isdetention';
+
+
+
+    UPDATE intakeservicerequestevaluation  
+    SET  isdetention = cast(j_evaluation ->> 'isdetention' as boolean), 
+      isdrai = cast(j_evaluation ->> 'isdrai' as boolean),
+      ismcasp = cast(j_evaluation ->> 'ismcasp' as boolean),
+      countyid = cast(j_evaluation ->> 'countyid' as uuid), 
+      complaintid = cast(v_complaintid as character varying),
+      evaluationsourcetypeid = cast(j_evaluation ->> 'evaluationsourcetypeid' as uuid),
+      evaluationsourceagencyid = cast(j_evaluation ->> 'evaluationsourceagencyid' as uuid),
+      yearsofage = cast(j_evaluation ->> 'yearsofage' as numeric), 
+      complaintreceiveddate = cast(j_evaluation ->> 'complaintreceiveddate' as timestamp without time zone),
+      arrestdate = cast(j_evaluation ->> 'arrestdate' as timestamp without time zone), 
+      zipcode = cast(j_evaluation ->> 'zipcode' as integer), 
+      unknownrange = cast(j_evaluation ->> 'allegedoffenseknown' as integer), 
+      offensedate = cast(j_evaluation ->> 'allegedoffensedate' as timestamp without time zone), 
+      begindate = cast(j_evaluation ->> 'begindate' as timestamp without time zone),
+      enddate = cast(j_evaluation ->> 'enddate' as timestamp without time zone),
+      evaluationsourceid = cast(j_evaluation ->> 'evaluationsourceid' as uuid),
+      activeflag = 1, 
+      updatedby = v_securityuserid, 
+      updatedon = now(),   
+      complaintstatustypekey = v_complaintstatustypekey, 
+      offencelocationtypekey = cast(j_evaluation ->> 'offencelocationtypekey' as character varying),
+      peaceordernotes = cast(j_evaluation ->> 'narrative' as character varying),
+      ispeaceorder = v_ispeaceorder,  
+      lecomplaintid = cast(j_evaluation ->> 'lecomplaintid' as character varying),
+      isotheroffense = cast(j_evaluation ->> 'isotheroffense' as boolean),
+      otheroffensetext = cast(j_evaluation ->> 'otheroffensetext' as character varying)
+      WHERE intakeservicerequestevaluationid = v_intakeservicerequestevaluationid;
+
+
+    For j in Select * from json_array_elements(j_allegedoffense)
+    LOOP
+     
+     if(j ->> 'intakeservicerequestevaluationconfigid' is not null) then
+     RAISE NOTICE 'update1%',v_securityuserid;
+     update intakeservicerequestevaluationconfig set activeflag = 1,updatedby = v_securityuserid, updatedon = now()
+     where intakeservicerequestevaluationconfigid = cast(j ->> 'intakeservicerequestevaluationconfigid' as uuid); 
+     
+     else 
+     
+      v_intakeservicerequestevaluationconfigid :=   gen_random_uuid();
+      
+          Insert Into intakeservicerequestevaluationconfig (intakeservicerequestevaluationconfigid, intakeservicerequestevaluationid, allegationid, activeflag, insertedby,updatedby)
+          values (v_intakeservicerequestevaluationconfigid, v_intakeservicerequestevaluationid, cast(j ->> 'allegationid' as uuid),
+      1, v_securityuserid,v_securityuserid);
+     
+     END IF;     
+    END LOOP;
+    
+    
+      
+    For i in Select * from json_array_elements(i_victims)
+    LOOP
+     
+     if(i ->> 'intakeservreqevalactorconfigid' is not null) then
+     RAISE NOTICE 'update2%',v_securityuserid;
+     update intakeservreqevalactorconfig set activeflag = 1, updatedby = v_securityuserid, updatedon = now()
+     where intakeservreqevalactorconfigid = cast(i ->> 'intakeservreqevalactorconfigid' as uuid);
+     
+     else
+     
+     INSERT INTO intakeservreqevalactorconfig
+     (intakeservicerequestevaluationid, activeflag, insertedby, insertedon,updatedby, effectivedate, personid)
+     VALUES(v_intakeservicerequestevaluationid, 1, v_securityuserid, now(),v_securityuserid, now(), cast(i ->> 'personid' as uuid));
+     
+     END IF;
+    END LOOP;
+    
+    IF(vintakeservicerequestpetitionid is not null) then
+    
+     update intakeservicerequestpetition 
+     set 
+     petitionid = j_evaluation ->> 'waiverpetitionid' ::character varying,
+     
+     adultpetitionid = j_evaluation ->> 'adultpetitionid' ::character varying
+     
+     where intakeservicerequestpetitionid = vintakeservicerequestpetitionid;
+    
+    END if;
+   
+   
+ 
+  END IF;
+ 
+    SELECT personid INTO l_personid 
+    FROM intakeservicerequestactor 
+    WHERE intakenumber=v_intakenumber AND intakeservicerequestpersontypekey='Youth';
+    
+   
+  IF l_datypekey IS NOT NULL THEN
+    /*Referal close*/ 
+      IF l_datypekey in ('PO','LE','ED','CC') THEN 
+       l_focusstatus := 'REF';
+     SELECT savefocuspersoncasestatus into l_refstatus FROM as_savefocuspersoncasestatus(l_personid,NULL,v_intakenumber,l_focusstatus,'Closed',
+     v_securityuserid,NULL,NULL);
+   END IF; 
+    /* Intake  peaceorder, adjudication open*/
+     IF(l_datypekey='PO') THEN  /*intakeservicerequesttype*/
+   l_focusstatus:='PO';  /* referencevalues*/
+  ELSIF(l_datypekey IN ('LE','ED','CC')) THEN   
+   l_focusstatus:='INTK';  
+  ELSIF(l_datypekey = 'WAC') THEN   
+   l_focusstatus:='ADJ'; 
+  END IF;    
+     
+     SELECT savefocuspersoncasestatus into l_intakestatus  FROM as_savefocuspersoncasestatus(l_personid,NULL,v_intakenumber,l_focusstatus,'Open',
+     v_securityuserid,NULL,NULL);
+    END IF;
+    
+  
+      Return 'Success';
+  
+ END;
+
+ $function$
+

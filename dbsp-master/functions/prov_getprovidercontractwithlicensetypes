@@ -1,0 +1,43 @@
+CREATE OR REPLACE FUNCTION prov_getprovidercontractwithlicensetypes(v_provider_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+jsondata  json;
+BEGIN
+SELECT  Json_agg(a)  INTO      jsondata  FROM      (  
+SELECT  tpc.*,
+      (select json_agg(x) from (
+        SELECT tcp.program_id, tcp.license_no, tpl.license_level, tpl.license_type, tpl.site_id
+        FROM tb_contract_program tcp
+        LEFT JOIN tb_provider_licensing tpl on tpl.license_no = tcp.license_no
+        where tpc.contract_id = tcp.contract_id
+        ) x ) as contract_license_types,
+      (select json_agg(x) from (
+        SELECT budget_code
+        FROM tb_contract_budget_codes bc 
+        where bc.contract_id = tpc.contract_id
+        and bc.active_flag = 1
+        ) x ) as contract_budget_codes,
+      (SELECT json_agg(x) from(SELECT tfy.* from tb_contract_fiscal_year tfy where tfy.contract_id = tpc.contract_id)  x) AS
+      fiscalyeararray,      
+      (SELECT json_agg(x) from(
+        select DATE_PART('day', end_dt::timestamp -  now()::timestamp) ::integer as expire_days,
+              case
+              when (DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer <=90 and DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer >60) then 'yellow'
+              when (DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer <=60 and DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer >30) then 'orange'
+              when (DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer <=30) then 'red'
+              end as color_code
+            from tb_provider_contracts cont_exp where cont_exp.contract_id = tpc.contract_id
+            )  x) AS contractexpire      
+      FROM tb_provider_contracts tpc  
+      WHERE tpc.provider_id = v_provider_id GROUP BY tpc.contract_id
+ )  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

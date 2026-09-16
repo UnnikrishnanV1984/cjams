@@ -1,0 +1,23 @@
+ CREATE OR REPLACE FUNCTION public.get_picklist_values(picklist_id integer)                                                                                            
+  RETURNS TABLE(picklist_value_cd character varying, value_tx character varying)                                                                                       
+  LANGUAGE plpgsql                                                                                                                                                     
+ AS $function$                                                                                                                                                         
+                                                                                                                                                                       
+ DECLARE                                                                                                                                                               
+                                                                                                                                                                       
+         v_picklist_value_cd integer;                                                                                                                                  
+                                                                                                                                                                       
+                                                                                                                                                                       
+ BEGIN                                                                                                                                                                 
+                                                                                                                                                                       
+ v_picklist_value_cd := picklist_id;                                                                                                                                   
+                                                                                                                                                                       
+         return query                                                                                                                                                  
+                                                                                                                                                                       
+          Select picklist.PICKLIST_VALUE_CD,picklist.value_tx from tb_picklist_values as picklist where picklist.picklist_type_id=v_picklist_value_cd;--  '1397' '1398'
+                                                                                                                                                                       
+                                                                                                                                                                       
+ END;                                                                                                                                                                  
+                                                                                                                                                                       
+ $function$                                                                                                                                                            
+

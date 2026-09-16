@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION as_referrallttrtofacilities(i_intakenumber character varying, i_intakeserviceid uuid, i_caseworkerid character varying)
+ RETURNS TABLE(youthname character varying, youthpid character varying, dateofbirth character varying, provider_name character varying, provider_address character varying, cw_name character varying, cw_email character varying, cw_phone character varying, cw_address character varying, cw_role character varying)
+ LANGUAGE plpgsql
+AS $function$
+ declare 
+v_placementname character varying;
+v_placementaddress character varying;
+BEGIN
+
+ select 
+ cast(pr.providername as character varying) ,
+ cast(paddr.buildingno||','||paddr.addressline1||','|| paddr.addressline2||','||paddr.city||','||paddr.state  as character varying) as provider_address 
+into v_placementname,v_placementaddress
+from 
+ intakeservicerequest INTSR 
+             left join placement pl on INTSR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+             LEFT JOIN provideraddress paddr ON pr.providerid = paddr.providerid AND paddr.activeflag=1
+             where ((INTSR.intakeserviceid =i_intakeserviceid) or (INTSR.intakenumber =i_intakenumber));
+ 
+ 
+     RETURN QUERY (
+ select distinct 
+      cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+          cast(p.cjamspid as character varying) as youthpid,
+   cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as dateofbirth,
+   v_placementname  as provider_name,
+   v_placementaddress as provider_address,
+   cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = i_caseworkerid) as character varying) as  cw_name,
+   cast((select distinct up.email from userprofile up where securityusersid = i_caseworkerid) as character varying) as cw_email,
+   cast((select distinct phonenumber from userprofilephonenumber where securityusersid = i_caseworkerid limit 1) as character varying) as cw_phone,
+   (select distinct  cast(upa.address ||', '|| upa.city ||', '|| upa.state ||', '|| upa.country ||', '|| upa.zipcode as character varying) from userprofileaddress upa where securityusersid = i_caseworkerid limit 1)  as cw_address,
+         cast((select TMRT.description
+        From Team T Join TeamMember TM on TM.teamid = T.teamid
+       Join as_teammemberassignment TMA On TMA.teammemberId  = TM.teammemberid
+       Left Join TeamMemberRoleType TMRT On TMRT.roletypekey = TM.roletypekey
+       left join TeamType TTY on TTY.teamtypekey = TMRT.teamtypekey 
+       Join UserProfile UP On UP.securityusersid = TMA.securityusersid 
+          where TMA.securityusersid=i_caseworkerid)  as character varying)  as cw_role
+from  
+ intakeservicerequest isr
+   join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+   join actor a on a.actorid = isra.actorid and a.activeflag = 1
+   join person p on p.personid = a.personid and p.activeflag = 1
+ where (isr.intakeserviceid =NULL or isr.intakeserviceid =i_intakeserviceid) or
+                (isr.intakenumber =NULL or isr.intakenumber=i_intakenumber) 
+    
+ UNION
+ 
+ select 
+     cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+             cast(coalesce(obj->>'cjamspid','') as character varying) as youthid,
+    cast(obj->>'Dob' as character varying) as dateofbirth,
+      v_placementname  as provider_name,
+   v_placementaddress as provider_address,
+     cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = i_caseworkerid) as character varying) as  cw_name,
+   cast((select distinct up.email from userprofile up where securityusersid = i_caseworkerid) as character varying) as cw_email,
+   cast((select distinct phonenumber from userprofilephonenumber where securityusersid = i_caseworkerid) as character varying) as cw_phone,
+    (select distinct  cast(upa.address ||', '|| upa.city ||', '|| upa.state ||', '|| upa.country ||', '|| upa.zipcode as character varying) from userprofileaddress upa where securityusersid = i_caseworkerid limit 1)  as cw_address,
+         cast((select TMRT.description
+        From Team T Join TeamMember TM on TM.teamid = T.teamid
+       Join as_teammemberassignment TMA On TMA.teammemberId  = TM.teammemberid
+       Left Join TeamMemberRoleType TMRT On TMRT.roletypekey = TM.roletypekey
+       left join TeamType TTY on TTY.teamtypekey = TMRT.teamtypekey 
+       Join UserProfile UP On UP.securityusersid = TMA.securityusersid 
+          where TMA.securityusersid=i_caseworkerid)  as character varying)  as cw_role
+    from
+ intakedastaging ida
+  , jsonb_array_elements(ida.jsondata->'persons') obj 
+  where  ida.activeflag=1  and obj->>'Role' ='Youth'   and
+          (ida.intakenumber=i_intakenumber and obj->>'cjamspid' is not null)
+          limit 1) ;
+  
+END;
+
+$function$
+

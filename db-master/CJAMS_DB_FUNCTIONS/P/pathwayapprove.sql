@@ -1,0 +1,79 @@
+DROP FUNCTION IF EXISTS cjams.pathwayapprove(uuid, uuid);
+
+CREATE OR REPLACE FUNCTION cjams.pathwayapprove(v_intakeserviceid uuid, v_sdmid uuid, v_supervisorid uuid)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------------------------------------------
+-- Revision(s)
+-- 08/21/2022 Sandeep Kiran Anugolu - While doing Change Pathway in sdm for CPS case duplicate progams are gtting created (CIDM-10764)
+------------------------------------------------------------------------------------------------------------
+
+DECLARE
+v_isar boolean;
+v_isir boolean;
+v_subprog character varying;
+l_record RECORD;
+
+begin
+	
+SELECT isar, isir into v_isar,v_isir 
+FROM intakeservicerequestsdm isdm 
+WHERE isdm.intakeservicerequestsdmid = v_sdmid::uuid and isdm.activeflag=1;
+
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_insert_person_program_area (
+personprogramid uuid
+);
+
+raise notice 'v_isar  %',v_isar;
+raise notice 'v_isir  %',v_isir;
+
+IF(v_isar = true) THEN 
+	v_subprog = 'AR';
+	UPDATE intakeservicerequest set actiontype ='AR', intakeservicerequestclassid ='b74ded78-12dc-4e6d-94db-7662d6eaf093', updatedon=now()   
+	WHERE intakeserviceid = v_intakeserviceid::uuid;	
+ELSIF(v_isir = true) THEN 
+	v_subprog = 'IR';
+	UPDATE intakeservicerequest set actiontype ='IR', intakeservicerequestclassid ='3e026a57-247c-4203-82b7-62749c98ccc5', updatedon=now() 
+	WHERE intakeserviceid = v_intakeserviceid::uuid;
+END IF;
+
+raise notice 'v_subprog  %',v_subprog;
+
+WITH temp_ids AS (INSERT INTO personprogramarea(personid, startdate, insertedon, updatedon, insertedby, updatedby, activeflag, programkey, subprogramkey, objecttypekey, objectid, entityid, datatransferflag,sourcetype)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+select personid , now(), now(), now(), insertedby, updatedby, 1, programkey, v_subprog, objecttypekey, objectid, entityid, 'A', 'CW' from personprogramarea 
+WHERE programkey = 'CPS' AND activeflag = 1 AND enddate is null 
+AND objectid = v_intakeserviceid::character varying and subprogramkey != v_subprog
+RETURNING personprogramid)
+INSERT INTO Temp_insert_person_program_area SELECT personprogramid from temp_ids;
+
+
+WITH temp_ids AS (UPDATE personprogramarea SET enddate=CURRENT_TIMESTAMP, datatransferflag='D', 
+updatedon = CURRENT_TIMESTAMP, activeflag = 0
+WHERE programkey = 'CPS' AND activeflag = 1 AND enddate is null
+AND objectid = v_intakeserviceid::character varying and subprogramkey != v_subprog
+RETURNING personprogramid)
+INSERT INTO Temp_insert_person_program_area SELECT personprogramid from temp_ids;
+
+
+FOR l_record IN (select * from Temp_insert_person_program_area)
+LOOP
+INSERT INTO auditlog(referenceid, logtypekey, description, metadata, insertedon, insertedby)
+VALUES(l_record.personprogramid,'PRGMAREA','systemupdate12',
+			(SELECT row_to_json(personprogramarea) FROM personprogramarea WHERE personprogramid = l_record.personprogramid), now(), v_supervisorid);
+END LOOP;
+
+DROP TABLE Temp_insert_person_program_area;
+
+UPDATE responsereassignhistory
+SET updatedon = CURRENT_TIMESTAMP, approvaldate = CURRENT_TIMESTAMP, updatedby = v_supervisorid
+WHERE referralid = v_sdmid;
+
+return 'SUCCESS';
+					
+END;
+
+$function$
+;

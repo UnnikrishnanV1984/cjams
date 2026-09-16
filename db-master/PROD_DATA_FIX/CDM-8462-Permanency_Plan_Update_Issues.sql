@@ -1,0 +1,1 @@
+update permanencyplan set achieveddate = '2020-12-18 00:00:00' where permanencyplanid = '80d01b85-8600-4acf-8611-bc078b07719a' and intakeservicerequestactorid = '42371faa-41a8-42b9-b54c-1509965e4992';

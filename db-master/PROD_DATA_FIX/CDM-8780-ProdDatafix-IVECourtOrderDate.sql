@@ -1,0 +1,1 @@
+update intakeservicerequestcourthearing i set activeflag = 1, updatedon = now(), updatedby = 'Data Fix as per CDM-8780' where intakeservicerequestcourthearingid = 'c0fc6cd7-d87f-4c26-b890-125bb8cf1efe' and activeflag = 0;

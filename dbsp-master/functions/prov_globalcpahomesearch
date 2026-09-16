@@ -1,0 +1,70 @@
+CREATE OR REPLACE FUNCTION prov_globalcpahomesearch(searchreq json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+   v_cpahomeid  CHARACTER VARYING;
+   v_firstname character varying;
+   v_lastname character varying;
+   v_middlename character varying;
+   v_providername character varying;
+   v_cpa_address character varying;
+
+ v_pagenumber int;
+ v_pageoffset int;
+   v_json_data json;
+BEGIN
+   v_cpahomeid := searchreq ->> 'CPAHomeID';
+   v_firstname := searchreq ->> 'firstname';
+   v_firstname = trim(lower(v_firstname));
+   v_lastname := searchreq ->> 'lastname';
+   v_lastname = trim(lower(v_lastname));
+   v_middlename := searchreq ->> 'middlename';
+   v_middlename = trim(lower(v_middlename));
+   v_providername := searchreq ->> 'providername';
+ v_providername = trim(lower(v_providername));
+ v_cpa_address := searchreq ->> 'CPAHomeAddress';
+ v_cpa_address = trim(lower(v_cpa_address));
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+   select json_agg (x) into v_json_data from (
+
+        select  COUNT(1) OVER() totalcount,
+        tpv2.description_tx as status, tpaa.provider_id as parent_id , tpaa.provider_nm as parent_name, 
+         (select * from prov_get_formatted_addresses(tp.provider_id)) as cpa_address,  tpcap.first_nm, tpcap.last_nm ,tpcap.middle_nm, tp.provider_id, tp.provider_nm, tpv.description_tx as householdmembertype, tpaa.tax_id_no as ssnno,  tpp2.value_desc as provider_category_name from 
+        prov.tb_provider tp 
+         join prov.tb_provider tpaa on tp.affiliate_provider_id = tpaa.provider_id 
+        join prov.tb_provider_picklist tpp on tp.provider_id = tpp.provider_id and picklist_type_id = 155 and picklist_value_cd = 1782 and tpp.delete_sw = 'N'
+         join prov.tb_provider_picklist tpp2 on tp.provider_id = tpp2.provider_id and tpp2.picklist_type_id = 455 and tpp2.delete_sw ='N'
+        left join prov.tb_prov_cpa_adop_person tpcap on tpcap.provider_id = tp.provider_id and tpcap.delete_sw = 'N'
+        left join tb_picklist_values tpv on tpv.picklist_value_cd =tpcap.person_type_cd and tpv.picklist_type_id =371
+         left join tb_picklist_values tpv2 on tpv2.picklist_value_cd  = tp.provider_status_cd and tpv2.picklist_type_id = 159
+        where 
+        tp.delete_sw = 'N'
+        and (case when v_cpahomeid is null then true else 
+           tp.provider_id::character varying like '%'||v_cpahomeid||'%'
+        end )
+
+ AND (CASE WHEN v_firstname IS NOT NULL THEN trim(lower(tpcap.first_nm)) ilike '%'|| v_firstname || '%'   ELSE TRUE END)
+ AND (CASE WHEN v_middlename IS NOT NULL THEN trim(lower(tpcap.middle_nm)) ilike '%'|| v_middlename || '%'   ELSE TRUE END)
+ AND (CASE WHEN v_lastname IS NOT NULL THEN trim(lower(tpcap.last_nm)) ilike '%'|| v_lastname || '%'   ELSE TRUE END)
+ AND (CASE WHEN v_providername IS NOT NULL THEN trim(lower(tp.provider_nm)) ilike '%'|| v_providername || '%'   ELSE TRUE END)
+        
+ AND (CASE WHEN v_cpa_address IS NOT NULL THEN trim(lower(
+      (select * from prov_get_formatted_addresses(tp.provider_id))
+   )) ilike '%'|| v_cpa_address || '%'   ELSE TRUE END)
+
+
+         LIMIT v_liPageSize OFFSET v_pageoffset     
+        
+        ) x;
+          
+
+          return v_json_data;
+END;
+$function$
+

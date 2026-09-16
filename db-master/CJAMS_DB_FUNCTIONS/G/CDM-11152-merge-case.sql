@@ -1,0 +1,1 @@
+update assessment set objectname = 'servicerequest', objectid = '51964ced-c1d2-40d7-a3a9-b02ffecd0d7f',updatedby = '04e6db7d-25c7-4b81-b237-f3b58bfbed90', updatedon = now(), servicecaseid = '4bded10b-f470-4e0f-8845-9b47500f2d2b' where assessmentid = '735e6a56-63ab-4baa-801f-954d0fe93a5e';

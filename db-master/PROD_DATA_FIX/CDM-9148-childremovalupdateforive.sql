@@ -1,0 +1,1 @@
+update intakeservreqchildremoval set parent1id = 1738650, updatedby = 'Data fix CDM-9148',updatedon = now() where removalid = '187518';

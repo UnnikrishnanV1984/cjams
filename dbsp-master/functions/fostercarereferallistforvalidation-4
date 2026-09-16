@@ -1,0 +1,119 @@
+CREATE OR REPLACE FUNCTION fostercarereferallistforvalidation(securityusersid character varying, v_lipagenumber bigint, v_lipagesize bigint, v_validation character varying DEFAULT NULL::character varying, v_client_id bigint DEFAULT NULL::bigint)
+ RETURNS TABLE(totalcount bigint, placement_validation_id integer, placement_id integer, placement_entry_dt date, placement_exit_dt date, validation_status_cd text, comment_tx character varying, delete_sw character, validation_start_dt date, validation_end_dt date, case_id bigint, client_id bigint, client_first_nm character varying, client_last_nm character varying, provider_organization_id integer, provider_id integer, provider_nm character varying, placement_structure_nm character varying, rate_structure_nm character varying, contract_program_nm character varying, entry_dt date, exit_dt date, validation_month character varying, address character varying, provider_type_cd character varying, servicecaseid uuid, intakeserviceid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+ v_pageNum int;
+ v_pageOffset int;
+ 
+
+BEGIN 
+
+--v_pagenumber := v_liPageNumber - 1;
+--v_pageoffset := v_pagenumber * v_liPageSize;
+
+ v_pageNum := v_lipagenumber - 1;
+ v_pageOffset = v_pageNum  * v_lipagesize; 
+return query
+/*
+select COUNT(1) OVER() totalcount, TBPM.placement_id, TBPM.client_id, ISR.servicerequestnumber, P.firstname clientfirstname
+, P.lastname clientlastname, TBP.provider_nm, TBS.service_nm, 
+--TBCP.program_nm
+(select TBCP.program_nm from tb_provider_contracts as TBPC 
+INNER JOIN tb_contract_program as TBCP ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = TBPM.contract_program_id and TBCP.delete_sw = 'N' where
+TBP.affiliate_provider_id= TBPC.provider_id and TBPC.delete_sw = 'N') as programname 
+, TBPM.entry_dt, TBPM.exit_dt
+, (date_trunc('month', now()) - interval '1 month'):: date validation_start_dt
+, date_trunc('month', now())::date-1 validation_end_dt,
+(CAST(INITCAP(TRIM(TBPA.adr_street_tx)||' '||TRIM(TBPA.adr_street_nm)||' '||TRIM(TBPA.adr_city_nm) ||' '||TRIM(TBPA.adr_state_cd) 
+||' '||TRIM(TBPA.adr_zip5_no::character varying)) as  character varying)) as address, TBS.service_nm, TBS.service_id
+from tb_placement TBPM 
+LEFT JOIN person p on p.cjamspid = TBPM.client_id
+--JOIN tb_placement_providers as TBPMP
+--     ON TBPMP.placement_id = TBPM.placement_id and TBPMP.delete_sw = 'N'
+JOIN tb_provider as TBP
+     ON TBP.provider_id = TBPM.provider_id and TBP.delete_sw = 'N' 
+     
+/*LEFT JOIN tb_provider_contracts as TBPC 
+      ON TBP.affiliate_provider_id= TBPC.provider_id  and TBPC.delete_sw = 'N'
+LEFT JOIN tb_contract_program as TBCP 
+     ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = TBPM.contract_program_id and TBCP.delete_sw = 'N' */
+     
+-- JOIN intakeservicerequest as ISR 
+--  ON ISR.servicerequestnumber = TBPM.case_id::character varying and ISR.activeflag=1
+--LEFT JOIN tb_provider_services as TBPS ON TBPS.provider_id = TBPM.provider_id and TBPS.delete_sw = 'N'
+--LEFT JOIN tb_services as TBS ON  TBS.service_id =  TBPS.service_id  and TBS.placement_structure_id = TBPM.placement_structure_id and TBS.delete_sw = 'N' -- Placement structures  
+--JOIN tb_provider_addresses as TBPA ON TBPA.parent_key_id::integer = TBP.provider_id and TBPA.delete_sw = 'N' -- Placement Address
+--
+--where TBPM.delete_sw = 'N' and p.activeflag = 1
+--and TBPM.approval_status_cd = '3047' and TBPM.entry_dt is not null and TBPM.exit_dt is null
+--and TBPM.entry_dt between date_trunc('month', now()) - interval '1 month' and date_trunc('month', now())::date-1
+--and TBPM.create_user_id=securityusersid
+--order by TBPM.create_ts desc */
+select COUNT(1) OVER() totalcount
+ ,PLVL.placement_validation_id
+ ,PLVL.placement_id
+ ,PLVL.placement_entry_dt
+ ,PLVL.placement_exit_dt
+ ,case when (PLVL.validation_status_cd in ('1750')) then 'Approved'  when (PLVL.validation_status_cd is null or PLVL.validation_status_cd not in ('1750')) then 'Pending' end as validation_status_cd
+ ,PLVL.comment_tx 
+ ,PLVL.delete_sw
+ ,case when to_char(PLVL.placement_entry_dt, 'Mon-YY') = to_char( PLVL.validation_start_dt, 'Mon-YY')
+ then PLVL.placement_entry_dt else PLVL.validation_start_dt end as validation_start_dt
+ ,case when to_char(PLVL.placement_exit_dt, 'Mon-YY') = to_char( PLVL.validation_end_dt, 'Mon-YY')
+ then PLVL.placement_exit_dt else PLVL.validation_end_dt end as validation_end_dt
+-- ,PLVL.validation_start_dt
+-- ,PLVL.validation_end_dt
+ ,PL.case_id
+ ,PL.client_id 
+ ,client.firstname AS client_first_nm
+ ,client.lastname AS client_last_nm 
+ ,PL.provider_organization_id
+ ,PL.provider_id
+ ,CASE WHEN (prov.provider_nm = null OR prov.provider_nm='') 
+ THEN CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) ELSE prov.provider_nm END AS provider_nm
+ ,(select service_nm from tb_services tbs where tbs.service_id=PL.placement_structure_id and tbs.delete_sw='N') as placement_structure_nm
+ ,(select service_nm from tb_services tbs1 where tbs1.service_id=PL.rate_structure_id and tbs1.delete_sw='N') as rate_structure_nm
+ ,(select TBCP.program_nm from tb_provider_contracts as TBPC 
+INNER JOIN tb_contract_program as TBCP ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = PL.contract_program_id and TBCP.delete_sw = 'N' where
+prov.affiliate_provider_id= TBPC.provider_id and TBPC.delete_sw = 'N') as contract_program_nm 
+ ,PL.entry_dt::DATE
+ ,PL.exit_dt::DATE
+ --to_char(to_timestamp (4::text, 'MM'), 'TMon')
+ , concat(Trim(to_char(to_timestamp ((date_part('MONTH',PLVL.validation_start_dt))::text, 'MM'), 'Month')::character varying)
+   ,'-',date_part('year', PLVL.validation_start_dt):: character varying ):: character varying
+ as validation_month
+ --,(date_part('MONTH',PLVL.validation_start_dt))::character varying as validation_month
+ ,(select (CAST(INITCAP(TRIM(TBPA.adr_street_tx)||' '||TRIM(TBPA.adr_street_nm)||' '||TRIM(TBPA.adr_city_nm) ||' '||TRIM(TBPA.adr_state_cd) 
+||' '||TRIM(TBPA.adr_zip5_no::character varying)) as  character varying)) as address from 
+tb_provider_addresses as TBPA where TBPA.parent_key_id::integer = prov.provider_id and TBPA.delete_sw = 'N' and TBPA.parent_key_id!='null' limit 1)
+ ,prov.provider_type_cd,
+ sc.servicecaseid ,ins.intakeserviceid
+from tb_PLACEMENT_VALIDATION PLVL 
+INNER JOIN tb_PLACEMENT PL ON PLVL.placement_id=PL.placement_id and PL.delete_sw = 'N' and PL.provider_id is not null
+INNER JOIN person as client ON PL.client_id = client.cjamspid and client.activeflag=1
+INNER JOIN tb_provider as prov ON PL.provider_id = prov.provider_id and prov.delete_sw = 'N'
+left join servicecase sc on sc.servicecasenumber = PL.case_id :: character varying 
+left join intakeservicerequest ins on sc.servicecaseid = ins.servicecaseid 
+--INNER JOIN tb_provider_addresses as TBPA ON TBPA.parent_key_id::integer = prov.provider_id and TBPA.delete_sw = 'N' -- Placement Address
+and PLVL.delete_sw = 'N'
+where 
+ securityusersid = (select rr.tosecurityusersid from routing rr where rr.toroleid = 'CWCW' and  rr.eventcode = 'SRVC' and rr.activeflag = 1 and rr.objectid = sc.servicecaseid :: character varying order by rr.insertedon desc limit 1) :: character varying and
+--PLVL.validation_start_dt::date = (date_trunc('month', now()) - interval '1 month')::date -- last month start date
+--and PLVL.validation_end_dt::date =  (date_trunc('month', now())::date - 1) -- last month end date
+--and 
+case v_validation when 'Approved' then  PLVL.validation_status_cd in ('1750') when 'Pending' then  (PLVL.validation_status_cd not in ('1750') or PLVL.validation_status_cd is null) else (PLVL.validation_status_cd is null or PLVL.validation_status_cd in ('1750')) end
+and (v_client_id:: character varying is null or PL.client_id = v_client_id)
+
+--and (PLVL.validation_status_cd IS NULL OR PLVL.validation_status_cd NOT IN ('1750'))
+--and TBPM.create_user_id=securityusersid
+--LIMIT v_pagenumber OFFSET v_pageoffset;
+order by PLVL.placement_validation_id desc
+LIMIT v_lipagesize OFFSET v_pageOffset;
+
+END;
+
+$function$
+

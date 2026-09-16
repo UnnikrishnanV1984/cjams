@@ -1,0 +1,812 @@
+CREATE OR REPLACE FUNCTION usersservicerequestclw(userid character varying, page integer, pagelimit integer, searchval character varying, searchcol character varying, actiontype character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, datereceived timestamp without time zone, saoinboxdate timestamp without time zone, supervisorname character varying, displayname character varying, isclw boolean, clwstatus character varying, servicerequestnumber character varying[], intakeservicerequestid uuid[], courtadjudicationdate timestamp without time zone, lastupdatedby character varying, caseworkername character varying, signedoffdate timestamp without time zone, saoresponsedate timestamp without time zone, youthcjamspid bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+-- intakereceiveddate
+DECLARE v_pageoffset int;
+v_pagenumber int;
+searchstring character varying(1000);
+l_actiontype character varying;
+
+complaintstatussearchstring character varying(1000);
+
+DECLARE totalcount integer;
+ 
+BEGIN
+ 
+--v_pagenumber := (page-1)*   10;
+v_pagenumber := page-1;
+v_pageoffset = v_pagenumber * pagelimit;
+ 
+
+l_actiontype:=actiontype;
+ 
+ if(searchcol!='' and  searchval !='' ) then
+        /*
+ if (searchcol='groupnumber') then 
+  searchstring:= ' INNER join (SELECT distinct ISGD.intakeserviceid , ISG.groupnumber FROM  intakeservicerequestgroup as ISG 
+  INNER JOIN intakeservicerequestgroupdetails as ISGD ON ISG.groupid=ISGD.groupid 
+  AND lower(ISG.groupnumber) LIKE ''' || lower(searchval) || '%'' ) as ISGD ON  ISGD.intakeserviceid =ISR.intakeserviceid ';
+ end if;
+ 
+ if (searchcol='servicerequestnumber') then 
+        searchstring:= ' AND lower(ISR.servicerequestnumber) like  ''' || lower(searchval) || '%'''; 
+ end if;
+ 
+ if (searchcol='srtype') then 
+         searchstring:= ' INNER JOIN intakeservicerequesttype as itsrt ON  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid 
+ AND  lower(itsrt.intakeservreqtypekey )  LIKE ''' || lower(searchval) || '%'''; 
+ end if;
+ 
+ if (searchcol='srsubtype') then 
+  searchstring:= ' INNER JOIN servicerequestsubtype as srst ON  srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid 
+  AND  lower(srst.classkey )  LIKE ''' || lower(searchval) || '%''';
+ end if;
+
+ if (searchcol='county') then 
+  searchstring:= ' INNER JOIN (SELECT personid, county FROM personaddress  pa WHERE  personaddresstypekey=''C'' 
+  AND lower(pa.county) LIKE ''' || lower(searchval) || '%''  ) pa ON pa.personid = ar.personid  '; 
+ end if;
+
+ if (searchcol='displayname')  then
+         searchstring:= ' AND lower(cast(PN.lastname|| '', '' || PN.firstname as  character varying))  LIKE ''' || lower(searchval) || '%''';
+ end if;
+         */
+ if (searchcol='intakenumber') then 
+         searchstring:= ' AND lower(IDS.intakenumber) like  ''' || lower(searchval) || '%'''; 
+ end if;
+ /*
+ if (searchcol='youthfirstname')  then
+         searchstring:= ' AND lower(cast(PN.firstname as character varying))  LIKE ''' || lower(searchval) || '%''';
+ end if;
+ 
+ if (searchcol='youthlastname')  then
+         searchstring:= ' AND lower(cast(PN.lastname as character varying))  LIKE ''' || lower(searchval) || '%''';
+ end if;
+ */
+ if (searchcol='supervisorname')  then
+         searchstring:= ' AND lower(cast(UP.fullname as character varying))  LIKE ''' || lower(searchval) || '%''';
+ end if;
+          
+   END IF;
+          
+        --searchstring:= coalesce(searchstring,'')|| ' AND IDS.clwstatus = '''||(l_actiontype)||''' ';
+        searchstring:= coalesce(searchstring,'');
+        --  (select array_agg(servicerequestnumber) from intakeservicerequest ISR where ISR.intakenumber =IDS.intakenumber and ISR.activeflag =1 )as servicerequestnumber
+ /*
+  IF(l_actiontype = '4' or l_actiontype = '5') THEN
+
+  RETURN QUERY
+ 
+    execute ' 
+    SELECT  count(1)   over(),
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) 
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,IDS.clwstatus,
+           (select array_agg(servicerequestnumber) from intakeservicerequest ISR where ISR.intakenumber =IDS.intakenumber and ISR.activeflag =1 )as servicerequestnumber,
+           (select array_agg(intakeserviceid) from intakeservicerequest ISR where ISR.intakenumber =IDS.intakenumber and ISR.activeflag =1 )as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           (select (TRIM(UP.fullname)):: character varying from routing as R
+     Join intakeservicerequest as ISR
+          On ISR.intakeserviceid = R.objectid::uuid and ISR.activeflag=1
+     Join intakedastaging as IDS1
+          On IDS1.intakenumber = ISR.intakenumber and IDS1.activeflag=1
+     Join userprofile as UP 
+          On UP.securityusersid = R.tosecurityusersid and UP.activeflag=1
+     Where R.toroleid like ''%CW'' and isr.intakenumber= IDS.intakenumber '|| searchstring ||'  limit 1) as caseworkername
+             
+    FROM intakedastaging as IDS
+    JOIN routing as R 
+         ON R.objectid= IDS.intakenumber and R.activeflag =1  and R.routingstatustypeid=2
+   
+    JOIN teammemberassignment tma2 
+         ON tma2.securityusersid =R.Tosecurityusersid and tma2.activeflag =1
+    JOIN teammember tm2 
+         ON tma2.teammemberid = tm2.teammemberid and tm2.activeflag =1
+    JOIN teammemberroletype tmrt 
+         ON tmrt.roletypekey = tm2.roletypekey and tmrt.isupervisor = true and tmrt.activeflag =1
+    JOIN teammember tm 
+         ON tm2.teamid = tm.teamid and tm.activeflag =1
+    JOIN teammemberassignment tma 
+         ON tma.teammemberid = tm.teammemberid and tma.securityusersid = '''||userid||''' and tma.activeflag =1
+    JOIN userprofile UP 
+         ON UP.securityusersid = tma2.securityusersid and UP.activeflag =1
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+    JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1        
+     ' 
+     '
+      
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+       '|| searchstring ||' 
+       
+      -- AND  ISR.intakeserviceid in ( SELECT atmsr.intakeserviceid FROM areateammemberservicerequest as atmsr WHERE atmsr.teammemberid in 
+       --(SELECT teammemberid FROM teammemberassignment  WHERE   activeflag =1 and securityusersid= '''||userid||'''))
+        ORDER BY    
+  (CASE '''||sortcolumn||''' when ''intakereceiveddate'' then cast( IDS.daterecieved as character varying) 
+  when ''saoinboxdate'' then cast( IDS.insertedon as character varying)
+  --when ''displayname'' then cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) 
+  when ''supervisorname'' then cast( UP.fullname as character varying)
+  ELSE IDS.intakenumber end)  '||sortorder||'
+    LIMIT 10  OFFSET ' || v_pagenumber ;
+
+  ELSIF(l_actiontype = 'RCL' or l_actiontype = 'DG' or l_actiontype = 'SAOPF' or l_actiontype = 'SAORC' or l_actiontype = 'PS' or l_actiontype = 'HS' OR l_actiontype = 'CHU'  ) THEN
+
+  RETURN QUERY
+ 
+    execute ' 
+    SELECT  count(1)   over(),
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) 
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername
+          
+             
+    FROM intakedastaging as IDS
+    JOIN routing as R 
+         ON R.objectid= IDS.intakenumber and R.activeflag =1  and R.routingstatustypeid=2
+        
+    JOIN teammemberassignment tma2 
+         ON tma2.securityusersid =R.Tosecurityusersid and tma2.activeflag =1
+    JOIN teammember tm2 
+         ON tma2.teammemberid = tm2.teammemberid and tm2.activeflag =1
+    JOIN teammemberroletype tmrt 
+         ON tmrt.roletypekey = tm2.roletypekey and tmrt.isupervisor = true and tmrt.activeflag =1
+    JOIN teammember tm 
+         ON tm2.teamid = tm.teamid and tm.activeflag =1
+    JOIN teammemberassignment tma 
+         ON tma.teammemberid = tm.teammemberid and tma.securityusersid = '''||userid||''' and tma.activeflag =1
+    JOIN userprofile UP 
+         ON UP.securityusersid = tma2.securityusersid and UP.activeflag =1
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+    JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1     
+     ' 
+     '
+      
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+       AND IDS.intakenumber in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey='''||l_actiontype||''' and ISRE.activeflag = 1)
+       
+      -- AND  ISR.intakeserviceid in ( SELECT atmsr.intakeserviceid FROM areateammemberservicerequest as atmsr WHERE atmsr.teammemberid in 
+       --(SELECT teammemberid FROM teammemberassignment  WHERE   activeflag =1 and securityusersid= '''||userid||'''))
+        ORDER BY    
+  (CASE '''||sortcolumn||''' when ''intakereceiveddate'' then cast( IDS.daterecieved as character varying) 
+  when ''saoinboxdate'' then cast( IDS.insertedon as character varying)
+  --when ''displayname'' then cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) 
+  when ''supervisorname'' then cast( UP.fullname as character varying)
+  ELSE IDS.intakenumber end)  '||sortorder||'
+    LIMIT 10  OFFSET ' || v_pagenumber ;
+
+    
+
+  ELSE
+
+  RETURN QUERY
+ 
+    execute ' 
+    SELECT  count(1)   over(),
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) 
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,IDS.clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername
+          
+             
+    FROM intakedastaging as IDS
+    JOIN routing as R 
+         ON R.objectid= IDS.intakenumber and R.activeflag =1  and R.routingstatustypeid=2
+        
+    JOIN teammemberassignment tma2 
+         ON tma2.securityusersid =R.Tosecurityusersid and tma2.activeflag =1
+    JOIN teammember tm2 
+         ON tma2.teammemberid = tm2.teammemberid and tm2.activeflag =1
+    JOIN teammemberroletype tmrt 
+         ON tmrt.roletypekey = tm2.roletypekey and tmrt.isupervisor = true and tmrt.activeflag =1
+    JOIN teammember tm 
+         ON tm2.teamid = tm.teamid and tm.activeflag =1
+    JOIN teammemberassignment tma 
+         ON tma.teammemberid = tm.teammemberid and tma.securityusersid = '''||userid||''' and tma.activeflag =1
+    JOIN userprofile UP 
+         ON UP.securityusersid = tma2.securityusersid and UP.activeflag =1
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+    JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1     
+     ' 
+     '
+      
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+       '|| searchstring ||' 
+       
+      -- AND  ISR.intakeserviceid in ( SELECT atmsr.intakeserviceid FROM areateammemberservicerequest as atmsr WHERE atmsr.teammemberid in 
+       --(SELECT teammemberid FROM teammemberassignment  WHERE   activeflag =1 and securityusersid= '''||userid||'''))
+        ORDER BY    
+  (CASE '''||sortcolumn||''' when ''intakereceiveddate'' then cast( IDS.daterecieved as character varying) 
+  when ''saoinboxdate'' then cast( IDS.insertedon as character varying)
+  --when ''displayname'' then cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) 
+  when ''supervisorname'' then cast( UP.fullname as character varying)
+  ELSE IDS.intakenumber end)  '||sortorder||'
+    LIMIT 10  OFFSET ' || v_pagenumber ;
+  
+  END IF; */
+
+  IF(l_actiontype = 'RCL' or l_actiontype = 'DG' or l_actiontype = 'SAOPF' or l_actiontype = 'SAORC' or l_actiontype = 'PS' or l_actiontype = 'HS' OR l_actiontype = 'CHU'  ) THEN
+
+  IF(l_actiontype != 'HS') THEN
+ complaintstatussearchstring := 'complaintstatustypekey='''||l_actiontype||'''';
+  ELSE
+ complaintstatussearchstring := 'complaintstatustypekey  in (''HS'', ''RCAS'')';
+  End If;
+  
+  RETURN QUERY  
+ 
+    execute ' 
+ SELECT  count(1)   over(), datas.intakenumber,datas.intakereceiveddate,datas.saoinboxdate,datas.supervisorname, datas.displayname,datas.isclw,
+                      datas.clwstatus,datas.servicerequestnumber,datas.intakeservicerequestid,datas.courtAdjudicationDate,datas.lastUpdatedBy,datas.caseworkername,datas.signedoffdate,datas.saoresponsedate,
+                      datas.youthcjamspid from 
+((
+select 
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''''))|| CASE WHEN PN.suffix is not null THEN '' '' ELSE '''' END  || TRIM(coalesce(PN.suffix,'''')) || '', '' ||TRIM(coalesce(PN.firstname,''''))) as  character varying) 
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername,IDSTA.signedoffdate ,SAOR.saoresponsedate,
+     (SELECT PN.cjamspid as youthcjamspid
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as youthcjamspid
+          
+
+    FROM intakedastaging as IDS
+    JOIN routing as R 
+         ON R.objectid= IDS.intakenumber and R.activeflag =1  and R.routingstatustypeid=2
+ JOIN intakedastatus IDSTA 
+   ON IDSTA.intakenumber=IDS.intakenumber and IDSTA.activeflag=1     
+ LEFT JOIN saoresponse SAOR 
+   ON SAOR.intakenumber=IDS.intakenumber and SAOR.activeflag=1 
+   
+    JOIN teammemberassignment tma2 
+         ON tma2.securityusersid =R.Tosecurityusersid and tma2.activeflag =1
+    JOIN teammember tm2 
+         ON tma2.teammemberid = tm2.teammemberid and tm2.activeflag =1
+    JOIN teammemberroletype tmrt 
+         ON tmrt.roletypekey = tm2.roletypekey and tmrt.isupervisor = true and tmrt.activeflag =1
+    JOIN teammember tm 
+         ON tm2.teamid = tm.teamid and tm.activeflag =1
+    JOIN teammemberassignment tma 
+         ON tma.teammemberid = tm.teammemberid and tma.securityusersid = '''||userid||''' and tma.activeflag =1
+    JOIN userprofile UP 
+         ON UP.securityusersid = tma2.securityusersid and UP.activeflag =1
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+    JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1     
+     ' 
+     '
+      
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+        '|| searchstring ||' 
+       AND IDS.intakenumber in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE 
+   CST.' || complaintstatussearchstring || '
+   and ISRE.activeflag = 1) and IDSTA.saocountyid is null )
+         union all
+         
+         (
+   
+   select 
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''''))|| CASE WHEN PN.suffix is not null THEN '' '' ELSE '''' END  || TRIM(coalesce(PN.suffix,'''')) || '', '' ||TRIM(coalesce(PN.firstname,''''))) as  character varying) 
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername,IDSTA.signedoffdate ,SAOR.saoresponsedate,
+     (SELECT PN.cjamspid as youthcjamspid
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as youthcjamspid
+          
+             
+    FROM intakedastaging as IDS
+    JOIN intakedastatus IDSTA 
+   ON IDSTA.intakenumber=IDS.intakenumber and IDSTA.activeflag=1    
+   LEFT JOIN saoresponse SAOR 
+   ON SAOR.intakenumber=IDS.intakenumber and SAOR.activeflag=1 
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+         
+         join intakedastatus INS on INS.intakenumber = IDS.intakenumber and INS.activeflag =1
+         join team t on t.countyid=ins.saocountyid::character varying and t.activeflag=1
+         join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+         and  mu.securityusersid='''||userid||'''       
+         JOIN userprofile UP 
+         ON UP.securityusersid = tma.securityusersid 
+         JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1   
+      ' 
+     '
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+        '|| searchstring ||' 
+       AND IDS.intakenumber in( select distinct ins.intakenumber from 
+         intakedastatus ins
+         join intakeservicerequestevaluation INES on INES.intakenumber=ins.intakenumber and 
+   INES.' || complaintstatussearchstring || '
+   and INES.activeflag=1
+         join team t on t.countyid=ins.saocountyid::character varying and t.activeflag=1
+         
+         join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+  join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1
+  join role r on r.id = rm.roleid :: int 
+  where mu.securityusersid='''||userid||''') 
+    and IDSTA.saocountyid is not null 
+  ) ) as datas 
+
+-- Group by datas.intakenumber,datas.intakereceiveddate,datas.saoinboxdate,datas.supervisorname, datas.displayname,datas.isclw,
+--                      datas.clwstatus,datas.servicerequestnumber,datas.intakeservicerequestid,datas.courtAdjudicationDate,datas.lastUpdatedBy,datas.caseworkername,datas.signedoffdate,datas.saoresponsedate
+--
+
+      -- AND  ISR.intakeserviceid in ( SELECT atmsr.intakeserviceid FROM areateammemberservicerequest as atmsr WHERE atmsr.teammemberid in 
+       --(SELECT teammemberid FROM teammemberassignment  WHERE   activeflag =1 and securityusersid= '''||userid||'''))
+        ORDER BY    
+  (CASE '''||sortcolumn||''' when ''intakereceiveddate'' then cast( datas.intakereceiveddate as character varying) 
+  when ''saoinboxdate'' then cast( datas.saoinboxdate as character varying)
+  --when ''displayname'' then cast(INITCAP(TRIM(datas.displayname)|| '', '' ||TRIM(datas.displayname)) as  character varying) 
+  when ''supervisorname'' then cast( datas.supervisorname as character varying)
+  ELSE datas.intakenumber end)  '||sortorder||'
+    LIMIT '||pagelimit||'  OFFSET ' || v_pageoffset ;
+
+   --changes by venkatesh
+   
+   else IF(l_actiontype = 'CHC') THEN
+
+  RETURN QUERY
+ 
+    execute ' 
+ 
+ SELECT  count(1)   over(), datas.intakenumber,datas.intakereceiveddate,datas.saoinboxdate,datas.supervisorname, datas.displayname,datas.isclw,
+                      datas.clwstatus,datas.servicerequestnumber,datas.intakeservicerequestid,datas.courtAdjudicationDate,datas.lastUpdatedBy,datas.caseworkername,datas.signedoffdate,datas.saoresponsedate,
+                      datas.youthcjamspid from 
+((
+select 
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''''))|| CASE WHEN PN.suffix is not null THEN '' '' ELSE '''' END  || TRIM(coalesce(PN.suffix,'''')) || '', '' ||TRIM(coalesce(PN.firstname,''''))) as  character varying) 
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername,IDSTA.signedoffdate ,SAOR.saoresponsedate,
+     (SELECT PN.cjamspid as youthcjamspid
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as youthcjamspid
+          
+             
+    FROM intakedastaging as IDS
+    JOIN routing as R 
+         ON R.objectid= IDS.intakenumber and R.activeflag =1  and R.routingstatustypeid=2
+ JOIN intakedastatus IDSTA 
+   ON IDSTA.intakenumber=IDS.intakenumber and IDSTA.activeflag=1     
+ LEFT JOIN saoresponse SAOR 
+   ON SAOR.intakenumber=IDS.intakenumber and SAOR.activeflag=1 
+   
+    JOIN teammemberassignment tma2 
+         ON tma2.securityusersid =R.Tosecurityusersid and tma2.activeflag =1
+    JOIN teammember tm2 
+         ON tma2.teammemberid = tm2.teammemberid and tm2.activeflag =1
+    JOIN teammemberroletype tmrt 
+         ON tmrt.roletypekey = tm2.roletypekey and tmrt.isupervisor = true and tmrt.activeflag =1
+    JOIN teammember tm 
+         ON tm2.teamid = tm.teamid and tm.activeflag =1
+    JOIN teammemberassignment tma 
+         ON tma.teammemberid = tm.teammemberid and tma.securityusersid = '''||userid||''' and tma.activeflag =1
+    JOIN userprofile UP 
+         ON UP.securityusersid = tma2.securityusersid and UP.activeflag =1
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+    JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1     
+     ' 
+     '
+      
+        WHERE  IDS.activeflag = 1 -- AND IDS.isclw = true  AND IDS.clwstatus = 1
+        '|| searchstring ||' 
+       AND IDS.intakenumber in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey in(''CHC'', ''SAORC'') and ISRE.activeflag = 1) 
+  
+        AND (coalesce(IDS.isclw,false)=false or (IDS.isclw = true  
+  and IDS.intakenumber  in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey  in(''CHC'', ''SAORC'') and ISRE.activeflag = 1)))
+
+  and IDSTA.saocountyid is null )
+         union all
+         
+         (
+   select 
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''''))|| CASE WHEN PN.suffix is not null THEN '' '' ELSE '''' END  || TRIM(coalesce(PN.suffix,'''')) || '', '' ||TRIM(coalesce(PN.firstname,''''))) as  character varying)
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername,IDSTA.signedoffdate ,SAOR.saoresponsedate,
+     (SELECT PN.cjamspid as youthcjamspid
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as youthcjamspid
+          
+             
+   FROM intakedastaging as IDS
+    JOIN intakedastatus IDSTA 
+   ON IDSTA.intakenumber=IDS.intakenumber and IDSTA.activeflag=1    
+   LEFT JOIN saoresponse SAOR 
+   ON SAOR.intakenumber=IDS.intakenumber and SAOR.activeflag=1 
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+         
+         join intakedastatus INS on INS.intakenumber = IDS.intakenumber and INS.activeflag =1
+         join team t on t.countyid=ins.saocountyid::character varying and t.activeflag=1
+         join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+         and  mu.securityusersid='''||userid||'''       
+         JOIN userprofile UP 
+         ON UP.securityusersid = tma.securityusersid 
+         JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1   
+      ' 
+     '
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+        '|| searchstring ||' 
+       AND IDS.intakenumber in( select distinct ins.intakenumber from 
+         intakedastatus ins
+--         join intakeservicerequestevaluation INES on INES.intakenumber=ins.intakenumber 
+--  JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = INES.complaintstatustypekey and CST.activeflag = 1 
+--         and  CST.complaintstatustypekey  in(''CHC'', ''SAORC'') and INES.activeflag = 1
+ join intakeservicerequestevaluation INES on INES.intakenumber=ins.intakenumber and  INES.activeflag=1 and INES.complaintstatustypekey  in(''CHC'', ''SAORC'') 
+
+         join team t on t.countyid=ins.saocountyid::character varying and t.activeflag=1
+         
+         join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+  join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1
+  join role r on r.id = rm.roleid :: int 
+  where mu.securityusersid='''||userid||''' ) 
+ and IDSTA.saocountyid is not null
+  AND (coalesce(IDS.isclw,false)=false or (IDS.isclw = true  
+  and IDS.intakenumber  in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey  in(''CHC'', ''SAORC'') and ISRE.activeflag = 1)))
+
+and 
+IDS.intakenumber  in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey  in(''CHC'', ''SAORC'') and ISRE.activeflag = 1)
+
+   
+  ) ) as datas 
+ 
+-- Group by datas.intakenumber,datas.intakereceiveddate,datas.saoinboxdate,datas.supervisorname, datas.displayname,datas.isclw,
+--                      datas.clwstatus,datas.servicerequestnumber,datas.intakeservicerequestid,datas.courtAdjudicationDate,datas.lastUpdatedBy,datas.caseworkername,datas.signedoffdate,datas.saoresponsedate
+
+       
+
+       ORDER BY    
+  (CASE '''||sortcolumn||''' when ''intakereceiveddate'' then cast( datas.intakereceiveddate as character varying) 
+  when ''saoinboxdate'' then cast( datas.saoinboxdate as character varying)
+  --when ''displayname'' then cast(INITCAP(TRIM(datas.displayname)|| '', '' ||TRIM(datas.displayname)) as  character varying) 
+  when ''supervisorname'' then cast( datas.supervisorname as character varying)
+  ELSE datas.intakenumber end)  '||sortorder||'
+    LIMIT '||pagelimit||'  OFFSET ' || v_pageoffset ;
+   
+    else IF(l_actiontype = 'CAS') THEN
+
+  RETURN QUERY
+ 
+    execute ' 
+   
+SELECT  count(1)   over(), datas.intakenumber,datas.intakereceiveddate,datas.saoinboxdate,datas.supervisorname, datas.displayname,datas.isclw,
+                      datas.clwstatus,datas.servicerequestnumber,datas.intakeservicerequestid,datas.courtAdjudicationDate,datas.lastUpdatedBy,datas.caseworkername,datas.signedoffdate,datas.saoresponsedate,
+                      datas.youthcjamspid from 
+((
+select 
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''''))|| CASE WHEN PN.suffix is not null THEN '' '' ELSE '''' END  || TRIM(coalesce(PN.suffix,'''')) || '', '' ||TRIM(coalesce(PN.firstname,''''))) as  character varying) 
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername,IDSTA.signedoffdate ,SAOR.saoresponsedate,
+     (SELECT PN.cjamspid as youthcjamspid
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as youthcjamspid
+          
+             
+    FROM intakedastaging as IDS
+    JOIN routing as R 
+         ON R.objectid= IDS.intakenumber and R.activeflag =1  and R.routingstatustypeid=2
+ JOIN intakedastatus IDSTA 
+   ON IDSTA.intakenumber=IDS.intakenumber and IDSTA.activeflag=1     
+ LEFT JOIN saoresponse SAOR 
+   ON SAOR.intakenumber=IDS.intakenumber and SAOR.activeflag=1 
+   
+    JOIN teammemberassignment tma2 
+         ON tma2.securityusersid =R.Tosecurityusersid and tma2.activeflag =1
+    JOIN teammember tm2 
+         ON tma2.teammemberid = tm2.teammemberid and tm2.activeflag =1
+    JOIN teammemberroletype tmrt 
+         ON tmrt.roletypekey = tm2.roletypekey and tmrt.isupervisor = true and tmrt.activeflag =1
+    JOIN teammember tm 
+         ON tm2.teamid = tm.teamid and tm.activeflag =1
+    JOIN teammemberassignment tma 
+         ON tma.teammemberid = tm.teammemberid and tma.securityusersid = '''||userid||''' and tma.activeflag =1
+    JOIN userprofile UP 
+         ON UP.securityusersid = tma2.securityusersid and UP.activeflag =1
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+    JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1     
+     ' 
+     '
+      
+        WHERE  IDS.activeflag = 1 -- AND IDS.isclw = true  AND IDS.clwstatus = 1
+        '|| searchstring ||' 
+       AND IDS.intakenumber in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey in(''CAS'') and ISRE.activeflag = 1) 
+  
+        AND (coalesce(IDS.isclw,false)=false or (IDS.isclw = true  
+  and IDS.intakenumber  in(select distinct ISRE.intakenumber from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE CST.complaintstatustypekey  in(''CAS'') and ISRE.activeflag = 1)))
+
+  and IDSTA.saocountyid is null )
+         union all
+         
+         (
+   select 
+            
+           --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying) as displayname,
+           IDS.intakenumber,IDS.daterecieved as intakereceiveddate,IDS.insertedon as saoinboxdate,UP.fullname as supervisorname,
+           (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''''))|| CASE WHEN PN.suffix is not null THEN '' '' ELSE '''' END  || TRIM(coalesce(PN.suffix,'''')) || '', '' ||TRIM(coalesce(PN.firstname,''''))) as  character varying) 
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as displayname,
+           IDS.isclw,(select CST.complaintstatustypekey from intakeservicerequestevaluation as ISRE
+         JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1 
+         WHERE ISRE.intakenumber = IDS.intakenumber and ISRE.activeflag = 1 limit 1) as clwstatus,
+           (SELECT ''{}''::character varying []) as servicerequestnumber,
+           (SELECT ''{}''::uuid []) as intakeservicerequestid,
+           IDS1.insertedon as courtAdjudicationDate,UP1.fullname as lastUpdatedBy,
+           ''''::character varying as caseworkername,IDSTA.signedoffdate ,SAOR.saoresponsedate,
+     (SELECT PN.cjamspid as youthcjamspid
+      
+           FROM person as PN 
+           JOIN actor as AR ON PN.personid=AR.personid and AR.activeflag = 1 
+           JOIN intakeservicerequestactor as ISRA ON AR.actorid=ISRA.actorid and ISRA.activeflag =1 and ISRA.intakeservicerequestpersontypekey=''Youth''
+           JOIN intakeservicerequest as ISR ON ISR.intakeserviceid=ISRA.intakeserviceid and ISR.activeflag =1
+           JOIN intakedastaging as IDAS ON IDS.intakenumber=ISR.intakenumber and IDS.activeflag =1  
+           WHERE IDAS.intakenumber=IDS.intakenumber and PN.activeflag = 1
+           limit 1
+           )as youthcjamspid
+          
+             
+   FROM intakedastaging as IDS
+    JOIN intakedastatus IDSTA 
+   ON IDSTA.intakenumber=IDS.intakenumber and IDSTA.activeflag=1    
+   LEFT JOIN saoresponse SAOR 
+   ON SAOR.intakenumber=IDS.intakenumber and SAOR.activeflag=1 
+    JOIN intakedastaging as IDS1
+         ON  IDS1.intakenumber = IDS.intakenumber and IDS1.activeflag =1
+         
+         join intakedastatus INS on INS.intakenumber = IDS.intakenumber and INS.activeflag =1
+         join team t on t.countyid=ins.saocountyid::character varying and t.activeflag=1
+         join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+         and  mu.securityusersid='''||userid||'''       
+         JOIN userprofile UP 
+         ON UP.securityusersid = tma.securityusersid 
+         JOIN userprofile UP1 
+         ON UP1.securityusersid = IDS1.cruworkername and UP1.activeflag =1   
+      ' 
+     '
+        WHERE IDS.isclw = true AND IDS.activeflag = 1 --AND IDS.clwstatus = 1
+        '|| searchstring ||' 
+       AND IDS.intakenumber in( select distinct ins.intakenumber from 
+         intakedastatus ins
+         join intakeservicerequestevaluation INES on INES.intakenumber=ins.intakenumber 
+  JOIN  complaintstatustype as CST ON CST.complaintstatustypekey = INES.complaintstatustypekey and CST.activeflag = 1 
+         and  CST.complaintstatustypekey  in(''CAS'') and INES.activeflag = 1
+
+         join team t on t.countyid=ins.saocountyid::character varying and t.activeflag=1
+         
+         join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+  join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1
+  join role r on r.id = rm.roleid :: int 
+  where mu.securityusersid='''||userid||''') 
+   and IDSTA.saocountyid is not null
+  ) ) as datas 
+ 
+-- Group by datas.intakenumber,datas.intakereceiveddate,datas.saoinboxdate,datas.supervisorname, datas.displayname,datas.isclw,
+--                      datas.clwstatus,datas.servicerequestnumber,datas.intakeservicerequestid,datas.courtAdjudicationDate,datas.lastUpdatedBy,datas.caseworkername,datas.signedoffdate,datas.saoresponsedate
+--
+--     
+
+       ORDER BY    
+  (CASE '''||sortcolumn||''' when ''intakereceiveddate'' then cast( datas.intakereceiveddate as character varying) 
+  when ''saoinboxdate'' then cast( datas.saoinboxdate as character varying)
+  --when ''displayname'' then cast(INITCAP(TRIM(datas.displayname)|| '', '' ||TRIM(datas.displayname)) as  character varying) 
+  when ''supervisorname'' then cast( datas.supervisorname as character varying)
+  ELSE datas.intakenumber end)  '||sortorder||'
+    LIMIT '||pagelimit||'  OFFSET ' || v_pageoffset ;
+
+    END IF;
+    END IF;
+   --changes end 
+    END IF;
+   
+        
+       --signoff date (status)
+       -- sao response  (sao responce date)
+
+END; 
+
+$function$
+

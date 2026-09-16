@@ -1,0 +1,23 @@
+CREATE TABLE  IF NOT EXISTS cjams.personprogramareahistory (
+	personprogramhistoryid uuid NOT NULL DEFAULT gen_random_uuid(),
+	personprogramid uuid NOT NULL,
+	personid uuid NOT NULL,
+	startdate timestamp,
+	enddate timestamp,
+	insertedon timestamp NOT NULL DEFAULT now(),
+	insertedby varchar(50),
+	datavalidflag int4,
+	clientmergeid int4,
+	endreasonkey varchar(12),
+	ifpsatriskflag int4,
+	old_id varchar(16),
+	programkey varchar(15),
+	subprogramkey varchar(15),
+	objecttypekey varchar(25), 
+	objectid varchar(50),
+	entityid varchar,
+	alternateid bigserial,
+	datatransferflag varchar(1) NOT NULL DEFAULT 'N'::character varying,
+	datasentdate timestamp,
+    CONSTRAINT pk_ppa_history PRIMARY KEY(personprogramhistoryid)
+);

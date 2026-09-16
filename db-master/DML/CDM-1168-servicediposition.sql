@@ -1,0 +1,3 @@
+INSERT INTO cjams.servicecasedisposition
+(servicecasedispositionid, servicecaseid, statusdate, intakeserreqstatustypekey, dispositioncode, "comments", effectivedate, activeflag, insertedby, insertedon, updatedby, updatedon, expirationdate, old_id, etl_userid, etl_load_date)
+VALUES(gen_random_uuid(), '00996a6e-07eb-4643-8170-ab2d459d2982', now(), 'Reopen', 'Inprogress', 'Reopening Case as per CDM-1168 request', now(), 1, 'Datafix user', now(), 'Datafix user', now(), null, '3305247', '', null);

@@ -1,0 +1,350 @@
+CREATE OR REPLACE FUNCTION cjams.sp_payment_header_insert(	al_provider_id bigint, 
+															al_payment_type character varying, 
+															ad_prev_month_start date, 
+															ad_prev_month_end date, 
+															OUT al_header_id bigint, 
+															OUT al_sqlcode integer, 
+															OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Description: To Create Payment Header data.
+
+-- Revisions:
+-- Vineet Tirodkar 09/14/2020 Changes for Adult Services Service Plan Payment (22)
+------------------------------------------------------------------------------------------------
+DECLARE		
+	DECLARE vl_sqlcode int DEFAULT 0;
+	DECLARE vs_mess varchar(50);
+	DECLARE v_sqlcode int DEFAULT 0;
+
+	DECLARE vl_pay_header_id BIGINT DEFAULT 0;
+	DECLARE vl_aff_provider_id BIGINT DEFAULT 0;
+	DECLARE vl_provider_for_address BIGINT DEFAULT 0;
+	DECLARE vs_pay_header_id VARCHAR(50) DEFAULT 'sq_payment_header';
+	DECLARE vl_pay_status_id BIGINT DEFAULT 0;
+	DECLARE vs_pay_status_id VARCHAR(50) DEFAULT 'sq_payment_status';
+	DECLARE vs_provider_name VARCHAR(100) DEFAULT NULL;
+	DECLARE vs_pay_to_aff VARCHAR(5) DEFAULT NULL;
+	DECLARE vs_adr_typ VARCHAR(5) DEFAULT '3356';
+	DECLARE vs_payment_status VARCHAR(5) DEFAULT NULL;
+
+	DECLARE vs_adr_type_cd VARCHAR(5);
+	DECLARE vs_adr_format_cd VARCHAR(5);
+	DECLARE vs_street_no VARCHAR(10) DEFAULT NULL;
+	DECLARE vl_adr_box_no BIGINT DEFAULT 0;
+	DECLARE vs_pre_dir_cd VARCHAR(5);
+	DECLARE vs_adr_street_nm  VARCHAR(50);
+	DECLARE vs_str_suff_cd VARCHAR(5);
+	DECLARE vs_post_dir_cd VARCHAR(5);
+	DECLARE vs_unit_type_cd VARCHAR(5);
+	DECLARE vs_unit_no_tx VARCHAR(50);
+	DECLARE vs_city_nm  VARCHAR(50);
+	DECLARE vs_adr_county_cd VARCHAR(5);
+	DECLARE vs_adr_state_cd VARCHAR(5);
+	DECLARE vl_zip5_no BIGINT DEFAULT 0;
+	DECLARE vl_zip4_no BIGINT DEFAULT 0;
+	DECLARE vs_adr_dir VARCHAR(500);
+	DECLARE vs_forgin_tx VARCHAR(500);
+	DECLARE vs_forgin_state VARCHAR(500);
+	DECLARE vs_county_tx VARCHAR(50);
+	DECLARE vs_adr_postal_tx VARCHAR(50);
+	DECLARE vd_adr_start_dt DATE;
+	DECLARE vd_adr_end_dt DATE;
+	DECLARE vdt_payment_dt DATE;
+	DECLARE vs_home_phone_tx VARCHAR(10) DEFAULT NULL;
+	DECLARE vs_work_phone_tx VARCHAR(10) DEFAULT NULL;
+	DECLARE vs_work_ext VARCHAR(5) DEFAULT NULL;
+
+	DECLARE vd_previous_month_start_dt DATE;
+	DECLARE vd_previous_month_end_dt DATE;
+	DECLARE vd_current_month_end_dt DATE;
+
+	DECLARE vs_Provider_Category VARCHAR(5) DEFAULT NULL;
+	DECLARE vl_checklist_cnt INT DEFAULT 0;
+
+	DECLARE vs_withhold_payment CHAR(1) DEFAULT NULL;
+
+	DECLARE SQLCODE INT DEFAULT 0;
+	DECLARE SQLSTATE CHAR(5) DEFAULT '00000';
+	DECLARE vs_message_text VARCHAR(3000) DEFAULT '';
+	DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_PAYMENT_HEADER_INSERT';
+	
+
+BEGIN
+
+	BEGIN
+		-- GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;--
+		EXCEPTION WHEN OTHERS THEN
+		-- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+		GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+		v_sqlcode := -1 ;
+		as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;
+		as_error := COALESCE(as_error ,'') || '::RO ' || 'provider_id' || ' :: ' || COALESCE((al_provider_id),'');
+		as_error := as_error || COALESCE(vs_message_text ,'');
+	END;
+
+	as_error := '';
+	vd_previous_month_start_dt := ad_prev_month_start;
+	vd_previous_month_end_dt := ad_prev_month_end;
+
+	SELECT F_PRVPCKLST_CAT(tb_PROVIDER.PROVIDER_ID,'PLACEMENT')
+		INTO vs_Provider_Category	
+	FROM tb_PROVIDER
+	WHERE tb_PROVIDER.PROVIDER_ID  = al_provider_id;
+
+	IF vs_Provider_Category is NULL THEN
+		vs_Provider_Category := '';
+	END IF;
+
+	SELECT F_ENAME('2953', PROVIDER_ID) AS PROVIDER_NAME,
+		PAY_TO_AFFILIATE_CD,
+		AFFILIATE_PROVIDER_ID
+	INTO vs_provider_name,
+		vs_pay_to_aff,
+		vl_aff_provider_id
+	FROM tb_PROVIDER
+	WHERE PROVIDER_ID = al_provider_id
+		AND DELETE_SW = 'N';
+
+	IF LENGTH(LTRIM(RTRIM(vs_pay_to_aff))) > 0  THEN 
+
+		IF vs_pay_to_aff = '3366' THEN 
+			vl_provider_for_address := al_provider_id;
+			vs_adr_typ := '3357';
+		ELSEIF vs_pay_to_aff = '3367' THEN  
+			vl_provider_for_address := al_provider_id;
+			vs_adr_typ := '3356';
+		ELSEIF vs_pay_to_aff = '3368' THEN 
+			vl_provider_for_address := vl_aff_provider_id;
+		
+			SELECT PAY_TO_AFFILIATE_CD
+			   INTO vs_pay_to_aff
+			 FROM tb_PROVIDER
+			WHERE PROVIDER_ID = vl_aff_provider_id
+				  AND DELETE_SW = 'N';
+			
+			IF vs_pay_to_aff = '3366' THEN 
+				 vs_adr_typ = '3357';
+			ELSEIF vs_pay_to_aff = '3367' THEN  
+				 vs_adr_typ = '3356';
+			END IF;
+		END IF;
+
+		SELECT
+			ADR_TYPE_CD,                ADR_FORMAT_CD,
+			ADR_STREET_TX,              ADR_BOX_NO,
+			ADR_PRE_DIR_CD,             ADR_STREET_NM,
+			ADR_STREET_SUFFIX_CD,       ADR_POST_DIR_CD,
+			ADR_UNIT_TYPE_CD,           ADR_UNIT_NO_TX,
+			ADR_CITY_NM,                ADR_COUNTY_CD,
+			ADR_STATE_CD,               ADR_ZIP5_NO,
+			ADR_ZIP4_NO,                ADR_DIRECTION_TX,
+			ADR_FOREIGN_TX,             ADR_FOREIGN_STATE_TX,
+			ADR_COUNTRY_TX,             ADR_POSTAL_CODE_TX,
+			ADR_START_DT,               ADR_END_DT
+		INTO
+			vs_adr_type_cd,        vs_adr_format_cd,
+			vs_street_no,          vl_adr_box_no,
+			vs_pre_dir_cd,         vs_adr_street_nm,
+			vs_str_suff_cd,        vs_post_dir_cd,
+			vs_unit_type_cd,       vs_unit_no_tx,
+			vs_city_nm,            vs_adr_county_cd,
+			vs_adr_state_cd,       vl_zip5_no,
+			vl_zip4_no,            vs_adr_dir,
+			vs_forgin_tx,          vs_forgin_state,
+			vs_county_tx,          vs_adr_postal_tx,
+			vd_adr_start_dt,       vd_adr_end_dt
+		FROM
+		tb_PROVIDER_ADDRESSES
+		WHERE (
+			DELETE_SW = 'N' AND
+			PARENT_KEY_ID = vl_provider_for_address::character varying AND
+			ADR_TYPE_CD = vs_adr_typ AND
+			ADR_DEFAULT_SW = 'Y' )
+		FETCH FIRST ROW ONLY;
+	ELSE
+		vl_provider_for_address := al_provider_id;
+	
+		SELECT a.vl_output_sqlcode,
+				a.vs_message 
+		from SP_PAYMENT_EXECEPTION 
+			(	'SP_PAYMENT_HEADER_INSERT',
+				al_provider_id,
+				'Payment Address setting is missing for the Provider ' || '' || (al_provider_id::character varying)) a 
+		into vL_SQLCODE,
+			vS_MESS;
+
+		IF vL_SQLCODE < 0  THEN
+			as_error := 'Payment Header: SP_PAYMENT_EXECEPTION failed';
+		END IF ;
+
+	END IF;
+	
+	
+	SELECT adr_home_phone_tx,adr_work_phone_tx,adr_work_xtn_tx,f_ename('2953', PROVIDER_ID)
+		INTO vs_home_phone_tx,vs_work_phone_tx, vs_work_ext, vs_provider_name
+	FROM tb_PROVIDER
+	WHERE PROVIDER_ID = vl_provider_for_address;
+
+	SELECT COUNT(*)
+		INTO vl_checklist_cnt
+	FROM tb_PROVIDER_DETAILS_CHECKLIST
+	WHERE PROVIDER_ID = vl_provider_for_address
+		AND DELETE_SW = 'N'
+		AND PROVIDER_CATEGORY_SW = 'Y'
+		AND TAX_ID_TYPE_SW = 'Y'
+		AND TAX_ID_SW = 'Y'
+		AND MAIL_CODE_SW = 'Y'
+		AND INDICATOR_1099_SW = 'Y'
+		AND SEND_PAYMENT_TO_SW = 'Y'
+		AND LOCAL_DEPARTMENT_SW = 'Y'
+		AND RESOURCE_WORKER_SW = 'Y'
+		AND LOCN_ADR_SW = 'Y'
+		AND PAY_ADR_SW  = 'Y' ;
+	
+	al_sqlcode := SQLCODE;
+	IF al_sqlcode <> 0  THEN
+		as_error := 'Payment Header: Error in selecting record from tb_PROVIDER_DETAILS_CHECKLIST';
+	END IF ;	
+	RAISE NOTICE '% tb_PROVIDER_DETAILS_CHECKLIST as_error', as_error;
+
+	IF vl_checklist_cnt is NULL THEN
+		vl_checklist_cnt := 0;
+	END IF;
+
+	SELECT WITHHOLD_PAYMENT_SW
+		INTO vs_withhold_payment
+	FROM tb_PROVIDER
+	WHERE PROVIDER_ID = vl_provider_for_address
+		AND DELETE_SW = 'N';
+
+	al_sqlcode := SQLCODE;
+ 
+	IF al_sqlcode <> 0  THEN
+		as_error := 'Payment Header: Error in selecting rovider Withhold Check SW.';
+	END IF ;	
+
+	IF vs_withhold_payment is NULL OR RTRIM(LTRIM(vs_withhold_payment)) = '' THEN
+		vs_withhold_payment := 'N' ;
+	END IF;
+
+	-- Vineet 09/14/2020 for AS Service Plan Payment (22)
+	IF al_payment_type = '5689' OR al_payment_type = '3294' 
+				OR al_payment_type = '7' OR al_payment_type = '22' THEN 
+		IF vl_checklist_cnt > 0 AND vs_withhold_payment = 'N' THEN	
+			vs_payment_status := '1634';  
+		ELSE
+			vs_payment_status := '1635';  
+		END IF;
+		vdt_payment_dt := current_date;
+	ELSE
+		vs_payment_status := '1637';  
+		vdt_payment_dt := NULL;
+	END IF;
+
+	SELECT al_next_value from  sp_nextid ( vs_pay_header_id) into vl_pay_header_id;
+	RAISE NOTICE '%  sp_payment_header_insert insert proc vl_pay_header_id  ', vl_pay_header_id;
+	RAISE NOTICE '%  sp_payment_header_insert insert proc vl_provider_for_address  ', vl_provider_for_address;
+	RAISE NOTICE '%  sp_payment_header_insert insert proc MANUAL_SW ->N ', al_payment_type;
+	RAISE NOTICE '%  sp_payment_header_insert insert proc vs_provider_name', vs_provider_name;
+
+	
+	RAISE NOTICE '%  sp_payment_header_insert insert proc vd_previous_month_start_dt  ', vd_previous_month_start_dt;
+	RAISE NOTICE '%  sp_payment_header_insert insert proc vd_previous_month_end_dt  ', vd_previous_month_end_dt;
+
+	INSERT INTO
+    tb_PAYMENT_HEADER
+    (
+       PAYMENT_ID,       		PROVIDER_ID,
+       PAYMENT_TYPE_CD,  		MANUAL_SW,
+       PAYEE_NM,        		PAYMENT_START_DT,
+       PAYMENT_END_DT,
+       CREATE_TS,        		CREATE_USER_ID,
+       UPDATE_TS,        		UPDATE_USER_ID,
+       DELETE_SW,
+       ADR_TYPE_CD,             ADR_FORMAT_CD,
+       ADR_STREET_TX,           ADR_BOX_NO,
+       ADR_PRE_DIR_CD,          ADR_STREET_NM,
+       ADR_STREET_SUFFIX_CD,    ADR_POST_DIR_CD,
+       ADR_UNIT_TYPE_CD,        ADR_UNIT_NO_TX,
+       ADR_CITY_NM,             ADR_COUNTY_CD,
+       ADR_STATE_CD,            ADR_ZIP5_NO,
+       ADR_ZIP4_NO,             ADR_DIRECTION_TX,
+       ADR_FOREIGN_TX,          ADR_FOREIGN_STATE_TX,
+       ADR_COUNTRY_TX,          ADR_POSTAL_CODE_TX,
+       ADR_DEFAULT_SW,          ADR_START_DT,
+       ADR_END_DT,              PAYMENT_DT,
+       ADR_HOME_PHONE_TX,       ADR_WORK_PHONE_TX,
+       ADR_WORK_XTN_TX
+    )
+     VALUES
+    (
+       vl_pay_header_id,    	vl_provider_for_address,
+       al_payment_type,     	'N',
+       vs_provider_name,    	 vd_previous_month_start_dt,
+       vd_previous_month_end_dt,
+       current_timestamp,   	'finance',
+       current_timestamp,   	'finance',
+       'N',
+       vs_adr_type_cd,        	vs_adr_format_cd,
+       vs_street_no,          	vl_adr_box_no,
+       vs_pre_dir_cd,         	vs_adr_street_nm,
+       vs_str_suff_cd,        	vs_post_dir_cd,
+       vs_unit_type_cd,      	vs_unit_no_tx,
+       vs_city_nm,           	vs_adr_county_cd,
+       vs_adr_state_cd,       	vl_zip5_no,
+       vl_zip4_no,            	vs_adr_dir,
+       vs_forgin_tx,          	vs_forgin_state,
+       vs_county_tx,          	vs_adr_postal_tx,
+       'Y',                   	vd_adr_start_dt,
+       vd_adr_end_dt,         	vdt_payment_dt,
+       vs_home_phone_tx,      	vs_work_phone_tx,
+       vs_work_ext
+	);
+
+	al_sqlcode := SQLCODE;
+ 	RAISE NOTICE '%  sp_payment_header_insert insert proc al_sqlcode  ', al_sqlcode;
+
+	IF al_sqlcode <> 0  THEN
+		as_error := 'Payment Header: Error in inserting payment header record';
+	END IF ;
+	RAISE NOTICE '%  sp_payment_header_insert insert proc Payment Header: Error as_error  ', as_error;
+
+	SELECT al_next_value from  sp_nextid ( vs_pay_status_id) into vl_pay_status_id;
+
+	INSERT INTO
+		tb_PAYMENT_STATUS
+    (
+       PAYMENT_STATUS_ID,       PAYMENT_STATUS_CD,
+       PAYMENT_STATUS_DT,       PAYMENT_ID,
+       ACTIVE_SW,               CREATE_TS,
+       CREATE_USER_ID,          UPDATE_TS,
+       UPDATE_USER_ID,          DELETE_SW,
+       APPROVAL_STATUS_CD
+    )
+     VALUES
+    (
+       vl_pay_status_id,       vs_payment_status,
+       current_date,           vl_pay_header_id,
+       'Y',                    current_timestamp,
+       'finance',              current_timestamp,
+       'finance',              'N',
+       NULL
+    );
+
+	al_sqlcode := SQLCODE;
+	IF al_sqlcode <> 0  THEN
+		as_error := 'Payment Status: Error in inserting payment status record';
+	END IF ;
+	
+	al_sqlcode := v_sqlcode;
+	al_header_id := vl_pay_header_id;
+END;
+
+$function$
+;

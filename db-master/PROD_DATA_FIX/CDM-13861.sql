@@ -1,0 +1,1 @@
+update cjams.intakeservreqchildremoval set exitdate ='2008-04-07 15:30:00', removalexitreason ='ADPFIN', updatedby ='CDM-13861', updatedon =now()  where intakeservreqchildremovalid ='5393de34-9185-473e-88f6-7136b741a236';

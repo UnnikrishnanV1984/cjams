@@ -1,0 +1,108 @@
+CREATE OR REPLACE FUNCTION publishinvestigationfinding(v_investigationid uuid, v_investigationallegationmaltreatorid uuid, v_investigationallegationid uuid)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+ IF (v_investigationallegationmaltreatorid IS NOT NULL ) THEN 
+  SELECT  investigationallegationid
+  INTO v_investigationallegationid 
+  FROM  investigationallegationmaltreators 
+  WHERE  investigationallegationmaltreatorsid = v_investigationallegationmaltreatorid;
+ END IF;
+ --## Update maltreator info
+ UPDATE tb_cjams_investigation_client tb SET
+     findings_cd   = CASE v.findings_cd WHEN 'ID' THEN '1394'
+             WHEN 'UD' THEN '1396'
+             WHEN 'RO' THEN '1395'
+             ELSE v.findings_cd
+         END 
+  ,  expungement_dt  = CASE v.findings_cd  
+         WHEN 'ID' THEN (v.reporteddate + (25 * INTERVAL '1 years'))
+         WHEN 'UD' THEN (v.reporteddate + (5 * INTERVAL '1 years'))
+         WHEN 'RO' THEN (v.reporteddate + (2 * INTERVAL '1 years'))
+         END 
+  ,  status_sw    = v.status_sw
+ FROM (SELECT   p.cjamspid 
+    , p.old_id::bigint
+    , p.cisclientid
+    , REPLACE(ir.servicerequestnumber,'CW','')  investigation_id
+    , ir.reporteddate
+    , NULL
+    , COALESCE(im.overridefindingtypekey,ivf.investigationfindingtypekey) findings_cd
+    , a.name
+    , CASE WHEN im.finalizeddate IS NULL then 'A' ELSE 'F' END status_sw
+    , ir.lastexpungementdate expungement_dt 
+    , ia.investigationallegationid allegation_id
+    , 'A'      action_flag
+    , NOW()      create_ts
+    , 'CJAMS'     create_user_id
+    , NOW()      update_ts
+    , 'CJAMS'     update_user_id
+    , 'N'      delete_sw
+  FROM  investigationallegationmaltreators im 
+    INNER JOIN investigationallegation ia ON ia.investigationallegationid = im.investigationallegationid AND ia.activeflag =1
+    INNER JOIN intakeservicerequestactor ira ON ira.intakeservicerequestactorid = im.intakeservicerequestactorid
+    INNER JOIN person p ON p.personid = ira.personid
+    INNER JOIN intakeservicerequest ir ON ir.intakeserviceid = ira.intakeserviceid
+    INNER JOIN investigationfinding ivf ON ivf.investigationallegationid = im.investigationallegationid AND ivf.activeflag = 1
+    INNER JOIN allegation a ON a.allegationid = ia.allegationid AND a.activeflag = 1  
+  WHERE   ia.investigationallegationid = v_investigationallegationid 
+  AND  im.activeflag = 1) v
+ WHERE v.allegation_id::character varying = tb.allegation_id::character varying;
+ 
+ --## Insert record if not exists
+ INSERT INTO tb_cjams_investigation_client(cjams_person_id, client_id, cis_client_id, investigation_id, screening_received_dt,
+             screening_approval_dt, findings_cd, maltreatment_type_cd, status_sw, expungement_dt, allegation_id,
+             action_flag, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+ SELECT   p.cjamspid 
+   , p.old_id::bigint
+   , p.cisclientid
+   , REPLACE(ir.servicerequestnumber,'CW','')  investigation_id
+   , ir.reporteddate
+   , iv.insertedon
+   , CASE COALESCE(im.overridefindingtypekey,ivf.investigationfindingtypekey)  
+     WHEN 'ID' THEN '1394'
+     WHEN 'UD' THEN '1396'
+     WHEN 'RO' THEN '1395'
+      ELSE COALESCE(im.overridefindingtypekey,ivf.investigationfindingtypekey)
+     END findings_cd
+   , CASE a.name WHEN 'Mental Injury- Abuse' THEN '2628'
+       WHEN 'Mental Injury- Neglect' THEN '2629'
+       WHEN 'Neglect' THEN '2630'
+       WHEN 'Physical Abuse' THEN '2631'
+       WHEN 'Sexual Abuse' THEN '2633'
+       ELSE  a.name
+     END 
+   , CASE WHEN im.finalizeddate IS NULL then 'A' ELSE 'F' END status_sw
+   , CASE COALESCE(im.overridefindingtypekey,ivf.investigationfindingtypekey)  
+     WHEN 'ID' THEN (ir.reporteddate + (25 * INTERVAL '1 years'))
+     WHEN 'UD' THEN (ir.reporteddate + (5 * INTERVAL '1 years'))
+     WHEN 'RO' THEN (ir.reporteddate + (2 * INTERVAL '1 years'))
+     END       expungement_dt 
+   , ia.investigationallegationid
+   , 'A'      action_flag
+   , NOW()      create_ts
+   , 'CJAMS'     create_user_id
+   , NOW()      update_ts
+   , 'CJAMS'     update_user_id
+   , 'N'      delete_sw
+ FROM  investigationallegationmaltreators im 
+   INNER JOIN investigationallegation ia ON ia.investigationallegationid = im.investigationallegationid AND ia.activeflag =1
+   INNER JOIN intakeservicerequestactor ira ON ira.intakeservicerequestactorid = im.intakeservicerequestactorid
+   INNER JOIN person p ON p.personid = ira.personid
+   INNER JOIN intakeservicerequest ir ON ir.intakeserviceid = ira.intakeserviceid
+   INNER JOIN investigationfinding ivf ON ivf.investigationallegationid = im.investigationallegationid AND ivf.activeflag = 1
+   INNER JOIN allegation a ON a.allegationid = ia.allegationid AND a.activeflag = 1
+   INNER JOIN investigation iv ON iv.intakeserviceid = ir.intakeserviceid
+ WHERE   ia.investigationallegationid=v_investigationallegationid
+ AND  im.activeflag = 1
+ AND  (SELECT COUNT(1) FROM tb_cjams_investigation_client 
+    WHERE allegation_id = v_investigationallegationid::character varying) = 0;
+
+
+
+END
+
+$function$
+

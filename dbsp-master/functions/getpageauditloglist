@@ -1,0 +1,117 @@
+CREATE OR REPLACE FUNCTION getpageauditloglist(as_objecttype character varying, as_objectid character varying, as_modulename character varying, as_securityusersid character varying, ad_startdate date, ad_enddate date, _page integer, _limit integer, sortorder character varying, sortcolumn character varying)
+ RETURNS TABLE(totalcount bigint, eventdescription character varying, username character varying, actiontime timestamp without time zone, referenceid uuid, progressnotedetails json)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 01/14/2022
+-- SP for CJAMS Page Audit Log screen (CIDM-4145)
+
+-- Revision(s)
+-- 02/14/2022 Vineet Tirodkar - Modifications to return Contact Details as json to display on Audit log screen (CIDM-4145)
+------------------------------------------------------------------------ 
+DECLARE                    
+_offset    integer;
+ 
+BEGIN
+ _offset := (_page  -  1)  *  _limit;    
+
+ RAISE  NOTICE  '_page  %',_page;
+ RAISE  NOTICE  '_limit  %',_limit;
+
+ RETURN  QUERY  
+ select count(1) over()::bigint as totalcount,
+    al.description::character varying as eventdescription,
+    up.fullname::character varying as username,
+    al.insertedon as actiontime,
+    al.referenceid,
+    (SELECT Json_agg(contactdetails) 
+   FROM (select pr.witsid as contactnoteid,
+      pr.contactdate::date as contactdate, 
+      ( select pt.description 
+        from progressnotetype pt 
+       where pt.progressnotetypeid = pr.progressnotetypeid 
+      ) as contacttype
+     from progressnote pr 
+      where progressnoteid   = al.referenceid
+     ) as contactdetails
+  )::json AS progressnotedetails 
+    /*
+    (case when al.logtypekey 
+    in ( 'edit-contact-note', 'view-contact-note', 'download-contact-note' , 
+      'add-note-addendum', 'save-contact-note'
+     ) then
+    ( select 'Type Of Contact: ' || 
+     ( select pt.description 
+      from progressnotetype pt 
+       where pt.progressnotetypeid = pr.progressnotetypeid 
+        ) || 
+     ' - Date: ' || to_char(pr.contactdate::date, 'MM/DD/YYYY')
+     from progressnote pr 
+     where progressnoteid  = al.referenceid
+   )
+   else
+   null
+   end
+   )::character varying as referencedescription
+   */
+ from auditlog al
+      left outer join userprofile up on up.securityusersid = al.insertedby
+     ,auditlogtype alt 
+ where al.logtypekey = alt.logtypekey 
+  and (case when as_objecttype is not null and btrim(as_objecttype) <> '' then
+    lower(al.objecttype) = lower(btrim(as_objecttype))
+    else
+    True
+    end)  
+  and (case when as_objectid is not null and btrim(as_objectid) <> '' then
+    al.objectid = as_objectid
+    else
+    True
+    end)  
+  and (case when as_modulename is not null and btrim(as_modulename) <> '' then
+    lower(alt.modulename) = lower(btrim(as_modulename))
+    else
+    True
+    end)  
+  and (case when as_securityusersid is not null then   
+    al.insertedby = as_securityusersid
+    else
+    True
+    end)   
+  and (case when ad_startdate is not null and ad_enddate is not null then
+    al.insertedon::date between ad_startdate::date and ad_enddate::date 
+   else
+    True
+    end)
+ order by ( CASE sortorder
+     WHEN 'asc'
+     THEN
+                         CASE sortcolumn
+                          WHEN 'logtypekey' THEN al.logtypekey 
+                            WHEN 'description' THEN  (al.description::character varying)
+                          WHEN 'username' THEN al.updatedby  
+                          WHEN 'actiontime' THEN (al.insertedon::character varying)
+               ELSE
+                     al.insertedon::character varying
+               END
+              END) ASC NULLS LAST,
+                (CASE sortorder
+                   WHEN 'desc'
+     THEN
+      CASE sortcolumn
+       WHEN 'logtypekey' THEN al.logtypekey 
+       WHEN 'description' THEN  (al.description::character varying)
+       WHEN 'username' THEN al.updatedby  
+       WHEN 'actiontime' THEN (al.insertedon::character varying)
+                ELSE
+                     al.insertedon::character varying
+                END
+                END) DESC NULLS last
+ LIMIT  _limit  OFFSET  _offset ;
+ 
+END;
+
+$function$
+

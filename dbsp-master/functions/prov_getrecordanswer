@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION prov_getrecordanswer(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ v_applicantid character varying;
+ v_prgram character varying;
+ v_monitoringsiteid character varying;
+
+ BEGIN
+ v_applicantid:=reqobj ->> 'applicant_id';
+ v_prgram:=reqobj ->> 'prgram';
+ v_monitoringsiteid:=reqobj ->> 'monitoring_record_site_id';
+ 
+
+    if (v_prgram  is not null) then
+  if (v_prgram='PPHSS') then
+   select monitoring_record_site_id into v_monitoringsiteid from prov_monitoring_record_site pmrs 
+   where applicant_id=v_applicantid
+   and  objecttype='HomeStudySurvey' order by update_ts desc limit 1; 
+  end if; 
+  if (v_prgram='KINSHIP') then
+   select monitoring_record_site_id into v_monitoringsiteid from prov_monitoring_record_site pmrs 
+   where applicant_id=v_applicantid
+   and  objecttype='KinshipAssessment' order by update_ts desc limit 1; 
+  end if; 
+ end if;
+
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  select prs.child_id,prs.site_id,prs.monitoring_record_site_id,pr.prgram,pr.prgram_type,prq.question_addtional_fields,
+  prq.question,prq.question_data_type,prq.question_hint,prq.question_options,prq.question_type,prq.record_question_id ,prq.record_id,prq.tooltipkey,
+  prd.monitoring_record_data_id,prd.monitoring_record_dt,prd.monitoring_record_value,prd.frequency_deficiency,prd.impact_deficiency,prd.scope_deficiency,prd.findings,prd.comments
+  ,(select json_agg(x) from (
+    select prd1.monitoring_record_data_id,prd1.monitoring_record_dt,prd1.monitoring_record_value,prd.comments,
+    prq1.question,prq1.question_data_type,prq1.question_hint,prq1.question_options,prq1.question_type,prq1.record_question_id ,prq1.record_id
+    from prov_monitoring_record_data prd1 
+    left join prov_record_question prq1 on prq1.record_question_id = prd1.record_question_id and prd1.delete_sw ='N'
+    where prq1.parent_record_question_id =  prq.record_question_id 
+   order by prq1.displayorder nulls last
+   ) x ) as answers,
+   (select json_agg(x) from (
+    select * from prov_signature_capture prd1 
+    where prd1.object_id =  v_applicantid and prd1.delete_sw = 'N'
+   
+   ) x ) as signatures,
+   (select * from prov_get_formatted_applicantaddresses(v_applicantid)) as address
+ 
+  from prov_monitoring_record_data prd 
+  join prov_record_question prq on prq.record_question_id = prd.record_question_id
+         join prov_monitoring_record_site prs on prs.monitoring_record_site_id = prd.monitoring_record_site_id
+  left join prov_record pr on pr.record_id = prs.record_id
+  where prd.monitoring_record_site_id =(v_monitoringsiteid)::uuid and prd.delete_sw = 'N'
+  --and coalesce (prq.parent_record_question_id :: character varying,'') = ''
+  order by prq.displayorder  nulls last, prq.question_hint asc nulls last
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

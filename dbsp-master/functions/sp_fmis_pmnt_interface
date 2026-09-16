@@ -1,0 +1,724 @@
+CREATE OR REPLACE FUNCTION sp_fmis_pmnt_interface(vn_batch_sz integer, adt_rundate timestamp without time zone, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS $function$
+
+------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Raghu Tarlapu
+-- Date Created :06/01/2014
+-- Description : 'SP_FMIS_PMNT_INTERFACE' includes the following logic
+--                  1) Generate FMIS records for Adoption, GAP and Fostercare Payments
+--                      in 'TB_FMIS_PAYMENT_DETAIL_INTERFACE'.
+
+--                  2) Records for Off-set payments for Fostercare in
+--                      'TB_FMIS_PAYMENT_DETAIL_INTERFACE'.
+--                  3) Records with cumulative results into 'TB_FMIS_PAYMENT_HEADER_INTERFACE'.
+--                  4) Modifications needed for 'Agency_object_cd' correction per PRJ-03892.
+------------------------------------------------------------------------------------------------
+
+DECLARE --p_sp_error CONDITION   FOR SQLSTATE '99999';
+ CHECK_ROWS INTEGER;
+ SQLCODE INTEGER DEFAULT 0;
+ vs_message_text    VARCHAR(3000) DEFAULT '';
+ vl_ret_status     INTEGER DEFAULT 0;
+ vs_Procedure_nm    VARCHAR(100) DEFAULT 'SP_FMIS_PAYMENT';
+ VN_PROVIDER_ID INTEGER DEFAULT 0;
+ VS_PAYMENT_TYPE_CD VARCHAR(4) DEFAULT '';
+ VN_PAYMENT_ID INTEGER DEFAULT 0;
+ VS_MAIL_CODE_TX VARCHAR(3) DEFAULT '';
+ VS_EFT_SW VARCHAR(1) DEFAULT '';
+ VS_COUNTY_CD VARCHAR(4) DEFAULT '';
+ VS_PAYMENT_TAX_TYPE VARCHAR(4) DEFAULT '';
+ VN_FINAL_AMOUNT_NO DECIMAL (13,2)  DEFAULT 0;
+ VN_CLIENT_ID INTEGER  DEFAULT 0;
+ VN_FINAL_SERVICE_ID INTEGER DEFAULT 0;
+ VN_PAYMENT_DETAIL_ID INTEGER DEFAULT 0;
+---Output from SP
+ VS_PMNT_CAT_SW CHAR(1) DEFAULT NULL;
+ VS_AGENCY_OBJECT_CD VARCHAR(4) DEFAULT NULL;
+ VS_TRANSACTION_AMT VARCHAR(500) DEFAULT NULL;
+ VS_PMNT_DIST_TYPE VARCHAR(2) DEFAULT NULL;
+ VS_PAYMENT_ID VARCHAR(50) DEFAULT NULL;
+ VN_DETAIL_CNT INTEGER DEFAULT 0;
+ VN_APPROPRIATION_YEAR INTEGER DEFAULT 0;
+ vd_run_date DATE;
+ VN_OFF_PROVIDER_ID INTEGER DEFAULT 0;
+ VS_OFF_PAYMENT_TYPE_CD VARCHAR(4) DEFAULT '';
+ VN_OFF_PAYMENT_ID INTEGER DEFAULT 0;
+ VS_OFF_MAIL_CODE_TX VARCHAR(3) DEFAULT '';
+ VS_OFF_EFT_SW VARCHAR(1) DEFAULT '';
+ VN_CUR_BATCH INTEGER DEFAULT 0;
+ VN_MOD INTEGER DEFAULT 0;
+ VN_DTL_CNT INTEGER DEFAULT 0;
+ VN_BATCH_CNT INTEGER DEFAULT 0;
+ prev_month_last_day DATE;
+ prev_month_first_day DATE;
+ REPORT_PERIOD_DT DATE;
+ VN_UND_19 INTEGER;
+ VN_OVR_18 INTEGER;
+ VN_TEMP_Record_ID INTEGER;
+ VN_TEMP_BATCH_SEQ_NO INTEGER;
+ ls_batch_no VARCHAR(50);
+ ls_hdr_transaction_amt VARCHAR(50);
+ ls_max_batch_seq_nbr VARCHAR(5);
+ li_hdr_transaction_amt INTEGER;
+ VN_ERROR_PAYMENT_ID INTEGER;
+ VN_ERROR_CLIENT_ID INTEGER;
+ VS_ERROR_COUNTY_CD VARCHAR(5);
+ VN_ERROR_PROVIDER_ID INTEGER;
+ VS_BATCH_NO VARCHAR(5);
+ VS_ERROR_TX VARCHAR(500);
+ C1 REFCURSOR;
+ ERROR_CUR REFCURSOR;
+ --cur4 REFCURSOR;
+--Cursor for populating the Batch numbers in the FMIS Detail table
+DECLARE cur4 CURSOR FOR SELECT VN_BATCH_CNT ;-- FROM SYSIBM.SYSDUMMY1;
+ BEGIN
+ CHECK_ROWS := 1;
+--Error Handling
+/*
+--DECLARE CONTINUE  FOR SQLWARNING
+        BEGIN
+                --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;
+         al_sqlcode := -1 ;
+                as_error := to_char(CURRENT_TIMESTAMP, 'yyyy-MM-dd HH24:MI:SS.MS')::timestamp;
+                as_error := as_error || vs_message_text;
+         execute  SP_BATCH_ERROR_LOG (vs_Procedure_nm
+                                         , NULL
+                                         , NULL
+                                         , NULL
+                                         , NULL
+                                         , NULL
+                                         , SQLCODE
+                                         , as_error
+                                         , NULL
+                                         , vl_ret_status
+                                         );
+           
+
+ END;
+*/
+/*
+--DECLARE EXIT FOR SQLEXCEPTION
+ BEGIN
+  --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;
+  al_sqlcode := -1 ;
+  as_error := to_char(CURRENT_TIMESTAMP, 'yyyy-MM-dd HH24:MI:SS.MS')::timestamp;
+  as_error := as_error || vs_message_text;
+   ROLLBACK; 
+         execute  SP_BATCH_ERROR_LOG (vs_Procedure_nm
+                                          , NULL
+                                          , NULL
+                                          , NULL
+                                          , NULL
+                                          , NULL
+                                          , SQLCODE
+                                          , as_error
+                                          , NULL
+                                          , vl_ret_status
+                                          );
+  
+  --RETURNS -1; 
+ END;
+*/
+
+   DROP TABLE IF EXISTS TTB_FMIS_MAIN CASCADE;
+--Temporary table for the distinct fields to be populated in 'TB_FMIS_PAYMENT_DETAIL_INTERFACE'    
+CREATE TABLE TTB_FMIS_MAIN(   VN_TEMP_PROVIDER_ID INTEGER
+                                                ,VS_TEMP_PAYMENT_TYPE_CD VARCHAR(4)
+                                                ,VN_TEMP_PAYMENT_ID INTEGER
+                                                ,VS_TEMP_MAIL_CODE_TX VARCHAR(3)
+                                                ,VS_EFT_SW VARCHAR(1)
+                                                ,VS_TRANSACTION_AMT VARCHAR(500)
+                                                ,VS_COLLECTED_AMT VARCHAR(500)
+                                                ,VS_AGENCY_OBJECT_CD VARCHAR(4)
+                                                ,VN_TAX_ID INTEGER
+                                                ,VS_OFFSET_FLAG CHAR(1)
+                                                ,VS_TEMP_REVERSE_IND CHAR(1)
+                                                ,VL_UNDER_19 INTEGER
+                                                ,VL_OVER_18 INTEGER
+                                                ,VS_PROV_PLMT_TYPE VARCHAR(5)
+                                                ,VS_PROV_AFF  VARCHAR(5)
+                                                ,VS_DIST_TYPE VARCHAR(2)
+                                                ,VN_PRV_ADR_56_CNT INTEGER
+                                                ,VN_PRV_ADR_57_CNT INTEGER
+                                                ,VN_CURR_DOC_NBR INTEGER
+                                                ,VN_CURR_DOC_SUFFIX INTEGER
+                                            )  ;
+
+if adt_rundate is null or adt_rundate = '01-01-1900' then
+        adt_rundate := current_date;
+else
+        vd_run_date := adt_rundate;
+end if;
+
+--there is no f_daymonth/f_daymonth function to build that function waht is the logic bussiness need
+/* DRVR
+ prev_month_first_day  := f_daymonth(vd_run_date,' ','');--
+ prev_month_last_day  :=  f_daymonth(vd_run_date,'L','');--
+ */
+
+        prev_month_first_day  := (SELECT (date_trunc('month', now()) - interval '1 month')::date);
+        prev_month_last_day  :=  (SELECT (date_trunc('month', now())::date - 1));
+
+IF DATE_PART('MONTH',(vd_run_date)) IN (1,2,3,4,5,6) THEN
+         VN_APPROPRIATION_YEAR := (SELECT DATE_PART('YEAR',(vd_run_date))) ;
+ELSE
+         VN_APPROPRIATION_YEAR := (SELECT DATE_PART('YEAR',(vd_run_date)) + 1);
+END IF;
+
+-- no data exist in TB_FMIS_PAYMENT_DETAIL_INTERFACE
+            
+-- Delete the records from the parent tables if exists.
+ 
+SELECT COUNT(*) INTO VN_DETAIL_CNT
+FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE;
+RAISE NOTICE 'VN_DETAIL_CNT (%)', VN_DETAIL_CNT;
+
+IF VN_DETAIL_CNT > 0 THEN
+     DELETE FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE;
+          al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+ as_error := 'ERROR in Deleting  TB_FMIS_PAYMENT_DETAIL_INTERFACE.';
+ --ROLLBACK;
+ --GOTO ERROR_SECTION;
+     END IF; 
+
+     DELETE FROM  TB_FMIS_PAYMENT_HEADER_INTERFACE;
+          al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+ as_error := 'ERROR in Deleting  TB_FMIS_PAYMENT_HEADER_INTERFACE.';
+ --ROLLBACK;
+ --GOTO ERROR_SECTION;
+     END IF; 
+END IF;
+           
+INSERT INTO TTB_FMIS_MAIN(  SELECT  TBP.PROVIDER_ID
+                                                   ,PH.PAYMENT_TYPE_CD
+                                                   ,PH.PAYMENT_ID
+                                                   ,TBP.MAIL_CODE_TX
+                                                   ,TBP.EFT_SW
+                                                   ,NULL
+                                                   ,NULL
+                                                   ,NULL
+                                                   ,(SELECT COALESCE(TP.TAX_ID_NO,(select TAX_ID_NO from tb_provider
+                                                                                      where provider_id = (select affiliate_provider_id from tb_provider
+                                                                                                               where provider_id = TBP.PROVIDER_ID)
+                                                                                   )
+                                                                    ) as TAX_ID_NO  FROM TB_PROVIDER TP
+                                                        WHERE TP.provider_id = TBP.PROVIDER_ID AND TP.Delete_sw = 'N'
+                                                     )
+                                                   ,NULL
+                                                   ,NULL
+                                                   ,(SELECT COUNT(CLIENT_ID) FROM  TB_PAYMENT_DETAIL
+                                                      WHERE PAYMENT_ID = ph.payment_id
+                                                      AND CLIENT_ID IN (SELECT CLIENT_ID FROM TB_CLIENT WHERE  F_AGE(DOB_DT) < 19 AND DELETE_SW = 'N')
+                                                      AND DELETE_SW = 'N'  )
+                                                   ,(SELECT COUNT(CLIENT_ID) FROM  TB_PAYMENT_DETAIL
+                                                      WHERE PAYMENT_ID = ph.payment_id
+                                                      AND CLIENT_ID IN (SELECT CLIENT_ID FROM TB_CLIENT WHERE  F_AGE(DOB_DT) >= 19 AND DELETE_SW = 'N')
+                                                      AND DELETE_SW = 'N'  )
+                                                   , F_PRVPCKLST_CAT(TBP.PROVIDER_ID,'PLACEMENT')
+                                                   ,(SELECT LTRIM(RTRIM(PAY_TO_AFFILIATE_CD)) FROM TB_PROVIDER
+                                                      WHERE DELETE_SW = 'N' AND PROVIDER_ID =  TBP.PROVIDER_ID)
+                                          ,NULL
+                                          ,(SELECT  COUNT(*) FROM TB_PROVIDER_ADDRESSES
+                                                 WHERE PARENT_KEY_ID::INTEGER = TBP.PROVIDER_ID
+                                    AND  ADR_DEFAULT_SW = 'Y'
+                                    AND ADR_TYPE_CD = '3356' AND ADR_FORMAT_CD  = 'F'
+                                    AND DELETE_SW = 'N')
+                                                   ,(SELECT  COUNT(*) FROM TB_PROVIDER_ADDRESSES
+                                           WHERE PARENT_KEY_ID::INTEGER = TBP.PROVIDER_ID
+                                    AND  ADR_DEFAULT_SW = 'Y'
+                                    AND ADR_TYPE_CD = '3357' AND ADR_FORMAT_CD  = 'F'
+                                    AND DELETE_SW = 'N')
+                                       ,NEXTVAL('SQ_FMIS_CURR_DOC_NBR')
+                                                   ,1
+
+                                        FROM TB_PROVIDER TBP, TB_PAYMENT_STATUS PS,  TB_PAYMENT_HEADER PH
+                                        WHERE TBP.PROVIDER_ID = PH.PROVIDER_ID 
+           AND PH.PAYMENT_ID = PS.PAYMENT_ID
+                                          AND PH.DELETE_SW = 'N' AND PS.DELETE_SW = 'N' AND TBP.DELETE_SW = 'N'
+                                          AND PS.PAYMENT_STATUS_CD = '1636' AND PH.PAYMENT_TYPE_CD  IN ('6','5689', '7') --  By DRVR this condition is changed from IN to NOT IN to just populate the data into the common table or the base tables should be populated with mock up data
+                                          AND (PH.PAYMENT_START_DT <= prev_month_last_day OR PH.PAYMENT_START_DT BETWEEN prev_month_first_day AND prev_month_last_day)
+                                     --DRVR AND (PH.PAYMENT_END_DT >= prev_month_first_day OR PH.PAYMENT_END_DT BETWEEN prev_month_first_day AND prev_month_last_day) -- By DRVRconditon is breaking here need to be fixed by changing the date logic or by populating the mockup data into the base tables whic can pull the data for this condition.
+                                        GROUP BY TBP.PROVIDER_ID , PH.PAYMENT_TYPE_CD, PH.PAYMENT_ID, TBP.MAIL_CODE_TX, TBP.EFT_SW             
+                                        ORDER BY TBP.PROVIDER_ID ,PH.PAYMENT_ID ,PH.PAYMENT_TYPE_CD);
+RAISE NOTICE 'INSERTING INTO TTB_FMIS_MAIN %', (SELECT COUNT (*) FROM TTB_FMIS_MAIN) ;
+-----------------------------------Transaction Amount and Collected Amount --------------------------------------
+UPDATE TTB_FMIS_MAIN
+   SET VS_TRANSACTION_AMT = ( SELECT SUM(FINAL_AMOUNT_NO) FROM  TB_PAYMENT_DETAIL TPD WHERE TPD.PAYMENT_ID = TTB_FMIS_MAIN.VN_TEMP_PAYMENT_ID);
+
+-- Collected Amount if Offset is present
+UPDATE TTB_FMIS_MAIN
+  SET VS_COLLECTED_AMT = ( SELECT sum(rl.collected_amount_no) 
+        FROM tb_receivable_offset ro , tb_receivable_liquidation rl, tb_receivable_detail rd, tb_payment_detail pd
+                       WHERE ro.offset_id = rl.offset_id
+                             AND rd.receivable_detail_id = rl.receivable_detail_id
+            AND pd.payment_detail_id = rd.payment_detail_id
+           AND ro.payment_id = TTB_FMIS_MAIN.VN_TEMP_PAYMENT_ID
+           AND rl.delete_sw = 'N'
+            AND pd.delete_sw = 'N'
+            AND rd.delete_sw = 'N'
+            AND ro.delete_sw = 'N'
+            AND rl.collected_amount_no is not null )
+  WHERE VS_TEMP_PAYMENT_TYPE_CD = '6';
+-----------------------------------Transaction Amount and Collected Amount --------------------------------------
+
+-- Set the Offset flag
+/* DRVR
+UPDATE TTB_FMIS_MAIN
+  SET VS_OFFSET_FLAG = 'Y'
+ WHERE (TTB_FMIS_MAIN.VS_COLLECTED_AMT :: INTEGER) < (TTB_FMIS_MAIN.VS_TRANSACTION_AMT :: INTEGER);
+              */
+
+-----------------------------------Distribution Type ------------------------------------------------------------
+UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '61'
+ WHERE  TTB_FMIS_MAIN.VS_EFT_SW = 'Y' AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783';
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '60'
+ WHERE TTB_FMIS_MAIN.VS_EFT_SW = 'N' AND TTB_FMIS_MAIN.VN_PRV_ADR_56_CNT = 0 AND TTB_FMIS_MAIN.VN_PRV_ADR_57_CNT = 0 AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783';
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '66'
+ WHERE TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783'
+ AND (TTB_FMIS_MAIN.VS_EFT_SW = 'N' AND TTB_FMIS_MAIN.VN_PRV_ADR_56_CNT > 0 AND TTB_FMIS_MAIN.VS_PROV_AFF = '3357')
+ OR (TTB_FMIS_MAIN.VS_EFT_SW = 'N' AND TTB_FMIS_MAIN.VN_PRV_ADR_57_CNT > 0 AND TTB_FMIS_MAIN.VS_PROV_AFF = '3356');
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '86'
+ WHERE  TTB_FMIS_MAIN.VS_EFT_SW = 'Y' AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE <> '1783';
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '00'
+ WHERE TTB_FMIS_MAIN.VS_EFT_SW = 'N' AND TTB_FMIS_MAIN.VN_PRV_ADR_56_CNT = 0 AND TTB_FMIS_MAIN.VN_PRV_ADR_57_CNT = 0 AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE <> '1783';
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '01'
+ WHERE TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE <> '1783'
+ AND (TTB_FMIS_MAIN.VS_EFT_SW = 'N' AND TTB_FMIS_MAIN.VN_PRV_ADR_56_CNT > 0 AND TTB_FMIS_MAIN.VS_PROV_AFF = '3357')
+ OR (TTB_FMIS_MAIN.VS_EFT_SW = 'N'  AND TTB_FMIS_MAIN.VN_PRV_ADR_57_CNT > 0 AND TTB_FMIS_MAIN.VS_PROV_AFF = '3356');
+-----------------------------------Distribution Type ------------------------------------------------------------
+
+-----------------------------------Agency Object Codes ----------------------------------------------------------
+UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '1298'   -- Taxable
+WHERE TTB_FMIS_MAIN.VL_OVER_18 > 5  AND TTB_FMIS_MAIN.VS_TEMP_PAYMENT_TYPE_CD = '6' AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783';
+
+  
+UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '1298'   -- Taxable
+ WHERE (TTB_FMIS_MAIN.VL_OVER_18 > 5 OR TTB_FMIS_MAIN.VL_UNDER_19 > 10) AND TTB_FMIS_MAIN.VS_TEMP_PAYMENT_TYPE_CD = '6' AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783';
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '0856'   -- Private Providers
+ WHERE (TTB_FMIS_MAIN.VL_OVER_18 > 5 OR TTB_FMIS_MAIN.VL_UNDER_19 > 10) AND TTB_FMIS_MAIN.VS_TEMP_PAYMENT_TYPE_CD = '6' AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE <> '1783';
+
+UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '1201'   -- Non - Taxable
+ WHERE RTRIM(LTRIM(TTB_FMIS_MAIN.VS_AGENCY_OBJECT_CD)) = '' OR TTB_FMIS_MAIN.VS_AGENCY_OBJECT_CD IS NULL;
+    
+RAISE NOTICE 'TTB_FMIS_MAIN Upating completed';
+-----------------------------------Agency Object Codes ----------------------------------------------------------
+
+---------------------------------- Populating Temporary table for Offset Values ---------------------------------
+INSERT INTO TTB_FMIS_MAIN(SELECT DISTINCT TPH.Provider_ID
+                  ,TPH.Payment_type_cd
+           ,offset_rec.payment_id
+           ,TP.MAIL_CODE_TX
+           ,TP.EFT_SW
+           ,offset_rec.amt_no
+           ,NULL
+           ,(SELECT B.VS_AGENCY_OBJECT_CD FROM TTB_FMIS_MAIN B WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID AND VS_OFFSET_FLAG = 'Y')
+           ,(SELECT B.VN_TAX_ID FROM TTB_FMIS_MAIN B WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID AND VS_OFFSET_FLAG = 'Y')
+           ,NULL
+           ,'R'
+           ,NULL :: INTEGER
+           ,NULL :: INTEGER
+           ,NULL
+           ,NULL :: INTEGER
+           ,(SELECT B.VS_DIST_TYPE FROM TTB_FMIS_MAIN B WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID AND VS_OFFSET_FLAG = 'Y')
+           ,NULL :: INTEGER
+           ,NULL :: INTEGER
+           ,(SELECT B.VN_CURR_DOC_NBR FROM TTB_FMIS_MAIN B WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID AND VS_OFFSET_FLAG = 'Y')
+           ,NULL :: INTEGER
+      FROM ( SELECT pd.county_cd, pd.agency_object_cd, ro.payment_id, sum(rl.collected_amount_no) AS amt_no
+                                   FROM tb_receivable_offset ro, tb_receivable_liquidation rl, tb_receivable_detail rd, tb_payment_detail pd
+             WHERE ro.offset_id = rl.offset_id
+                      AND rl.receivable_detail_id = rd.receivable_detail_id
+        AND rd.payment_detail_id = pd.payment_detail_id
+        AND ro.payment_id IN (SELECT VN_TEMP_PAYMENT_ID FROM TTB_FMIS_MAIN WHERE VS_OFFSET_FLAG = 'Y')
+        AND ro.DELETE_SW = 'N' AND RL.DELETE_SW = 'N' AND RD.DELETE_SW = 'N' AND PD.DELETE_SW = 'N'
+      GROUP BY pd.agency_object_cd, pd.county_cd, ro.payment_id ) as offset_rec, tb_payment_header TPH, tb_provider TP
+       WHERE offset_rec.payment_id = TPH.payment_id and TPH.delete_sw = 'N'
+        and TP.provider_id = TPH.provider_id); 
+       
+RAISE NOTICE ' 2..INSERTING INTO TTB_FMIS_MAIN %',(SELECT COUNT (1) FROM TTB_FMIS_MAIN) ;
+---------------------------------- Populating Temporary table for Offset Values ---------------------------------
+
+---------------------------------- Populating FMIS Detail table from Temp table ---------------------------------
+
+INSERT INTO  TB_FMIS_PAYMENT_DETAIL_INTERFACE( FMIS_PAYMENT_DETAIL_Record_ID
+                                                     ,Agency_Object_CD
+                                                     ,Vendor_tax_type_cd
+                                                     ,vendor_mail_code_tx
+                                                     ,Invoice_Nbr
+                                                     ,Transaction_Amt
+                                                     ,REVERSE_IND
+                                                     ,BATCH_SEQUENCE_NO 
+                                                     ,CURRENT_DOCUMENT_NBR_CD
+                                                     ,CURRENT_DOCUMENT_NBR_SUFFIX
+                                                     ,PAYMENT_TYPE_CD
+                                                    )
+                                 (SELECT NEXTVAL( 'SQ_FMIS_PAYMENT_DETAIL_INTERFACE')
+                                                    ,TFM.VS_AGENCY_OBJECT_CD
+                                                    ,'W' || VN_TAX_ID--LPAD(LTRIM(RTRIM(CHAR(VN_TAX_ID))),9,'0')
+                                                    ,VS_TEMP_MAIL_CODE_TX
+                                                    ,VN_TEMP_PAYMENT_ID --CHAR(VN_TEMP_PAYMENT_ID)
+                                                    ,TFM.VS_TRANSACTION_AMT
+                                                    ,VS_TEMP_REVERSE_IND
+                                                    ,NEXTVAL( 'SQ_FMIS_BATCH_SEQ_N0') :: char(5)
+                                                    ,VN_CURR_DOC_NBR
+                                                    ,VN_CURR_DOC_SUFFIX
+                                                    ,VS_TEMP_PAYMENT_TYPE_CD
+                                   FROM TTB_FMIS_MAIN TFM
+                                   ORDER BY (VN_TEMP_PAYMENT_ID)); --CHAR(VN_TEMP_PAYMENT_ID));
+       
+SELECT COUNT(*) FROM TB_FMIS_PAYMENT_DETAIL_INTERFACE
+INTO CHECK_ROWS;
+RAISE NOTICE 'TB_FMIS_PAYMENT_DETAIL_INTERFACE -- CHECK_ROWS(%)',(SELECT COUNT(*) FROM TB_FMIS_PAYMENT_DETAIL_INTERFACE);
+    /* drvr  --SET al_sqlcode = SQLCODE;
+     IF  al_sqlcode < 0 THEN
+      as_error := 'ERROR in Inserting  TB_FMIS_PAYMENT_DETAIL_INTERFACE.';
+ --GOTO ERROR_SECTION;
+     END IF; */
+
+-------------------------------Updates for Columns constant across the total table ------------------------
+/* comented by DRVR
+UPDATE   TB_FMIS_PAYMENT_DETAIL_INTERFACE 
+SET Batch_Agency_CD =  F_picklist_ctxt('7732',1550)
+     ,Batch_type_cd =  F_picklist_ctxt('8088',1550)
+     ,User_Operator_id =  F_picklist_ctxt('7733',1550)
+     ,Transaction_cd =  F_picklist_ctxt('7743',1550)
+     ,Finance_agency_cd =  F_picklist_ctxt('7744',1550)
+     ,PCA_CD =  F_picklist_ctxt('7745',1550)
+     ,IRS_1099_SW =  F_picklist_ctxt('8089',1550)
+     ,Discount_amt =  F_picklist_ctxt('7741',1550)
+     ,interest_Terms_CD =  F_picklist_ctxt('7746',1550)
+     ,Penalty_Amt =  F_picklist_ctxt('7747',1550)
+     ,Document_agency_cd =  F_picklist_ctxt('7748',1550)
+     ,Appropriation_year = VN_APPROPRIATION_YEAR
+     ,Document_year = VN_APPROPRIATION_YEAR;
+SELECT * FROM F_picklist_ctxt('8088',1550)            
+
+     -- DRVR al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+ as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_DETAIL_INTERFACE for Constant Columns';
+ --GOTO ERROR_SECTION;
+     END IF;
+*/
+
+UPDATE  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+  SET PAYMENT_TYPE_SW = 'F'
+  WHERE PAYMENT_TYPE_CD = '6';
+
+   
+     al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+  as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_DETAIL_INTERFACE for Constant Columns for payment_type_sw --> F';
+ --GOTO ERROR_SECTION; --DRVR
+     END IF; 
+         
+
+UPDATE  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+  SET PAYMENT_TYPE_SW = 'A'
+  WHERE PAYMENT_TYPE_CD = '5689';
+
+       
+     al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+    as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_DETAIL_INTERFACE for Constant Columns for payment_type_sw --> A';
+ --GOT--O ERROR_SECTION; --DRVR 
+     END IF;
+  
+            
+--there is no data in the base table to update
+UPDATE  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+  SET PAYMENT_TYPE_SW = 's'          
+  WHERE PAYMENT_TYPE_CD = '7'; 
+
+     al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+  as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_DETAIL_INTERFACE for Constant Columns for payment_type_sw --> S';
+ --GOTO ERROR_SECTION; --DRVR 
+     END IF;
+
+-------------------------------Updates for Columns constant across the total table ------------------------
+
+---------------------------Populating FMIS Detail table from Temp table -----------------------------------
+RAISE NOTICE 'Cur C1..';
+            
+        OPEN C1 FOR
+        SELECT FMIS_PAYMENT_DETAIL_Record_ID
+         FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+        ORDER BY FMIS_PAYMENT_DETAIL_Record_ID;
+
+        --OPEN C1 for execute sqlquery;
+        LOOP
+        FETCH C1 INTO VN_TEMP_Record_ID;
+        EXIT WHEN NOT FOUND;
+        WHILE (SQLCODE > 100) LOOP
+        SELECT NEXTVAL('SQ_FMIS_BATCH_SEQ_N0') INTO VN_TEMP_BATCH_SEQ_NO ;-- FROM SYSIBM.SYSDUMMY1; 
+            
+SQLCODE := SQLCODE+1;
+        al_sqlcode := SQLCODE;
+        
+        IF al_sqlcode < 0 THEN
+         as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_DETAIL_INTERFACE for Constant Columns for VN_TEMP_BATCH_SEQ_NO';
+         --GOTO ERROR_SECTION;
+        END IF;
+
+        FETCH C1 INTO VN_TEMP_Record_ID;
+
+        END LOOP;
+
+---------------------------Populating FMIS Detail table from Temp table -----------------------------------
+
+---------------------------Splitting logic for every 200 records ------------------------------------------
+        SELECT COUNT(*) INTO VN_DTL_CNT FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE;
+        al_sqlcode := SQLCODE;
+        IF al_sqlcode < 0 THEN
+         as_error := 'ERROR in getting record count from  TB_FMIS_PAYMENT_DETAIL_INTERFACE ';
+         --GOTO ERROR_SECTION;
+        END IF;
+
+        SELECT MOD(VN_DTL_CNT,VN_BATCH_SZ) INTO VN_MOD ;-- FROM SYSIBM.SYSDUMMY1;
+                al_sqlcode := SQLCODE;
+        IF al_sqlcode < 0 THEN
+         as_error := 'ERROR in sysdummy1';
+         --GOTO ERROR_SECTION;
+        END IF;
+
+        SELECT MAX(CAST(BATCH_NO AS INT)) INTO VN_CUR_BATCH FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE_ISS;
+        al_sqlcode := SQLCODE;
+        IF al_sqlcode < 0 THEN
+         as_error := 'ERROR in getting max batch number from  TB_FMIS_PAYMENT_DETAIL_INTERFACE_ISS ';
+         --GOTO ERROR_SECTION;
+        END IF;
+
+        IF VN_MOD > 0 THEN
+            VN_BATCH_CNT := (VN_DTL_CNT / VN_BATCH_SZ) + 1;
+        ELSE
+            VN_BATCH_CNT := VN_DTL_CNT / VN_BATCH_SZ;
+        END IF;
+
+        OPEN CUR4;
+
+        FETCH CUR4 INTO VN_BATCH_CNT;
+ EXIT WHEN NOT FOUND;
+        WHILE (VN_BATCH_CNT <> 0) LOOP
+                VN_CUR_BATCH := VN_CUR_BATCH + 1;
+
+                UPDATE  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+                  SET BATCH_NO = VN_CUR_BATCH
+                WHERE FMIS_PAYMENT_DETAIL_RECORD_ID IN (SELECT FMIS_PAYMENT_DETAIL_RECORD_ID FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+                                                         WHERE BATCH_NO IS NULL
+                                                        ORDER BY FMIS_PAYMENT_DETAIL_RECORD_ID
+                                                        FETCH FIRST 200 ROWS ONLY);
+
+                al_sqlcode := SQLCODE;
+                IF al_sqlcode < 0 THEN
+                 as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_DETAIL_INTERFACE for Batch numbers ';
+                 --GOTO ERROR_SECTION;
+                END IF;
+               FETCH CUR4 INTO VN_BATCH_CNT;
+        END LOOP;
+
+        CLOSE CUR4;
+---------------------------Splitting logic for every 200 records ------------------------------------------
+
+-------------------------- Inserting the records into FMIS Header grouping by splits-----------------------
+RAISE NOTICE 'INSERTING INTO TB_FMIS_PAYMENT_HEADER_INTERFACE....';
+      
+INSERT INTO  TB_FMIS_PAYMENT_HEADER_INTERFACE( FMIS_PAYMENT_HEADER_Record_ID
+                                                     ,Batch_No
+                                                     ,Batch_last_sequence_no
+                                                  ,Batch_entered_Count
+                                                  ,Batch_entered_amt
+                                                  ,payment_type_cd
+                                                  ,FILLTER_3_TX)
+                                (SELECT  NEXTVAL ('SQ_FMIS_PAYMENT_HEADER_INTERFACE') :: INTEGER
+                                                     ,batch_no
+                                                     ,max(Batch_sequence_no) 
+                                                     ,max(Batch_sequence_no) 
+                                                     ,MAX(TRANSACTION_AMT) 
+                                                     ,''
+                                                     ,'  '
+                                  FROM  TB_FMIS_PAYMENT_DETAIL_INTERFACE
+                                  GROUP BY Batch_no);
+
+/*
+ OPEN HEADER_cur;   --  Open the Cursor
+ FETCH HEADER_CUR INTO ls_batch_no ,ls_max_batch_seq_nbr;
+       WHILE (SQLCODE <> 100) DO
+         SELECT SUM(INTEGER(TRANSACTION_AMT))
+         INTO li_hdr_transaction_amt
+         FROM TB_FMIS_PAYMENT_DETAIL_INTERFACE
+         WHERE BATCH_NO = ls_batch_no
+         GROUP BY ls_batch_no;
+ 
+         SET al_sqlcode = SQLCODE;
+                IF al_sqlcode < 0 THEN
+                 SET as_error = 'ERROR in getting sum(transaction amount) ';
+                 GOTO ERROR_SECTION;
+                END IF;
+
+        SET ls_hdr_transaction_amt = LPAD(RTRIM(LTRIM(CHAR(li_hdr_transaction_amt))),13,'0');
+ 
+      --  SET ls_header_payment_type_sw = ls_payment_type_sw;--
+                INSERT INTO  TB_FMIS_PAYMENT_HEADER_INTERFACE( FMIS_PAYMENT_HEADER_Record_ID
+                                                                     ,Batch_No
+                                                                     ,Batch_last_sequence_no
+                                                                     ,Batch_entered_Count
+                                                                     ,Batch_entered_amt
+                                                                     ,payment_type_cd
+                                                                     ,FILLTER_3_TX)
+                                                        VALUES (NEXTVAL ( 'SQ_FMIS_PAYMENT_HEADER_INTERFACE')
+                                                                     ,ls_batch_no
+                                                                     ,ls_max_batch_seq_nbr
+                                                                     ,ls_max_batch_seq_nbr
+                                                                     ,ls_hdr_transaction_amt
+                                                                     ,''
+                                                                     ,SPACE(618));
+                SET al_sqlcode = SQLCODE;
+                IF al_sqlcode < 0 THEN
+                 SET as_error = 'ERROR in Inserting  TB_FMIS_PAYMENT_HEADER_INTERFACE ';
+                 GOTO ERROR_SECTION;
+                END IF; 
+ 
+                 FETCH HEADER_CUR INTO ls_batch_no ,ls_max_batch_seq_nbr;
+ 
+  END WHILE;
+      CLOSE HEADER_cur;     
+   */
+-- Updating columns that are constant across the FMIS Payment Header table
+  
+-- SELECT * FROM TB_FMIS_PAYMENT_HEADER_INTERFACE                
+/* DRVR
+      UPDATE  TB_FMIS_PAYMENT_HEADER_INTERFACE
+        SET Batch_Agency_CD =  F_picklist_ctxt('7732',1550)
+           ,Batch_type_cd =  F_picklist_ctxt('8088',1550)
+           ,Batch_User_Operator_Id =  F_picklist_ctxt('7733',1550)
+           ,Batch_dis_Method_Ind =   F_picklist_ctxt('7734',1550)
+           ,Fast_entry_Ind =  F_picklist_ctxt('7735',1550)
+           ,batch_amt_count_Entered_Ind =  F_picklist_ctxt('7736',1550)
+           ,Batch_status_Ind =  F_picklist_ctxt('7737',1550)
+           ,Batch_header_count_Ind =  F_picklist_ctxt('7738',1550)
+           ,Batch_master_file_Ind =  F_picklist_ctxt('7739',1550)
+           ,Batch_computed_cnt =  F_picklist_ctxt('7740',1550)
+           ,Batch_computed_amt =  F_picklist_ctxt('7741',1550)
+           ,Approval_to_post_Ind =  F_picklist_ctxt('7742',1550)
+           ,create_ts = CURRENT_TIMESTAMP
+           ,create_user_id = 'finance'
+           ,update_ts = CURRENT_TIMESTAMP
+           ,update_user_id = 'finance'
+           ,delete_sw = 'N';
+
+      */
+      
+           al_sqlcode := SQLCODE;
+           IF al_sqlcode < 0 THEN
+          as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_HEADER_INTERFACE  for Constant Columns';
+                 --GOTO ERROR_SECTION;
+           END IF; 
+    
+  UPDATE  TB_FMIS_PAYMENT_HEADER_INTERFACE
+        SET Payment_Type_cd = 'A'
+  WHERE date_part('day',Create_ts) >= 1;
+  -- DRVR WHERE Create_ts::INTEGER >0 AND  Create_ts::INTEGER >= 1;
+     -- DRVR    WHERE LENGTH(TRIM(Create_ts))>0 AND RIGHT(Create_ts,2):: INTEGER >= 1; 
+
+     al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+         as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_HEADER_INTERFACE  for Payment_Type_cd = A';
+         --GOTO ERROR_SECTION;
+     END IF;
+
+      UPDATE  TB_FMIS_PAYMENT_HEADER_INTERFACE
+        SET Payment_Type_cd = 'F'
+        WHERE date_part('day',Create_ts) >= 13;
+      
+  -- DRVR WHERE Create_ts::INTEGER >0 AND  Create_ts::INTEGER >= 13;     
+        --DRVR WHERE LENGTH(TRIM(Create_ts))>0 AND RIGHT(Create_ts,2):: INTEGER >= 13;
+
+     al_sqlcode := SQLCODE;
+     IF al_sqlcode < 0 THEN
+         as_error := 'ERROR in Updating  TB_FMIS_PAYMENT_HEADER_INTERFACE  for Payment_Type_cd = F';
+         --GOTO ERROR_SECTION;
+     END IF;
+
+/****************** Inserting the records into FMIS Header grouping by splits ******************/
+
+     --RETURN 0;
+--Error logging
+
+/* DRVR
+OPEN ERROR_CUR FOR
+SELECT PD.PAYMENT_ID,PD.CLIENT_ID,PD.COUNTY_CD COUNTY
+ ,HD.PROVIDER_ID
+ ,FMIS.BATCH_NO
+ ,'County Name :'||  F_PDESC(PD.COUNTY_CD,104) ||', Provider Name: '
+||  F_ENAME(HD.PROVIDER_ID,'2953')
+|| ', Client Name : ' ||  F_ENAME(PD.CLIENT_ID,'2955')
+||', Transaction amount is missing for '|| HD.PAYMENT_ID
+ FROM TB_PAYMENT_DETAIL PD ,  TB_FMIS_PAYMENT_DETAIL_INTERFACE FMIS,TB_PAYMENT_HEADER HD
+WHERE PD.PAYMENT_ID = CAST(FMIS.INVOICE_NBR AS INT)
+AND HD.PAYMENT_ID = PD.PAYMENT_ID
+AND HD.DELETE_SW = 'N'
+AND PD.DELETE_SW = 'N'
+AND FMIS.DELETE_SW = 'N'
+AND PD.FINAL_AMOUNT_NO IS NULL;
+
+FETCH ERROR_CUR INTO VN_ERROR_PAYMENT_ID, VN_ERROR_CLIENT_ID, VS_ERROR_COUNTY_CD, VN_ERROR_PROVIDER_ID, VS_BATCH_NO, VS_ERROR_TX;
+
+--WHILE (SQLCODE <> 0) LOOP
+
+INSERT INTO TB_INTERFACES_RUNTIMES_LOG   (RUN_ID,
+      INTERFACE_TX,
+      CURRENT_RUN_TS,
+      BATCH_NO,
+      CREATE_TS,
+      CREATE_USER_ID,
+      UPDATE_TS,
+      UPDATE_USER_ID,
+      DELETE_SW,
+      OTHER_TX)
+
+      (SELECT  '',
+      'FMIS_PAYMENT',
+      CURRENT_TIMESTAMP,
+       VS_BATCH_NO,
+      CURRENT_TIMESTAMP,
+      'finance',          
+      CURRENT_TIMESTAMP,
+      'finance',
+      'N',
+      VN_ERROR_PROVIDER_ID
+      ) ;
+      
+FETCH ERROR_CUR INTO VN_ERROR_PAYMENT_ID, VN_ERROR_CLIENT_ID, VS_ERROR_COUNTY_CD, VN_ERROR_PROVIDER_ID, VS_BATCH_NO, VS_ERROR_TX;
+
+*/
+END LOOP;
+
+--ERROR_SECTION:
+   -- RETURN -1;
+
+END; 
+
+$function$
+

@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION prov_getmonitordetails(v_monitoring_id character varying, v_record_type character varying, v_module_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+v_prgram character varying;
+v_provider_id character varying;
+ 
+ v_reporting_start_date timestamp without time zone;
+ v_reporting_end_date timestamp without time zone;
+ begin
+
+select provider_id, prgram, 
+  monitoring_period_start_date, monitoring_period_end_date 
+  into v_provider_id,v_prgram, v_reporting_start_date,v_reporting_end_date 
+  from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+  
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  select 
+  prs.objectid ,prs.site_id,tp.provider_nm,prs.monitoring_record_site_id,pr.prgram,prs.status,concat(p.firstname,' ',p.lastname) as person_name,p.dob::date,p.gendertypekey,
+  prs.update_ts ,tpl.license_no,tpl.license_type,prs.recordreviewdate,(select * from prov_get_formatted_addresses(prs.site_id)) as address,
+      ps.first_nm,ps.last_nm,
+                        hh.first_nm as hh_first_nm,hh.last_nm as hh_last_nm,hh.provider_id as hh_provider_id,
+                        p.firstname,p.lastname,
+  (select  case when count(1) > 0 then true else false end as any_pending from prov_monitoring_record_data prd where prd.monitoring_record_site_id = prs.monitoring_record_site_id and coalesce(prd.monitoring_record_value) = 'Pending'),
+  (select  case when count(1) > 0 then true else false end as any_nc from prov_monitoring_record_data prd where prd.monitoring_record_site_id = prs.monitoring_record_site_id and coalesce(prd.monitoring_record_value) = 'Non-Compliance')
+        ,objectid,
+        case (v_record_type) 
+      when 'Child' then (select concat(p.firstname,' ',p.lastname)  from  person p where  p.personid ::character varying = prs.objectid
+   union
+   select concat(p.firstname,' ',p.lastname)  from  prov.prov_adhoc_site_placements p where 
+        p.site_placement_id ::character varying = prs.objectid) 
+      when 'Parent' then (select concat(p.firstname,' ',p.lastname)  from  person p where  p.personid ::character varying = prs.objectid) 
+   when 'Board member' then (select concat(ps.first_nm,' ',ps.last_nm)  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)      
+   when 'Staff' then (select concat(ps.first_nm,' ',ps.last_nm)  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)      
+      end as objectname,     
+     case (v_record_type) 
+      when ('Staff' )  then (select ps.employee_type  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)      
+      end as emptype,
+     case (v_record_type) 
+      when ('Staff')  then (select ps.start_date::date  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)      
+      when ('Board member')  then (select monitoring_record_value::date from prov_monitoring_record_data prdt 
+   join prov_record_question prq on prq.record_question_id = prdt.record_question_id where question='Date' and monitoring_record_site_id=prs.monitoring_record_site_id
+   )   end as dateofhireorinterview,
+  case (v_record_type) 
+      when 'Parent' then (select pa.cpa_initial_date  from  tb_prov_cpa_address_cert pa where  pa.cpa_provider_id = hh.provider_id and pa.active_flag = 1) 
+     end as dateOfinitialcertification,
+  case (v_record_type) 
+      when 'Parent' then (select pa.cpa_recert_date  from tb_prov_cpa_address_cert pa where  pa.cpa_provider_id = hh.provider_id and pa.active_flag = 1) 
+     end as dateOfcurrentcertification,
+  case (v_record_type) 
+      when 'Child' then (select p.entry_dt from tb_placement  p where  p.personid ::character varying = prs.objectid and 
+   p.provider_id = prs.site_id and p.placement_id in  (select p1.placement_id from tb_placement  p1 where  p1.personid ::character varying = prs.objectid
+      and p1.provider_id = prs.site_id order by p.create_ts desc limit 1) union
+   select p.entry_dt  from  prov.prov_adhoc_site_placements p where 
+        p.site_placement_id ::character varying = prs.objectid and p.site_id = prs.site_id) 
+     end as dateOfadmission,
+        (select json_agg(x) from (select 
+  prq.question,prq.question_hint,monitoring_record_value,
+  count(prdt.monitoring_record_value)as cnt
+  from prov_monitoring_record_data prdt  
+  join prov_monitoring_record_site pms on pms.monitoring_record_site_id=prdt.monitoring_record_site_id 
+   join prov_record_question prq on prq.record_question_id = prdt.record_question_id
+  where prdt.monitoring_record_site_id = prs.monitoring_record_site_id::uuid and prdt.delete_sw = 'N' and prq.question !='Date'
+  group by prq.question,prq.question_hint,prdt.monitoring_record_value
+  )x) answers  
+  from prov_monitoring_record_site prs 
+  inner join prov_monitoring m on m.monitoring_id = prs.monitoring_id and m.delete_sw = 'N'
+  left join providerstaff ps                  on provider_staff_id::character varying = prs.objectid and ps.delete_sw = 'N'
+  left join (select lastname,firstname,dob,gendertypekey,personid from person p where activeflag = 1 union
+  select lastname,firstname,dob,gender as gendertypekey,site_placement_id as personid from prov_adhoc_site_placements where delete_sw = 'N') p on (case when prs.objectid = 'null' then p.personid = '00000000-0000-0000-0000-000000000000' else personid  = prs.objectid :: uuid end
+  ) and prs.objecttype != 'Parent'
+  left join tb_prov_cpa_adop_person hh        on hh.provider_cpa_adop_person_id = (select prs1.objectid from prov_monitoring_record_site prs1 where prs1.objecttype = 'Parent'
+  and prs.monitoring_record_site_id = prs1.monitoring_record_site_id)
+  left join prov_record pr on pr.record_id = prs.record_id
+  left join tb_provider_licensing tpl on tpl.site_id = prs.site_id and tpl.active_sw ='Y'
+  left join tb_provider tp on tpl.site_id = tp.provider_id
+  where 
+  (case when v_reporting_start_date is null or prs.recordreviewdate is null  then m.monitoring_id =v_monitoring_id 
+                        else prs.recordreviewdate::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end)
+  and m.provider_id = v_provider_id
+  and pr.prgram=v_prgram 
+  and pr.records_type = v_record_type 
+  and pr.module_name=v_module_name 
+  and prs.delete_sw = 'N' 
+ order by prs.create_ts desc
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

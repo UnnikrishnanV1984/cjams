@@ -1,0 +1,412 @@
+CREATE OR REPLACE FUNCTION f_fm005r_statewide(start_date date, end_date date)
+ RETURNS TABLE(county_cd character varying, final_fiscal_category_cd character varying, column_a numeric, column_b numeric, column_c numeric, column_d numeric, column_e numeric, column_f numeric, column_g numeric, column_h numeric, column_i numeric, column_j numeric, column_k numeric, class text, ldss character varying, categorydesc character varying, classdesc text)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+(
+SELECT tb_main_FM005R. county_cd
+   , tb_main_FM005R.final_fiscal_category_cd::VARCHAR
+   , tb_main_FM005R.column_A
+   , tb_main_FM005R.column_B
+   , tb_main_FM005R.column_C
+   , tb_main_FM005R.column_D
+   , tb_main_FM005R.column_E
+   , tb_main_FM005R.column_F
+   , tb_main_FM005R.column_G
+   , tb_main_FM005R.column_H
+   , tb_main_FM005R.column_I
+   , tb_main_FM005R.column_J
+   , tb_main_FM005R.column_I - tb_main_FM005R.column_J as column_K
+   , tb_main_FM005R.class,F_PLVALUE(tb_main_FM005R.COUNTY_CD,104) LDSS,
+                  (SELECT DISTINCT FISCAL_CATEGORY_DESC FROM TB_FISCAL_CATEGORY_MASTER WHERE FISCAL_CATEGORY_CD=tb_main_FM005R.final_fiscal_category_cd) CATEGORYDESC,
+                     CASE WHEN tb_main_FM005R.CLASS='2100' THEN 'Federal Foster Care'
+                     WHEN tb_main_FM005R.CLASS='7100' THEN 'Non- Federal Foster Care' 
+                     WHEN tb_main_FM005R.CLASS='4100' THEN 'Promoting Safe and Stable Families' 
+                     WHEN tb_main_FM005R.CLASS='5100' THEN 'Independent Living' end classdesc
+          
+   FROM ( SELECT tb_outer_FM005R.county_cd
+      , tb_outer_FM005R.final_fiscal_category_cd
+      , tb_outer_FM005R.column_A
+      , tb_outer_FM005R.column_B
+      , tb_outer_FM005R.column_C
+      , tb_outer_FM005R.column_D
+      , tb_outer_FM005R.column_E
+      , tb_outer_FM005R.column_F
+      , tb_outer_FM005R.column_G
+      , tb_outer_FM005R.column_H
+      , tb_outer_FM005R.column_I
+      , CAST(CASE WHEN tb_outer_FM005R.class = '2100' THEN tb_outer_FM005R.column_I * 0.50
+         WHEN tb_outer_FM005R.class = '7100' THEN 0
+         WHEN tb_outer_FM005R.final_fiscal_category_cd IN ('5113','5114','5115','5116','5119','5120') THEN tb_outer_FM005R.column_I * 0.80
+         WHEN tb_outer_FM005R.final_fiscal_category_cd IN ('5117','5118') THEN tb_outer_FM005R.column_I * 0.00
+         WHEN tb_outer_FM005R.class = '4100' THEN tb_outer_FM005R.column_I * 0.75
+     END as dec(20,2)) as column_J
+      , tb_outer_FM005R.class
+      FROM ( SELECT FM005R.county_cd
+         , FM005R.final_fiscal_category_cd
+         , sum(FM005R.column_A) as column_A
+         , sum(FM005R.column_B) as column_B
+         , sum(FM005R.Column_C) as column_C
+         , sum(FM005R.column_D) as column_D
+         , sum(FM005R.column_B) + sum(FM005R.Column_C) + sum(FM005R.column_D) as Column_E
+         , sum(FM005R.column_F) as column_F
+         , sum(FM005R.column_G) as column_G
+         , sum(FM005R.column_H) + sum(FM005R.column_X) as column_H
+         , sum(FM005R.column_B) + sum(FM005R.Column_C)+sum(FM005R.column_D)+sum(FM005R.column_F)+ 
+         sum(FM005R.column_G)+sum(FM005R.column_H)+ sum(FM005R.column_X) as column_I
+         , FM005R.class
+      FROM ( SELECT column_A.county_cd
+         , column_A.final_fiscal_category_cd
+         , column_A.column_A
+         , 0 as column_B
+         , 0 as column_C
+         , 0 as column_D
+         , 0 as column_F
+         , 0 as column_G
+         , 0 as column_H
+         , 0 as column_X
+         , CASE WHEN substr(column_A.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_A.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_A.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_A.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         --children receiveing Maintenance,subsidy,guardianship subsidy (FMIS interface) payments for room & board services
+         FROM ( SELECT tb_main2.county_cd
+            , tb_main2.final_fiscal_category_cd
+            , sum(tb_main2.column_A) as column_A
+            FROM ( SELECT tb_main.county_cd
+               , tb_main.final_fiscal_category_cd
+               , tb_main.client_id
+               --, DECIMAL(dec(sum(num_DAYs2))/dec(max(lastDAY)),10,2) 
+            ,1 as column_A
+               FROM ( SELECT pd.county_cd
+                  , pd.final_fiscal_category_cd
+                  , pd.client_id
+                  --, CAST (DAY(pd.final_service_start_dt + 1 MONTH - DAY(pd.final_service_start_dt) DAY) as DECIMAL (5,0) ) 
+               ,0 lastDAY
+                  , CASE WHEN pd.final_units_no = 1 THEN
+                 final_units_no * 1--(CAST (DAY(pd.final_service_start_dt + 1 MONTH - DAY(pd.final_service_start_dt) DAY) as DECIMAL (5,0) ))
+                 ELSE
+                 pd.final_units_no
+                 END as num_DAYs2
+               FROM tb_payment_detail pd JOIN tb_payment_header ph ON ph.payment_id = pd.payment_id
+                AND pd.delete_Sw = 'N'
+                AND ph.delete_Sw = 'N'
+               JOIN tb_payment_status ps ON ps.payment_id = ph.payment_id
+                AND ps.delete_Sw = 'N'
+                 WHERE pd.final_rate_type_cd IN ('1232','5670','5671')
+                AND ph.payment_type_cd IN ('6','5689','7')
+                AND ps.payment_status_cd = '1636'
+                AND pd.final_amount_no > 0
+                AND ph.payment_start_dt = START_DATE::timestamp - interval '1 month'
+                 AND pd.county_cd NOT IN ('9115','3825','3826')
+              ) tb_main
+              GROUP BY tb_main.county_cd, tb_main.final_fiscal_category_cd,tb_main. client_id
+              ) tb_main2
+              GROUP BY tb_main2.county_cd, tb_main2.final_fiscal_category_cd
+
+          --children for whom afs payments released AND afs system adjustments for room & board service
+           UNION
+          SELECT tb_main2.county_cd
+            , tb_main2.final_fiscal_category_cd
+            --, sum(column_A) 
+            ,1 column_A
+            FROM ( SELECT distinct tb_main.client_id
+               , tb_main.county_cd
+               , tb_main.final_fiscal_category_cd
+               ,-- DECIMAL(dec(sum(num_DAYs2))/dec(max(lastDAY)),10,2) 
+                      1 as column_A
+               , sum(tb_main.num_DAYs2)
+               , sum(tb_main.lastDAY)
+               FROM ( SELECT distinct pd.client_id
+                  , pd.final_fiscal_category_cd
+                  , CASE WHEN pd.final_units_no = 1 THEN
+                 pd.final_units_no *1-- (CAST (DAY(pd.final_service_start_dt + 1 MONTH - DAY(pd.final_service_start_dt) DAY) as DECIMAL (5,0) ))
+                 ELSE
+                 pd.final_units_no
+                 END as num_DAYs2
+                  , --CAST (DAY(pd.final_service_start_dt + 1 MONTH - DAY(pd.final_service_start_dt) DAY) as DECIMAL (5,0) )
+               1 lastDAY
+                  , pd.final_service_start_dt
+                  , pd.final_service_end_dt
+                  , pd.county_cd
+                  , pd.payment_id
+               FROM tb_afs_interfaces_iss afs JOIN tb_payment_detail pd ON pd.payment_id = cast(afs.payment_id as integer)
+                 WHERE upper(afs.payment_type_cd) IN ('SYAD','RELS') AND afs.delete_sw = 'N' AND pd.delete_Sw = 'N'
+                AND pd.final_rate_type_cd IN ('1232','5670','5671')
+               and DATE(afs.create_ts) between START_DATE AND END_DATE  
+                AND pd.county_cd NOT IN ('9115','3825','3826')
+              ) tb_main
+              GROUP BY tb_main.county_cd, tb_main.final_fiscal_category_cd, tb_main.client_id
+              ) tb_main2
+              GROUP BY tb_main2.county_cd, tb_main2.final_fiscal_category_cd 
+           ) as column_A
+
+        --FMIS interface payments under payment type Maintenance,Adoption Subsidy & Guardianship Subsidy (Column B)
+        UNION
+          SELECT column_B.county_cd
+         , column_B.final_fiscal_category_cd
+         , 0 as column_A
+         , column_B.column_B
+         , 0 as column_C
+         , 0 as column_D
+         , 0 as column_F
+         , 0 as column_G
+         , 0 as column_H
+         , 0 as column_X
+         , CASE WHEN substr(column_B.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_B.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_B.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_B.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         FROM ( SELECT pd.county_cd
+            , pd.final_fiscal_category_cd
+            , sum(pd.final_amount_no) as column_B
+            FROM tb_payment_header ph JOIN tb_payment_status ps ON ps.payment_id = ph.payment_id
+             AND ps.delete_Sw = 'N'
+            JOIN tb_payment_detail pd ON pd.payment_id = ph.payment_id
+             AND pd.delete_Sw = 'N' AND ph.delete_Sw = 'N'
+           WHERE pd.final_amount_no > 0
+             AND ph.payment_start_dt = START_DATE::timestamp - interval '1 month'
+             AND ph.payment_type_cd IN ('6','5689','7')
+             AND ps.payment_status_cd = '1636' AND pd.county_cd NOT IN ('9115','3825','3826')
+           GROUP BY pd.county_cd, pd.final_fiscal_category_cd 
+           ) column_B
+        --Afs system Adjustments & Released Payments for the report MONTH  (Column C)
+        UNION
+          SELECT column_C.county_cd
+         , column_C.final_fiscal_category_cd
+         , 0 as column_A
+         , 0 as column_B
+         , column_C.payment_amt as column_C
+         , 0 as column_D
+         , 0 as column_F
+         , 0 as column_G
+         , 0 as column_H
+         , 0 as column_X
+         , CASE WHEN substr(column_C.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_C.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_C.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_C.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         FROM ( SELECT tb_main.county_cd
+            , tb_main.final_fiscal_category_cd
+            , 0 as column_A
+            , 0 as column_B
+            , sum(tb_main.final_amount_no) as payment_amt
+            FROM ( SELECT distinct pd.payment_detail_id
+               , afs.payment_id
+               , pd.final_amount_no
+               , pd.final_fiscal_category_cd
+               , pd.final_rate_type_cd
+               , pd.final_service_start_dt
+               , pd.final_service_end_dt
+               , pd.county_cd
+               FROM tb_afs_interfaces_iss afs JOIN tb_payment_detail pd ON pd.payment_id = cast(afs.payment_id as integer)
+              WHERE upper(afs.payment_type_cd) IN ('SYAD','RELS')
+             AND afs.delete_sw = 'N' AND pd.delete_Sw = 'N'
+            and DATE(afs.create_ts) between START_DATE AND END_DATE  
+             aND pd.county_cd NOT IN ('9115','3825','3826')
+            ) tb_main
+            GROUP BY tb_main.county_cd,tb_main.final_fiscal_category_cd 
+           ) as column_C
+        --AFS ANCL & MANUAL ADJUSTMENTS   (Column D)
+        UNION
+          SELECT column_D.county_cd
+         , column_D.final_fiscal_category_cd
+         , 0 as column_A
+         , 0 as column_B
+         , 0 as column_C
+         , column_D.payment_amt as column_D
+         , 0 as column_F
+         , 0 as column_G
+         , 0 as column_H
+         , 0 as column_X
+         , CASE WHEN substr(column_D.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_D.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_D.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_D.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         FROM ( SELECT tb_main.county_cd
+            , tb_main.final_fiscal_category_cd
+            , sum(tb_main.final_amount_no) as payment_amt
+            FROM ( SELECT distinct pd.payment_detail_id
+               , afs.payment_id
+               , pd.final_amount_no
+               , pd.final_fiscal_category_cd
+               , pd.final_rate_type_cd
+               , pd.final_service_start_dt
+               , pd.final_service_end_dt
+               , pd.county_cd
+               FROM tb_afs_interfaces_iss afs JOIN tb_payment_detail pd ON pd.payment_id = cast(afs.payment_id as integer)
+              WHERE upper(payment_type_cd) IN ('ANCL','MNAD')
+             AND afs.delete_sw = 'N' AND pd.delete_Sw = 'N'
+             AND pd.county_cd NOT IN ('9115','3825','3826')
+             AND pd.final_fiscal_category_cd NOT IN ('7502','7503') --(Ancillary payments made FROM child a/c not to be included)
+             and DATE(afs.create_ts) between START_DATE AND END_DATE  
+              ) tb_main
+              GROUP BY tb_main.county_cd, tb_main.final_fiscal_category_cd 
+           ) as column_D
+        --FMIS AR offSET collections (Column F)
+        UNION
+          SELECT Column_F.county_cd
+         , Column_F.final_fiscal_category_cd
+         , 0 as column_A
+         , 0 as column_B
+         , 0 as column_C
+         , 0 as column_D
+         , Column_F.column_F
+         , 0 as column_G
+         , 0 as column_H
+         , 0 as column_X
+         , CASE WHEN substr(Column_F.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(Column_F.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(Column_F.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(Column_F.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         FROM ( SELECT pd.county_cd
+            , pd.final_fiscal_category_cd
+            , sum(rl.collected_amount_no) * (-1) as Column_F
+            FROM tb_payment_header ph JOIN tb_payment_detail pd ON pd.payment_id = ph.payment_id
+            JOIN TB_RECEIVABLE_DETAIL rd ON rd.payment_detail_id = pd.payment_detail_id
+            JOIN tb_receivable_liquidation rl ON rl.receivable_detail_id = rd.receivable_detail_id
+            JOIN tb_receivable_offSET ro ON ro.offSET_id = rl.offSET_id
+           WHERE ro.payment_id IN ( SELECT DISTINCT ph.payment_id
+                 FROM tb_payment_header ph JOIN tb_payment_status ps ON ps.payment_id=ph.payment_id
+                 JOIN tb_payment_detail D ON D.payment_id = ph.payment_id AND D.delete_Sw = 'N'
+                 JOIN tb_receivable_offSET ro ON ro.payment_id = ph.payment_id
+                 JOIN tb_receivable_liquidation rl ON rl.offSET_id = ro.offSET_id
+                   WHERE ph.offSET_amount_no > 0
+                  AND ph.payment_start_dt = START_DATE::timestamp - interval '1 month'
+                  AND ph.delete_Sw = 'N'
+                  AND ph.payment_type_cd = '6'
+                  AND ps.payment_status_cd = '1636'
+                  AND ps.delete_Sw = 'N'
+                  AND d.county_cd NOT IN ('9115','3825','3826') --LIMIT 10
+                )
+                GROUP BY pd.county_cd, pd.final_fiscal_category_cd 
+           ) Column_F
+        --AR Manual Receipts   (Column G)
+        UNION
+          SELECT column_G.county_cd
+         , column_G.final_fiscal_category_cd
+         , 0 as column_A
+         , 0 as column_B
+         , 0 as column_C
+         , 0 as column_D
+         , 0 as column_F
+         , column_G.column_G
+         , 0 as column_H
+         , 0 as column_X
+         , CASE WHEN substr(column_G.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_G.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_G.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_G.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+        FROM ( SELECT pd.county_cd
+           , pd.final_fiscal_category_cd
+           , sum(rl.collected_amount_no) * (-1) as column_G
+           FROM tb_payment_receipt pr JOIN tb_receivable_liquidation rl ON pr.receipt_id = rl.receipt_id
+            AND pr.delete_Sw = 'N'
+            AND (rl.delete_Sw = 'N' or (rl.delete_Sw = 'Y' AND upper(rl.upDATE_user_id) = 'REVERSAL'))
+           JOIN tb_receivable_detail rd ON rd.receivable_detail_id = rl.receivable_detail_id AND rd.delete_Sw = 'N'
+           JOIN tb_payment_detail pd ON pd.payment_detail_id = rd.payment_detail_id AND pd.delete_Sw = 'N'
+          WHERE DATE(pr.create_ts) between START_DATE AND END_DATE  AND 
+          payment_method_cd NOT IN ('16')
+            AND pd.county_cd NOT IN ('9115','3825','3826')
+          GROUP BY pd.county_cd, pd.final_fiscal_category_cd
+          
+          UNION
+            SELECT pd.county_cd
+           , pd.final_fiscal_category_cd
+           , sum(rl.collected_amount_no) as column_G
+           FROM tb_payment_receipt pr
+           JOIN tb_receivable_liquidation rl ON CAST(pr.payment_no_tx AS INTEGER) = rl.receipt_id
+            AND pr.delete_Sw = 'N' AND (rl.delete_Sw = 'N' or (rl.delete_Sw = 'Y' AND upper(rl.upDATE_user_id) = 'REVERSAL'))
+           JOIN tb_receivable_detail rd ON rd.receivable_detail_id = rl.receivable_detail_id AND rd.delete_Sw = 'N'
+           JOIN tb_payment_detail pd ON pd.payment_detail_id = rd.payment_detail_id AND pd.delete_Sw = 'N'
+          WHERE DATE(pr.create_ts) between START_DATE AND END_DATE  AND 
+          pr.payment_method_cd IN ('16')
+            AND pr.approval_status_cd = '3047' AND pd.county_cd NOT IN ('9115','3825','3826')
+          GROUP BY pd.county_cd, pd.final_fiscal_category_cd 
+          ) column_G
+        --Column_H cost of care reimbursement
+        UNION
+          SELECT column_H.county_cd
+         , column_H.final_fiscal_category_cd
+         , 0 as column_A
+         , 0 as column_B
+         , 0 as column_C
+         , 0 as column_D
+         , 0 as column_F
+         , 0 as column_G
+         , column_H.column_H
+         , 0 as column_X
+         , CASE WHEN substr(column_H.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_H.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_H.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_H.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         FROM ( SELECT sum(tr.transaction_amount_no) * (-1) as column_H
+            , pd.final_fiscal_category_cd
+            , pd.county_cd
+            FROM tb_account_transaction tr
+            JOIN tb_client_account ca ON tr.client_account_id = ca.client_account_id
+             AND tr.delete_sw = 'N' AND ca.delete_sw = 'N'
+            JOIN tb_payment_detail pd ON pd.payment_detail_id = tr.payment_detail_id
+             AND pd.delete_sw = 'N' AND tr.delete_sw = 'N'
+           WHERE TR.TRANSACTION_TYPE_CD = '3444'
+             AND TR.CREDIT_DEBIT_SW = 'D'
+             AND TR.TRANSACTION_SOURCE_CD = '5477'
+             AND cast(EXTRACT(month FROm TR.BENEFIT_START_DT::timestamp) as varchar) = cast(EXTRACT(month FROm START_DATE::timestamp - interval '1 month') as varchar) 
+AND cast(EXTRACT(year FROm TR.BENEFIT_START_DT::timestamp) as varchar) = cast(EXTRACT(year FROm START_DATE::timestamp - interval '1 month') as varchar)
+AND cast(EXTRACT(month FROm TR.TRANSACTION_DT::timestamp) as varchar) = cast(EXTRACT(month FROm START_DATE::timestamp) as varchar)
+ AND cast(EXTRACT(year FROm TR.TRANSACTION_DT::timestamp) as varchar) =  cast(EXTRACT(year FROm START_DATE::timestamp) as varchar)
+             GROUP BY pd.final_fiscal_category_cd, pd.county_cd
+           ) as column_H
+        UNION
+          SELECT column_X.county_cd
+         , column_X.final_fiscal_category_cd
+         , 0 as column_A
+         , 0 as column_B
+         , 0 as column_C
+         , 0 as column_D
+         , 0 as column_F
+         , 0 as column_G
+         , 0 as column_H
+         , column_X.column_X
+         , CASE WHEN substr(column_X.final_fiscal_category_cd,1,2) = '21' THEN '2100'
+             WHEN substr(column_X.final_fiscal_category_cd,1,2) = '71' THEN '7100'
+             WHEN substr(column_X.final_fiscal_category_cd,1,2) = '41' THEN '4100'
+             WHEN substr(column_X.final_fiscal_category_cd,1,2) = '51' THEN '5100'
+           END as class
+         FROM ( SELECT sum(column_X) * (-1) as column_X
+            , temp as final_fiscal_category_cd
+            , sub.county_cd
+            FROM ( SELECT DISTINCT tr.transaction_amount_no as column_X
+               , concat('71', substr(pd.final_fiscal_category_cd, 3)) as temp
+               , pd.county_cd
+               FROM tb_account_transaction tr
+               JOIN tb_client_account ca ON tr.client_account_id = ca.client_account_id
+             AND tr.delete_sw = 'N' AND ca.delete_sw = 'N'
+               JOIN tb_payment_detail pd ON pd.payment_detail_id = tr.payment_detail_id
+             AND pd.delete_sw = 'N' AND tr.delete_sw = 'N'
+              WHERE TR.TRANSACTION_TYPE_CD = '3444'
+             AND TR.CREDIT_DEBIT_SW = 'D'
+             AND TR.TRANSACTION_SOURCE_CD = '5477'
+             AND date(TR.BENEFIT_START_DT) < START_DATE::timestamp - interval '1 month'
+                AND cast(EXTRACT(month FROm TR.TRANSACTION_DT::timestamp) as varchar) = cast(EXTRACT(month FROm START_DATE::timestamp) as varchar)
+                AND cast(EXTRACT(year FROm TR.TRANSACTION_DT::timestamp) as varchar) =  cast(EXTRACT(year FROm START_DATE::timestamp) as varchar)
+              ) sub
+          GROUP BY temp, sub.county_cd 
+           ) as column_X
+        ) as FM005R
+       GROUP BY FM005R.county_cd, FM005R.final_fiscal_category_cd, FM005R.class
+     ) as tb_outer_FM005R
+     ) as tb_main_FM005R
+    where tb_main_FM005R.county_cd IS NOT NULL and tb_main_FM005R.final_fiscal_category_cd is not null
+    order by tb_main_FM005R.county_cd,tb_main_FM005R. class, tb_main_FM005R.final_fiscal_category_cd desc );
+              END;
+$function$
+

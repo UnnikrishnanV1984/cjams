@@ -1,0 +1,2 @@
+--CDM-11157-Change is Removal Date
+update intakeservreqchildremoval set removaldate = '2021-02-09 00:00:00', updatedby = 'CDM-11157', updatedon = now () where intakeservreqchildremovalid in ('a26e5094-80ee-4289-8ce8-aad498f367e4', '2219737a-2f62-462a-8847-64027b897069');

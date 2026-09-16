@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION as_savefocuspersoncasedetails(intakeserviceid uuid, v_intakenumber character varying, jsondata json, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE  
+
+v_date timestamp without time zone;
+j_interstate json;
+j_residingwithdetails json;
+j_warranttypedetails json;
+i json;
+j json;
+v_intakeserreqinterstateid uuid;
+v_intakeserreqinterstateresidingconfigid uuid;
+v_intakeserreqinterstatewarranttypeconfigid uuid;
+v_intakeserviceid uuid;
+v_intakeservicerequestactorid uuid; 
+l_focuspersonid uuid;
+I_isdetaintheyouth boolean;
+I_getfocuspersoncasestatusconfig character varying;
+ 
+BEGIN
+v_date:= now() ;
+IF (intakeserviceid is null) THEN
+v_intakeserviceid:= '00000000-0000-0000-0000-000000000000';
+ELSE
+v_intakeserviceid:= intakeserviceid;
+END IF;
+
+       Update intakeserreqinterstate set activeflag = 0 where intakenumber = v_intakenumber and activeflag = 1;
+    Update intakeserreqinterstateresidingconfig set activeflag = 0 where intakeserreqinterstateid in (select intakeserreqinterstateid from intakeserreqinterstate where intakenumber = v_intakenumber 
+    and activeflag = 1);
+    Update intakeserreqinterstatewarranttypeconfig set activeflag = 0 where intakeserreqinterstateid in (select intakeserreqinterstateid from intakeserreqinterstate where intakenumber = v_intakenumber 
+    and activeflag = 1);
+
+    For j_interstate in Select * from json_array_elements(jsondata)
+    LOOP
+       
+     j_residingwithdetails := j_interstate ->> 'residingwithdetails';
+     j_warranttypedetails := j_interstate ->> 'warranttypedetails';
+            I_isdetaintheyouth := j_interstate ->> 'isdetaintheyouth';
+   
+     /* Intakeserreqinterstate Insert*/
+     IF (intakeserviceid is null) THEN
+     v_intakeserviceid:= '00000000-0000-0000-0000-000000000000';
+     ELSE
+     v_intakeserviceid:= intakeserviceid;
+     END IF;
+     
+     v_intakeserreqinterstateid :=   gen_random_uuid();
+     Insert Into intakeserreqinterstate (intakeserreqinterstateid, intakeserviceid, intakenumber,
+     demandingstate, maxdateofexpiration, countyid, requisitiontypekey, iswritwarrant, warranttype,
+     isdetaintheyouth, notes, contentofrequisitionform, activeflag, insertedby, updatedby, insertedon,
+     updatedon,voluntrytype, writwarrentnumber)
+     values (v_intakeserreqinterstateid, v_intakeserviceid, v_intakenumber, 
+     cast(j_interstate ->> 'demandingstate' as character varying), cast(j_interstate ->> 'maxdateofexpiration' as timestamp without time zone), 
+     cast(j_interstate ->> 'countyid' as uuid),cast(j_interstate ->> 'requisitiontypekey' as character varying), cast(j_interstate ->> 'iswritwarrant' as boolean),
+     cast(j_interstate ->> 'warranttype' as character varying), cast(j_interstate ->> 'isdetaintheyouth' as boolean), cast(j_interstate ->> 'notes' as text), 
+     cast(j_interstate ->> 'contentofrequisitionform' as text), 1, v_securityuserid, v_securityuserid, v_date, v_date ,cast(j_interstate ->> 'voluntrytype' as  character varying), 
+     cast(j_interstate ->> 'writwarrentnumber' as  character varying));
+
+    --for open detention ststus 12/27/2018
+    if(I_isdetaintheyouth = true)
+    then
+    select focuspersonid into l_focuspersonid from intakedastaging where activeflag=1 and intakenumber=v_intakenumber limit 1;
+     SELECT getfocuspersoncasestatusconfig into I_getfocuspersoncasestatusconfig  FROM 
+     as_getfocuspersoncasestatusconfig(l_focuspersonid, null, v_intakenumber,
+              'DETN', null, null, v_securityuserid);
+             end if;
+           
+      /*  Intakeserreqinterstateresidingconfig Insert*/
+    
+     For i in Select * from json_array_elements(j_residingwithdetails)
+     LOOP
+      v_intakeserreqinterstateresidingconfigid:=   gen_random_uuid();
+      select isra.intakeservicerequestactorid into v_intakeservicerequestactorid from intakeservicerequestactor isra
+      join actor a on a.actorid = isra.actorid
+      join person p on p.personid = a.personid
+      where isra.intakeserviceid = v_IntakeServiceId and (CASE WHEN i->>'personid' not like 'temp%' THEN p.personid = (i->>'personid')::uuid
+                           ELSE (p.firstname = i->>'firstName' and p.lastname = i->>'lastName') end) ;
+         
+      Insert Into intakeserreqinterstateresidingconfig (intakeserreqinterstateresidingconfigid, intakeserreqinterstateid, intakeservicerequestactorid,
+      activeflag, insertedby, updatedby, insertedon, updatedon )
+      values (v_intakeserreqinterstateresidingconfigid, v_intakeserreqinterstateid, v_intakeservicerequestactorid, 1, v_securityuserid, v_securityuserid,
+      v_date, v_date );
+     
+     
+     END LOOP; 
+
+     /*  Intakeserreqinterstatewarranttypeconfig Insert*/
+    
+     For j in Select * from json_array_elements(j_warranttypedetails)
+     LOOP
+      v_intakeserreqinterstatewarranttypeconfigid:=   gen_random_uuid();
+      Insert Into intakeserreqinterstatewarranttypeconfig (intakeserreqinterstatewarranttypeconfigid, intakeserreqinterstateid, warranttype,
+      warranttypekey, activeflag, insertedby, updatedby, insertedon, updatedon )
+      values (v_intakeserreqinterstatewarranttypeconfigid, v_intakeserreqinterstateid, cast(j ->> 'warranttype' as character varying), 
+      cast(j ->> 'warranttypekey' as character varying), 1, v_securityuserid, v_securityuserid, v_date, v_date );
+     
+     END LOOP; 
+
+    END LOOP;
+    
+   
+ 
+ Return 'Success';
+ 
+END;
+
+
+$function$
+

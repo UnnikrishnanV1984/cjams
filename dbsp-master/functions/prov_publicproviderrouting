@@ -1,0 +1,227 @@
+CREATE OR REPLACE FUNCTION prov_publicproviderrouting(v_objectid character varying, v_securityuserid character varying, v_tosecurityusersid character varying, v_routingstatusid integer, appeventcode character varying, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying, v_typeofobject character varying DEFAULT ''::character varying, v_agency character varying DEFAULT ''::character varying, v_status character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ v_date timestamp without time zone; 
+ v_msg character varying;
+ v_username character varying;
+ v_returnstatus character varying;
+ v_supervisor boolean;
+ v_torolekey text;
+ v_teamid uuid;
+ v_roletypekey text;
+ v_routing_rec record;
+ v_routingid uuid;
+ v_prov_updateneiceapplication character varying = null;
+ v_is_enabled boolean;
+ BEGIN
+ v_date:= now();
+    SELECT tm.teamid,  r.roletypekey INTO 
+   v_teamid, v_roletypekey 
+   FROM    teammemberassignment tma 
+   INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+   INNER JOIN muser m on m.securityusersid = tma.securityusersid 
+    INNER JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag = 1 
+    INNER JOIN role r on r.id = rm.roleid 
+   WHERE  tma.SecurityUsersId = v_securityuserid AND   tma.activeflag =1 and 
+   case when (v_agency is null OR v_agency = '')  then rm.teamtypekey = 'LDSS'else 
+   rm.teamtypekey = v_agency  end   
+   and r.roletypekey like 'LDSS%';
+  RAISE NOTICE 'v_teamid;:%', v_teamid ;
+    RAISE NOTICE 'v_roletypekey;:%', v_roletypekey ;
+    RAISE NOTICE 'appeventcode;:%', appeventcode ;
+    
+ IF COALESCE(v_tosecurityusersid,'') = '' THEN
+    FOR v_routing_rec IN SELECT routingstatustypekey,sourcerolekey,targetrolekey,
+        ftmrt.teamtypekey frmteamtypekey, ttmrt.teamtypekey  toteamtypekey,
+                             CASE ftmrt.teamtypekey WHEN ttmrt.teamtypekey THEN 0 ELSE 1 END isotheragency
+                             FROM routingconfig  rc
+                       INNER JOIN teammemberroletype ftmrt   on  ftmrt.roletypekey  = rc.sourcerolekey AND ftmrt.activeflag =1
+                       INNER JOIN teammemberroletype ttmrt   on  ttmrt.roletypekey  = rc.targetrolekey AND ttmrt.activeflag =1
+         WHERE  eventcode = appeventcode AND  sourcerolekey =v_roletypekey   
+                             AND rc.activeflag =1
+    loop
+        
+       SELECT tma.SecurityUsersId , COALESCE(up.firstname,'') || ' ' || COALESCE(up.lastname,'')  
+       INTO v_tosecurityusersid, v_username
+       FROM teammemberassignment tma
+    INNER JOIN teammember tm
+     ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1 
+    INNER JOIN userprofile up 
+     ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+    INNER JOIN routingcONfig rc  
+     ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+     AND rc.sourcerolekey =v_routing_rec.sourcerolekey
+                    AND rc.targetrolekey   =v_routing_rec.targetrolekey
+    WHERE rc.eventcode =appeventcode AND tm.teamid =v_teamid
+                AND tm.isdefaultroute  =1
+    AND tma.activeflag =1 limit 1;   
+   
+  IF COALESCE(v_tosecurityusersid,'') <>'' then
+                  SELECT routingid into v_routingid
+               FROM routing r WHERE tosecurityusersid = v_securityuserid 
+               AND activeflag =1
+               AND r.objectid  = v_objectid
+               ORDER BY insertedon desc limit 1;
+       
+      UPDATE routing SET activeflag =0 ,remarks =v_notifymsg,updatedon= v_date 
+      WHERE routingid = v_routingid;               
+  
+                  INSERT INTO routing(
+         eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+         FROMroleid, toroleid,objectid , routingstatustypeid,
+         insertedby,  updatedby,insertedon,updatedon,  
+         servicerequestnumber,routeddescription)
+  
+      VALUES( appeventcode, v_securityuserid,
+        v_tosecurityusersid   , v_teamid,
+        v_routing_rec.sourcerolekey, v_routing_rec.targetrolekey,
+        v_objectid,v_routingstatusid,
+        v_securityuserid,v_securityuserid,
+        v_date,v_date, null,v_routeddescription);
+     
+                 v_msg:=  v_notifymsg || ' by '  ||   v_username;
+                
+       SELECT prov_send_notification INTO v_returnstatus FROM prov_send_notification(v_tosecurityusersid
+                                                                        ,v_securityuserid, v_tosecurityusersid,
+      'System', 'High', v_msg,
+       v_msg , v_objectid);
+                   v_returnstatus:='Success';
+  ELSE
+   v_returnstatus:='User not available for this role';
+  
+  END IF;
+  END LOOP;
+ ELSE  
+
+    SELECT targetrolekey into v_torolekey      
+                             FROM routingconfig  rc
+                       INNER JOIN teammemberroletype ftmrt   on  ftmrt.roletypekey  = rc.sourcerolekey AND ftmrt.activeflag =1
+                       INNER JOIN teammemberroletype ttmrt   on  ttmrt.roletypekey  = rc.targetrolekey AND ttmrt.activeflag =1
+        INNER JOIN role r on r.roletypekey = rc.targetrolekey and r.activeflag =1
+        inner join rolemapping rm on rm.roleid = r.id and rm.activeflag = 1 
+        inner join muser m on m.id = rm.principalid and m.activeflag =1 
+         WHERE  eventcode = appeventcode AND  sourcerolekey =v_roletypekey and m.securityusersid = v_tosecurityusersid
+                             AND rc.activeflag =1 limit 1 ;
+
+          SELECT v_tosecurityusersid , COALESCE(up.firstname,'') || ' ' || COALESCE(up.lastname,'')  
+       INTO v_tosecurityusersid, v_username
+       FROM userprofile up 
+    WHERE up.securityusersid = v_securityuserid;
+    SELECT routingid into v_routingid
+               FROM routing r WHERE tosecurityusersid = v_securityuserid 
+               AND activeflag =1
+               AND r.objectid  = v_objectid
+               ORDER BY insertedon desc limit 1;
+       
+      UPDATE routing SET activeflag =0 ,remarks =v_notifymsg,updatedon= v_date 
+      WHERE routingid = v_routingid;               
+  
+                  INSERT INTO routing(
+         eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+         FROMroleid, toroleid,objectid , routingstatustypeid,
+         insertedby,  updatedby,insertedon,updatedon,  
+         servicerequestnumber,routeddescription)
+  
+      VALUES( appeventcode, v_securityuserid,
+        v_tosecurityusersid   , v_teamid,
+        v_roletypekey, v_torolekey,
+        v_objectid,v_routingstatusid,
+        v_securityuserid,v_securityuserid,
+        v_date,v_date, null,v_routeddescription);
+     
+                 v_msg:=  v_notifymsg || ' by '  ||   v_username;
+                
+       SELECT prov_send_notification INTO v_returnstatus FROM prov_send_notification(v_tosecurityusersid
+                                                                        ,v_securityuserid, v_tosecurityusersid,
+      'System', 'High', v_msg,
+       v_msg , v_objectid);
+                   v_returnstatus:='Success';
+   END if;
+
+-- 15 Review - 16 Approved - 17-reject
+--IF v_typeofobject='Application' THEN
+--   IF v_routingstatusid = 15 THEN
+--    UPDATE tb_public_provider_applicant
+-- SET application_status = 'Pending',
+--     update_user_id = v_securityuserid,
+--        update_ts = v_date
+-- WHERE applicant_id=v_objectid;
+--   ELSIF v_routingstatusid = 16 THEN
+--    UPDATE tb_public_provider_applicant
+-- SET application_status = 'Approved',
+--     update_user_id = v_securityuserid,
+--        update_ts = v_date
+-- WHERE applicant_id=v_objectid;
+--   ELSIF v_routingstatusid = 17 THEN
+--    UPDATE tb_public_provider_applicant
+-- SET application_status = 'Rejected',
+--     update_user_id = v_securityuserid,
+--        update_ts = v_date
+-- WHERE applicant_id=v_objectid;
+--   END IF;
+--END IF;
+IF v_typeofobject='Pre-App' and v_routingstatusid=16 THEN
+   UPDATE tb_public_provider_applicant
+ SET phase = 'Application',
+     update_user_id = v_securityuserid,
+        update_ts = v_date
+ WHERE applicant_id=v_objectid;
+END IF;
+
+
+select
+  distinct (case when r.roletypekey in ('LDSSSP', 'KINSHIPAPP')  then true 
+  else false end )as  issupervisor into v_supervisor
+ from muser m join rolemapping rm on m.id = rm.principalid and m.activeflag =1 and rm.activeflag =1 
+ join role r on r.id = rm.roleid and r.activeflag =1 
+ where m.securityusersid ::character VARYING = v_tosecurityusersid:: CHARACTER varying and rm.teamtypekey = 'LDSS';                     
+
+
+
+if (v_typeofobject = 'Provider') then 
+ 
+ if (v_supervisor <> true) then 
+  INSERT INTO providerassignment(
+    fromworkeridno, fromsupervisoridno, toworkeridno, 
+    tosupervisoridno, objecttypekey, objectid, activeflag, startdate, 
+    enddate, fromteamid,
+    toteamid, 
+    remarks, 
+    insertedby, updatedby, insertedon, updatedon)
+  select v_securityuserid, v_securityuserid, v_tosecurityusersid, 
+   v_tosecurityusersid, 'Provider',v_objectid,1,now(),
+   null,(select tm.teamid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid where tma.securityusersid = v_securityuserid and tma.activeflag=1 and tm.activeflag=1),
+            (select tm.teamid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid where tma.securityusersid = v_tosecurityusersid and tma.activeflag=1 and tm.activeflag=1), 
+   v_routeddescription::character varying,
+   v_securityuserid,v_securityuserid, now(),now()
+ FROM providerassignment where objectid = v_objectid::character varying and toworkeridno not in (v_tosecurityusersid)  
+ and (enddate > now() or enddate is null ) and activeflag =1 
+ and not exists (select 1 from providerassignment where objectid = v_objectid::character varying and (enddate > now() or enddate is null ) and activeflag =1 )
+ order by insertedon desc limit 1;
+ end if; 
+
+else 
+ -- if ( v_supervisor <> true) then 
+  INSERT INTO providerassignment(fromworkeridno, toworkeridno, 
+           objecttypekey, objectid, activeflag, startdate, 
+            enddate, fromteamid, toteamid, remarks, assigndate, 
+            insertedby, updatedby, insertedon, updatedon)
+     VALUES (v_securityuserid, v_tosecurityusersid, 'Application',v_objectid,1,now(),null,(select tm.teamid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid where tma.securityusersid = v_securityuserid and tma.activeflag=1 and tm.activeflag=1),
+            (select tm.teamid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid where tma.securityusersid = v_tosecurityusersid and tma.activeflag=1 and tm.activeflag=1), v_routeddescription::character varying,now(),v_securityuserid,v_securityuserid, now(),now()) ;
+ -- end if;
+end if;
+
+if (appeventcode = 'PRASS' and v_status = 'Denied') then
+ select is_enabled into v_is_enabled from environmentconfig where env_variable = 'is_neice_enabled';
+ if(v_is_enabled = true) then
+  select prov_updateneiceapplication into v_prov_updateneiceapplication from prov_updateneiceapplication(v_objectid, v_status,v_securityuserid,null);
+ end if;
+end if;
+
+RETURN  v_returnstatus::text||'---'||v_prov_updateneiceapplication;
+END;             
+$function$
+

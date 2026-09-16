@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION prov_getallproviderrates(searchobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_skip numeric;
+v_program_id character varying;
+v_provider_id character varying;
+v_provider_name character varying;
+v_program_nm character varying;
+jsondata  json;
+BEGIN
+v_skip := searchobj->>'skip';
+v_program_id := searchobj->>'program_id';
+v_provider_id := searchobj->>'provider_id';
+v_provider_name := searchobj->>'provider_name';
+v_program_nm := searchobj->>'program_nm';
+
+SELECT Json_agg(a)
+INTO      jsondata
+FROM (
+SELECT
+  count(1) over() as totalcount,
+  tppr1.program_rate_id,
+  tppr1.program_id,
+  tppr1.annual_rate_no,
+  tppr1.monthly_rate_no,
+  tppr1.per_diem_rate_no,
+  tppr1.start_dt,
+  tppr1.end_dt,
+  tppr1.create_ts,
+  tppr1.create_user_id,
+  tppr1.update_ts,
+  tppr1.update_user_id,
+  tppr1.delete_sw,
+  tppr1.prov_program_actual_max_cd,
+  tppr1.rate_status,
+  tp.provider_id, 
+  tp.provider_nm as provider_name,
+  p.program_nm
+  ,(SELECT jsonb_agg(h) FROM 
+   ( SELECT count(1) over() as totalcount,*
+   FROM tb_prov_program_rates tppr2
+   WHERE tppr2.rate_status = 'Expired' 
+    AND tppr2.program_id = tppr1.program_id )
+  h) ratehistory
+ FROM tb_prov_program_rates tppr1
+ left join tb_contract_program p on p.program_id=tppr1.program_id and p.delete_sw='N'
+ left join tb_provider_contracts c on c.contract_id = p.contract_id and c.delete_sw='N'
+ left join tb_provider tp on c.provider_id=tp.provider_id and tp.delete_sw='N'
+ WHERE tppr1.rate_status = 'Active'
+ AND (v_program_id = '' or tppr1.program_id::character varying like '%'||v_program_id||'%') 
+ AND (v_provider_id = '' or tp.provider_id::character varying like '%'||v_provider_id||'%') 
+ AND (v_provider_name = '' or trim(lower(tp.provider_nm::character varying)) like '%'||v_provider_name||'%') 
+ AND (v_program_nm = '' or trim(lower(p.program_nm::character varying)) like '%'||v_program_nm||'%') 
+ ORDER BY program_rate_id DESC
+ limit 10 offset v_skip
+ )  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

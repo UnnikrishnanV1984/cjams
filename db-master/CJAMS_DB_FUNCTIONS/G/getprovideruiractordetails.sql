@@ -1,0 +1,27 @@
+DROP FUNCTION IF EXISTS cjams.getprovideruiractordetails(v_provider_uir_id uuid);
+CREATE OR REPLACE FUNCTION cjams.getprovideruiractordetails(v_provider_uir_id uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+jsondata  json;
+BEGIN
+
+SELECT  Json_agg(a)  INTO      jsondata  FROM      (  
+
+SELECT PUAD.provider_uir_actor_detail_id, PUAD.provider_uir_id, PUAD.uir_actor_type, PUAD.first_name,
+PUAD.last_name,PUAD.title, PUAD.dob, PUAD.address, PUAD.phone_no, PUAD.gender,
+PUAD.youth_identifier, PUAD.placing_agency,
+PUAD.inserted_on, PUAD.updated_on, PUAD.updated_by, PUAD.inserted_by,PUAD.admitting_charge, PUAD.identifier_no
+FROM cjams.provider_uir_actor_detail PUAD 
+where PUAD.provider_uir_id=v_provider_uir_id and PUAD.active_flag=1
+
+		 )  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+;

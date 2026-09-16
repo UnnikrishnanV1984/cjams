@@ -1,0 +1,132 @@
+CREATE OR REPLACE FUNCTION as_getpendingreviewda(userid character varying, pagenumber bigint, pagesize bigint, servicereqno character varying)
+ RETURNS TABLE(totalcount bigint, servicereqid uuid, servicerequestnumber character varying, intakenumber character varying, servreqtype character varying, servreqsubtype character varying, reporteddate timestamp without time zone, raname character varying, servreqstatus character varying, submitteon timestamp without time zone, submitteduser character varying, isgroup boolean, commets text, appevent character varying, dadetails json, eventdescription character varying, objectid character varying, client_id bigint, service_log_id integer, legalguardian json)
+ LANGUAGE plpgsql
+AS $function$
+
+ declare
+  v_pageoffset int;
+  v_pagenumber int;
+ begin
+  v_pagenumber := pagenumber-1;
+  v_pageoffset = v_pagenumber * pagesize;
+  return query
+  SELECT
+   count(1) over()
+    , *,(select as_getcasepersonname as legalguardian from as_getcasepersonname (
+             CASE WHEN Assignlist.servreqtype = 'Service Case'
+               THEN '' ELSE 'servicerequest' END, intakeserviceid::character varying))
+      
+  from
+   (
+    SELECT
+     ISR.intakeserviceid
+      , (ISR.servicerequestnumber :: character varying)
+      , isr.intakenumber
+      , (SELECT
+       itsrt.intakeservreqtypekey
+      FROM
+       intakeservicerequesttype as itsrt
+      WHERE
+       itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid
+       AND itsrt.activeflag     =1 limit 1
+     ) AS servreqtype
+      , (
+      SELECT
+       srst.classkey
+      FROM
+       servicerequestsubtype as srst
+      WHERE
+       srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+       AND srst.activeflag         =1 limit 1
+     )
+      , ISR.reporteddate :: timestamp
+      , cast( (TRIM(PN.lastname)
+      || ',    '
+      ||TRIM(PN.firstname)) as character varying) clientname
+      , intakeserreqstatustypekey
+      , R.Assignedon :: timestamp
+      , cast(up.lastname
+      ||',    '
+      ||up.firstname as character varying) assingeduser
+      , false
+      , coalesce(r.remarks,'') ::text
+      , r.eventcode :: character varying
+      , null ::json
+      , r.eventdesc,
+     r.objectid,
+     (select tsl.client_id::bigint from tb_service_log tsl join tb_service_purchase_authorization tspa on tspa.service_log_id = tsl.service_log_id where  tspa.authorization_id :: character varying = r.objectid limit 1),
+   (select tsl.service_log_id::integer from tb_service_log tsl join tb_service_purchase_authorization tspa on tspa.service_log_id = tsl.service_log_id where  tspa.authorization_id :: character varying = r.objectid limit 1)
+    FROM
+     intakeservicerequest as ISR
+      JOIN
+      (
+       select
+        ISRA.intakeserviceid
+         , (max(ISRA.personid::character varying ))::uuid personid
+       from
+        intakeservicerequestactor as ISRA
+        JOIN
+         actor as AR
+         ON
+          AR.actorid=ISRA.actorid
+       where
+        ISRA.intakeservicerequestpersontypekey in ('RA'
+                   , 'RC'
+                   ,'CLI'
+                   ,'CHILD','BIOCHILD','OTHERCHILD','AV', 'PA')
+       group by
+        ISRA.intakeserviceid
+      )
+      ISRA
+      ON
+       ISRA.intakeserviceid=ISR.intakeserviceid 
+     JOIN
+      person as PN
+      ON
+       PN.personid=ISRA.personid 
+     JOIN
+      (
+       SELECT    DISTINCT r.servicerequestnumber
+         , r.insertedon  assignedon
+         , r.remarks
+         , r.fromsecurityusersid
+         , r.eventcode,r.objectid
+                              , COALESCE(rf.value_text,'Code description Not available')  eventdesc
+       FROM
+        ROUTING R 
+                            LEFT JOIN referencevalues rf ON rf.ref_key = r.eventcode AND rf.activeflag =1 AND rf.referencetypeid =46 
+       WHERE
+        R.tosecurityusersid = userid
+        AND routingstatustypeid in(12, 15, 18,34,39)
+        AND R.activeflag =1
+        AND R.eventcode NOT IN ('ASST')
+        
+      )
+      R
+      ON
+       /*r.objectid = ISR.intakeserviceid::character varying*/
+       r.servicerequestnumber = ISR.servicerequestnumber::character varying
+     LEFT JOIN
+      userprofile up
+      on
+       up.securityusersid = r.fromsecurityusersid --    ISR.routedusersid
+       and up.activeflag  =1
+     inner JOIN
+      intakeserreqstatustype irst
+      on
+       irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid
+       and irst.activeflag           =1
+       and lower(irst.Intakeserreqstatustypekey) Not in ('closed')
+    WHERE
+     ISR.servicerequestnumber LIKE servicereqno ||'%'
+     and coalesce(ISR.isrouted,false) =true  
+   )
+   as Assignlist
+   /*    order    by    coalesce(routeddate,assignedon)    desc    */
+  order by
+   assignedon desc LIMIT pagesize OFFSET v_pageoffset;
+ 
+ end;
+ 
+$function$
+

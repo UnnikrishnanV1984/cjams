@@ -1,0 +1,80 @@
+ DROP FUNCTION IF EXISTS cjams.getactivitytask(uuid, character varying, character varying, character varying, integer, integer, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.getactivitytask(
+	v_investigationid uuid,
+	activitiesid character varying,
+	taskid character varying,
+	taskstatus character varying,
+	pageno integer,
+	pagesize integer,
+	v_securityusersid character varying DEFAULT ''::character varying)
+RETURNS TABLE(totalcount bigint, activityid uuid, activitytaskid uuid, actvityname text, duedate timestamp without time zone, task character varying, tasktype character varying, required boolean, assignedon timestamp without time zone, taskstatustype character varying, completeddate timestamp without time zone, dispositionstatus character varying, expceptionrequest character varying, assignedto character varying, activitytasktypekey character varying, insertedon timestamp without time zone, assignloadnumber character varying, location character varying, outofoffice boolean, activitytaskstatustypekey character varying, activitytaskdispositiontypekey character varying, taskdescription text, loadnumber character varying, startdatetime timestamp without time zone, enddatetime timestamp without time zone, activitytypekey character varying, taskdispositiontypekey character varying, iseditable boolean, iscontinual boolean, notes text) 
+    LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+ IF activitiesid ='null' THEN
+activitiesid:=null;
+END IF;
+ 
+IF taskid ='null' THEN
+taskid:=null;
+END IF;
+IF taskstatus ='null' THEN
+taskstatus:=null;
+END IF;
+
+RETURN QUERY 	
+
+SELECT 
+		COUNT(1) OVER() totalCOUNT,
+		a.ActivityId, at.ActivityTaskId, a.description,
+		
+		  /* For geting duedate from placement */	 
+		   CASE  
+		   	when (amt.duedatetype ='Placement' and at.duedate is null)  then 
+		     (select(pal.startdatetime + interval '1' day * amt.duedateoffset) from investigation invs 
+		      inner join placement pal on pal.intakeserviceid=invs.intakeserviceid
+		      where invs.investigationid=v_investigationid and pal.activeflag=1 limit 1 ) 
+		      WHEN  at.duedate is null THEN at.assignedon + interval '1' day * amt.duedateoffset --else at.duedate 			   
+		     
+		      else at.duedate 		 
+		 end,
+		
+		at.name task, att.TypeDescription as tasktypeType,at.Required , at.AssignedOn ,atst.typedescription as taskstatus,
+		at.completeddate,atd.typedescription as dispositionstatus , CAST(CASE it.ExceptionRequestDate  WHEN null THEN 'false'else 'true' END as character varying) as expceptionrequest, u.displayname Assignedto,
+		at.ActivityTaskTypeKey,at.insertedon,	at.assignedto as assignloadnumber,at.location, at.outofoffice,atst.ActivityTaskStatusTypeKey,
+		at.ActivityTaskDispositionTypekey,at.description as taskdescription,u.loadnumber as loadnumber,
+		at.startdatetime, at.ENDdatetime, att.activitytypekey,at.taskdispositiontypekey,at.iseditable,at.iscontinual,at.notes
+FROM activitytask at
+LEFT JOIN Activity a  on a.activityid = at.activityid   AND a.activeflag =1  
+LEFT JOIN ammappingtask amt on amt.amtaskid=at.amtaskid AND  amt.activeflag =1 AND amt.ammappingid = a.ammappingid
+LEFT JOIN ammapping amp on amp.amactivityid = a.amactivityid AND  amp.activeflag =1 AND amp.ammappingid = amt.ammappingid
+LEFT JOIN investigationtask it on it.activitytaskid = at.activitytaskid
+LEFT JOIN activitytasktype att on att.ActivityTaskTypeKey = at.ActivityTaskTypeKey 
+	   AND att.activitytypekey in('Investigation','Allegation', 'General')
+LEFT JOIN ActivityTaskStatusType atst on  atst.ActivityTaskStatusTypeKey = at.ActivityTaskStatusTypeKey
+	   AND atst.activitytypekey in('Investigation','Allegation', 'General')
+LEFT JOIN ActivityTaskDispositionType atd on atd.ActivityTaskDispositionTypekey= at.     ActivityTaskDispositionTypekey
+--left join investigation invs on a.objectid=invs.investigationid
+--left  join placement pal on pal.intakeserviceid=invs.intakeserviceid
+LEFT JOIN (SELECT 
+                   t.loadnumber, tma.SecurityUsersId , u.DisplayName  FROM teammember t INNER JOIN  teammemberassignment tma on tma.teammemberid = t.teammemberid
+				  AND  tma.activeflag =1
+				  INNER JOIN userprofile u on u.SecurityUsersId = tma.SecurityUsersId AND  tma.activeflag =1 
+				 AND u.securityusersid =  CASE coalesce(v_securityusersid,'') WHEN '' THEN u.securityusersid else v_securityusersid END 
+				 WHERE t.activeflag =1 group by  tma.SecurityUsersId , t.loadnumber, u.DisplayName ) as u on u.SecurityUsersId = at.assignedto
+WHERE   at.activeflag =1 AND a.objectid =v_investigationid
+AND (activitiesid is null or CAST(a.activityid as character varying) =activitiesid)
+AND (taskid is null or CAST(at.ActivityTasktypekey as character varying) =taskid) 
+AND (taskstatus is null or lower(CAST(atst.ActivityTaskStatusTypeKey as character varying)) ~ lower(taskstatus)    );
+-- order by 
+--at.description asc
+-- at.duedate asc 
+--  limit pagesize  offset pageno ;
+
+END;
+
+$function$
+;
+

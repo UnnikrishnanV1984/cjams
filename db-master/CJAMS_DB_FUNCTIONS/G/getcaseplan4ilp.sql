@@ -1,0 +1,140 @@
+-- FUNCTION: cjams.getcaseplan4ilp(character varying, character varying)
+
+DROP FUNCTION IF EXISTS cjams.getcaseplan4ilp(character varying, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.getcaseplan4ilp(
+	v_caseid character varying,
+	v_caseplanid character varying)
+    RETURNS TABLE(caseplan4ilp json) 
+   LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_caseplan4lip json;
+BEGIN	
+	SELECT json_agg(t) INTO l_caseplan4lip
+	FROM(
+		SELECT 	(select servicecasenumber from servicecase where servicecaseid = cp.caseid) caseid
+				, cp.old_id old_id
+				, concat(p.firstname,' ',p.lastname) childname
+				, p.firstname, p.middlename, p.lastname, p.prefx, p.suffix
+				, to_char(cp.begindate::timestamp,'MM/dd/yyyy') begindate 
+				, to_char(cp.enddate::timestamp,'MM/dd/yyyy')  enddate 
+				, to_char(cp.caseplan4date::timestamp,'MM/dd/yyyy') planestablished
+				, COALESCE(to_char(cp.projachievementdate::timestamp,'MM/dd/yyyy') ,'')  projachievementdate
+				, COALESCE(to_char(p.dob::timestamp,'MM/dd/yyyy'),'')  dob 
+				, '' fathername
+				, '' mothername
+				, pa.address
+				, pa.city
+				, pa.zipcode
+				, CASE TRIM(cp."signaturestatustypekey")  WHEN '6091' THEN 'Yes' WHEN '6092' THEN 'Refused to Sign' WHEN '6093' THEN 'No' ELSE '' END youthsign
+				, (SELECT typedescription FROM maritalstatustype WHERE maritalstatustypekey=p.maritalstatustypekey AND activeflag=1) maritalstatustype
+				, COALESCE(to_char(p.dateofdeath::timestamp,'MM/dd/yyyy'),'')  dateofdeath
+				, (SELECT typedescription FROM racetype WHERE racetypekey = p.racetypekey LIMIT 1) racetype
+				, (SELECT json_agg(item)
+					FROM (
+					SELECT  COALESCE(to_char(startdate::timestamp,'MM/dd/yyyy') ,'') startdate, COALESCE(to_char(enddate::timestamp,'MM/dd/yyyy') ,'')  enddate, tasktx,TRIM(responsibilitytypekey)  responsibilitytypekey 
+					FROM 	caseplan4tasks
+					WHERE   TRIM(tasktypekey) = '6150'
+							AND caseplan4id :: character varying=v_caseplanid  
+							--AND TRIM(responsibilitytypekey) ='6169'
+					) item) AS education
+				, (SELECT json_agg(item)
+					FROM (
+					SELECT  COALESCE(to_char(startdate::timestamp,'MM/dd/yyyy') ,'') startdate, COALESCE(to_char(enddate::timestamp,'MM/dd/yyyy') ,'')  enddate, tasktx
+					FROM 	caseplan4tasks
+					WHERE   TRIM(tasktypekey) = '6150'
+							AND caseplan4id :: character varying=v_caseplanid  
+							AND TRIM(responsibilitytypekey) ='6170'
+					) item) AS eduagency 
+				, (SELECT json_agg(item)
+					FROM (
+					SELECT 	COALESCE(to_char(startdate::timestamp,'MM/dd/yyyy') ,'') startdate, COALESCE(to_char(enddate::timestamp,'MM/dd/yyyy') ,'')  enddate , tasktx, TRIM(responsibilitytypekey)  responsibilitytypekey 
+					FROM 	caseplan4tasks 
+					WHERE  	TRIM(tasktypekey) = '6151' 
+							AND caseplan4id :: character varying=v_caseplanid 
+							--AND TRIM(responsibilitytypekey) ='6169'
+					) item) AS employment
+				, (SELECT json_agg(item)
+					FROM (
+					SELECT 	COALESCE(to_char(startdate::timestamp,'MM/dd/yyyy') ,'') startdate, COALESCE(to_char(enddate::timestamp,'MM/dd/yyyy') ,'')  enddate, tasktx
+					FROM 	caseplan4tasks 
+					WHERE  	TRIM(tasktypekey) = '6151' 
+							AND caseplan4id :: character varying=v_caseplanid 
+							AND TRIM(responsibilitytypekey) ='6170'
+					) item) AS empagency
+				, (SELECT json_agg(item)
+					FROM (
+					SELECT 	COALESCE(to_char(startdate::timestamp,'MM/dd/yyyy') ,'') startdate, COALESCE(to_char(enddate::timestamp,'MM/dd/yyyy') ,'')  enddate, tasktx,TRIM(responsibilitytypekey) responsibilitytypekey
+					FROM 	caseplan4tasks WHERE TRIM(tasktypekey) = '6152'  
+							AND caseplan4id :: character varying=v_caseplanid  
+					) item) AS preparation1 
+				
+				, (SELECT json_agg(item)
+					FROM (
+					SELECT COALESCE(to_char(startdate::timestamp,'MM/dd/yyyy') ,'') startdate, COALESCE(to_char(enddate::timestamp,'MM/dd/yyyy') ,'')  enddate, tasktx, TRIM(responsibilitytypekey) responsibilitytypekey
+					FROM caseplan4tasks WHERE TRIM(tasktypekey) = '6153'   AND caseplan4id :: character varying=v_caseplanid  
+					) item) AS preparation2	
+				, CASE WHEN cp.childrenflag=0 THEN 'No' ELSE 'Yes' END AS youthchildren
+				, COALESCE((SELECT concat(a.firstname,' ',a.lastname) FROM alias a WHERE a.personid = p.personid AND a.activeflag =1 LIMIT 1 ) ,'') aka
+				, p.ssnno ssn
+				, COALESCE(pp.homephone,'') homephone
+				, COALESCE(pp.workphone,'') workphone
+				, p.primarycitizenshiptypekey citizenship
+				, (SELECT attributevalue FROM personphysicalattribute WHERE physicalattributetypekey='Ht' AND personid=p.personid LIMIT 1) height
+				, (SELECT attributevalue FROM personphysicalattribute WHERE physicalattributetypekey='Wt' AND personid=p.personid LIMIT 1) weight
+				, (SELECT value_tx FROM tb_picklist_values pv where trim(picklist_value_cd) =p.haircolortypekey AND pv.active_sw ='Y' LIMIT 1) hair
+				, p.eyecolortypekey eyes
+				, p.skintonetypekey skin
+				, p.isglasses glassess
+				, pb.birthmark birthmarks
+				, pe.empadd empaddress
+				, pin.income income
+				, ph.medicalins medicalinsurance
+				, cp.goals
+				, cp.ilpgoals
+				, cp.svccompliance
+		FROM 	caseplan4 cp 
+				LEFT JOIN caseplan4tasks cpt ON cpt.caseplan4id=cp.caseplan4id AND cpt.activeflag=1 
+				INNER JOIN person p ON p.personid = cp.personid AND p.activeflag=1
+				LEFT JOIN personaddress pa ON pa.personid = p.personid AND pa.activeflag=1
+				LEFT JOIN (	SELECT 	pp.personid
+									, MAX(CASE personphonetypekey WHEN 'HM' THEN pp.phonenumber ELSE '' END) homephone
+									, MAX(CASE personphonetypekey WHEN 'WK' THEN pp.phonenumber ELSE '' END) workphone
+							FROM 	personphonenumber pp
+							WHERE  	personphonetypekey  IN ('WK','HM') AND pp.activeflag =1
+							GROUP BY pp.personid 
+						) pp ON pp.personid =  p.personid
+				LEFT JOIN (	SELECT 	pi.personid
+									, MAX(CASE ismedicaidmedicare WHEN true THEN 'Yes' WHEN false THEN 'No' ELSE '' END) medicalins
+							FROM 	Personhealthinsurance pi
+							WHERE 	pi.activeflag = 1
+							GROUP BY pi.personid 
+							)ph ON ph.personid =  p.personid
+				LEFT JOIN (	SELECT 	pi.personid
+									, SUM(amount) income
+							FROM 	Personincome pi
+							WHERE 	pi.activeflag = 1
+							GROUP BY pi.personid ) pin ON pin.personid =  p.personid
+				LEFT JOIN (	SELECT 	pe.personid
+									, MAX(concat_ws(' ',pe.streetname, pe.cityname, pe.statetypekey, pe.zip5no)) empadd
+							FROM 	Personemployment pe
+							WHERE 	pe.activeflag = 1
+							GROUP BY pe.personid )pe ON pe.personid =  p.personid
+				LEFT JOIN ( SELECT 	pm.personid
+									, MAX(COALESCE(pm.attributevalue,'')) birthmark
+							FROM 	personphysicalattribute pm
+							WHERE 	pm.activeflag = 1 AND TRIM(LOWER(pm.physicalattributetypekey))='phymark'
+							GROUP BY pm.personid ) pb ON pb.personid = p.personid 
+		WHERE 	cp.caseplan4id = v_caseplanid::uuid 
+				AND cp.activeflag = 1 LIMIT 1 
+		
+	--AND cp.caseid=v_caseid:: uuid
+	) t;	
+	
+	RETURN QUERY 
+		SELECT l_caseplan4lip;
+END;
+
+$function$;
+ 

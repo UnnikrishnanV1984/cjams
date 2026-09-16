@@ -1,0 +1,1 @@
+UPDATE caseassignment SET enddate = '2020-01-04 11:23:25', updatedon= NOW(), updatedby='admin' WHERE objectid:: character varying ='8536950b-37f0-4903-abd5-0c084c3d1930' and enddate is null;

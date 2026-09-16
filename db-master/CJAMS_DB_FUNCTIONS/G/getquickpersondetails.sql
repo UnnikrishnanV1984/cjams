@@ -1,0 +1,99 @@
+DROP FUNCTION IF EXISTS cjams.getquickpersondetails(text, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.getquickpersondetails(p_objectid text, p_objecttype character varying, p_intakenumber character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+--------------------------------------------------------------------
+-- 02/02/2022 To get the correct details
+--------------------------------------------------------------------
+ 
+declare l_quickpersondetails json;
+begin
+	
+	IF (lower(p_objecttype)='case') THEN 
+	
+			select json_agg(qupr) into l_quickpersondetails from (
+			    
+			SELECT qup.quickpersonid, qup.intakenumber, qup.caseid, qup.firstname,qup.middlename, qup.lastname, qup.dob, qup.ssn, 
+			qup.insertedon, qup.legalclientid, qup.expungementflag, qup.datavalidflag, qup.clientmergeid,
+			concat_ws(' ', coalesce(qup.firstname,null),coalesce(qup.middlename,null),coalesce(qup.lastname,null) ):: character varying as fullname,
+			qup.intakenumber, qup.objecttype,qup.substanceexposednewbornflag, qup.deletestatus,
+             qup.gendertypekey, (select typedescription from gendertype gt where activeflag = 1 and qup.gendertypekey =gt.gendertypekey limit 1) as genderdescription,       
+               (SELECT  json_agg(roles)  as quickpersonroleconfig FROM(
+ 
+ 
+				SELECT quprol.quickpersonroleconfigid, quprol.quickpersonid, quprol.actortypekey,rv.description
+				
+				FROM quickpersonroleconfig quprol 
+				left join referencevalues rv on rv.ref_key=quprol.actortypekey and rv.referencetypeid=176 and rv.activeflag =1 and teamtypekey is null
+               where quprol.quickpersonid=qup.quickpersonid
+                and quprol.activeflag=1
+               )				
+						
+                    roles  )::json ,
+				(SELECT  json_agg(subs)  as quickpersonsubstconfig FROM( 
+ 
+				SELECT qupsubs.quickpersonsubstconfigid, qupsubs.quickpersonid, qupsubs.substanceexposednewbornsourcetypekey,rv.description, qupsubs.substanceclasskey
+				
+				FROM quickpersonsubstconfig qupsubs
+				inner join referencevalues rv on rv.ref_key=qupsubs.substanceclasskey and rv.referencetypeid=55
+               where qupsubs.quickpersonid=qup.quickpersonid
+                and qupsubs.activeflag=1
+               )				
+						
+                    subs  )::json	 
+
+		FROM quickperson qup 
+		
+		where (qup.caseid=p_objectid::uuid or qup.intakenumber=p_intakenumber::character varying) and qup.activeflag=1
+        
+        ) as qupr;
+        
+return l_quickpersondetails;  
+
+else
+
+    			select json_agg(qupr) into l_quickpersondetails from (
+    
+				SELECT qup.quickpersonid, qup.intakenumber, qup.caseid,  qup.firstname,qup.middlename, qup.lastname, qup.dob, 
+				qup.ssn, qup.insertedon, qup.legalclientid, qup.expungementflag, qup.datavalidflag, qup.clientmergeid,
+ 					concat_ws(' ', coalesce( qup.firstname,null),coalesce(qup.middlename,null),coalesce(qup.lastname,null) ):: character varying as fullname,
+					qup.intakenumber,qup.objecttype,qup.substanceexposednewbornflag, qup.deletestatus,
+                 qup.gendertypekey, (select typedescription from gendertype gt where activeflag = 1 and qup.gendertypekey =gt.gendertypekey limit 1) as genderdescription,   
+                (SELECT  json_agg(roles)  as quickpersonroleconfig FROM( 
+ 
+				SELECT quprol.quickpersonroleconfigid, quprol.quickpersonid, quprol.actortypekey,rv.description
+				
+				FROM quickpersonroleconfig quprol 
+				left join referencevalues rv on rv.ref_key=quprol.actortypekey and rv.referencetypeid=176 and rv.activeflag =1 and teamtypekey is null
+               where quprol.quickpersonid=qup.quickpersonid
+               and quprol.activeflag=1)				
+						
+                    roles  )::json,
+				(SELECT  json_agg(subs)  as quickpersonsubstconfig FROM( 
+ 
+				SELECT qupsubs.quickpersonsubstconfigid, qupsubs.quickpersonid, qupsubs.substanceexposednewbornsourcetypekey,rv.description, qupsubs.substanceclasskey
+				
+				FROM quickpersonsubstconfig qupsubs
+				inner join referencevalues rv on rv.ref_key=qupsubs.substanceclasskey and rv.referencetypeid=55
+               where qupsubs.quickpersonid=qup.quickpersonid
+               and qupsubs.activeflag=1)				
+						
+                    subs  )::json					
+
+				FROM quickperson qup 
+				
+				where qup.intakenumber=p_objectid::character varying and (qup.activeflag=1 or qup.caseid is not null)
+        
+        ) as qupr;
+        
+return l_quickpersondetails;  
+END IF; 
+end;
+
+
+$function$
+;

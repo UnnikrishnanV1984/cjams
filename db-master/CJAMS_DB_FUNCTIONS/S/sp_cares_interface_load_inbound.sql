@@ -1,0 +1,1371 @@
+CREATE OR REPLACE FUNCTION cjams.sp_cares_interface_load_inbound( 	vs_batch_user character varying, 
+																	vs_batch_no character varying, 
+																	vl_error_line integer, 
+																	vs_record_type character varying, 
+																	vs_cis_client_id character varying, 
+																	vs_value1 character varying, 
+																	vs_value2 character varying, 
+																	vs_value3 character varying, 
+																	vs_value4 character varying, 
+																	vs_value5 character varying, 
+																	vs_value6 character varying, 
+																	vs_value7 character varying, 
+																	vs_value8 character varying, 
+																	vs_value9 character varying, 
+																	vs_value10 character varying, 
+																	OUT vs_error_code character varying, 
+																	OUT vl_output_sqlcode character varying, 
+																	OUT vs_error_desc character varying
+																)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Sudhin Kollara
+-- Date Created :07/20/2005
+-- Load data from Cares Interface
+-- Revision
+-- Mohan    01/16/06   #5955
+-- 04.16.2007 - #11080 - sandhya - Removed activeflag condition from the if statement of record type='16'- for primary key violation.
+-- 04/19/2007 - #11080 - sandhya - Update Delete Sw when there is any modification to Medical assistance '16'
+-- 04/24/2007 - #13722 - sandhya - change condition that checks IF cis_client_id exists in tb_client for performance
+-- 08/24/2012 - Raghu T - Changed Return 1 to Return 0.
+-- 09/10/2012 - Vineet Tirodkar PRJ-02667 - MD CHESSIE Batch Process Redesign - To add Return -1 in Exit Handler 
+-- 08/14/2017 - Samir Patil - B-07638 PI6_sprint01.No Error & No Batch termination for error-Unknown to chessie client.
+-- 08/31/2020 - Vineet Tirodkar - Modifications to Error Handling - (CIDM-415)
+--			    Return vl_output_sqlcode as '00000' for all warnings & for all errors return actual Error Codes 
+-- 11/03/2020 - Vineet Tirodkar - Modifications for CJAMS & E&E Interface 
+------------------------------------------------------------------------
+-- VARIABLE DECLARATION
+DECLARE v_num integer DEFAULT 0;
+	VS_OUTPUT_STATE CHAR(5) DEFAULT '00000';
+	VS_MESSAGE character varying DEFAULT '1234';
+	vl_integer_check INTEGER DEFAULT 0;
+	vd_date_check DATE;
+	vdec_decimal_check DECIMAL(10,2) DEFAULT 0.0;
+	vl_integer_null INTEGER DEFAULT NULL;
+	vdec_decimal_null DECIMAL(10,2) DEFAULT NULL;
+	vd_date_null DATE DEFAULT NULL;
+	vs_field_name VARCHAR(50);          
+
+          
+BEGIN          
+	VS_VALUE1   := RTRIM(LTRIM(VS_VALUE1))     ;
+	VS_VALUE2   := RTRIM(LTRIM(VS_VALUE2))     ;
+	VS_VALUE3   := RTRIM(LTRIM(VS_VALUE3))     ;
+	VS_VALUE4   := RTRIM(LTRIM(VS_VALUE4))     ;
+	VS_VALUE5   := RTRIM(LTRIM(VS_VALUE5))     ;
+	VS_VALUE6   := RTRIM(LTRIM(VS_VALUE6))     ;
+	VS_VALUE7   := RTRIM(LTRIM(VS_VALUE7))     ;
+	VS_VALUE8   := RTRIM(LTRIM(VS_VALUE8))     ;
+	VS_VALUE9   := RTRIM(LTRIM(VS_VALUE9))     ;
+	VS_VALUE10  := RTRIM(LTRIM(VS_VALUE10))    ;
+	VS_BATCH_NO := RTRIM(LTRIM(VS_BATCH_NO))    ;
+	VS_RECORD_TYPE := RTRIM(LTRIM(VS_RECORD_TYPE))    ;
+	VS_CIS_CLIENT_ID := RTRIM(LTRIM(VS_CIS_CLIENT_ID))    ;
+
+    IF VS_RECORD_TYPE NOT IN ('02','16','21','46','51') THEN
+		-- Do nothing
+		VL_OUTPUT_SQLCODE := '506';
+		VS_ERROR_CODE := '506';
+		IF lower(vs_batch_user) = 'cadmin' THEN
+			VS_ERROR_DESC := 'Invalid Record Code: ' || VS_RECORD_TYPE;
+			VS_MESSAGE := 'THE RUN WAS UNSUCCESSFUL';
+		ELSE
+			VS_ERROR_DESC := 'Invalid Record Code (E&E): ' || VS_RECORD_TYPE;
+			VS_MESSAGE := 'THE RUN WAS UNSUCCESSFUL (E&E)';
+		END IF;		
+		RETURN  ;                    
+	END IF;
+       
+	IF NOT EXISTS (SELECT 1 FROM person WHERE cisclientid = VS_CIS_CLIENT_ID::VARCHAR AND activeflag = 1) THEN -- #13722
+		-- B-07638
+		--SET VS_ERROR_CODE = '602';
+		VS_ERROR_DESC := ' ';
+		--GOTO LOG_ERROR ;          
+		VL_OUTPUT_SQLCODE := '00000';
+		VS_ERROR_CODE := '000';
+		--SET VS_ERROR_DESC = 'NO UPDATES APPLIED';
+		VS_MESSAGE := ' ';          
+		RETURN ;                                                            
+	END IF;
+         
+	IF VS_CIS_CLIENT_ID IS NULL OR VS_CIS_CLIENT_ID = '' THEN
+		VL_OUTPUT_SQLCODE := '503';
+		VS_ERROR_CODE := '503';
+		IF lower(vs_batch_user) = 'cadmin' THEN
+			VS_ERROR_DESC := 'Missing Mandatory Field CisClientID';
+		ELSE
+			VS_ERROR_DESC := 'Missing Mandatory Field CisClientID (E&E)';
+		END IF;		
+		RETURN ;
+	END IF;	  
+                                        
+    IF VS_RECORD_TYPE = '02' THEN          
+		-- VALUE5 >0
+        IF LENGTH(VS_VALUE5) > 0 THEN
+			vs_field_name := 'ssn' ;
+			BEGIN            
+				vl_integer_check := VS_VALUE5::INTEGER;
+				EXCEPTION WHEN OTHERS THEN  
+				VL_OUTPUT_SQLCODE := '504';				
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For ssn '  || SQLERRM;--x
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For ssn (E&E) '  || SQLERRM;
+				END IF;	
+				RETURN ;
+			END ;          
+		ELSE
+			VS_VALUE5 := NULL;
+		END IF;
+		
+		-- VALUE6 > 0          
+		IF LENGTH(VS_VALUE6) > 0 THEN
+			IF VS_VALUE6 = '00000000' THEN  
+				VS_VALUE6 := NULL ; 
+            END IF;                    
+
+            IF LENGTH(VS_VALUE6) = 8 THEN          
+				VS_VALUE6 := SUBSTRING(VS_VALUE6,1,4) || '-' || SUBSTRING(VS_VALUE6,5,2) || '-' || SUBSTRING(VS_VALUE6,7,2) ;
+            END IF ;
+            vs_field_name := 'dob' ;
+            BEGIN                        
+				vd_date_check := VS_VALUE6::DATE;                    
+                              
+                EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';				
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For dob '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For dob (E&E) '  || SQLERRM;
+				END IF;
+				RETURN ;
+			END ;          
+        ELSE
+			VS_VALUE6 := NULL;          
+		END IF;
+                         
+		IF EXISTS(SELECT 1 from caresclient WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+            = SUBSTRING('0000000000':: varchar,1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND activeflag = 0) THEN
+            -- UPDATE   
+            BEGIN       
+				UPDATE caresclient
+					SET lastname = VS_VALUE1,  
+						firstname = VS_VALUE2,
+						middlename = VS_VALUE3,    
+						suffix = VS_VALUE4,
+						ssn = CASE WHEN VS_VALUE5 IS NULL THEN NULL
+								WHEN VS_VALUE5 = '' THEN NULL
+								WHEN LENGTH(VS_VALUE5) <= 0 THEN NULL
+								ELSE VS_VALUE5::INTEGER
+							END,
+						dob = CASE WHEN VS_VALUE6 IS NULL THEN NULL
+								WHEN VS_VALUE6 = '' THEN NULL
+								WHEN LENGTH(VS_VALUE6) <= 0 THEN NULL
+								ELSE VS_VALUE6::DATE
+							END,
+						gender = VS_VALUE7, 
+						race = VS_VALUE8,
+						maflag = rtrim(VS_VALUE9)::integer,  
+						updatedby = vs_batch_user,
+						updatedon = CURRENT_TIMESTAMP, statusflag = 1
+				WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) =
+						SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+					AND activeflag = 1;
+                
+				EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';				
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'UPDATE OF caresclient FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM ;
+					VS_ERROR_DESC := 'UPDATE OF caresclient FAILED FOR old_id-cisclientid: '||coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM ;
+				ELSE
+					VS_MESSAGE := 'UPDATE OF caresclient FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM ;
+					VS_ERROR_DESC := 'UPDATE OF caresclient FAILED FOR old_id-cisclientid (E&E): '||coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM ;
+				END IF;
+				RETURN ;
+			END ;                                                  
+        ELSE
+			BEGIN          
+				INSERT INTO caresclient
+					(	old_id,
+						lastname,
+						firstname,
+						middlename,
+						suffix,
+						ssn,
+						dob,
+						gender,
+						race,
+						maflag,
+						insertedby,
+						insertedon,
+						updatedby,
+						updatedon,
+						activeflag,
+						statusflag
+					)
+				SELECT
+					VS_CIS_CLIENT_ID,
+					VS_VALUE1,
+					VS_VALUE2,
+					VS_VALUE3,
+					VS_VALUE4,
+					CASE WHEN VS_VALUE5 IS NULL THEN NULL
+						WHEN VS_VALUE5 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE5) <= 0 THEN NULL
+						ELSE VS_VALUE5::INTEGER
+						END,
+					CASE WHEN VS_VALUE6 IS NULL THEN NULL
+						WHEN VS_VALUE6 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE6) <= 0 THEN NULL
+						ELSE VS_VALUE6::DATE
+					END,
+					VS_VALUE7,
+					VS_VALUE8,
+					CASE WHEN VS_VALUE9 = 'Y' THEN 0
+						WHEN VS_VALUE9 = 'N' THEN 1
+					END,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					1,
+					1
+					;          
+				EXCEPTION WHEN OTHERS THEN
+				VL_OUTPUT_SQLCODE := '504';
+				VS_ERROR_CODE  := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'INSERT INTO caresclient FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM ;
+					VS_ERROR_DESC := 'INSERT INTO caresclient FAILED FOR old_id-cisclientid: ' | |coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM;
+				ELSE
+					VS_MESSAGE := 'INSERT INTO caresclient FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM ;
+					VS_ERROR_DESC := 'INSERT INTO caresclient FAILED FOR old_id-cisclientid (E&E): ' | |coalesce(VS_CIS_CLIENT_ID,'') || ' ' || SQLERRM;
+				END IF;
+				RETURN ;
+			END;                    
+        END IF;          
+    END IF; -- END of Record Type = '02'
+	
+	IF VS_RECORD_TYPE = '16' THEN
+          
+		IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field auno';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field auno (E&E)';
+			END IF;
+			RETURN;
+		END IF;
+
+		IF VS_VALUE2 IS NULL OR VS_VALUE2 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field matype';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field matype (E&E)';
+			END IF;
+			RETURN ;
+		END IF;
+
+		vs_field_name := 'auno' ;
+		BEGIN  
+			vl_integer_check :=VS_VALUE1::INTEGER;
+			EXCEPTION WHEN OTHERS THEN
+			VL_OUTPUT_SQLCODE := '504';
+			VS_ERROR_CODE := '504';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For auno '  || SQLERRM;
+			ELSE
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For auno (E&E) '  || SQLERRM;
+			END IF;
+			RETURN ;
+		END ;                              
+          
+		IF LENGTH(VS_VALUE3) > 0 THEN
+			IF VS_VALUE3 = '000000' THEN   
+				VS_VALUE3 := NULL ;  
+			END IF;                                        
+                        
+			IF LENGTH(VS_VALUE3) = 6 THEN          
+				--SET VS_VALUE3 = SUBSTRING(VS_VALUE3,3,4) || '-' || SUBSTRING(VS_VALUE3,1,2) || '-01' ;
+				VS_VALUE3 := SUBSTRING(VS_VALUE3,1,4) || '-' || SUBSTRING(VS_VALUE3,5,2) || '-01' ;
+			END IF;
+               
+            vs_field_name := 'maeligstartdate' ;
+            BEGIN       
+				vd_date_check :=  VS_VALUE3::DATE;
+				EXCEPTION WHEN OTHERS THEN  
+				VL_OUTPUT_SQLCODE := '504';				
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For maeligstartdate '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For maeligstartdate (E&E) '  || SQLERRM;
+				END IF;				
+				RETURN ;
+			END ;          
+		ELSE
+			VS_VALUE3 := NULL;                    
+		END IF;
+                 
+		IF LENGTH(VS_VALUE4) > 0 THEN
+			IF VS_VALUE4 = '999999' OR VS_VALUE4 = '000000' THEN  
+				VS_VALUE4 := NULL ;  
+			END IF;
+
+			IF LENGTH(VS_VALUE4) = 6 THEN          
+				VS_VALUE4 := SUBSTRING(VS_VALUE4,1,4) || '-' || SUBSTRING(VS_VALUE4,5,2) || '-09' ;
+				VS_VALUE4 := (VS_VALUE4::DATE + INTERVAL '1 month'  - INTERVAL '1 days'* extract ( day from VS_VALUE4::date))::VARCHAR;
+			END IF;
+            
+			vs_field_name := 'maeligenddate' ;
+            BEGIN  
+				vd_date_check :=  VS_VALUE4::DATE;                                
+				EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';				
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For maeligenddate '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For maeligenddate (E&E) '  || SQLERRM;
+				END IF;	
+				RETURN ;
+			END ;          
+		ELSE
+			VS_VALUE4 := NULL;                              
+		END IF;
+		-- #11080   
+			
+		IF EXISTS(SELECT 1 from caresclientma   WHERE SUBSTRING('000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+			= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND auno = VS_VALUE1) THEN
+			BEGIN                     
+				UPDATE caresclientma
+					SET matype = VS_VALUE2,
+						maeligstartdate = CASE WHEN VS_VALUE3 IS NULL THEN NULL
+											WHEN VS_VALUE3 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE3) <= 0 THEN NULL
+											ELSE VS_VALUE3::DATE
+										END,
+						maeligenddate = CASE WHEN VS_VALUE4 IS NULL THEN NULL
+											WHEN VS_VALUE4 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE4) <= 0 THEN NULL
+											ELSE VS_VALUE4::DATE
+										END,
+						maid = VS_VALUE5,
+						updatedby = vs_batch_user,
+						updatedon = CURRENT_TIMESTAMP,
+						statusflag = 1, 
+						activeflag = 1
+				WHERE SUBSTRING('000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) =
+						SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+					AND auno = VS_VALUE1 ;
+				--#11080 - update activeflag here.
+				
+				EXCEPTION WHEN OTHERS THEN
+				VL_OUTPUT_SQLCODE := '504';
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'UPDATE1 OF caresclientma FAILED FOR old_id-cisclientid: '||coalesce(VS_CIS_CLIENT_ID,'') || ' AND auno: '||coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+					VS_ERROR_DESC := 'UPDATE1 OF caresclientma FAILED FOR old_id-cisclientid: '||coalesce(VS_CIS_CLIENT_ID,'') ||' AND auno: '||coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+				ELSE
+					VS_MESSAGE := 'UPDATE1 OF caresclientma FAILED FOR old_id-cisclientid (E&E): '||coalesce(VS_CIS_CLIENT_ID,'') || ' AND auno: '||coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+					VS_ERROR_DESC := 'UPDATE1 OF caresclientma FAILED FOR old_id-cisclientid (E&E): '||coalesce(VS_CIS_CLIENT_ID,'') ||' AND auno: '||coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+				END IF;		
+				RETURN ;
+			END ;                                                  
+        ELSE
+            BEGIN                
+				INSERT INTO caresclientma
+					(	old_id,
+						auno,
+						matype,
+						maeligstartdate,
+						maeligenddate,
+						maid,
+						insertedby,
+						insertedon,
+						updatedby,
+						updatedon,
+						activeflag,
+						statusflag
+					)
+				SELECT
+					VS_CIS_CLIENT_ID,
+					VS_VALUE1,
+					VS_VALUE2,
+					CASE WHEN VS_VALUE3 IS NULL THEN NULL
+						WHEN VS_VALUE3 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE3) <= 0 THEN NULL
+						ELSE VS_VALUE3::DATE
+					END,
+					CASE WHEN VS_VALUE4 IS NULL THEN NULL
+						WHEN VS_VALUE4 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE4) <= 0 THEN NULL
+						ELSE VS_VALUE4::DATE
+					END,
+					VS_VALUE5,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					1,
+					1
+				;          
+				EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'INSERT INTO caresclientma FAILED FOR old_id-cisclientid: '||coalesce(VS_CIS_CLIENT_ID,'') ||' AND auno: '|| coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+					VS_ERROR_DESC := 'INSERT INTO caresclientma FAILED FOR old_id-cisclientid: '||coalesce(VS_CIS_CLIENT_ID,'') ||' AND auno: '|| coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+				ELSE
+					VS_MESSAGE := 'INSERT INTO caresclientma FAILED FOR old_id-cisclientid (E&E): '||coalesce(VS_CIS_CLIENT_ID,'') ||' AND auno: '|| coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+					VS_ERROR_DESC := 'INSERT INTO caresclientma FAILED FOR old_id-cisclientid (E&E): '||coalesce(VS_CIS_CLIENT_ID,'') ||' AND auno: '|| coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+				END IF;
+				RETURN ;
+			END ;                    
+        END IF;          
+	END IF; -- END of Record Type = '16'
+
+	IF VS_RECORD_TYPE = '21' THEN
+
+		IF VS_VALUE8 = 'Y' THEN -- Vineet 04/07/2020 old value as '0'
+			IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+				VL_OUTPUT_SQLCODE := '00000';
+				VS_ERROR_CODE := '000';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'NO UPDATES APPLIED for Record Type 21 (VS_VALUE8 = Y)';
+					VS_MESSAGE := 'NO UPDATES APPLIED for Record Type 21 (VS_VALUE8 = Y)';          
+				ELSE
+					VS_ERROR_DESC := 'NO UPDATES APPLIED (E&E) for Record Type 21 (VS_VALUE8 = Y)';
+					VS_MESSAGE := 'NO UPDATES APPLIED (E&E) for Record Type 21 (VS_VALUE8 = Y)';          
+				END IF;	
+				RETURN ;
+			ELSE
+				IF EXISTS(SELECT 1 from caresclientassets WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+						= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)) AND assetidno = VS_VALUE1::INTEGER AND activeflag = 1) THEN          
+					BEGIN                       
+						UPDATE caresclientassets
+							SET assetsdeleteflag  = 0,
+							updatedby = vs_batch_user,
+							updatedon = CURRENT_TIMESTAMP,
+							statusflag = 1
+						WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) = SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+							AND assetidno = VS_VALUE1::INTEGER
+							AND activeflag = 1;
+                                        
+						EXCEPTION WHEN OTHERS THEN
+						VL_OUTPUT_SQLCODE := '504';
+						VS_ERROR_CODE := '504';
+						IF lower(vs_batch_user) = 'cadmin' THEN
+							VS_MESSAGE := 'UPDATE OF assetsdeleteflag IN caresclientassets FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+							VS_ERROR_DESC := 'UPDATE OF assetsdeleteflag IN caresclientassets FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+						ELSE
+							VS_MESSAGE := 'UPDATE OF assetsdeleteflag IN caresclientassets FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+							VS_ERROR_DESC := 'UPDATE OF assetsdeleteflag IN caresclientassets FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+						END IF;		
+						RETURN ;
+					END ;                                                  
+                                        
+					VL_OUTPUT_SQLCODE := '00000';
+					VS_ERROR_CODE := '000';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_ERROR_DESC := 'assetsdeleteflag SET IN caresclientassets FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') ;
+						VS_MESSAGE := 'assetsdeleteflag SET IN caresclientassets FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') ;
+					ELSE
+						VS_ERROR_DESC := 'assetsdeleteflag SET IN caresclientassets FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') ;
+						VS_MESSAGE := 'assetsdeleteflag SET IN caresclientassets FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') ;
+					END IF;		
+					RETURN ;
+
+                ELSE
+					VL_OUTPUT_SQLCODE := '00000';
+					VS_ERROR_CODE := '000';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_ERROR_DESC := 'NO UPDATES APPLIED for Record Type 21';
+						VS_MESSAGE := 'NO UPDATES APPLIED for Record Type 21';          
+					ELSE
+						VS_ERROR_DESC := 'NO UPDATES APPLIED (E&E) for Record Type 21';
+						VS_MESSAGE := 'NO UPDATES APPLIED (E&E) for Record Type 21';          
+					END IF;	
+					RETURN  ;             
+				END IF;
+			END IF;
+        END IF;                       
+
+		IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field assetidno';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field assetidno (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+                    
+		IF VS_VALUE2 IS NULL OR VS_VALUE2 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field assettype';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field assettype (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+                              
+		IF VS_VALUE4 IS NULL OR VS_VALUE4 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field assetamount';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field assetamount (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+
+		IF VS_VALUE9 IS NULL OR VS_VALUE9 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE  := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field assetdate';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field assetdate (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+                              
+        vs_field_name := 'assetidno' ;
+        BEGIN                
+			vl_integer_check := VS_VALUE1::INTEGER;
+			EXCEPTION WHEN OTHERS THEN  
+			VL_OUTPUT_SQLCODE := '504';	
+			VS_ERROR_CODE := '504';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetidno '  || SQLERRM;
+			ELSE
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetidno (E&E) '  || SQLERRM;
+			END IF;	
+			RETURN ;
+		END ;                                        
+		
+        raise notice 'aaaaa num %', v_num;              
+        IF LENGTH(VS_VALUE3) > 0 THEN                     
+			vs_field_name := 'assetowner' ;
+			BEGIN                        
+				vl_integer_check := VS_VALUE3::INTEGER;
+				EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';	
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetowner ' || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetowner (E&E)' || SQLERRM;
+				END IF;	
+				RETURN;
+			END ;          
+        ELSE
+			VS_VALUE3 := NULL;                              
+		END IF;          
+		
+        IF LENGTH(VS_VALUE4) > 0 THEN
+			VS_VALUE4 := SUBSTRING(VS_VALUE4,1,LENGTH(VS_VALUE4) - 2) || '.' || SUBSTRING(VS_VALUE4,LENGTH(VS_VALUE4) - 1,2) ;
+			vs_field_name := 'assetamount' ;
+			BEGIN                        
+				vdec_decimal_check := VS_VALUE4::DECIMAL(10,2);
+				EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';				
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetamount '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetamount (E&E) '  || SQLERRM;
+				END IF;	
+				RETURN ;
+			END ;          
+		END IF;
+		
+		IF LENGTH(VS_VALUE9) > 0 THEN          
+			IF LENGTH(VS_VALUE9) = 8 THEN          
+				VS_VALUE9 := SUBSTRING(VS_VALUE9,1,4) || '-' || SUBSTRING(VS_VALUE9,5,2) || '-' || SUBSTRING(VS_VALUE9,7,2) ;
+			END IF ;
+			
+			vs_field_name := 'assetdate' ;
+			BEGIN      
+				vd_date_check := VS_VALUE9::DATE ;
+				EXCEPTION WHEN OTHERS  THEN 
+				VL_OUTPUT_SQLCODE := '504';			
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetdate '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For assetdate (E&E) '  || SQLERRM;
+				END IF;	
+				RETURN ;
+			END    ;                      
+        END IF;                                 
+		
+        IF EXISTS(SELECT 1 from caresclientassets WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+            = SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND assetidno = VS_VALUE1::INTEGER) THEN
+
+			IF EXISTS(SELECT 1 from caresclientassets WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+				= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND assetidno = VS_VALUE1::INTEGER AND activeflag = 0) THEN                                        
+					VL_OUTPUT_SQLCODE := '504';
+					VS_ERROR_CODE := '504';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_MESSAGE := 'DELETED RECORD EXISTS IN caresclientassets FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: '||coalesce(VS_VALUE1,'') ;
+						VS_ERROR_DESC := 'DELETED RECORD EXISTS IN caresclientassets FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: '||coalesce(VS_VALUE1,'') ;
+					ELSE
+						VS_MESSAGE := 'DELETED RECORD EXISTS IN caresclientassets FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: '||coalesce(VS_VALUE1,'') ;
+						VS_ERROR_DESC := 'DELETED RECORD EXISTS IN caresclientassets FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: '||coalesce(VS_VALUE1,'') ;
+					END IF;	
+					RETURN ;                                         
+			END IF;
+
+			IF EXISTS(SELECT 1 from caresclientassets WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+				= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND assetidno = VS_VALUE1::INTEGER AND activeflag = 1) THEN                                        
+				BEGIN
+					UPDATE caresclientassets
+						SET assetowner = CASE WHEN VS_VALUE3 IS NULL THEN NULL
+											WHEN VS_VALUE3 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE3) <= 0 THEN NULL
+											ELSE VS_VALUE3::INTEGER
+										END,
+							assetamount =  CASE WHEN VS_VALUE4 IS NULL THEN NULL
+											WHEN VS_VALUE4 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE4) <= 0 THEN NULL
+											ELSE VS_VALUE4::DECIMAL(10,2)
+										END,
+							assetaccountno = VS_VALUE5,
+							assetinstitutionname = VS_VALUE6,
+							assetverificationkey = VS_VALUE7,
+							assetsdeleteflag = CASE WHEN VS_VALUE8 = '' THEN 1
+												WHEN VS_VALUE8 IS NULL THEN 1
+												ELSE VS_VALUE8 ::INTEGER
+											END,
+							updatedby = vs_batch_user,
+							updatedon = CURRENT_TIMESTAMP,
+							assetdate = VS_VALUE9::DATE,
+							statusflag = 1
+					WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) = SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+						AND assetidno = VS_VALUE1::INTEGER 
+						AND activeflag = 1;
+
+					EXCEPTION WHEN OTHERS THEN
+					VL_OUTPUT_SQLCODE := '504';
+					VS_ERROR_CODE := '504';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_MESSAGE := 'UPDATE OF caresclientassets FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+						VS_ERROR_DESC := 'UPDATE OF caresclientassets FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+					ELSE
+						VS_MESSAGE := 'UPDATE OF caresclientassets FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+						VS_ERROR_DESC := 'UPDATE OF caresclientassets FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND assetidno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+					END IF;	
+					RETURN ;
+				END ;            
+			END IF;
+				
+        ELSE
+				
+			raise notice 'bbbb num %', v_num;
+			BEGIN              
+				INSERT INTO caresclientassets
+					(	old_id,
+						assetidno,
+						assettype,
+						assetowner,
+						assetamount,
+						assetaccountno,
+						assetinstitutionname,
+						assetverificationkey,
+						assetsdeleteflag,
+						insertedby,
+						insertedon,
+						updatedby,
+						updatedon,
+						activeflag,
+						statusflag,
+						assetdate
+					)
+				SELECT
+					VS_CIS_CLIENT_ID,
+					VS_VALUE1::INTEGER,
+					CASE WHEN  VS_VALUE2 = '  ' then 'NA'
+					ELSE  VS_VALUE2
+					end,
+					CASE WHEN VS_VALUE3 IS NULL THEN NULL
+						WHEN VS_VALUE3 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE3) <= 0 THEN NULL
+						ELSE VS_VALUE3::INTEGER
+					END,
+					CASE WHEN VS_VALUE4 IS NULL THEN NULL
+						WHEN VS_VALUE4 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE4) <= 0 THEN NULL
+						ELSE VS_VALUE4::DECIMAL(10,2)
+					END,
+					VS_VALUE5,
+					VS_VALUE6,                    
+					VS_VALUE7,          
+					CASE WHEN VS_VALUE9 = 'Y' THEN 0
+						WHEN VS_VALUE9 = 'N'  THEN 1
+					END,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					1,
+					1,
+					VS_VALUE9::DATE
+					;          
+
+				EXCEPTION WHEN OTHERS THEN
+				VL_OUTPUT_SQLCODE := '504';
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'INSERT INTO caresclientassets FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') || ' '  || SQLERRM ;
+					VS_ERROR_DESC := 'INSERT INTO caresclientassets FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+				ELSE
+					VS_MESSAGE := 'INSERT INTO caresclientassets FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'') || ' '  || SQLERRM ;
+					VS_ERROR_DESC := 'INSERT INTO caresclientassets FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') ||' AND assetidno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+				END IF;	
+				RETURN ;
+			END ;                    
+		END IF;          
+    END IF; -- END of Record Type = '21'
+
+	IF VS_RECORD_TYPE = '51' THEN
+                              
+		IF VS_VALUE9 = 'Y' THEN
+			IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+				VL_OUTPUT_SQLCODE := '00000';
+				VS_ERROR_CODE := '000';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'NO UPDATES APPLIED1 for Record Type 51 (VS_VALUE9 = Y)';
+					VS_MESSAGE := 'NO UPDATES APPLIED1 for Record Type 51 (VS_VALUE9 = Y)';          
+				ELSE
+					VS_ERROR_DESC := 'NO UPDATES APPLIED1 (E&E) for Record Type 51 (VS_VALUE9 = Y)';
+					VS_MESSAGE := 'NO UPDATES APPLIED1 (E&E) for Record Type 51 (VS_VALUE9 = Y)';          
+				END IF;	
+				RETURN   ;
+            ELSE
+				IF EXISTS(SELECT 1 FROM caresclientincome WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+					= SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)) AND old_id :: integer  = VS_VALUE1::INTEGER AND incometype = VS_VALUE2 AND activeflag = 1) THEN           
+					BEGIN    
+						UPDATE caresclientincome
+							SET incomedeleteflag = 0,
+								updatedby = vs_batch_user,
+								updatedon = CURRENT_TIMESTAMP,
+								statusflag= 'N'
+						WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) =   SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+							AND old_id = VS_VALUE1::INTEGER
+							AND incometype = VS_VALUE2
+							AND activeflag = 1;
+
+						EXCEPTION WHEN OTHERS THEN
+						VL_OUTPUT_SQLCODE := '504';
+						VS_ERROR_CODE := '504';
+						IF lower(vs_batch_user) = 'cadmin' THEN
+							VS_MESSAGE := 'UPDATE OF incomedeleteflag IN caresclientincome FAILED FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+							VS_ERROR_DESC := 'UPDATE OF incomedeleteflag IN caresclientincome FAILED FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+						ELSE
+							VS_MESSAGE := 'UPDATE OF incomedeleteflag IN caresclientincome FAILED FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+							VS_ERROR_DESC := 'UPDATE OF incomedeleteflag IN caresclientincome FAILED FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+						END IF;	
+						RETURN ;
+					END ;                                                  
+                                        
+					VL_OUTPUT_SQLCODE := '00000';
+					VS_ERROR_CODE := '000';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_ERROR_DESC := 'incomedeleteflag SET IN caresclientincome FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 ;
+						VS_MESSAGE := 'incomedeleteflagSET IN caresclientincome FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+					ELSE
+						VS_ERROR_DESC := 'incomedeleteflag SET IN caresclientincome FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 ;
+						VS_MESSAGE := 'incomedeleteflagSET IN caresclientincome FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID ||' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+					END IF;	
+					RETURN  ;
+				ELSE
+					VL_OUTPUT_SQLCODE := '00000';
+					VS_ERROR_CODE := '000';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_ERROR_DESC := 'NO UPDATES APPLIED2 for Record Type 51';
+						VS_MESSAGE := 'NO UPDATES APPLIED2 for Record Type 51' ;          
+					ELSE
+						VS_ERROR_DESC := 'NO UPDATES APPLIED2 (E&E) for Record Type 51';
+						VS_MESSAGE := 'NO UPDATES APPLIED2 (E&E) for Record Type 51' ;          
+					END IF;	
+					RETURN   ;
+
+				END IF;
+			END IF;
+        END IF;                               
+                 
+		IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field old_id';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field old_id (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+
+		IF VS_VALUE2 IS NULL OR VS_VALUE2 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field incometype';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field incometype (E&E)';
+			END IF;	
+			RETURN;
+		END IF;
+
+		IF VS_VALUE3 IS NULL OR VS_VALUE3 = '' THEN
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field incomecategory';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field incomecategory (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+
+		IF VS_VALUE4 IS NULL OR VS_VALUE4 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			VS_ERROR_DESC := 'Missing Mandatory Field incomeamount';
+			RETURN;
+		END IF;
+
+		IF VS_VALUE5 IS NULL OR VS_VALUE5 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field incomeverification';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field incomeverification (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+
+		IF VS_VALUE8 IS NULL OR VS_VALUE8 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field incomefrequency';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field incomefrequency (E&E)';
+			END IF;	
+			RETURN;
+		END IF;
+
+		vs_field_name := 'old_id' ;
+		BEGIN  
+			vl_integer_check := VS_VALUE1::INTEGER;
+			EXCEPTION WHEN OTHERS THEN 
+			VL_OUTPUT_SQLCODE := '504';			
+			VS_ERROR_CODE := '504';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For old_id';
+			ELSE
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For old_id (E&E)';
+			END IF;	
+			RETURN ;
+		END ;
+                        
+		IF LENGTH(VS_VALUE4) > 0 THEN
+			VS_VALUE4 = SUBSTRING(VS_VALUE4,1,LENGTH(VS_VALUE4) - 2) || '.' || SUBSTRING(VS_VALUE4,LENGTH(VS_VALUE4) - 1,2);
+			vs_field_name = 'incomeamount' ;
+			BEGIN                         
+				vdec_decimal_check  =  VS_VALUE4::DECIMAL(10,2);
+				EXCEPTION WHEN OTHERS THEN  
+				VL_OUTPUT_SQLCODE := '504';	
+				VS_ERROR_CODE  := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For incomeamount';
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For incomeamount (E&E)';
+				END IF;	
+				RETURN ;
+			END ;
+		END IF;
+			
+		IF LENGTH(VS_VALUE6) > 0 THEN
+			IF VS_VALUE6 = '00000000' THEN
+				VS_VALUE6 := NULL ;
+			END IF;
+			
+			IF LENGTH(VS_VALUE6) = 8 THEN          
+				VS_VALUE6 := SUBSTRING(VS_VALUE6,1,4) || '-' || SUBSTRING(VS_VALUE6,5,2) || '-' || SUBSTRING(VS_VALUE6,7,2) ;
+			END IF ;
+                              
+			vs_field_name := 'incomestartdate' ;
+			BEGIN    
+				vd_date_check := VS_VALUE6::DATE ;
+				EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE := '504';	
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For incomestartdate';
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For incomestartdate (E&E)';
+				END IF;	
+				RETURN;
+			END;
+        ELSE
+			VS_VALUE6 := NULL;          
+		END IF;
+			
+		IF LENGTH(VS_VALUE7) > 0 THEN
+			IF VS_VALUE7 = '99999999' OR VS_VALUE7 = '00000000'  THEN  
+				VS_VALUE7 := NULL ; 
+			END IF;
+			
+			IF LENGTH(VS_VALUE7) = 8 THEN          
+				VS_VALUE7 :=  SUBSTRING(VS_VALUE7,1,4) || '-' || SUBSTRING(VS_VALUE7,5,2) || '-' || SUBSTRING(VS_VALUE7,7,2) ;
+			END IF ;                               
+                              
+			vs_field_name := 'incomeenddate' ;
+			BEGIN    
+				vd_date_check :=  VS_VALUE7::DATE;
+				EXCEPTION WHEN OTHERS THEN
+				VL_OUTPUT_SQLCODE := '504';	
+				VS_ERROR_CODE := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For incomeenddate';
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For incomeenddate (E&E)';
+				END IF;	
+				RETURN ;
+			END ;          
+		ELSE
+			VS_VALUE7 := NULL;          
+		END IF;
+
+		IF EXISTS(SELECT 1 FROM caresclientincome WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+			= SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)) AND old_id  :: integer = VS_VALUE1::INTEGER AND incometype = VS_VALUE2) THEN
+
+			IF EXISTS(SELECT 1 FROM caresclientincome WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+				= SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)) AND old_id  :: integer  = VS_VALUE1::INTEGER AND incometype = VS_VALUE2 AND activeflag =0) THEN
+					VL_OUTPUT_SQLCODE := '504';
+					VS_ERROR_CODE := '504';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_MESSAGE := 'DELETED RECORD EXISTS IN caresclientincome FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID ||' AND old_id:'||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+						VS_ERROR_DESC := 'DELETED RECORD EXISTS IN caresclientincome FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID ||' AND old_id:'||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 ;
+					ELSE
+						VS_MESSAGE := 'DELETED RECORD EXISTS IN caresclientincome FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID ||' AND old_id:'||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+						VS_ERROR_DESC := 'DELETED RECORD EXISTS IN caresclientincome FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID ||' AND old_id:'||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 ;
+					END IF;		
+					RETURN;                                         
+			END IF;
+                                       
+			IF EXISTS(SELECT 1 FROM caresclientincome WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+				= SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)) AND old_id  :: integer = VS_VALUE1::INTEGER AND incometype = VS_VALUE2 AND activeflag = 1) THEN                                         
+
+				BEGIN
+					UPDATE caresclientincome
+						SET incometype = VS_VALUE2,
+						incomecategory = VS_VALUE3,
+						incomeamount = VS_VALUE4::DECIMAL(10,2),
+						incomeverification = VS_VALUE5,
+						incomestartdate = CASE  WHEN VS_VALUE6 IS NULL THEN NULL
+											WHEN VS_VALUE6 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE6) <= 0 THEN NULL
+											ELSE VS_VALUE6::DATE
+										END,
+						incomeenddate = CASE WHEN VS_VALUE7 IS NULL THEN NULL
+											WHEN VS_VALUE7 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE7) <= 0 THEN NULL
+											ELSE VS_VALUE7::DATE
+										END,
+						incomefrequency = VS_VALUE8,
+						incomedeleteflag = CASE WHEN VS_VALUE9 = '' THEN 1
+											WHEN VS_VALUE9 IS NULL THEN 1
+											ELSE VS_VALUE9  :: integer
+										END,
+						updatedby = vs_batch_user,
+						updatedon = CURRENT_TIMESTAMP,
+						statusflag = 'N',
+						activeflag = 1
+					WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) = SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+						AND old_id = VS_VALUE1
+						AND incometype = VS_VALUE2
+						AND activeflag = 1;
+
+					EXCEPTION WHEN OTHERS THEN
+					VL_OUTPUT_SQLCODE := '504';
+					VS_ERROR_CODE := '504';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_MESSAGE := 'UPDATE OF caresclientincome FAILED FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID || ' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+						VS_ERROR_DESC := 'UPDATE OF caresclientincome FAILED FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID || ' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+					ELSE
+						VS_MESSAGE := 'UPDATE OF caresclientincome FAILED FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID || ' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+						VS_ERROR_DESC := 'UPDATE OF caresclientincome FAILED FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID || ' AND old_id: ' || VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+					END IF;	
+					RETURN ;
+				END ;          
+            END IF;
+	
+        ELSE
+			BEGIN          
+				INSERT INTO caresclientincome
+					(	old_id,
+						incomeidno,
+						incometype,
+						incomecategory,
+						incomeamount,
+						incomeverification,
+						incomestartdate,
+						incomeenddate,
+						incomefrequency,
+						incomedeleteflag,
+						insertedby,
+						insertedon,
+						updatedby,
+						updatedon,
+						activeflag,
+						statusflag
+					)
+				SELECT
+					VS_CIS_CLIENT_ID,
+					VS_VALUE1::INTEGER,
+					VS_VALUE2,
+					VS_VALUE3,
+					VS_VALUE4::DECIMAL(10,2),
+					VS_VALUE5,
+					CASE WHEN VS_VALUE6 IS NULL THEN NULL
+						WHEN VS_VALUE6 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE6) <= 0 THEN NULL
+						ELSE VS_VALUE6::DATE
+					END,                    
+					CASE WHEN VS_VALUE7 IS NULL THEN NULL
+						WHEN VS_VALUE7 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE7) <= 0 THEN NULL
+						ELSE VS_VALUE7::DATE
+					END,
+					VS_VALUE8,          
+					CASE WHEN VS_VALUE9 = '' THEN 1
+						WHEN VS_VALUE9 IS NULL THEN 1
+						ELSE VS_VALUE9 :: integer
+					END,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					1,
+					1
+					;          
+
+				EXCEPTION WHEN OTHERS THEN
+				VL_OUTPUT_SQLCODE := '504';
+				VS_ERROR_CODE  := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'INSERT INTO caresclientincome FAILED FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID || ' AND old_id: '||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+					VS_ERROR_DESC := 'INSERT INTO caresclientincome FAILED FOR old_id-cisclientid: ' || VS_CIS_CLIENT_ID || ' AND old_id: '||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+				ELSE
+					VS_MESSAGE := 'INSERT INTO caresclientincome FAILED FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID || ' AND old_id: '||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM  ;
+					VS_ERROR_DESC := 'INSERT INTO caresclientincome FAILED FOR old_id-cisclientid (E&E): ' || VS_CIS_CLIENT_ID || ' AND old_id: '||VS_VALUE1 || ' AND incometype: ' || VS_VALUE2 || ' ' || SQLERRM ;
+				END IF;	
+				RETURN ;
+			END ;          
+        END IF;          
+	END IF; -- END of Record Type = '51'
+
+	IF VS_RECORD_TYPE = '46' THEN
+                              
+		IF VS_VALUE5 = 'Y' THEN
+			IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+				VL_OUTPUT_SQLCODE := '00000';
+				VS_ERROR_CODE := '000';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'NO UPDATES APPLIED for Record Type 46 (VS_VALUE5 = Y)';
+					VS_MESSAGE := 'NO UPDATES APPLIED for Record Type 46 (VS_VALUE5 = Y) '  || SQLERRM ;          
+				ELSE
+					VS_ERROR_DESC := 'NO UPDATES APPLIED (E&E) for Record Type 46 (VS_VALUE5 = Y)';
+					VS_MESSAGE := 'NO UPDATES APPLIED (E&E) for Record Type 46 (VS_VALUE5 = Y) '  || SQLERRM ;          
+				END IF;	
+				RETURN ;
+			ELSE
+				IF EXISTS(SELECT 1 from caresclientemployer WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+					= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND employeridno = VS_VALUE1::INTEGER AND activeflag = 1)   THEN          
+					BEGIN
+						UPDATE caresclientemployer
+							SET employerdeleteflag = 1,
+								updatedby = vs_batch_user,
+								updatedon = CURRENT_TIMESTAMP,
+								statusflag = 1
+							WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) 
+										= SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+								AND employeridno = VS_VALUE1::INTEGER
+								AND activeflag = 1;
+
+						EXCEPTION WHEN OTHERS THEN
+						VL_OUTPUT_SQLCODE := '504';
+						VS_ERROR_CODE  := '504';
+						IF lower(vs_batch_user) = 'cadmin' THEN
+							VS_MESSAGE := 'UPDATE OF employerdeleteflag IN caresclientemployer FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+							VS_ERROR_DESC := 'UPDATE OF employerdeleteflag IN caresclientemployer FAILED FOR old_id-cisclientid: '|| coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM;
+						ELSE
+							VS_MESSAGE := 'UPDATE OF employerdeleteflag IN caresclientemployer FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM ;
+							VS_ERROR_DESC := 'UPDATE OF employerdeleteflag IN caresclientemployer FAILED FOR old_id-cisclientid (E&E): '|| coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'')  || ' ' || SQLERRM;
+						END IF;	
+						RETURN ;
+					END ;                                                  
+                                        
+					VL_OUTPUT_SQLCODE := '00000';
+					VS_ERROR_CODE := '000';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_ERROR_DESC := 'employerdeleteflag SET IN caresclientemployer FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+						VS_MESSAGE := 'employerdeleteflag SET IN caresclientemployer FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+					ELSE
+						VS_ERROR_DESC := 'employerdeleteflag SET IN caresclientemployer FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+						VS_MESSAGE := 'employerdeleteflag SET IN caresclientemployer FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+					END IF;					
+					RETURN ;
+				ELSE
+					VL_OUTPUT_SQLCODE := '00000';
+					VS_ERROR_CODE := '000';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_ERROR_DESC := 'NO UPDATES APPLIED for Record Type 46';
+						VS_MESSAGE := 'NO UPDATES APPLIED for Record Type 46';          
+					ELSE
+						VS_ERROR_DESC := 'NO UPDATES APPLIED (E&E) for Record Type 46';
+						VS_MESSAGE := 'NO UPDATES APPLIED (E&E) for Record Type 46';          
+					END IF;					
+					RETURN  ;             
+				END IF;
+			END IF;
+        END IF;                                
+                
+        IF VS_VALUE1 IS NULL OR VS_VALUE1 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE  := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field employeridno';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field employeridno (E&E)';
+			END IF;	
+			RETURN;
+		END IF;
+                           
+		IF VS_VALUE2 IS NULL OR VS_VALUE2 = '' THEN
+			VL_OUTPUT_SQLCODE := '503';
+			VS_ERROR_CODE  := '503';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Missing Mandatory Field employername';
+			ELSE
+				VS_ERROR_DESC := 'Missing Mandatory Field employername (E&E)';
+			END IF;	
+			RETURN ;
+		END IF;
+
+		vs_field_name := 'employeridno' ;
+		BEGIN           
+			vl_integer_check :=  VS_VALUE1::INTEGER;
+			EXCEPTION WHEN OTHERS THEN 
+			VL_OUTPUT_SQLCODE := '504';	
+			VS_ERROR_CODE  := '504';
+			IF lower(vs_batch_user) = 'cadmin' THEN
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For employeridno '  || SQLERRM;
+			ELSE
+				VS_ERROR_DESC := 'Batch Line Has Invalid Data For employeridno (E&E) '  || SQLERRM;
+			END IF;	
+			RETURN;
+		END ;
+                              
+		IF LENGTH(VS_VALUE3) > 0 THEN
+			IF VS_VALUE3 = '00000000' THEN  
+				VS_VALUE3 := NULL ;           
+			END IF;                                        
+
+			IF LENGTH(VS_VALUE3) = 8 THEN          
+				VS_VALUE3 :=   SUBSTRING(VS_VALUE3,1,4) || '-' || SUBSTRING(VS_VALUE3,5,2) || '-' || SUBSTRING(VS_VALUE3,7,2) ;
+			END IF ;
+			vs_field_name := 'employerstartdate' ;
+			
+            BEGIN                            
+				vd_date_check :=  VS_VALUE3::DATE;
+				EXCEPTION WHEN OTHERS  THEN  
+				VL_OUTPUT_SQLCODE := '504';	
+				VS_ERROR_CODE  := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For employerstartdate '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For employerstartdate (E&E) '  || SQLERRM;
+				END IF;	
+				RETURN ;
+			END ;
+		ELSE
+			VS_VALUE3 := NULL;
+		END IF;
+		
+		IF LENGTH(VS_VALUE4) > 0 THEN
+			IF VS_VALUE4 = '99999999' OR  VS_VALUE4 = '00000000' THEN  
+				VS_VALUE4 := NULL ;
+			END IF;
+			
+			IF LENGTH(VS_VALUE4) = 8 THEN          
+				VS_VALUE4 := SUBSTRING(VS_VALUE4,1,4) || '-' || SUBSTRING(VS_VALUE4,5,2) || '-' || SUBSTRING(VS_VALUE4,7,2) ;
+			END IF ;
+                              
+			vs_field_name := 'employerenddate' ;
+			BEGIN                        
+				vd_date_check :=  VS_VALUE4::DATE;
+				EXCEPTION WHEN OTHERS THEN
+				VL_OUTPUT_SQLCODE := '504';	
+				VS_ERROR_CODE  := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For employerenddate '  || SQLERRM;
+				ELSE
+					VS_ERROR_DESC := 'Batch Line Has Invalid Data For employerenddate (E&E) '  || SQLERRM;
+				END IF;	
+				RETURN ;
+			END ;          
+		ELSE
+			VS_VALUE4 := NULL;                              
+		END IF;
+			
+		IF EXISTS(SELECT 1 from caresclientemployer WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+			= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND employeridno = VS_VALUE1::INTEGER)   THEN
+                                        
+			IF EXISTS(SELECT 1 from caresclientemployer WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+				= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND employeridno = VS_VALUE1::INTEGER AND activeflag = 0)   THEN                                        
+					VL_OUTPUT_SQLCODE := '504';
+					VS_ERROR_CODE  := '504';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_MESSAGE := 'DELETED RECORD EXISTS IN caresclientemployer FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+						VS_ERROR_DESC := 'DELETED RECORD EXISTS IN caresclientemployer FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+					ELSE
+						VS_MESSAGE := 'DELETED RECORD EXISTS IN caresclientemployer FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;
+						VS_ERROR_DESC := 'DELETED RECORD EXISTS IN caresclientemployer FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') ;					
+					END IF;	
+					RETURN ;                                         
+			END IF;
+					
+			IF EXISTS(SELECT 1 from caresclientemployer WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id))
+				= SUBSTRING('0000000000',1,10 - LENGTH(VS_CIS_CLIENT_ID::varchar):: integer) || (VS_CIS_CLIENT_ID) AND employeridno = VS_VALUE1::INTEGER AND activeflag = 1)   THEN                                        
+				BEGIN                               
+					UPDATE caresclientemployer
+						SET employername = VS_VALUE2,
+						employerstartdate = CASE WHEN VS_VALUE3 IS NULL THEN NULL
+												WHEN VS_VALUE3 = '' THEN NULL
+												WHEN LENGTH(VS_VALUE3) <= 0 THEN NULL
+												ELSE DATE(VS_VALUE3)
+											END,
+						employerenddate = CASE  WHEN VS_VALUE4 IS NULL THEN NULL
+											WHEN VS_VALUE4 = '' THEN NULL
+											WHEN LENGTH(VS_VALUE4) <= 0 THEN NULL
+											ELSE DATE(VS_VALUE4)
+										END,
+						employerdeleteflag = CASE WHEN VS_VALUE5 = '' THEN 1
+												WHEN VS_VALUE5 IS NULL THEN 1
+												ELSE VS_VALUE5::integer
+											END,
+						updatedby = vs_batch_user,
+						updatedon = CURRENT_TIMESTAMP,
+						statusflag = 1
+					WHERE SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(old_id)))) || LTRIM(RTRIM(old_id)) 
+							= SUBSTRING('0000000000',1,10 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID))
+						AND employeridno = VS_VALUE1::INTEGER 
+						AND activeflag = 1;
+
+					EXCEPTION WHEN OTHERS THEN
+					VL_OUTPUT_SQLCODE := '504';
+					VS_ERROR_CODE  := '504';
+					IF lower(vs_batch_user) = 'cadmin' THEN
+						VS_MESSAGE := 'UPDATE OF caresclientemployer FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+						VS_ERROR_DESC := 'UPDATE OF caresclientemployer FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+					ELSE
+						VS_MESSAGE := 'UPDATE OF caresclientemployer FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+						VS_ERROR_DESC := 'UPDATE OF caresclientemployer FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+					END IF;					
+					RETURN ;
+				END ;          
+			END IF;
+					
+		ELSE
+			BEGIN          
+				INSERT INTO caresclientemployer
+					(	old_id,
+						employeridno,
+						employername,
+						employerstartdate,
+						employerenddate,
+						employerdeleteflag,
+						insertedby,
+						insertedon,
+						updatedby,
+						updatedon,
+						activeflag,
+						statusflag 
+					)
+				SELECT
+					VS_CIS_CLIENT_ID,
+					VS_VALUE1::INTEGER,
+					VS_VALUE2,
+					CASE WHEN VS_VALUE3 IS NULL THEN NULL
+						WHEN VS_VALUE3 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE3) <= 0 THEN NULL
+						ELSE VS_VALUE3::DATE
+					END,
+					CASE WHEN VS_VALUE4 IS NULL THEN NULL
+						WHEN VS_VALUE4 = '' THEN NULL
+						WHEN LENGTH(VS_VALUE4) <= 0 THEN NULL
+						ELSE VS_VALUE4::DATE
+					END,
+					CASE WHEN VS_VALUE5  = '' THEN 1
+						WHEN VS_VALUE5 IS NULL THEN 1
+						ELSE VS_VALUE5::integer
+					END,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					vs_batch_user,
+					CURRENT_TIMESTAMP,
+					1,
+					1
+				;          
+
+				EXCEPTION WHEN OTHERS  THEN
+				VL_OUTPUT_SQLCODE := '504';
+				VS_ERROR_CODE  := '504';
+				IF lower(vs_batch_user) = 'cadmin' THEN
+					VS_MESSAGE := 'INSERT INTO caresclientemployer FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+					VS_ERROR_DESC := 'INSERT INTO caresclientemployer FAILED FOR old_id-cisclientid: ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+				ELSE
+					VS_MESSAGE := 'INSERT INTO caresclientemployer FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM;
+					VS_ERROR_DESC := 'INSERT INTO caresclientemployer FAILED FOR old_id-cisclientid (E&E): ' || coalesce(VS_CIS_CLIENT_ID,'') || ' AND employeridno: ' || coalesce(VS_VALUE1,'') || ' ' || SQLERRM ;
+				END IF;	
+				RETURN ;
+			END ;                    
+        END IF; 
+	END IF;  -- END of Record Type = '46'         
+
+	-- Success.
+	--COMMIT;
+	VL_OUTPUT_SQLCODE := '00000';
+	VS_ERROR_CODE := '000';
+	VS_ERROR_DESC := NULL;
+	IF lower(vs_batch_user) = 'cadmin' THEN
+		VS_MESSAGE := 'THE RUN WAS SUCCESSFUL' ;
+	ELSE
+		VS_MESSAGE := 'THE RUN WAS SUCCESSFUL (E&E)' ;
+	END IF;	
+	VS_MESSAGE := ltrim(rtrim(VS_MESSAGE));
+
+	RETURN ;
+END ;
+
+$function$
+;

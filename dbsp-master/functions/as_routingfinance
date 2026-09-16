@@ -1,0 +1,501 @@
+CREATE OR REPLACE FUNCTION as_routingfinance(objectids character varying, securityuserid character varying, appeventcode character varying, status integer, commenttext text, assignsecurityuserid character varying DEFAULT ''::character varying, bmanualrouting boolean DEFAULT false, bclosecase boolean DEFAULT false, bfromintake boolean DEFAULT false, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying, v_intakeserviceid character varying DEFAULT ''::character varying, v_intakeserreqstatustypeid character varying DEFAULT ''::character varying, v_roletypekey character varying DEFAULT ''::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+/* One Parameter added decision - intakeserreqstatustypeid  */
+DECLARE 
+ 
+v_teamid uuid;
+v_fromroleid character varying;
+v_fromloadnumber character varying;
+v_toroleid character varying;
+v_securityuserid character varying;
+v_objectid character varying;
+v_status  character varying;
+v_routingid uuid;
+v_tosecurityusersid  character varying;
+v_notifystatus character varying;
+v_date timestamp without time zone;
+v_msg character varying;
+v_username character varying;
+v_assignsecurityuserid character varying;
+v_taskstatus character varying;
+v_dispositionstatusdescription text;
+v_dispositionstatusdesc text;
+v_tmpstatus integer;
+v_updateplacement character varying;
+
+v_torolekey character varying;
+v_servicerequestno character varying;
+v_servicerequestnumber character varying;
+v_icjsecurityusersid uuid;
+v_dispositionupdate    Character    varying;
+v_objectkey character varying;
+v_assigned_sp_id character varying;
+
+v_tousersid RECORD;
+v_msgs character varying;
+v_role character varying;
+v_countyid character varying;
+BEGIN
+v_assignsecurityuserid:= assignsecurityuserid;
+v_securityuserid:= securityuserid;
+v_objectid:= objectids;
+v_role := v_roletypekey;
+raise notice 'test %',v_roletypekey;
+RAISE NOTICE 'status:%', status;
+v_date:= now();
+v_torolekey := '';
+v_servicerequestno:='';
+v_servicerequestnumber:='';
+v_dispositionstatusdesc:='';
+v_dispositionstatusdescription:='';
+
+select ISRST.description,servicerequestnumber into v_dispositionstatusdescription,v_servicerequestno  from intakeservicerequest as ISR
+      join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag =1
+where ISR.activeflag =1 and ISR.intakenumber = v_objectid;
+/* Get case number implemented by Gavaskar 11-01-2019  */
+select  ISR.servicerequestnumber into v_servicerequestnumber from intakeservicerequest as ISR
+      join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag =1
+where ISR.activeflag =1 and ISR.intakeserviceid::character varying = v_objectid; 
+RAISE NOTICE 'v_servicerequestnumber:%', v_servicerequestnumber;
+RAISE NOTICE 'v_intakeserreqstatustypeid:%', v_intakeserreqstatustypeid;
+/* Get Status disposition implemented by Gavaskar 11-01-2019  */
+if(appeventcode not in  ('ASPCAUTH','ASPCAUTHR'))
+then
+IF (coalesce(v_intakeserreqstatustypeid,'') <> '') THEN
+select ISRST.description into v_dispositionstatusdesc from intakeserreqstatustype as ISRST where ISRST.intakeserreqstatustypeid::character varying = v_intakeserreqstatustypeid;
+END IF;
+RAISE NOTICE 'v_intakeserviceid first :%', v_intakeserviceid;
+
+if (coalesce(v_intakeserviceid,'') = '') THEN
+ v_intakeserviceid = v_objectid; END IF ;
+SELECT servicerequestnumber into v_servicerequestno FROM intakeservicerequest 
+WHERE intakeserviceid :: character varying = v_intakeserviceid;
+end if;
+
+if(appeventcode in  ('ASPCAUTH','ASPCAUTHR'))
+then
+--if(status = 39)
+--then
+--select inrs.servicerequestnumber into v_servicerequestno  from intakeservicerequest inrs 
+--join servicecase scc on scc.servicecaseid =inrs.servicecaseid and scc.activeflag=1
+--where scc.servicecaseid= v_intakeserviceid :: uuid;
+--else
+if(bmanualrouting) 
+then 
+select inrs.servicerequestnumber into v_servicerequestno  from intakeservicerequest inrs where inrs.intakeserviceid = v_intakeserviceid :: uuid;
+v_objectkey := 'OtherCase';
+
+-- select r.fromsecurityusersid into v_assigned_sp_id from routing r where r.eventcode ='INVT' and r.fromroleid ='CWSP' and r.objectid = v_intakeserviceid  order by insertedon desc limit 1;   
+else
+select servicecasenumber into v_servicerequestno  from servicecase where servicecaseid= v_intakeserviceid :: uuid;
+-- select r.fromsecurityusersid into v_assigned_sp_id from routing r where r.eventcode ='SRVC' and r.fromroleid ='CWSP' and r.objectid = v_intakeserviceid order by insertedon desc limit 1;
+v_objectkey := 'ServiceCase';
+end if;
+SELECT assupervisorid INTO v_assigned_sp_id FROM userprofile WHERE securityusersid = v_securityuserid AND activeflag=1;
+
+end if;
+--end if;
+
+RAISE NOTICE 'v_intakeserviceid aaa :%', v_intakeserviceid;
+RAISE NOTICE 'v_servicerequestno aa :%', v_servicerequestno;
+
+if (status in (30,51)) then  /*request  - Write off request from FW to FS */
+if(status in (30)) then 
+update routing set activeflag=0  where eventcode = appeventcode and objectid = v_objectid;
+end if;
+ RAISE NOTICE 'inside:%', status;
+ SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey into 
+   v_teamid,v_fromloadnumber,v_fromroleid 
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+        
+     SELECT routingid into v_routingid
+        FROM routing r WHERE tosecurityusersid = v_securityuserid 
+        AND activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode = appeventcode
+        ORDER BY insertedon desc limit 1;
+  
+       
+        UPDATE routing SET activeflag =0 ,remarks =commenttext,updatedon= v_date 
+        WHERE routingid = v_routingid;
+       
+      
+            INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber)
+
+            SELECT rc.eventcode, v_securityuserid,
+                    tma.SecurityUsersId   , tm.teamid,
+                    v_fromroleid, tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno
+             FROM as_teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+             INNER join teammemberroletype  tmrt 
+                ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode AND tm.teamid =v_teamid
+            AND tma.activeflag =1 and  tma.SecurityUsersId = cast(v_assignsecurityuserid as character varying)  limit 1;
+             v_tosecurityusersid:=cast(v_assignsecurityuserid as character varying) ; 
+           
+--           update tb_provider_complaint set complaint_status=status
+--          where complaint_number=objectid and activeflag=1;
+    
+          v_msg:=  v_notifymsg || ' by ';  /* Write off request ends */
+v_status:='SUCCESS';
+
+end if;
+
+if (status in (39)) then  /*request  - assigned by role */
+ RAISE NOTICE 'inside:%', status;
+ SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey into 
+   v_teamid,v_fromloadnumber,v_fromroleid 
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+      
+       -- commenting tosecurityusersid for return to worker flow 
+     SELECT routingid into v_routingid
+        FROM routing r WHERE --tosecurityusersid = v_securityuserid 
+       -- AND 
+        activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode = appeventcode
+        ORDER BY insertedon desc limit 1;
+  
+       
+        UPDATE routing SET activeflag =0 ,remarks =commenttext,updatedon= v_date 
+        WHERE routingid = v_routingid;
+      
+            INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber,objecttypekey)
+
+            SELECT appeventcode, v_securityuserid,
+                    v_assigned_sp_id  , v_teamid,
+                    v_fromroleid, 'ASSP'  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno,v_objectkey
+                     RETURNING tosecurityusersid INTO v_tosecurityusersid;
+             
+           /* SELECT rc.eventcode, v_securityuserid,
+                    v_assigned_sp_id  , tm.teamid,
+                    v_fromroleid, tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno,v_objectkey
+             FROM as_teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+             INNER join teammemberroletype  tmrt 
+                ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode AND tm.teamid =v_teamid
+            AND tma.activeflag =1 and coalesce(tm.isdefaultroute,0) =1 limit 1
+            RETURNING tosecurityusersid INTO v_tosecurityusersid; */
+           
+--           update tb_provider_complaint set complaint_status=status
+--          where complaint_number=objectid and activeflag=1;
+    
+          v_msg:=  v_notifymsg || ' by ';  /* Write off request ends */
+v_status:='SUCCESS';
+ 
+end if;
+
+--for diff team assignment
+--delete all the rejected records for Final Disbursement 
+if(status in (56)) then 
+update routing set activeflag=0  where eventcode = appeventcode and objectid = v_objectid and routingstatustypeid =61;
+delete from routing where eventcode = appeventcode and objectid = v_objectid and routingstatustypeid !=61;
+end if;
+
+if(status in (57)) then 
+update routing set activeflag=0  where eventcode = appeventcode and objectid = v_objectid and routingstatustypeid =56;
+end if;
+
+if(status in (81)) then 
+update routing set activeflag=0  where eventcode = appeventcode and objectid = v_objectid and routingstatustypeid =81;
+end if;
+
+if(status in (45)) then 
+update routing set activeflag=0  where eventcode = appeventcode and objectid = v_objectid;
+end if;
+
+if (status in (40,41,42,44,45,56,57,73,81)) then  /*request  - Write off request from FW to FS */
+ RAISE NOTICE 'inside:%', status;
+ 
+ SELECT  tm.teamid ,tm.loadnumber ,rty.roletypecode, --tm.roletypekey,
+    t.countyid into 
+   v_teamid,v_fromloadnumber,v_fromroleid ,v_countyid
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+  INNER JOIN team t on t.teamid = tm.teamid AND t.activeflag =1
+        join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+  inner join rolemapping rolemap on rolemap.principalid = mu.id and rolemap.activeflag=1 and mu.activeflag=1 and rolemap.teamtypekey='AS'
+  inner join role ro on ro.id = rolemap.roleid and ro.activeflag=1 and rolemap.activeflag=1  
+  left JOIN roletype rty ON rty.shortname = ro.roletypekey AND rty.activeflag =1 --and rty.roletypecode = 'ASFS'
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+        
+   
+      
+        if(appeventcode != 'ASPCAUTHR')
+        then
+          
+             SELECT routingid into v_routingid
+        FROM routing r where
+--        r.toroleid=--v_role
+--  (select r.roletypekey from muser mu 
+--  join rolemapping rm on rm.principalid = mu.id :: character varying
+--  join "role" r on r.id = rm.roleid
+--  where mu.securityusersid = v_securityuserid  and rm.activeflag =1 ORDER BY roletypekey DESC LIMIT 1)
+--        --tosecurityusersid = v_securityuserid 
+--        AND 
+        activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode in ('ASPCAUTH','ASPCAUTHR')
+        ORDER BY insertedon desc limit 1;
+  
+       if(appeventcode = 'MANREC')
+        then
+          
+             SELECT routingid into v_routingid
+        FROM routing r where
+        activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode in ('MANREC')
+        ORDER BY insertedon desc limit 1;
+       end if;
+       
+        UPDATE routing SET activeflag =0 --,remarks =commenttext
+        ,updatedon= v_date 
+        WHERE routingid = v_routingid;
+       
+      raise notice '>>>> inside ASPCAUTH';
+            INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+            
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber,objecttypekey)
+
+            SELECT rc.eventcode, v_securityuserid,
+                    tma.SecurityUsersId   , tm.teamid,
+                    v_fromroleid, tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno,v_objectkey
+             FROM as_teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+             INNER join teammemberroletype  tmrt 
+                ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode -- AND tm.teamid =v_teamid
+            AND tma.activeflag =1 and  tma.SecurityUsersId = cast(v_assignsecurityuserid as character varying)  limit 1;
+             v_tosecurityusersid:=cast(v_assignsecurityuserid as character varying) ; 
+           else 
+           
+             SELECT routingid into v_routingid
+        FROM routing r where
+--        r.toroleid=--v_role
+--        (select r.roletypekey from muser mu 
+--join rolemapping rm on rm.principalid = mu.id :: character varying
+--join "role" r on r.id = rm.roleid
+--where mu.securityusersid = v_securityuserid and rm.activeflag =1 order by roletypekey DESC LIMIT 1) 
+--        AND 
+        activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode in ('ASPCAUTH','ASPCAUTHR')
+        ORDER BY insertedon desc limit 1;
+  
+        --Removed. bcz, if no routing happened, previous status should be active.
+        -- UPDATE routing SET activeflag =0 --,remarks =commenttext
+        -- ,updatedon= v_date 
+        -- WHERE routingid = v_routingid;
+       
+        if(v_role = 'ASLDSSD')
+         then
+            INSERT INTO routing(
+                        eventcode, fromsecurityusersid,  teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber,objecttypekey)
+
+            SELECT rc.eventcode, v_securityuserid,
+                     tm.teamid,
+                    v_fromroleid, rty.roletypecode, --tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno,v_objectkey
+             FROM as_teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+    INNER JOIN team t on t.teamid = tm.teamid AND t.activeflag =1
+             --INNER join teammemberroletype  tmrt 
+             --   ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+    inner join muser m on m.securityusersid = up.securityusersid and m.activeflag=1
+            inner join rolemapping rolemap on rolemap.principalid = m.id and rolemap.activeflag=1 and m.activeflag=1 and rolemap.teamtypekey='AS'
+      inner join role ro on ro.id = rolemap.roleid and ro.activeflag=1 and rolemap.activeflag=1  
+      inner JOIN roletype rty ON rty.roletypecode = ro.roletypekey AND rty.activeflag =1 and (rty.roletypecode = v_role or rty.roletypecode ='ASSP')    
+    
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = rty.shortname --tm.roletypekey   
+    AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode -- AND tm.teamid =v_teamid
+            AND tma.activeflag =1 --and   tm.roletypekey in ('ASLDSSD','ASSP') 
+   AND t.countyid=v_countyid
+   limit 1;
+           
+           else
+           
+           INSERT INTO routing(
+                        eventcode, fromsecurityusersid,  teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber,objecttypekey)
+
+            SELECT rc.eventcode, v_securityuserid,
+                     tm.teamid,
+                    v_fromroleid, rty.roletypecode,--tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno,v_objectkey
+             FROM as_teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+          INNER JOIN team t on t.teamid = tm.teamid AND t.activeflag =1
+
+            --  INNER join teammemberroletype  tmrt 
+            --     ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+            inner join muser m on m.securityusersid = up.securityusersid and m.activeflag=1
+            inner join rolemapping rolemap on rolemap.principalid = m.id and rolemap.activeflag=1 and m.activeflag=1 and rolemap.teamtypekey='AS'
+      inner join role ro on ro.id = rolemap.roleid and ro.activeflag=1 and rolemap.activeflag=1 
+      INNER JOIN roletype rty ON rty.shortname = ro.name AND rty.activeflag =1 and rty.roletypecode = v_role
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = rty.shortname --tm.roletypekey   
+                AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode -- AND tm.teamid =v_teamid
+            AND tma.activeflag =1 --and   tm.roletypekey=v_role 
+   and t.countyid=v_countyid 
+   limit 1;
+           end if;
+           --if no routing happened, previous status should be active.
+     if((SELECT count(*) FROM routing r where activeflag =1 AND r.objectid  =v_objectid AND r.eventcode in ('ASPCAUTH','ASPCAUTHR')
+     and r.routingstatustypeid=status) =1) then 
+      UPDATE routing SET activeflag =0 --,remarks =commenttext
+      ,updatedon= v_date 
+      WHERE routingid = v_routingid;
+      end if;
+           --tma.SecurityUsersId = cast(v_assignsecurityuserid as character varying)  limit 1;
+            -- v_tosecurityusersid:=cast(v_assignsecurityuserid as character varying) ; 
+--           update tb_provider_complaint set complaint_status=status
+--          where complaint_number=objectid and activeflag=1;
+
+           FOR v_tousersid IN 
+    select mu.securityusersid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join as_teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+ where  r.roletypekey=v_roletypekey and t.countyid=v_countyid
+   loop
+   SELECT COALESCE(lastname,'')||', '|| COALESCE(firstname,'')into v_username
+  FROM userprofile WHERE securityusersid = v_securityuserid;
+   v_msg:=  v_notIFymsg || ' by ';
+   v_msgs:= COALESCE(v_msg ,'') ||COALESCE( v_username,'');
+  raise notice 'v_tousersid.securityusersid %',v_tousersid.securityusersid;
+      SELECT as_send_notification INTO v_notIFystatus FROM as_send_notIFication( v_tousersid.securityusersid,v_securityuserid, v_tousersid.securityusersid,
+    'System', 'High', v_msgs,
+     v_msgs , v_objectid);
+     end loop;
+           
+           
+    end if;
+          v_msg:=  v_notifymsg || ' by ';  /* Write off request ends */
+v_status:='SUCCESS';
+
+end if;
+
+if (status  in (33,34,52,74,75,82)) then  /*approvel  - Write off approved by FS to FW */
+ RAISE NOTICE 'inside:%', status;
+RAISE NOTICE 'v_objectid:%', v_objectid;
+RAISE NOTICE 'v_securityuserid:%', v_securityuserid;
+  SELECT routingid,fromsecurityusersid into v_routingid,v_tosecurityusersid
+            FROM routing r WHERE tosecurityusersid = v_securityuserid 
+            AND activeflag =1
+            AND r.objectid  = v_objectid
+            ORDER BY insertedon desc limit 1;
+           RAISE NOTICE 'v_routingid:%', v_routingid;
+            RAISE NOTICE 'v_tosecurityusersid:%', v_tosecurityusersid;
+           UPDATE routing SET routingstatustypeid =status,remarks =commenttext,updatedon= v_date
+    WHERE routingid = v_routingid;
+    
+          v_msg:=  v_notifymsg || ' by ';  /* Write off approvel */
+v_status:='SUCCESS';
+
+end if;
+
+ IF (status in (81,82,40,41,42,44,45,39))then
+ if(appeventcode != 'ASPCAUTHR')
+      then
+ SELECT COALESCE(lastname,'')||', '|| COALESCE(firstname,'')into v_username
+  FROM userprofile WHERE securityusersid = securityuserid;
+ 
+  v_msg:= COALESCE(v_msg ,'') ||COALESCE( v_username,'');
+  --END IF;
+    SELECT as_send_notification INTO v_notIFystatus FROM as_send_notIFication(v_tosecurityusersid,v_securityuserid, v_tosecurityusersid,
+    'System', 'High', v_msg,
+     v_msg , v_objectid);
+  END IF;
+  END IF;
+RETURN v_status;
+
+END;
+
+$function$
+

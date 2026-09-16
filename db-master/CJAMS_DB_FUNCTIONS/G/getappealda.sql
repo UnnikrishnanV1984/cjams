@@ -1,0 +1,69 @@
+DROP function if EXISTS public.getappealda(userid character varying, pagenumber bigint, pagesize bigint, servicereqno character varying);
+CREATE OR REPLACE FUNCTION cjams.getappealda(userid character varying, pagenumber bigint, pagesize bigint, servicereqno character varying)
+ RETURNS TABLE(totalcount bigint, servicereqid uuid, servicerequestnumber character varying, servreqtype character varying, servreqsubtype character varying, reporteddate timestamp without time zone, raname character varying, servreqstatus character varying, routedon timestamp without time zone, assignedto character varying, assigned boolean, assigneddate timestamp without time zone, sdm json, legalguardian json)
+ LANGUAGE plpgsql
+AS $function$
+
+  
+declare    v_pageoffset  int;
+                v_pagenumber  int;
+
+begin
+  
+        v_pagenumber  :=  pagenumber-1;
+        v_pageoffset  =  v_pagenumber  *  pagesize;
+  return  query      
+
+                      	  SELECT       count(1)  over(),
+                          
+                        ISR.intakeserviceid,ISR.servicerequestnumber,
+                        (SELECT  itsrt.intakeservreqtypekey  
+                          FROM  intakeservicerequesttype  as  itsrt
+                        WHERE  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid
+                            AND  itsrt.activeflag  =1
+                        limit  1),
+                        (SELECT  srst.classkey  FROM  servicerequestsubtype  as  srst
+                        WHERE  srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+                          AND  srst.activeflag  =1    limit  1),
+                        ISR.reporteddate,
+                        cast(  (TRIM(PN.lastname)||  ',  '  ||TRIM(PN.firstname))  as    character  varying)  clientname  ,
+                        intakeserreqstatustypekey,
+                        ISR.routedon  as  routeddate,
+                      --  cast(up.lastname  ||',  '||up.firstname  as  character  varying)  assingeduser,
+                        (select cast(up.lastname  ||',  '||up.firstname  as  character  varying)  from userprofile  up where up.securityusersid=ISR.routedusersid and up.activeflag=1) assingeduser,
+                        ISR.isrouted,
+                        R.Assignedon,
+			(SELECT  json_agg(e)    as  fatality  from
+		(select  isrs.ischildfatality,isrs.ismaltreatment  from  intakeservicerequestsdm  isrs  where  isrs.intakenumber  =  isr.intakenumber  and  isrs.activeflag  =1  )  as  e)  ::json,
+		(select getcasepersonname as legalguardian from getcasepersonname ('servicerequest',ISR.intakeserviceid::character varying))
+              
+                        
+        FROM  intakeservicerequest  as  ISR  
+            JOIN  (select      ISRA.intakeserviceid  ,  (max(AR.personid::character  varying  ))::uuid  personid
+                    from  intakeservicerequestactor  as  ISRA    
+                        JOIN  actor  as  AR
+                ON  AR.actorid=ISRA.actorid  
+                    where  ISRA.intakeservicerequestpersontypekey  in  ('RA',  'RC','CLI')  group  by  ISRA.intakeserviceid)  ISRA
+                  ON  ISRA.intakeserviceid=ISR.intakeserviceid    
+        JOIN  person  as  PN  
+                ON  PN.personid=ISRA.personid        
+         left   JOIN  (SELECT  DISTINCT  objectid  ,cast(r.insertedon  as   timestamp without time zone)  assignedon  FROM  ROUTING  R  
+                              	  WHERE  R.tosecurityusersid  =  userid  AND  routingstatustypeid  =2
+                        	AND  R.activeflag  =1
+                                )  R  ON
+            r.objectid  =  ISR.intakenumber    
+      --  LEFT  JOIN  userprofile  up  on  up.securityusersid  =  ISR.routedusersid  and  up.activeflag  =1  
+  inner  JOIN  intakeserreqstatustype  irst  on  irst.intakeserreqstatustypeid  =  ISR.intakeserreqstatustypeid  and  irst.activeflag  =1 and intakeserreqstatustypekey = 'Closed'
+  
+  
+  WHERE  ISR.servicerequestnumber  LIKE  ''  ||'%'  
+  --and  isallowappeal  =true and    ((ISR.updatedon  ::  date  +  coalesce(appealdurationdays  ,0)  )::  date-  now()::date)  >0  
+
+ -- and    coalesce(ISR.isrouted,false)  =false    
+ -- and  coalesce(ISR.isappealed,false)  =false ; 
+		      LIMIT  pagesize  OFFSET  v_pageoffset  ;  
+ 
+end;
+
+$function$
+;

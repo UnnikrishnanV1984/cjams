@@ -1,0 +1,2 @@
+update servicecasedisposition s set activeflag = 0, updatedby = 'CDM-11229', updatedon = now() where servicecasedispositionid = 'cdc90be5-be9b-4406-b1a9-5b403133edbe' and 	servicecaseid = '90f9b232-9d9b-424c-8a36-e3f22fe08b64';
+update servicecase set statustypekey = 'Open' , dispositioncode = 'Open' , updatedon = now(), updatedby = 'CDM-11229' where servicecaseid = '90f9b232-9d9b-424c-8a36-e3f22fe08b64' and activeflag = 1;

@@ -1,0 +1,3 @@
+CREATE INDEX servicecasedisposition_intakeserreqstatustypekey_idx ON cjams.servicecasedisposition (intakeserreqstatustypekey);
+CREATE INDEX servicecasedisposition_servicecaseid_idx ON cjams.servicecasedisposition (servicecaseid);
+CREATE INDEX restricteditems_objectid_idx ON cjams.restricteditems (objectid);

@@ -1,0 +1,110 @@
+CREATE OR REPLACE FUNCTION listprovideruir(userid character varying, p_status character varying, pagenumber integer, pagelimit integer, uirno character varying, providerid integer, provider_name character varying, programname character varying, youthidentificationnumber character varying, childname character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, provider_uir_id uuid, uir_no character varying, provider_id integer, program_name character varying, insertedon timestamp without time zone, inserted_by character varying, formatted_provider_nm character varying, updated_on timestamp without time zone, displayname character varying, routingstatustypeid integer, statusdesc text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+totalcount integer;
+v_status character varying;
+ v_userid character varying;
+ orderbycolumn character varying;
+
+ BEGIN
+ v_limit=10;
+    v_pagenumber := pageNumber-1;
+    v_pageoffset = v_pagenumber * v_limit;  
+v_userid=null;
+   
+IF (p_status ='pending')  THEN
+  v_status=null;   
+
+
+ELSIF  (p_status='review')  then
+    v_userid='review'; 
+  v_status='49';
+   
+  
+
+  
+    end if;
+
+ RETURN QUERY 
+
+
+select count(1)  over(),  PU.provider_uir_id,  PU.uir_no,PUAD.identifier_no,PUAD.first_name,  
+  PU.provider_id, tpa.program_name,
+
+PU.inserted_on, PU.inserted_by,TB.formatted_provider_nm,PU.updated_on,UP.displayname,r.routingstatustypeid,
+CASE     WHEN RTs.typedescription is null THEN  'Pending'  ELSE RTs.typedescription  end as statusdesc
+FROM  provider_uir PU
+ inner join tb_provider TB on TB.provider_id=PU.provider_id
+ inner join provider_uir_actor_detail PUAD on PUAD.provider_id:: integer = PU.provider_id 
+INNER join userprofile UP on UP.securityusersid=PU.inserted_by
+INNER  JOIN  routing  r  ON  r.objectid  = PU.provider_uir_id::varchar   AND  (r.activeflag  =1 )--  and  r.eventcode in ('PRCM')
+INNER  JOIN  routingstatustype  RTs  ON  RTs.sequencenumber  =  r.routingstatustypeid  and  rts.activeflag  =1  
+INNER  JOIN  teammemberroletype  rt  on  rt.roletypekey  =  r.toroleid  AND  rt.activeflag  =1
+inner join tb_provider_applicant tpa on tpa.provider_id ::int=pu.provider_id
+
+where PU.active_flag=1 
+--and  CASE WHEN v_status is  NULL THEN (PU.uir_status is null or PU.uir_status='49'  ) ELSE (PU.uir_status = v_status) END
+
+--and case
+--WHEN v_userid is  null THEN (PU.inserted_by=userid)
+--ELSE (r.tosecurityusersid = userid) end
+AND case when uirno is not null then (COALESCE(lower(PU.uir_no) ,'') LIKE '%'||COALESCE(lower(uirno) ,'')||'%') END
+AND case when providerid is not null then (COALESCE(lower(PU.provider_id :: character varying) ,'') LIKE '%'||COALESCE(lower(providerid ::character varying) ,'')||'%') END
+-- AND case when provider_name is not null then (COALESCE(lower(PU.displayname) ,'') LIKE '%'||COALESCE(lower(provider_name) ,'')||'%') END
+AND case when programname is not null then (COALESCE(lower(tpa.program_name) ,'') LIKE '%'||COALESCE(lower(programname) ,'')||'%') END
+AND case when youthidentificationnumber is not null then (COALESCE(lower(PUAD.identifier_no) ,'') LIKE '%'||COALESCE(lower(youthidentificationnumber) ,'')||'%') END
+AND case when childname is not null then (COALESCE(lower(PUAD.first_name) ,'') LIKE '%'||COALESCE(lower(childname) ,'')||'%') END
+
+
+group by PU.provider_uir_id,  PU.uir_no,PUAD.identifier_no,PUAD.first_name,
+PU.inserted_on,PU.inserted_by,
+TB.formatted_provider_nm,PU.updated_on,UP.displayname,RTs.typedescription,r.routingstatustypeid,tpa.program_name
+order by
+ (
+ case
+  sortorder
+  when 'asc' then
+  case
+   sortcolumn
+   when 'uir_no' THEN PU.uir_no :: character varying 
+   when 'providerid' then PU.provider_id :: character varying
+    when 'provider_name' then UP.displayname :: character varying 
+    when 'programname' then PU.uir_no :: character varying 
+   when 'licensing_agency' then PU.uir_no :: character varying 
+   when 'incident_date' then PU.inserted_on :: character varying 
+   when 'youthidentificationnumber' then PUAD.identifier_no :: character varying 
+   when 'childname' then PUAD.first_name :: character varying 
+   else PU.uir_no :: character varying
+  end
+ end) asc,
+ (
+ case
+  sortorder
+  when 'desc' then
+  case
+   sortcolumn
+   when 'uir_no' THEN PU.uir_no :: character varying 
+   when 'providerid' then PU.provider_id :: character varying
+    when 'provider_name' then UP.displayname :: character varying 
+    when  'programname' then PU.uir_no :: character varying 
+    when 'licensing_agency' then PU.uir_no :: character varying 
+    when 'incident_date' then PU.inserted_on :: character varying 
+    when 'youthidentificationnumber' then PUAD.identifier_no :: character varying 
+    when 'childname' then PUAD.first_name :: character varying 
+   else PU.uir_no :: character varying
+  end
+ end) desc
+
+LIMIT v_limit OFFSET v_pageoffset ;  
+          RAISE  NOTICE  'v_userid%',v_userid;              
+end
+
+$function$
+

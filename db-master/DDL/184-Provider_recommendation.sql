@@ -1,0 +1,1 @@
+alter table tb_public_provider_applicant add column if not exists recommendation_status varchar(50) null;

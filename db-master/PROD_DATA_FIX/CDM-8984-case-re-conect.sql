@@ -1,0 +1,2 @@
+select * from createservicecase('7f485c37-d8d0-497d-867d-b37f24453f83','1a780539-b0f6-4298-89b6-55ca896d6606',0,'430aff8a-d3fd-4df8-9d09-9c539edeaf65');
+update servicecase set activeflag = 0, updatedby = 'CDM-8984', updatedon = now() where servicecaseid = 'd1ff10ea-f4b4-436a-8bd2-14c49bc1d70c';

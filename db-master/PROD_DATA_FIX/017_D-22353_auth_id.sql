@@ -1,0 +1,1 @@
+delete from tb_service_purchase_authorization where authorization_id=1730797 and service_log_id=1954424;

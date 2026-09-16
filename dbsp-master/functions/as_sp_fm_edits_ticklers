@@ -1,0 +1,877 @@
+CREATE OR REPLACE FUNCTION as_sp_fm_edits_ticklers(al_provider_id bigint, as_activity_type character varying, as_user_id character varying, as_string character varying, al_entity_id1 bigint, al_entity_id2 bigint)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+             
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author      :  Vineet Tirodkar
+-- Date        :  02/13/2008
+-- Description :  To Create / Delete Financial Edits Ticklers based on provider checklist result
+-- Arguments   : 1) Provider ID
+--   2) Activity - 'INFO_MISSING' - Create Tickler # 409
+--           'INFO_CORRECTED' - Delete Tickler # 409 and Create Tickler # 410
+--               3) User Id - 'INFO_MISSING'  pass as 'Finance' 
+--         'INFO_CORRECTED' pass logged in user
+--   4) Additional String argument for future, currently not is use
+--   5) Additional bigint argument for future, currently not is use
+--   6) Additional bigint argument for future, currently not is use
+-- Vineet Tirodkar 02/21/2008 - Code for Tickler # 410
+-- Vineet Tirodkar 04/14/2008 - Change in Tickler Text of # 409
+------------------------------------------------------------------------
+
+DECLARE vl_days_no INTEGER;--
+DECLARE vl_reminder_days INTEGER;--
+DECLARE vl_expiry INTEGER;--
+DECLARE ll_system_ticlker_id1 BIGINT;--
+DECLARE ll_system_ticlker_id2 BIGINT;--
+DECLARE ll_tickler_cnt1 BIGINT DEFAULT 0;--
+DECLARE ll_tickler_cnt2 BIGINT DEFAULT 0;--
+DECLARE vl_staff_id BIGINT DEFAULT 0;--
+DECLARE vl_supervisor_id BIGINT DEFAULT 0;--
+DECLARE vl_to_unit_id BIGINT DEFAULT NULL;--
+DECLARE vl_assign_to_unit_id BIGINT DEFAULT NULL; --
+DECLARE vl_unit_id BIGINT DEFAULT NULL;--
+DECLARE vl_tickler_id BIGINT DEFAULT 0;--
+DECLARE vl_ENTITY_ID1 BIGINT DEFAULT 0;--
+DECLARE vl_ENTITY_ID2 BIGINT DEFAULT 0;--
+DECLARE vl_null BIGINT DEFAULT NULL;--
+DECLARE vl_row_cnt BIGINT DEFAULT 0;--
+DECLARE vl_case_id BIGINT ;--
+DECLARE vl_client_id BIGINT ;--
+DECLARE vl_sub_provider_id BIGINT ;--
+DECLARE ll_sub_tickler_cnt2 BIGINT DEFAULT 0;--
+
+DECLARE vs_tickler_tx VARCHAR(500);--
+DECLARE vs_nature VARCHAR(5);--
+DECLARE vs_provider_nm VARCHAR(100);--
+DECLARE vs_screen_cd VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_to_county_cd VARCHAR(5);--
+DECLARE vs_assign_to_county_cd VARCHAR(5);--
+DECLARE vs_tickler_col VARCHAR(50) DEFAULT 'SQ_TICKLERS';--
+DECLARE vs_entity_type VARCHAR(5) DEFAULT '2953' ; -- Provider
+DECLARE vs_entity_type1 VARCHAR(5) DEFAULT '2952' ;  -- Service Case
+DECLARE vs_county_cd VARCHAR(5);--
+DECLARE vs_prov_cat VARCHAR(5);--
+DECLARE vs_cursor_sql VARCHAR(12000) ;--
+DECLARE vs_client_nm VARCHAR(200) ;--
+DECLARE vs_case_nm VARCHAR(200) ;--
+
+DECLARE vd_due_dt DATE;--
+DECLARE vd_reminder_dt DATE;--
+DECLARE vd_expiry_dt DATE;--
+
+--Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+ p_sp_error CHAR(5);--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_FM_EDITS_TICKLERS';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+--Log Error
+
+--DECLARE CUR_INFO_CORRECTED CURSOR WITH HOLD FOR s1;--
+CUR_INFO_CORRECTED REFCURSOR;--
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+ BEGIN
+ EXCEPTION WHEN OTHERS THEN
+
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+ vs_message_text :=  MESSAGE_TEXT;
+--    SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || TO_CHAR(CURRENT_TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_FM_EDITS_TICKLERS' ,
+                                    NULL,
+                                 NULL,
+                                   NULL,
+                                       NULL,
+                                       as_error,
+                                       'finance') INTO
+                                       vl_ret_status ;
+
+     as_error := '';--
+ RETURN;
+ END;
+--Log error
+
+-- Get Provider NM and County - START
+SELECT F_ENAME('2953', PROVIDER_ID) AS PROVIDER_NM,
+       COUNTY_CD,
+       F_PRVPCKLST_CAT(PROVIDER_ID ,'PLACEMENT') AS PROVIDER_CAT
+    INTO vs_provider_nm,
+      vs_county_cd,
+      vs_prov_cat 
+   FROM TB_PROVIDER
+WHERE PROVIDER_ID = al_provider_id
+      AND DELETE_SW = 'N' ;--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0 THEN
+    as_error := 'Provider Info NOT found.' ;--
+    vs_identity_column := 'PROVIDER_ID';--
+    vs_identity_val := al_provider_id :: character varying;--
+   --SIGNAL p_sp_error  ;--
+END IF ;--
+
+IF vs_provider_nm IS NULL THEN
+    vs_provider_nm := '';--
+END IF;--
+
+IF vs_prov_cat IS NULL THEN
+    vs_prov_cat := '';--
+END IF;--
+-- Get Provider NM and County - END  
+
+-- Get Basic Info of System Ticklers - START
+IF as_activity_type = 'INFO_MISSING' THEN
+   -- Create Tickler # 409 Provider Information must be corrected for ^Provider Nm^  (^Provider Id^). 
+    ll_system_ticlker_id1 := 409; -- Create
+    ll_system_ticlker_id2 := 0;--
+ELSE -- 'INFO_CORRECTED'
+   -- Delete Tickler # 409
+   -- Create Tickler # 410 Provider information has been corrected; please validate the placement of ^Client Nm^  (^Client ID^).
+    ll_system_ticlker_id1 := 410; -- Create
+    ll_system_ticlker_id2 := 409; -- Delete
+END IF;--
+
+SELECT DAYS_NO,
+       REMINDER_DAYS_NO,
+       SYSTEM_TICKLER_TX,
+       TICKLER_NATURE_CD,
+       EXPIRE_AFTER_DAYS
+INTO   vl_days_no,
+       vl_reminder_days,
+       vs_tickler_tx,
+       vs_nature,
+       vl_expiry
+FROM TB_SYSTEM_TICKLERS
+  WHERE SYSTEM_TICKLER_ID = ll_system_ticlker_id1 AND
+ DELETE_SW = 'N' AND
+ ACTIVE_SW = 'Y';--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0 THEN
+    as_error := 'System tickler info NOT found.' ;--
+    vs_identity_column := 'SYSTEM_TICKLER_ID';--
+    vs_identity_val := ll_system_ticlker_id1:: character varying;--
+   --SIGNAL p_sp_error  ;--
+END IF ;--
+
+/*SELECT ( CURRENT_DATE + vl_days_no DAYS ) AS DUE_DT,
+       ( CURRENT_DATE + vl_days_no DAYS ) - vl_reminder_days DAYS AS REMD_DT,
+       ( CURRENT_DATE + vl_days_no DAYS ) + vl_expiry DAYS AS EXP_DT
+   INTO vd_due_dt,
+     vd_reminder_dt,
+     vd_expiry_dt;*/
+SELECT ( CURRENT_DATE + vl_days_no ) AS DUE_DT,
+       ( CURRENT_DATE + vl_days_no ) - vl_reminder_days  AS REMD_DT,
+       ( CURRENT_DATE + vl_days_no ) + vl_expiry  AS EXP_DT
+   INTO vd_due_dt,
+     vd_reminder_dt,
+     vd_expiry_dt;
+--FROM sysibm.sysdummy1 ; --
+-- Get Basic Info of System Ticklers - END
+
+IF as_activity_type = 'INFO_MISSING' THEN
+   -- Create Tickler # 409 Provider Information must be corrected for ^Provider Nm^  (^Provider Id^). 
+
+   -- Create Tickler # 409 - START  
+    ll_tickler_cnt1 := 0; -- INITIAL VALUE
+
+   SELECT COUNT(*)
+  INTO ll_tickler_cnt1  
+      FROM TB_TICKLERS
+    WHERE TB_TICKLERS.ENTITY_TYPE_CD = vs_entity_type
+          AND TB_TICKLERS.ENTITY_KEY_ID = al_provider_id
+          AND TB_TICKLERS.DELETE_SW = 'N'
+          AND TB_TICKLERS.SYSTEM_TICKLER_ID = ll_system_ticlker_id1 ;--
+
+   IF ll_tickler_cnt1 = 0 THEN
+       vs_tickler_tx := 'Provider Information must be corrected for ' || vs_provider_nm || '  (' || RTRIM(LTRIM(TO_CHAR(al_provider_id,'9999999999'))) || ').' || ' Check for missing/invalid data.';--
+
+       vl_staff_id := NULL; -- INITIAL VALUE
+       vl_supervisor_id :=  NULL; -- INITIAL VALUE
+   
+     /* SELECT ASG.ASSIGN_TO_STAFF_ID,
+          STA.PRIMARY_COUNTY_CD,
+          STA.PRIMARY_COUNTY_UNIT_ID,
+        --  F_SUPERVISOR(ASG.ASSIGN_TO_STAFF_ID) AS SUP_ID
+     '' AS SUP_ID
+      INTO vl_staff_id,
+        vs_to_county_cd,
+        vl_to_unit_id,
+        vl_supervisor_id
+      FROM TB_ASSIGNMENT ASG,
+        TB_STAFF STA 
+ WHERE ASG.ASSIGN_TO_STAFF_ID = STA.STAFF_ID AND
+       ASG.ENTITY_KEY_ID = al_provider_id  AND
+       ASG.RESPONSIBILITY_CD = 'P' AND
+       ASG.ENTITY_TYPE_CD = '2953' AND
+       ASG.DELETE_SW = 'N' AND
+       ASG.END_DT IS NULL
+ ORDER BY ASG.ASSIGNMENT_ID DESC ;--*/
+SELECT --ASG.ASSIGN_TO_STAFF_ID,
+   STA.cjamspid,
+        --  STA.PRIMARY_COUNTY_CD,
+     (select c.statecountycode from team t 
+join county c on c.countyid::character varying = t.countyid::character varying
+where teamid = ASG.fromteamid limit 1 ) AS PRIMARY_COUNTY_CD,
+         -- STA.PRIMARY_COUNTY_UNIT_ID,
+   0,--here (Need to change alternate column)
+        --  F_SUPERVISOR(ASG.ASSIGN_TO_STAFF_ID) AS SUP_ID
+     F_SUPERVISOR(ASG.toworkeridno) AS SUP_ID
+    -- '' AS SUP_ID
+      INTO vl_staff_id,
+        vs_to_county_cd,
+        vl_to_unit_id,
+        vl_supervisor_id
+     -- FROM TB_ASSIGNMENT ASG,
+   --     TB_STAFF STA      
+   FROM caseassignment ASG,
+             userprofile STA  
+ WHERE ASG.toworkeridno = STA.securityusersid AND
+                 ASG.objectid =(select sc.servicecaseid from servicecase sc where sc.servicecasenumber=al_provider_id :: character varying limit 1)   AND --here-- need to check the al_provider_id 
+                 ASG.objecttypekey = 'servicecase' AND
+              ASG.activeflag = 1 AND
+              ASG.enddate IS NULL
+             ORDER BY ASG.insertedon DESC ;
+    
+  al_sqlcode := SQLCODE;--
+ IF al_sqlcode <> 0 THEN
+     as_error := 'Resource Worker NOT found.' ;--
+     vs_identity_column := 'PROVIDER_ID';--
+     vs_identity_val := al_provider_id:: character varying;--
+   -- SIGNAL p_sp_error  ;--
+ END IF ;--
+
+ IF vs_to_county_cd is NULL THEN
+     vs_to_county_cd := vs_county_cd;--
+ END IF;--
+
+  vs_assign_to_county_cd := NULL;--
+  vl_assign_to_unit_id := NULL;--
+
+ -- Create Tickler for Resource Worker - START
+ IF vl_staff_id IS NOT NULL AND vl_staff_id > 0 THEN
+     vl_tickler_id := 0; -- INITIAL VALUE
+    SELECT as_sp_nextid(vs_tickler_col) into vl_tickler_id;--
+
+     vl_ENTITY_ID1 := NULL;--
+     vl_ENTITY_ID2 := NULL;--
+     vl_null:= NULL; --
+   
+   INSERT INTO TB_TICKLERS
+   ( TICKLER_ID,
+     TICKLER_TX,
+     TICKLER_TYPE_SW,
+     DUE_DT,
+     REMINDER_START_DT,
+     ENTITY_TYPE_CD,
+     ENTITY_KEY_ID,
+     ENTITY_NM,
+     ASSIGNED_TO_STAFF_ID,
+     CLIENT_ID,
+     CREATE_TS,
+     CREATE_USER_ID,
+     UPDATE_TS,
+     UPDATE_USER_ID,
+     DELETE_SW,
+     COUNTY_CD,
+     COUNTY_UNIT_ID,
+     SYSTEM_TICKLER_ID,
+     TICKLER_NATURE_CD,
+     ASSIGN_TO_COUNTY_CD,
+     ASSIGN_TO_UNIT_ID,
+     EXPIRY_DT,
+     ENTITY_ID1,
+     ENTITY_ID2,
+     SCREEN_CD )
+   VALUES ( vl_tickler_id,
+     vs_tickler_tx,
+     'S',
+     vd_due_dt,
+     vd_reminder_dt,
+     vs_entity_type,
+     al_provider_id,
+     vs_provider_nm,
+     vl_staff_id,
+     vl_null,
+     CURRENT_TIMESTAMP,
+     as_user_id,
+     CURRENT_TIMESTAMP,
+     as_user_id,
+     'N',
+     vs_to_county_cd,
+     vl_to_unit_id,
+     ll_system_ticlker_id1,
+     vs_nature,
+     vs_assign_to_county_cd,
+     vl_assign_to_unit_id,
+     vd_expiry_dt,
+     vl_ENTITY_ID1,
+     vl_ENTITY_ID2,
+     vs_screen_cd )  ;--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+      as_error := 'Error in generating FM Tickler to Resource Worker.';--
+      vs_identity_column := 'Provider ID/ SysTickler ID/';--
+      vs_identity_val := al_provider_id:: character varying || '/ ' || ll_system_ticlker_id1:: character varying;--
+    -- SIGNAL p_sp_error  ;--
+  END IF ;--
+ 
+ END IF;--
+ -- Create Tickler for Resource Worker - END
+ 
+ -- Create Tickler for Supervisor - START
+ IF vl_supervisor_id IS NOT NULL AND vl_supervisor_id > 0 THEN
+      vl_tickler_id := 0; -- INITIAL VALUE
+     SELECT as_sp_nextid(vs_tickler_col) into vl_tickler_id;--
+ 
+      vl_ENTITY_ID1 := NULL;--
+      vl_ENTITY_ID2 := NULL;--
+      vl_null:= NULL; --
+    
+    INSERT INTO TB_TICKLERS
+    ( TICKLER_ID,
+      TICKLER_TX,
+      TICKLER_TYPE_SW,
+      DUE_DT,
+      REMINDER_START_DT,
+      ENTITY_TYPE_CD,
+      ENTITY_KEY_ID,
+      ENTITY_NM,
+      ASSIGNED_TO_STAFF_ID,
+      CLIENT_ID,
+      CREATE_TS,
+      CREATE_USER_ID,
+      UPDATE_TS,
+      UPDATE_USER_ID,
+      DELETE_SW,
+      COUNTY_CD,
+      COUNTY_UNIT_ID,
+      SYSTEM_TICKLER_ID,
+      TICKLER_NATURE_CD,
+      ASSIGN_TO_COUNTY_CD,
+      ASSIGN_TO_UNIT_ID,
+      EXPIRY_DT,
+      ENTITY_ID1,
+      ENTITY_ID2,
+      SCREEN_CD )
+    VALUES ( vl_tickler_id,
+      vs_tickler_tx,
+      'S',
+      vd_due_dt,
+      vd_reminder_dt,
+      vs_entity_type,
+      al_provider_id,
+      vs_provider_nm,
+      vl_supervisor_id,
+      vl_null,
+      CURRENT_TIMESTAMP,
+      as_user_id,
+      CURRENT_TIMESTAMP,
+      as_user_id,
+      'N',
+      vs_to_county_cd,
+      vl_to_unit_id,
+      ll_system_ticlker_id1,
+      vs_nature,
+      vs_assign_to_county_cd,
+      vl_assign_to_unit_id,
+      vd_expiry_dt,
+      vl_ENTITY_ID1,
+      vl_ENTITY_ID2,
+      vs_screen_cd )  ;--
+ 
+ 
+    al_sqlcode := SQLCODE;--
+   IF al_sqlcode <> 0 THEN
+       as_error := 'Error in generating FM Tickler to Supervisor.';--
+       vs_identity_column := 'Provider ID/ SysTickler ID/';--
+       vs_identity_val := TO_CHAR(al_provider_id) || '/ ' || TO_CHAR(ll_system_ticlker_id1);--
+     -- SIGNAL p_sp_error  ;--
+   END IF ;--
+   
+ END IF;--
+ -- Create Tickler for Supervisor - END
+ 
+ IF ( vl_staff_id IS NOT NULL AND vl_staff_id > 0 ) OR (vl_supervisor_id IS NOT NULL AND vl_supervisor_id > 0) THEN
+    COMMIT;--
+ END IF;--
+
+   END IF;--
+   -- Create Tickler # 409 - END 
+
+ELSE -- 'INFO_CORRECTED'
+   -- Delete Tickler # 409
+   -- Create Tickler # 410 Provider information has been corrected; please validate the placement of ^Client Nm^  (^Client ID^).
+   -- Two different methods 1) for 'Private Organization' 2) for all others 
+
+   -- Delete Tickler # 409 common for all types of providers - START   
+    ll_tickler_cnt2 := 0; -- INITIAL VALUE
+
+   SELECT COUNT(*)
+  INTO ll_tickler_cnt2  
+      FROM TB_TICKLERS
+    WHERE TB_TICKLERS.ENTITY_TYPE_CD = vs_entity_type
+          AND TB_TICKLERS.ENTITY_KEY_ID = al_provider_id
+          AND TB_TICKLERS.DELETE_SW = 'N'
+          AND TB_TICKLERS.SYSTEM_TICKLER_ID = ll_system_ticlker_id2 ;--
+
+   IF ll_tickler_cnt2 > 0 THEN
+      UPDATE TB_TICKLERS
+           SET DELETE_SW = 'Y',
+               UPDATE_TS = CURRENT_TIMESTAMP,
+               UPDATE_USER_ID = as_user_id
+         WHERE ENTITY_TYPE_CD = vs_entity_type AND
+              ENTITY_KEY_ID = al_provider_id AND
+              DELETE_SW = 'N' AND
+            SYSTEM_TICKLER_ID = ll_system_ticlker_id2 ;--
+
+      al_sqlcode := SQLCODE;--
+     IF al_sqlcode < 0 THEN
+         as_error := 'Error in Deleting FM Tickler # 409.';--
+         vs_identity_column := 'Provider ID';--
+         vs_identity_val := TO_CHAR(al_provider_id);--
+       -- SIGNAL p_sp_error  ;--
+     END IF ; --
+
+     COMMIT;--
+   ELSE
+     SELECT COUNT(*)
+            INTO ll_tickler_cnt2  
+      FROM TB_TICKLERS
+     WHERE TB_TICKLERS.ENTITY_TYPE_CD = '2953'
+           AND TB_TICKLERS.ENTITY_KEY_ID IN  ( SELECT TB_PROVIDER.PROVIDER_ID
+                               FROM TB_PROVIDER
+                                WHERE TB_PROVIDER.DELETE_SW = 'N'
+                                     AND TB_PROVIDER.PAY_TO_AFFILIATE_CD = '3368'
+                                     AND TB_PROVIDER.AFFILIATE_PROVIDER_ID = al_provider_id  )
+           AND TB_TICKLERS.DELETE_SW = 'N'
+           AND TB_TICKLERS.SYSTEM_TICKLER_ID = ll_system_ticlker_id2 ;--
+   END IF;--
+   -- Delete Tickler # 409 common for all types of providers - END
+
+   -- Reverse Tickler (Info corrected) Activity - START
+   IF ll_tickler_cnt2 > 0 THEN
+      SET vs_cursor_sql = ''; -- INITIAL VALUE
+      IF vs_prov_cat = '3049' THEN -- Private Organization
+        vs_cursor_sql := ' SELECT DISTINCT PL.CASE_ID,'||
+       '                             PL.CLIENT_ID,'||
+       '                                   PL.PROVIDER_ID'||
+       '  FROM TB_PLACEMENT PL,'||
+       '       TB_PLACEMENT_VALIDATION  PV,'||
+       '          TB_PROVIDER PRV'||
+       ' WHERE PL.PLACEMENT_ID = PV.PLACEMENT_ID'||
+       '           AND PL.PROVIDER_ID = PRV.PROVIDER_ID'||
+    '     AND PRV.PAY_TO_AFFILIATE_CD = ''3368'''||
+       '     AND PL.DELETE_SW = ''N'''||
+       '     AND ( PL.VOID_SW is null OR PL.VOID_SW = ''N'' )'||
+       '     AND PV.DELETE_SW = ''N'''||
+       '     AND PL.PROVIDER_ID  IN ( SELECT DISTINCT TB_PLACEMENT.PROVIDER_ID'||
+       '       FROM TB_PLACEMENT '||
+       '          WHERE TB_PLACEMENT.DELETE_SW = ''N'''||
+       '         AND TB_PLACEMENT.PROVIDER_ORGANIZATION_ID  = '|| TO_CHAR(al_provider_id) ||' ) '||
+       '     AND ( PV.VALIDATION_STATUS_CD IS NULL OR PV.VALIDATION_STATUS_CD = ''1749'' ) '||
+       '     AND  ( SELECT  COUNT(*)'||
+       '        FROM TB_PROVIDER_DETAILS_CHECKLIST  PDC'||
+       '    WHERE PDC.PROVIDER_ID = PL.PROVIDER_ID'||
+       '          AND PDC.DELETE_SW = ''N'''||
+       '          AND PDC.PROVIDER_CATEGORY_SW = ''Y'''||
+       '          AND PDC.TAX_ID_TYPE_SW = ''Y'''||
+       '          AND PDC.TAX_ID_SW = ''Y'''||
+       '          AND PDC.MAIL_CODE_SW = ''Y'''||
+       '          AND PDC.INDICATOR_1099_SW = ''Y'''||
+       '          AND PDC.SEND_PAYMENT_TO_SW = ''Y'''||
+       '          AND PDC.LOCAL_DEPARTMENT_SW = ''Y'''||
+       '          AND PDC.RESOURCE_WORKER_SW = ''Y'''||
+       '          AND PDC.LOCN_ADR_SW = ''Y'''||
+       '          AND PDC.PAY_ADR_SW  = ''N'' ) > 0 '||
+       '     AND (SELECT COUNT(*)'||
+       '     FROM TB_TICKLERS'||
+       '          WHERE TB_TICKLERS.ENTITY_TYPE_CD = '|| '''' || vs_entity_type || '''' ||
+       '                AND TB_TICKLERS.ENTITY_KEY_ID = PL.PROVIDER_ID'||
+       '                AND TB_TICKLERS.DELETE_SW = ''N'''||
+             '                AND TB_TICKLERS.SYSTEM_TICKLER_ID = '|| TO_CHAR(ll_system_ticlker_id2 ) ||') > 0 ';--
+      ELSE -- OTHERS
+        vs_cursor_sql := ' SELECT DISTINCT PL.CASE_ID,'||
+       '           PL.CLIENT_ID,'||
+       '          PL.PROVIDER_ID'||     
+       '  FROM TB_PLACEMENT PL,'||
+       '       TB_PLACEMENT_VALIDATION  PV'||
+       ' WHERE PL.PLACEMENT_ID = PV.PLACEMENT_ID'||
+       '     AND PL.DELETE_SW = ''N'''||
+       '     AND ( PL.VOID_SW is null OR PL.VOID_SW =''N'' )'||
+       '     AND PV.DELETE_SW = ''N'''||
+       '     AND PL.PROVIDER_ID  = '|| TO_CHAR(al_provider_id) ||
+       '     AND ( PV.VALIDATION_STATUS_CD IS NULL OR PV.VALIDATION_STATUS_CD = ''1749'' )' ;--
+      END IF;--
+
+      -- Take count to run a loop for cursor - START 
+       vl_row_cnt := 0; -- INITIAL VALUE
+      IF vs_prov_cat = '3049' THEN -- Private Organization
+      SELECT COUNT(*)
+         INTO vl_row_cnt
+      FROM ( SELECT  COUNT(*)
+              FROM TB_PLACEMENT PL,
+                      TB_PLACEMENT_VALIDATION  PV,
+                      TB_PROVIDER PRV
+   WHERE PL.PLACEMENT_ID = PV.PLACEMENT_ID
+      AND PL.PROVIDER_ID = PRV.PROVIDER_ID
+     AND PRV.PAY_TO_AFFILIATE_CD = '3368'
+        AND PL.DELETE_SW = 'N'
+        AND ( PL.VOID_SW is null OR PL.VOID_SW ='N' )
+        AND PV.DELETE_SW = 'N'
+        AND PL.PROVIDER_ID  IN ( SELECT DISTINCT TB_PLACEMENT.PROVIDER_ID
+                      FROM TB_PLACEMENT
+                    WHERE TB_PLACEMENT.DELETE_SW = 'N'
+                          AND TB_PLACEMENT.PROVIDER_ORGANIZATION_ID  = al_provider_id )
+        AND ( PV.VALIDATION_STATUS_CD IS NULL OR PV.VALIDATION_STATUS_CD = '1749' )
+           AND  ( SELECT  COUNT(*)
+           FROM TB_PROVIDER_DETAILS_CHECKLIST  PDC
+               WHERE PDC.PROVIDER_ID = PL.PROVIDER_ID
+              AND PDC.DELETE_SW = 'N'
+                          AND PDC.PROVIDER_CATEGORY_SW = 'Y'
+                     AND PDC.TAX_ID_TYPE_SW = 'Y'
+                           AND PDC.TAX_ID_SW = 'Y'
+                  AND PDC.MAIL_CODE_SW = 'Y'
+                  AND PDC.INDICATOR_1099_SW = 'Y'
+                  AND PDC.SEND_PAYMENT_TO_SW = 'Y'
+                     AND PDC.LOCAL_DEPARTMENT_SW = 'Y'
+                  AND PDC.RESOURCE_WORKER_SW = 'Y'
+                  AND PDC.LOCN_ADR_SW = 'Y'
+                  AND PDC.PAY_ADR_SW  = 'N' ) > 0
+           AND (SELECT COUNT(*)
+           FROM TB_TICKLERS
+          WHERE TB_TICKLERS.ENTITY_TYPE_CD = vs_entity_type
+                AND TB_TICKLERS.ENTITY_KEY_ID = PL.PROVIDER_ID
+                   AND TB_TICKLERS.DELETE_SW = 'N'
+            AND TB_TICKLERS.SYSTEM_TICKLER_ID = ll_system_ticlker_id2 ) > 0
+         GROUP BY PL.CASE_ID,
+                  PL.CLIENT_ID,
+           PL.PROVIDER_ID) AS DUMMY ; --
+      ELSE -- OTHERS
+           SELECT COUNT(*)
+            INTO vl_row_cnt   
+          FROM ( SELECT COUNT(*)
+               FROM TB_PLACEMENT PL,
+                TB_PLACEMENT_VALIDATION  PV
+           WHERE PL.PLACEMENT_ID = PV.PLACEMENT_ID
+                AND PL.DELETE_SW = 'N'
+                AND ( PL.VOID_SW is null OR PL.VOID_SW ='N' )
+                AND PV.DELETE_SW = 'N'
+         AND PL.PROVIDER_ID  = al_provider_id
+                AND ( PV.VALIDATION_STATUS_CD IS NULL OR PV.VALIDATION_STATUS_CD = '1749' )  
+               GROUP BY PL.CASE_ID,
+                          PL.CLIENT_ID,
+                       PL.PROVIDER_ID ) AS DUMMY ;--
+
+      END IF;--
+      -- Take count to run a loop for cursor - END
+
+      --PREPARE s1 FROM vs_cursor_sql;--
+     -- OPEN CUR_INFO_CORRECTED;--
+  OPEN CUR_INFO_CORRECTED FOR EXECUTE vs_cursor_sql;--
+     -- INFO_CORRECTED:
+     -- WHILE vl_row_cnt > 0  DO
+  loop EXIT WHEN vl_row_cnt = 0::bigint;
+      vl_case_id := 0; -- INITIAL VALUE
+             vl_client_id := 0; -- INITIAL VALUE
+      vl_sub_provider_id := 0; -- INITIAL VALUE
+ 
+     FETCH CUR_INFO_CORRECTED INTO vl_case_id, vl_client_id, vl_sub_provider_id;--
+
+          IF vl_row_cnt = 0 THEN
+            -- LEAVE INFO_CORRECTED;--
+           END IF;--
+ 
+        -- Delete Tickler # 409 of sub provider - START  
+        IF vs_prov_cat = '3049' AND vl_sub_provider_id > 0 THEN -- Private Organization
+             ll_sub_tickler_cnt2 := 0; -- INITIAL VALUE
+
+            SELECT COUNT(*)
+              INTO ll_sub_tickler_cnt2  
+             FROM TB_TICKLERS
+                    WHERE TB_TICKLERS.ENTITY_TYPE_CD = vs_entity_type
+                AND TB_TICKLERS.ENTITY_KEY_ID = vl_sub_provider_id
+                AND TB_TICKLERS.DELETE_SW = 'N'
+                AND TB_TICKLERS.SYSTEM_TICKLER_ID = ll_system_ticlker_id2 ;--
+
+             IF ll_sub_tickler_cnt2 > 0 THEN
+                UPDATE TB_TICKLERS
+                  SET DELETE_SW = 'Y',
+                    UPDATE_TS = CURRENT_TIMESTAMP,
+                    UPDATE_USER_ID = as_user_id
+              WHERE ENTITY_TYPE_CD = vs_entity_type AND
+                 ENTITY_KEY_ID = vl_sub_provider_id AND
+                 DELETE_SW = 'N' AND
+                 SYSTEM_TICKLER_ID = ll_system_ticlker_id2 ;--
+
+             al_sqlcode := SQLCODE;--
+            IF al_sqlcode < 0 THEN
+                as_error := 'Error in Deleting FM Tickler # 409 of sub provider.';--
+                vs_identity_column := 'Sub Provider ID';--
+                   vs_identity_val := TO_CHAR(vl_sub_provider_id);--
+                     --SIGNAL p_sp_error  ;--
+              END IF ; --
+             END IF;--
+        END IF;--
+        -- Delete Tickler # 409 of sub provider - END  
+
+        -- Create Tickler # 410 - START
+         ll_tickler_cnt1 := 0; -- INITIAL VALUE
+ 
+        SELECT COUNT(*)
+           INTO ll_tickler_cnt1  
+                  FROM TB_TICKLERS
+        WHERE TB_TICKLERS.ENTITY_TYPE_CD = vs_entity_type1
+              AND TB_TICKLERS.ENTITY_KEY_ID = vl_case_id
+                  AND TB_TICKLERS.CLIENT_ID = vl_client_id
+              AND TB_TICKLERS.ENTITY_ID1 = vl_sub_provider_id
+              AND TB_TICKLERS.DELETE_SW = 'N'
+                  AND TB_TICKLERS.SYSTEM_TICKLER_ID = ll_system_ticlker_id1 ;--
+ 
+           IF ll_tickler_cnt1 = 0 THEN
+            vl_staff_id := NULL; -- INITIAL VALUE
+            vs_to_county_cd := NULL; --INITIAL VALUE
+            vl_to_unit_id := NULL; --INITIAL VALUE
+               vl_supervisor_id :=  NULL; -- INITIAL VALUE 
+               vs_case_nm := NUll; -- INITIAL VALUE 
+            vs_client_nm :=  NULL; -- INITIAL VALUE 
+
+          /* SELECT ASG.ASSIGN_TO_STAFF_ID,
+                  STA.PRIMARY_COUNTY_CD,
+                  STA.PRIMARY_COUNTY_UNIT_ID,
+                  F_SUPERVISOR(ASG.ASSIGN_TO_STAFF_ID) AS SUP_ID,
+                  F_ENAME( '2952', ASG.ENTITY_KEY_ID) AS CASE_NM
+            INTO vl_staff_id,
+              vs_to_county_cd,
+              vl_to_unit_id,
+              vl_supervisor_id,
+              vs_case_nm
+                FROM TB_ASSIGNMENT ASG,
+                  TB_STAFF STA 
+               WHERE ASG.ASSIGN_TO_STAFF_ID = STA.STAFF_ID AND
+                 ASG.ENTITY_KEY_ID = vl_case_id  AND
+                ASG.RESPONSIBILITY_CD = 'P' AND
+              ASG.ENTITY_TYPE_CD = vs_entity_type1 AND
+              ASG.DELETE_SW = 'N' AND
+              ASG.END_DT IS NULL
+             ORDER BY ASG.ASSIGNMENT_ID DESC ;-- */
+    SELECT STA.cjamspid,
+                  (select c.statecountycode from team t 
+join county c on c.countyid::character varying = t.countyid::character varying
+where teamid = ASG.fromteamid ) AS PRIMARY_COUNTY_CD,
+                 -- STA.PRIMARY_COUNTY_UNIT_ID,
+     0,--here (Need to change alternate column)
+                  F_SUPERVISOR(ASG.toworkeridno) AS SUP_ID,
+                  F_ENAME( '2952', (select sc.servicecasenumber from servicecase sc where sc.servicecasenumber='9f8747c5-25ac-4473-b839-6de5e6270c8e' limit 1)::bigint) AS CASE_NM
+            INTO vl_staff_id,
+              vs_to_county_cd,
+              vl_to_unit_id,
+              vl_supervisor_id,
+             vs_case_nm
+                FROM caseassignment ASG,
+                  userprofile STA 
+               WHERE ASG.toworkeridno = STA.securityusersid AND
+                ASG.objectid =(select sc.servicecaseid from servicecase sc where sc.servicecasenumber='9f8747c5-25ac-4473-b839-6de5e6270c8e' limit 1)   AND
+                 ASG.objecttypekey = 'servicecase' AND
+                
+              --ASG.ENTITY_TYPE_CD = vs_entity_type1 AND
+              ASG.activeflag = 1 AND
+               ASG.enddate IS NULL
+             ORDER BY ASG.insertedon DESC ;
+
+            al_sqlcode := SQLCODE;--
+           IF al_sqlcode <> 0 THEN
+            as_error := 'Case Resource Worker/Supervisor NOT found.' ;--
+            vs_identity_column := 'CASE_ID';--
+            vs_identity_val := TO_CHAR(vl_case_id);--
+           --SIGNAL p_sp_error  ;--
+           END IF ;--
+
+           SELECT F_ENAME( '2955', CLIENT_ID ) AS CLIENT_NM
+                 INTO vs_client_nm
+             FROM TB_CLIENT
+           WHERE CLIENT_ID = vl_client_id ;--
+     
+           IF vs_client_nm is NULL THEN
+               vs_client_nm := 'N/A';--
+           END IF;--
+              vs_assign_to_county_cd := NULL;--
+             vl_assign_to_unit_id := NULL; --
+ 
+            vs_tickler_tx := 'Provider information has been corrected; please validate the placement of ' || vs_client_nm || '  (' || RTRIM(LTRIM(TO_CHAR(vl_client_id))) || ').';--
+ 
+           -- Create Tickler for Resource Worker - START
+          IF vl_staff_id IS NOT NULL AND vl_staff_id > 0 THEN
+              vl_tickler_id := 0; -- INITIAL VALUE
+             select as_sp_nextid(vs_tickler_col) into vl_tickler_id;--
+ 
+              vl_ENTITY_ID1 := vl_sub_provider_id;--
+              vl_ENTITY_ID2 := NULL;--
+              vl_null := NULL; --
+          
+            INSERT INTO TB_TICKLERS
+              ( TICKLER_ID,
+                TICKLER_TX,
+                TICKLER_TYPE_SW,
+                   DUE_DT,
+                   REMINDER_START_DT,
+                ENTITY_TYPE_CD,
+                ENTITY_KEY_ID,
+                   ENTITY_NM,
+                 ASSIGNED_TO_STAFF_ID,
+                CLIENT_ID,
+                   CREATE_TS,
+                CREATE_USER_ID,
+                   UPDATE_TS,
+                   UPDATE_USER_ID,
+                   DELETE_SW,
+                COUNTY_CD,
+                   COUNTY_UNIT_ID,
+             SYSTEM_TICKLER_ID,
+                TICKLER_NATURE_CD,
+                   ASSIGN_TO_COUNTY_CD,
+                   ASSIGN_TO_UNIT_ID,
+                EXPIRY_DT,
+                ENTITY_ID1,
+                   ENTITY_ID2,
+                   SCREEN_CD )
+              VALUES ( vl_tickler_id,
+                   vs_tickler_tx,
+               'S',
+                vd_due_dt,
+                   vd_reminder_dt,
+                vs_entity_type1,
+                   vl_case_id,
+                   vs_case_nm,
+                vl_staff_id,
+                   vl_client_id,
+                   CURRENT_TIMESTAMP,
+                as_user_id,
+             CURRENT_TIMESTAMP,
+                 as_user_id,
+                'N',
+                vs_to_county_cd,
+                vl_to_unit_id,
+                ll_system_ticlker_id1,
+                 vs_nature,
+                vs_assign_to_county_cd,
+               vl_assign_to_unit_id,
+                   vd_expiry_dt,
+                vl_ENTITY_ID1,
+               vl_ENTITY_ID2,
+                vs_screen_cd )  ;--
+ 
+ 
+          al_sqlcode := SQLCODE;--
+         IF al_sqlcode <> 0 THEN
+             as_error := 'Error in generating FM Tickler to Resource Worker.';--
+             vs_identity_column := 'CASE/CLIENT/PROVIDER IDs';--
+             vs_identity_val := TO_CHAR(vl_case_id) || '/ ' || TO_CHAR(vl_client_id) || '/ ' || TO_CHAR(vl_sub_provider_id);--
+            --SIGNAL p_sp_error  ;--
+         END IF ;--
+          END IF;--
+        -- Create Tickler for Resource Worker - END
+  
+        -- Create Tickler for Supervisor - START
+    IF vl_supervisor_id IS NOT NULL AND vl_supervisor_id > 0 THEN
+            vl_tickler_id := 0; -- INITIAL VALUE
+           SELECT as_sp_nextid(vs_tickler_col) into vl_tickler_id;--
+ 
+               vl_ENTITY_ID1 := vl_sub_provider_id;--
+            vl_ENTITY_ID2 := NULL;--
+            vl_null := NULL; --
+    
+              INSERT INTO TB_TICKLERS
+           ( TICKLER_ID,
+             TICKLER_TX,
+             TICKLER_TYPE_SW,
+              DUE_DT,
+                 REMINDER_START_DT,
+                 ENTITY_TYPE_CD,
+          ENTITY_KEY_ID,
+              ENTITY_NM,
+              ASSIGNED_TO_STAFF_ID,
+              CLIENT_ID,
+              CREATE_TS,
+              CREATE_USER_ID,
+              UPDATE_TS,
+          UPDATE_USER_ID,
+              DELETE_SW,
+              COUNTY_CD,
+              COUNTY_UNIT_ID,
+          SYSTEM_TICKLER_ID,
+              TICKLER_NATURE_CD,
+              ASSIGN_TO_COUNTY_CD,
+              ASSIGN_TO_UNIT_ID,
+             EXPIRY_DT,
+             ENTITY_ID1,
+             ENTITY_ID2,
+          SCREEN_CD )
+              VALUES ( vl_tickler_id,
+                       vs_tickler_tx,
+                'S',
+                 vd_due_dt,
+                        vd_reminder_dt,
+                    vs_entity_type1,
+                        vl_case_id,
+                 vs_case_nm,
+                vl_supervisor_id,
+                vl_client_id,
+                CURRENT_TIMESTAMP,
+         as_user_id,
+                CURRENT_TIMESTAMP,
+                as_user_id,
+                'N',
+         vs_to_county_cd,
+             vl_to_unit_id,
+                 ll_system_ticlker_id1,
+                 vs_nature,
+             vs_assign_to_county_cd,
+                 vl_assign_to_unit_id,
+                 vd_expiry_dt,
+                 vl_ENTITY_ID1,
+             vl_ENTITY_ID2,
+                 vs_screen_cd )  ;--
+ 
+ 
+        al_sqlcode := SQLCODE;--
+           IF al_sqlcode <> 0 THEN
+           as_error := 'Error in generating FM Tickler to Supervisor.';--
+               vs_identity_column := 'CASE/CLIENT/PROVIDER IDs';--
+                  vs_identity_val := TO_CHAR(vl_case_id) || '/ ' || TO_CHAR(vl_client_id) || '/ ' || TO_CHAR(vl_sub_provider_id);--
+          --SIGNAL p_sp_error  ;--
+       END IF ;--
+           END IF;--
+        -- Create Tickler for Supervisor - END  
+         END IF;  --
+          -- Create Tickler # 410 - END
+ 
+     --COMMIT;   --
+      vl_row_cnt := vl_row_cnt  - 1; --
+ --END WHILE ;--
+ END LOOP;
+ CLOSE CUR_INFO_CORRECTED ;--
+
+   END IF;--
+   -- Reverse Tickler (Info corrected) Activity - END
+END IF;--
+
+END;--
+
+$function$
+

@@ -1,0 +1,84 @@
+CREATE OR REPLACE FUNCTION getusernotification(searchobj json, isextentity boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, usernotificationid uuid, objecttype character varying, fromname character varying, toname character varying, frommail character varying, tomail character varying, usernotificationtypekey character varying, url text, subject character varying, priorityleveltypekey character varying, body text, hasattachments boolean, updatedby character varying, updatedon timestamp without time zone, insertedby character varying, insertedon timestamp without time zone, teammemberid uuid, attachmentlocation character, servicerequestnumber character varying, tosecurityusersid character varying, isreplied boolean, isforwarded boolean, iscarboncopy boolean, isread boolean, effectivedate timestamp without time zone, expirationdate timestamp without time zone, intakeserviceid character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- Revision(s)
+-- 08/18/2021 - Vineet Tirodkar - Modifications to pull system generated Notifications (B-107734)
+------------------------------------------------------------------------
+DECLARE 
+v_userID character varying;
+v_liPageNumber      INT;                                                          
+v_liPageSize       INT; 
+v_pageNumber INT;                                                          
+v_pageSize  INT; 
+v_pageOffset int;
+v_userSecurityID character varying; 
+
+BEGIN
+
+v_userID := searchObj ->> 'userid';
+v_liPageNumber := searchObj ->> 'pagenumber';
+v_liPageSize := searchObj ->> 'pagesize';
+ 
+ 
+-- SELECT securityusersid into v_userSecurityID FROM muser where id = v_userID;
+ 
+v_pageNumber := v_liPageNumber-1;
+v_pageOffset = v_pageNumber * v_liPageSize;    
+
+RETURN QUERY 
+
+select count(1) over(), 
+ un.usernotificationid, 
+ un.objecttype,
+ case coalesce(upfrom.fullname,'') when '' then 'CJAMS' -- unmap.fromsecurityusersid  
+ else coalesce(upfrom.fullname,'') end :: character varying as fromname,
+ upto.fullname as toname,
+ case coalesce(upfrom.email,'')when '' then unmap.fromsecurityusersid  
+ else coalesce(upfrom.email,'') end :: character varying as frommail,
+ upto.email as tomail,
+ un.usernotificationtypekey, 
+ un.url,
+ un.subject, 
+ un.priorityleveltypekey, 
+ un.body, 
+ un.hasattachments, 
+ un.updatedby, 
+ un.insertedon as updatedon, 
+ un.insertedby,
+ un.insertedon, 
+ un.teammemberid, 
+ un.attachmentlocation, 
+ coalesce(un.objectcasenumber,
+  (select case_id from tb_service_log 
+   where service_log_id = (tspa.service_log_id))::character varying) as servicecasenumber,
+ unmap.tosecurityusersid, 
+ unmap.isreplied, 
+ unmap.isforwarded, 
+ unmap.iscarboncopy, 
+ unmap.isread,
+ unmap.effectivedate, 
+ unmap.expirationdate,
+ CASE WHEN Length (un.objectid)  > 30 THEN un.objectid 
+ ELSE (select servicecaseid from servicecase 
+   where servicecasenumber = (select case_id from tb_service_log 
+      where service_log_id = (tspa.service_log_id)))::character varying END as intakeserviceid
+from usernotification un 
+ LEFT JOIN ( select authorization_id, service_log_id 
+    from tb_service_purchase_authorization) tspa ON tspa.authorization_id::CHARACTER VARYING = un.objectid
+ inner join usernotificationmap unmap on un.usernotificationid = unmap.usernotificationid 
+ left join userprofile upfrom on upfrom.securityusersid= COALESCE(unmap.fromsecurityusersid, un.insertedby)
+  and upfrom.securityusersid is not null 
+ inner join userprofile upto on upto.securityusersid = unmap.tosecurityusersid 
+  and un.securityusersid = v_userID
+  and unmap.tosecurityusersid is not null
+  and un.activeflag=1 and un.teamtypekey = 'CW'
+  and COALESCE(un.isexternalentity,false)= isextentity 
+order by un.updatedon desc
+LIMIT v_liPageSize OFFSET v_pageOffset;
+
+END;
+
+$function$
+

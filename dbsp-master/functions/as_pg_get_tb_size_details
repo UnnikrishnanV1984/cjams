@@ -1,0 +1,90 @@
+CREATE OR REPLACE FUNCTION as_pg_get_tb_size_details()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_status varchar(20) default 'SUCCESS';
+v_var record;
+var_table text;
+v_cnt integer;
+v_table_name text;
+begin
+ delete from tb_get_tb_size_details;
+ for v_var in (SELECT *, pg_size_pretty(total_bytes) AS total
+         , pg_size_pretty(index_bytes) AS tb_index
+         , pg_size_pretty(toast_bytes) AS toast
+         , pg_size_pretty(table_bytes) AS tb_table
+       FROM (
+       SELECT *, total_bytes-index_bytes-COALESCE(toast_bytes,0) AS table_bytes FROM (
+            SELECT c.oid,nspname AS table_schema, relname AS TABLE_NAME
+                    , c.reltuples AS row_estimate
+                    , pg_total_relation_size(c.oid) AS total_bytes
+                    , pg_indexes_size(c.oid) AS index_bytes
+                    , pg_total_relation_size(reltoastrelid) AS toast_bytes
+                FROM pg_catalog.pg_class c
+                LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                WHERE relkind = 'r' 
+               and nspname not like 'pg_catalog'
+         and nspname not like 'information_schema'
+         and nspname not like 'sys'
+         and nspname not like '%pg_temp%'
+         order by relname asc
+       ) a
+     ) a)
+ loop
+ insert into tb_get_tb_size_details(table_schema ,
+          table_name ,
+          row_estimate,
+          total_bytes ,
+          index_bytes ,
+          toast_bytes ,
+          table_bytes ,
+           total ,
+          tb_index ,
+          toast ,
+          tb_table)
+ values(
+          v_var.table_schema ,
+          v_var.table_name ,
+          v_var.row_estimate,
+          v_var.total_bytes ,
+          v_var.index_bytes ,
+          v_var.toast_bytes ,
+          v_var.table_bytes ,
+          v_var.total ,
+          v_var.tb_index ,
+          v_var.toast ,
+          v_var.tb_table);
+  --return next;
+  end loop; 
+
+  
+  
+
+  for var_table in (select table_name from tb_get_tb_size_details)
+  loop
+  
+   v_table_name:=var_table;
+   --raise notice '--%--',v_table_name;
+  
+   EXECUTE 'select coalesce(count(*),0)cnt from ' || '"' || v_table_name ||'"'
+   INTO v_cnt;
+   
+   --raise notice '--%--',v_cnt;
+  
+   update tb_get_tb_size_details 
+   set tb_total_rows_cnt = v_cnt
+   where table_name  = v_table_name;
+  
+  end loop;
+
+ return v_status;
+  
+  
+  exception 
+        when others then  
+     v_status:='FAILED';
+     return v_status;
+
+end;$function$
+

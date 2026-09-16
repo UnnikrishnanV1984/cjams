@@ -1,0 +1,13 @@
+update progressnotedetail
+set description ='<p>TW reported to Ms. White''s home. Upon arrival, Ms. White was arriving home from a walk with her dogs. She put the dogs inside the home and then let TW inside. The home was noted to be clean and well maintained, although there were kitchen items placed on every available surface. Ms. White explained that she was cleaning her kitchen and apologized for the items. TW gave Ms. White a television that DSS had purchased for the Respondent''s room and she thanked TW. TW also provided her with a $100 gift card that the Respondent had been given. Given his disabilities and limited ability to manage finances, it is appropriate to give to Ms. White to manage on the Respondent''s behalf.
+
+ 
+
+TW asked Ms. White if she was excited that the Respondent would soon be back with her and she said she was. She showed TW formal clothes she had purchased for the Respondent''s upcoming graduation and stated that she would be taking him to get a haircut before his graduation. She asked about what will happen when the Respondent comes back to her home and TW advised that TW will need to come see the Respondent in her home and do an assessment of the home and his room and Ms. White stated that would be fine. She advised that TW could see the Respondent''s room now but that it was still a little messy from the Respondent''s last visit. TW advised that the room could be observed at the next visit when the Respondent is there. TW explained that the visit will initially be a trial visit but it is hoped that the Respondent staying there will be permanent and the case will then close at the July court date. Ms. White appeared to be nervous about the prospect of the case closing and said "it will be that quick?". TW reminded Ms. White that her attorney had stated that this is what she wanted to happen at the July hearing. TW also advised Ms. White that DSS involvement will not end right at the court hearing and that aftercare services can be provided to help support and stabilize the family for a limited period of time. TW further advised that Ms. White will need to be made representative payee for the Respondent''s SSI and the Respondent has a foster youth savings account that will need to be disbursed. TW reminded Ms. White that her child support will also stop.
+
+ 
+
+The visit was ultimately concluded with an agreement that TW will come for a visit shortly after the Respondent returns to Ms. White''s home in June.</p>',
+updatedby ='CDM-14269',
+updatedon = now()
+where  progressnotedetailid = '58b68be0-da93-4e45-8a09-26f68acf306d';

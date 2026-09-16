@@ -1,0 +1,68 @@
+CREATE OR REPLACE FUNCTION as_createnewuser2(v_email character varying, v_firstname character varying, v_lastname character varying, v_teamname character varying, v_agencycode character varying, v_roletypekey character varying, issuperadmin integer DEFAULT 0)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+declare v_teamid uuid ;
+v_teammemberid uuid ;
+v_securityusersid uuid ;
+v_message character varying(100);
+v_positioncode  int;
+BEGIN
+v_message:= 'Success';
+
+Select teamid into v_teamid from team where lower(teamname ) = lower(v_teamname);
+IF (coalesce(v_teamid::character varying,'')='') THEN 
+INSERT INTO team
+(teamid, activeflag, teamname, teamnumber, teamtypekey, description, officetimingfrom, officetimingto, parentteamid, insertedby, insertedon, updatedby, updatedon, effectivedate, expirationdate, "timestamp", region, regionid, old_id, countyid)
+VALUES(gen_random_uuid(), 1, v_teamname, v_teamname, v_agencycode, NULL, '01:00:00', '04:00:00', NULL, 'admin', now(), 'admin', now(), now(), NULL, NULL, 0, NULL, NULL, NULL) returning teamid into v_teamid ;
+END IF;
+
+    IF NOT EXISTS (SELECT * FROM role WHERE  lower(roletypekey)=lower(v_roletypekey) ) THEN
+         v_message:= 'Role does not exist';
+    ELSE 
+
+  Select securityusersid into v_securityusersid from userprofile where lower(email ) = lower(v_email);
+  IF (coalesce(v_securityusersid::character varying,'')=''AND EXISTS (SELECT * FROM role WHERE  lower(roletypekey)=lower(v_roletypekey) ) ) THEN 
+
+   Select max(linenumber) into v_positioncode from teammember ;
+   v_positioncode:= coalesce(v_positioncode,0)+1;
+   
+   INSERT INTO teammember (teammemberid, activeflag, teamid, loadnumber, roletypekey, positioncode, description, isoncall,
+   insertedby, insertedon, updatedby, updatedon, effectivedate, expirationdate, "timestamp", linenumber, voidedby, voidedon, voidreasonid, rtfdate, coadate, old_id, isdefaultroute)
+   VALUES (gen_random_uuid(), 1, v_teamid, v_positioncode::character varying, v_roletypekey,
+   v_positioncode::character varying , '', true, '', now(), 'admin',  now(),  now(), null, NULL,
+   v_positioncode , NULL, NULL, NULL,  now(), now(), NULL, 1)  returning teammemberid into v_teammemberid; 
+
+   INSERT INTO userprofile(
+    securityusersid, firstname, lastname, displayname, fullname, 
+    activeflag,   email,    insertedby, insertedon, updatedby, updatedon,
+      teamtypekey,usertypekey,autonotification,old_id,title)
+   values(gen_random_uuid(),v_firstname,v_lastname,v_firstname || v_lastname,v_firstname || v_lastname,1,v_email ,'admin' ,now(),'admin',now(),v_agencycode,'DSDS',false,'',null) returning securityusersid into v_securityusersid ;
+
+   INSERT INTO securityusers(
+    securityusersid, username , activeflag, insertedby, updatedby, insertedon, updatedon,old_id)
+    select securityusersid, displayname,  1,'admin','admin',now(),now(),'man' from userprofile where email= v_email;
+   INSERT INTO muser(
+      username, password, email,  id, securityusersid,
+    insertedby, updatedby, insertedon, updatedon, activeflag ,old_id)
+    SELECT  displayname,'$2a$10$fwlp0MMCDZHj9wk7mNdQ6uf1hQkZXcDYiqlLZZVWK0Ic4PCcm0lyW',email,nextval('muser_id_seq'),securityusersid, 'admin' ,'admin',now(),now(),1,title from userprofile where email= v_email;
+    
+    INSERT INTO as_teammemberassignment
+   (teammemberassignmentid, activeflag, teammemberid, securityusersid, insertedby, insertedon, updatedby, updatedon, effectivedate)
+   VALUES (gen_random_uuid(), 1, v_teammemberid,v_securityusersid, 'admin', now(), 'admin', now(), now());
+    
+     
+     INSERT INTO rolemapping
+     (id, principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon)
+     select nextval('rolemapping_id_seq'),'USER',id::character varying,
+      case issuperadmin when 1 then  4 else (select id from role where lower(roletypekey)=lower(v_roletypekey) and activeflag =1 limit 1) end ,1, 'admin', 'admin', now(), now()
+     from muser where securityusersid in (select securityusersid from userprofile where email= v_email);
+   
+  ELSE
+            v_message:= 'User already exists';
+        END IF;
+ END IF; 
+ return v_message;
+ END  
+  $function$
+

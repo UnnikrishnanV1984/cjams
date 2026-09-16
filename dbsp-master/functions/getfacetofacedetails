@@ -1,0 +1,69 @@
+CREATE OR REPLACE FUNCTION getfacetofacedetails(v_intakeserviceid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_taskdetails json;
+DECLARE l_count integer;
+DECLARE l_isvalid integer;
+DECLARE v_entitytypeid character varying(50);
+
+BEGIN
+
+v_entitytypeid = v_intakeserviceid;
+
+SELECT count(1) INTO l_count 
+FROM contactparticipant ct
+INNER JOIN progressnote pt ON ct.progressnoteid=pt.progressnoteid AND  ct.activeflag=1 AND pt.activeflag=1
+INNER JOIN progressnotetype pty ON pty.progressnotetypeid=pt.progressnotetypeid AND pty.activeflag=1
+LEFT JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid=ct.intakeservicerequestactorid AND isra.activeflag=1  
+--AND  isra.intakeservicerequestpersontypekey  ='LE'  
+WHERE pty.progressnotetypekey='Initialfacetoface' 
+--AND ct.participanttypekey IN ('LO','Oth')  -- quick fix to disable facetoface popup
+AND pt.attemptindicator IS NOT NULL AND pt.entitytypeid in (v_entitytypeid,
+(SELECT DISTINCT intakeserviceid:: character varying FROM intakeservicerequest WHERE servicecaseid =v_entitytypeid::UUID AND activeflag =1 LIMIT 1),
+     (SELECT DISTINCT intakenumber:: character varying FROM intakeservicerequestactor WHERE (servicecaseid =v_entitytypeid::UUID OR intakeserviceid =v_entitytypeid::UUID ) AND activeflag =1 LIMIT 1),
+     (SELECT DISTINCT servicecaseid:: character varying FROM intakeservicerequestactor WHERE (servicecaseid =v_entitytypeid::UUID OR intakeserviceid =v_entitytypeid::UUID ) AND activeflag =1 LIMIT 1)
+
+);
+
+SELECT CASE WHEN Count(1)=1 AND p.dateofdeath IS NOT NULL THEN 0 ELSE 1 END into l_isvalid  
+FROM intakeservicerequestactor isra  
+INNER JOIN actor A ON a.actorid=isra.actorid and a.activeflag=1
+INNER JOIN person p ON isra.personid=p.personid AND p.activeflag=1  
+WHERE isra.intakeserviceid=v_intakeserviceid AND intakeservicerequestpersontypekey IN('RC', 'CHILD', 'Child') AND isra.activeflag=1 GROUP BY p.dateofdeath;
+
+RAISE  NOTICE  '%l_isvalid',  l_isvalid;
+            
+SELECT json_agg(ltask) INTO l_taskdetails FROM 
+(
+ SELECT 
+  'initalfacetoface' AS taskname,
+  CASE coalesce(l_count,0) WHEN 0 THEN UPPER('no') ELSE UPPER('yes') END AS status,
+  l_isvalid AS isvalid
+ 
+ UNION ALL  
+    
+ SELECT 
+  'Personrole' AS taskname,
+        UPPER('yes') AS status,
+  l_isvalid AS isvalid
+ 
+ UNION ALL
+  
+ select ast.titleheadertext as taskname,
+ ass.assessmentstatustypekey as status,
+ l_isvalid AS isvalid
+ from assessmenttemplate ast 
+ left join assessment ass  on ast.assessmenttemplateid=ass.assessmenttemplateid and ass.activeflag=1 
+ where ass.objectid=v_intakeserviceid
+ and ast."name" in ('marylandFamilyInitialRiskAssessment','SAFE-C','cansF','safeCOhp')
+ 
+ 
+)  ltask;
+    
+RETURN  l_taskdetails;                
+END;
+
+$function$
+

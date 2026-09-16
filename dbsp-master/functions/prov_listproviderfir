@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION prov_listproviderfir(userid character varying, p_status character varying, pagenumber integer, pagelimit integer, firno character varying, providerid integer, providername character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, provider_fir_id uuid, fir_no character varying, provider_id integer, site_id integer, licence_type character varying, fir_comments character varying, incident_date character varying, status character varying, statusdesc character varying, insertedby character varying, provider_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+totalcount integer;
+v_status character varying;
+v_userid character varying;
+orderbycolumn character varying;
+
+ BEGIN
+ v_limit= pagelimit;
+    v_pagenumber := pageNumber-1;
+    v_pageoffset = v_pagenumber * v_limit;  
+v_userid=null;
+IF (p_status='')  then 
+  v_status=null;
+ELSE 
+  v_status = p_status;
+end if;
+--
+--raise notice 'v_userid%',v_userid;
+--raise notice 'v_status%',v_status;
+
+ RETURN QUERY 
+ SELECT  count(1)  over(),fir.provider_fir_id, fir.fir_no as fir_no, fir.provider_id, fir.site_id, fir.licence_type, 
+ fir.fir_comments ::character varying, fir.incident_date::character varying, fir.fir_status, fir.fir_statusdesc ,
+ (select UP.displayname from userprofile UP where UP.securityusersid=fir.inserted_by) ,tb.provider_nm
+FROM provider_fir fir
+inner join tb_provider TB on TB.provider_id=fir.provider_id 
+where fir.active_flag=1 and fir.delete_sw='N'
+and  case when providerid is not null then  fir.provider_id = providerid else true end 
+and case when v_status is not null then 
+      (case 
+             when p_status = 'pending' then fir.fir_status in ('102','106') or fir.fir_status is null 
+             when p_status = 'closed' then fir.fir_status in ('105')
+             when p_status = 'compliant' then fir.fir_status in ('103')
+             when p_status = 'noncompliant' then fir.fir_status in ('104')
+             when p_status = 'pendingoig' then fir.fir_status in ('109')
+      else true end)
+ else true end
+and case when firno is not null then fir.fir_no =firno else true end
+and case when providerid is not null then fir.provider_id =providerid else true end
+and case when providername is not null then TB.provider_nm=providername else true end
+order by fir.inserted_on::timestamp desc
+LIMIT v_limit OFFSET v_pageoffset ;            
+end;
+$function$
+

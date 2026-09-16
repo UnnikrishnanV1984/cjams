@@ -1,0 +1,89 @@
+CREATE OR REPLACE FUNCTION as_icjabsconderreportnotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+v_status character varying;
+
+v_count int;
+v_icjassessment20daysrecord  record;
+v_msg character varying;
+v_voluntrytype character varying;
+P_cjamspid bigint;
+
+
+BEGIN
+    FOR  v_icjassessment20daysrecord  IN
+
+    SELECT DISTINCT ISR.intakeserviceid, ISR.servicerequestnumber, ISR.intakenumber, 
+ R.tosecurityusersid,R.fromsecurityusersid,P.lastname,P.firstname ,P.cjamspid,
+ CASE WHEN R.insertedon::DATE = NOW()::DATE -'5 day'::INTERVAL THEN 1
+ WHEN R.insertedon::DATE = NOW()::DATE -'4 day'::INTERVAL THEN 2
+ WHEN R.insertedon::DATE = NOW()::DATE -'3 day'::INTERVAL THEN 3
+ WHEN R.insertedon::DATE = NOW()::DATE -'2 day'::INTERVAL THEN 4
+ --WHEN R.insertedon::DATE = NOW()::DATE -'1 day'::INTERVAL THEN 5
+ WHEN R.insertedon::DATE between now()::date -'1 day'::interval and now() THEN 5
+ END AS daysinterval
+  
+ FROM intakeservicerequest as ISR
+ JOIN intakeservicerequesttype as ISRT 
+    ON ISRT.intakeservreqtypeid=ISR.intakeservreqtypeid and lower(ISRT.intakeservreqtypekey)='ic'
+ JOIN routing as R 
+    ON R.objectid = ISR.intakeserviceid::character varying  and R.toroleid='JSCSP' and R.routingstatustypeid= 12 
+ and R.activeflag = 1   
+ JOIN intakeservicerequestactor as ISRA
+    ON ISR.intakeserviceid  = ISRA.intakeserviceid  and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+ JOIN actor as A
+    ON A.actorid  = ISRA.actorid  and A.activeflag = 1  
+ JOIN Person as P
+    ON P.personid  = A.personid  and P.activeflag = 1 
+ JOIN intakeserreqinterstate as ISIT 
+    ON ISIT.intakeserviceid = ISR.intakeserviceid and ISIT.activeflag = 1
+ JOIN intakeservicerequestdispositioncode as ISRDC 
+    ON ISRDC.intakeserviceid = ISR.intakeserviceid and ISRDC.activeflag = 1
+ JOIN intakeserreqstatustype as ISRST 
+  ON ISRST.intakeserreqstatustypeid = ISRDC.intakeserreqstatustypeid and ISRST.activeflag = 1 and 
+ lower(ISRST.intakeserreqstatustypekey) = 'review'   
+
+ WHERE  (R.insertedon::date = now()::date -'5 day'::interval OR R.insertedon::date = now()::date -'4 day'::interval 
+ OR R.insertedon::date = now()::date -'3 day'::interval OR R.insertedon::date = now()::date -'2 day'::interval
+ --OR R.insertedon::date = now()::date -'1 day'::interval
+ OR R.insertedon::date between now()::date -'1 day'::interval and now()
+ 
+ )  
+
+ LOOP
+   
+select count(*) into v_count from assessment AST 
+join assessmenttemplate ASMT on ASMT.assessmenttemplateid=AST.assessmenttemplateid and AST.assessmentstatustypekey='Submitted'and AST.activeflag=1
+
+join intakeservicerequest ISR on ISR.intakeserviceid=AST.objectid and ISR.activeflag=1
+
+where AST.objectid=v_icjassessment20daysrecord.intakeserviceid and ASMT.name='icjFormIiRequisitionForEscapeeAbsconderOrAccusedDelinquent';
+
+
+IF(v_count > 0) then 
+
+ v_msg:=   'Please respond to the Absconder Report ('|| v_icjassessment20daysrecord.lastname ||', '|| v_icjassessment20daysrecord.firstname ||')  ('|| v_icjassessment20daysrecord.servicerequestnumber ||') in '||v_icjassessment20daysrecord.daysinterval||' days.';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.tosecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+ 
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.fromsecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.fromsecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+
+     
+END IF;      
+    END LOOP;
+ 
+RETURN
+
+'Success';
+
+END;
+
+
+$function$
+

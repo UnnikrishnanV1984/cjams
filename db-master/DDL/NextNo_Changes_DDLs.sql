@@ -1,0 +1,1 @@
+Alter table cjams.adoptioncase alter column adoptioncasenumber set default getnextdanumber('Adoptioncasenumber'::character varying);

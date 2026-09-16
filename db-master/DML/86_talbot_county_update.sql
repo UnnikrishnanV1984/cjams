@@ -1,0 +1,1 @@
+UPDATE county set state = 'MD' where countyname = 'Talbot' and activeflag = 1

@@ -1,0 +1,399 @@
+CREATE OR REPLACE FUNCTION createadoptioncase(v_adoptionplanningid uuid, v_servicecaseid uuid, v_casedata jsonb, v_userid character varying)
+ RETURNS TABLE(servicecaseno character varying, caseid uuid, message character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+ DECLARE l_personid uuid;
+        l_personname character varying(100);
+        l_adoptioncaseid uuid;
+        l_adoptioncase_adoptionagreementid uuid;
+        l_adoptioncasenumber character varying(20) ;
+        l_response text;
+        l_supervisor character varying(100);
+        v_persondata json;
+        v_person  json;
+        v_addressdata  json;
+     v_contactsdata  json;
+     v_address  json;
+     v_contacts  json;
+        l_parent1personid uuid;
+        l_parent2personid uuid;
+        v_ag record;
+        v_oldpersonid uuid;
+        --v_providerlastname character varying(100);
+        v_parent1firstname character varying(100);
+        v_parent1lastname character varying(100);
+        v_parent2firstname character varying(100);
+        v_parent2lastname character varying(100);
+        l_programkey character varying;
+  l_subprogramkey character varying;
+     l_fromteamid uuid;
+        l_toteamid uuid;
+        l_fromldssid uuid;
+        l_toldssid uuid;
+        l_assignedsecurity character varying;
+        l_responsibilitytypekey character varying;
+       
+       
+
+
+    BEGIN
+  /*SELECT isr.insertedby INTO l_supervisor FROM adoptionplanning ap
+  INNER JOIN intakeservicerequest isr ON isr.servicecaseid = ap.servicecaseid
+  WHERE ap.adoptionplanningid = v_adoptionplanningid;*/
+     v_parent1firstname:='';
+      v_parent1lastname:='';
+      v_parent2firstname:='';
+      v_parent2lastname:='';
+     
+        RAISE  NOTICE  ' >>>v_parent1firstname%',v_parent1firstname;
+         RAISE  NOTICE  ' >>>v_parent1lastname%',v_parent1lastname;
+            RAISE  NOTICE  ' >>>v_parent2firstname%',v_parent2firstname;
+         RAISE  NOTICE  ' >>>v_parent2lastname%',v_parent2lastname;
+        
+        
+     
+     SELECT TB.provider_first_nm, TB.provider_last_nm, TB.co_first_nm, TB.co_last_nm
+  INTO v_parent1firstname, v_parent1lastname, v_parent2firstname, v_parent2lastname
+  FROM tb_provider TB WHERE TB.provider_id in (select parent1providerid from adoptionagreement ag where ag.adoptionplanningid=v_adoptionplanningid);
+
+ 
+    RAISE  NOTICE  ' >>>v_parent1firstname%',v_parent1firstname;
+         RAISE  NOTICE  ' >>>v_parent1lastname%',v_parent1lastname;
+            RAISE  NOTICE  ' >>>v_parent2firstname%',v_parent2firstname;
+         RAISE  NOTICE  ' >>>v_parent2lastname%',v_parent2lastname;
+        
+        
+   --SELECT split_part(ag.parent1providername, ' ', 2) from adoptionagreement ag where ag.adoptionplanningid=v_adoptionplanningid INTO v_providerlastname;
+    IF v_parent1lastname is null THEN                     
+         v_parent1lastname := '';
+        END IF;
+  /*
+    IF v_providerlastname is null THEN                     
+         v_providerlastname := '';
+        END IF;
+        */
+  SELECT  fromsecurityusersid::CHARACTER VARYING,teamid INTO l_supervisor,l_fromteamid
+  FROM  routing r 
+    INNER JOIN adoptionbreakthelink abl ON abl.adoptionbreakthelinkid::character varying = r.objectid
+  WHERE  eventcode ='ABLR' 
+    AND r.routingstatustypeid = 16
+    AND abl.adoptionplanningid = v_adoptionplanningid
+    AND r.activeflag =1
+  ORDER BY r.insertedon DESC LIMIT 1; 
+
+  /*Get Program area for adoption from configuration */
+        SELECT programkey, subprogramkey INTO l_programkey, l_subprogramkey FROM programareaconfig WHERE LOWER(servicerequestsubtypekey) = 'adoption' AND isdefault =1 limit 1;
+ 
+       
+      --Start Adoption case changes
+      --Create Adoption case and update adoptioncase id in adoptionagreement, get rid of adoptionplanning from adoptioncase table
+      INSERT INTO adoptioncase 
+        (adoptionplanningid,alternateid,startdate,enddate,statustypekey,insertedby,updatedby)
+      SELECT 
+       v_adoptionplanningid, ap.alternateid::bigint, ag.startdate, ag.enddate,'Open', v_userid, v_userid
+      FROM  
+        adoptionplanning ap, adoptionagreement ag
+      WHERE 
+        ap.adoptionplanningid = ag.adoptionplanningid
+      AND
+        ap.adoptionplanningid = v_adoptionplanningid
+      RETURNING    "adoptioncaseid" , "adoptioncasenumber"  INTO l_adoptioncaseid, l_adoptioncasenumber;
+
+      INSERT INTO adoptioncaseagreement
+        (adoptioncaseid, isofferedsubsidy, offeraccepteddate, startdate, enddate, finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, alternateid, issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, agreementcomments, childplacedby, childplacedfrom)
+      SELECT 
+        l_adoptioncaseid, isofferedsubsidy, offeraccepteddate, startdate, enddate, finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, alternateid, issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, agreementcomments, childplacedby, childplacedfrom
+      FROM 
+        adoptionagreement
+      WHERE 
+        adoptionplanningid = v_adoptionplanningid
+      RETURNING "adoptionagreementid" INTO l_adoptioncase_adoptionagreementid;
+
+      INSERT INTO routing
+        (eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype)
+      SELECT 
+        eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, l_adoptioncase_adoptionagreementid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype
+      FROM 
+        routing
+      WHERE routing.routingstatustypeid = 16 
+        AND routing.eventcode::text = 'ASAR'::text 
+        AND routing.activeflag = 1 
+        AND routing.objectid::text = (
+          SELECT adoptionagreementid FROM adoptionagreement WHERE adoptionplanningid = v_adoptionplanningid
+          )::text;
+
+      INSERT INTO adoptioncaseagreementrate
+        (adoptionagreementid, startdate, enddate, provider_id, paymentamout, isapproval, approvaldate, isspeacialneeds, parent1actorid, parent2actorid, childrelationship, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw,status)
+      SELECT 
+        l_adoptioncase_adoptionagreementid, startdate, enddate, provider_id, paymentamout, isapproval, approvaldate, isspeacialneeds, parent1actorid, parent2actorid, childrelationship, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw,status
+      FROM 
+        adoptionagreementrate
+      WHERE 
+        adoptionagreementid = (
+          SELECT adoptionagreementid FROM adoptionagreement WHERE adoptionplanningid = v_adoptionplanningid limit 1 /*subqry return more than one value to resolve this error limit 1 added */
+          );
+
+      --End of Adoption case changes
+  
+      v_persondata:= v_casedata;
+        
+        RAISE  NOTICE  'v_persondata%',v_casedata;
+    
+      
+       FOR  v_person  IN  SELECT  *  FROM    json_array_elements(v_persondata)  loop
+
+        v_oldpersonid:= v_person->>'personid';
+        
+       INSERT INTO person (firstname,lastname,middlename,dob,gendertypekey,everbeenadoptedflag,
+                            activeflag,insertedby,updatedby) 
+           values (
+                substring(v_person->>'firstname',1,49),
+                --substring(v_person->>'lastname',1,49),
+                --substring(v_providerlastname,1,49),
+                v_parent1lastname,
+                v_person->>'middlename',
+                (v_person->>'dob')::timestamp,
+                v_person->>'gendertypekey',
+                1,
+                1,
+                v_userid,
+                v_userid
+           )RETURNING    "personid" INTO l_personid;
+       
+
+        -- Education info
+        INSERT INTO personeducation
+            (personid, educationname, educationtypekey, countyid, statecode, startdate, enddate, lastgradetypekey, currentgradetypekey, isspecialeducation, specialeducationtypekey, absentdate, isreceived, isverified, isexcuesed, activeflag, effectivedate, expirationdate, insertedby, updatedby, insertedon, updatedon, extracurricular, schoolid, clientid, contactname, schoolsettingtypekey, schoolschedule, schooladjustment, functioninggradetypekey, intensitylevelno, "comments", statustypekey, performance, strengths, weaknesses, adrformattypekey, adrstreetno, adrboxno, adrpredirtypekey, adrstreetname, adrstreetsuffixtypekey, adrpostdirtypekey, adrunittypetypekey, adrunitno, adrcityname, adrzip5no, adrzip4no, adrdirection, adrforeign, adrworkphone, adrworkxtn, adrhomephone, adrpager, adremail, adrfax, adrcellphone, adrurl, adrothercontact, educationstatustypekey, lastiepdate, lastattendeddate, withdrawaldate, secondaryby19flag, transportmodetypekey, adrforeignstate, adrcountry, adrpostalcode, classtypetypekey, firstqtrperformancetypekey, secondqtrperformancetypekey, thirdqtrperformancetypekey, fourthqtrperformancetypekey, extracurricularactivities, educationproggoal, adrstreet, expungementflag, paytill22typekey, datavalidflag, clientmergeid, educationstatusdate, schoolchangeforplcmnttypekey, schoolchangereason, hospitaledusrv, schoolexitcomments, paytill22educhkflag, paytill22enrollchkflag, paytill22emppgmchkflag, paytill22emp80hrchkflag, paytill22medchkflag, paytill22medchk, adresscounty, disciplinaryactioncomments, speacialeducationrestrictivekey, currentgradelevel, functioninggradelevel, lastgradelevel, highestgradetypekey, summerschoolname, firstqtrabsenceexcused, firstqtrabsencenotexcused, firstqtrabsencetardy, firstqtrabsence, secondqtrabsenceexcused, secondqtrabsencenotexcused, secondqtrabsencetardy, secondqtrabsence, thirdqtrabsenceexcused, thirdqtrabsencenotexcused, thirdqtrabsencetardy, thirdqtrabsence, fourthqtrabsenceexcused, fourthqtrabsencenotexcused, fourthqtrabsencetardy, fourthqtrabsence, numberofabsences, lastifspdate, ifsplastdate, transportmodetypedetail, sasidno)
+        SELECT
+             l_personid, educationname, educationtypekey, countyid, statecode, startdate, enddate, lastgradetypekey, currentgradetypekey, isspecialeducation, specialeducationtypekey, absentdate, isreceived, isverified, isexcuesed, activeflag, effectivedate, expirationdate, insertedby, updatedby, insertedon, updatedon, extracurricular, schoolid, clientid, contactname, schoolsettingtypekey, schoolschedule, schooladjustment, functioninggradetypekey, intensitylevelno, "comments", statustypekey, performance, strengths, weaknesses, adrformattypekey, adrstreetno, adrboxno, adrpredirtypekey, adrstreetname, adrstreetsuffixtypekey, adrpostdirtypekey, adrunittypetypekey, adrunitno, adrcityname, adrzip5no, adrzip4no, adrdirection, adrforeign, adrworkphone, adrworkxtn, adrhomephone, adrpager, adremail, adrfax, adrcellphone, adrurl, adrothercontact, educationstatustypekey, lastiepdate, lastattendeddate, withdrawaldate, secondaryby19flag, transportmodetypekey, adrforeignstate, adrcountry, adrpostalcode, classtypetypekey, firstqtrperformancetypekey, secondqtrperformancetypekey, thirdqtrperformancetypekey, fourthqtrperformancetypekey, extracurricularactivities, educationproggoal, adrstreet, expungementflag, paytill22typekey, datavalidflag, clientmergeid, educationstatusdate, schoolchangeforplcmnttypekey, schoolchangereason, hospitaledusrv, schoolexitcomments, paytill22educhkflag, paytill22enrollchkflag, paytill22emppgmchkflag, paytill22emp80hrchkflag, paytill22medchkflag, paytill22medchk, adresscounty, disciplinaryactioncomments, speacialeducationrestrictivekey, currentgradelevel, functioninggradelevel, lastgradelevel, highestgradetypekey, summerschoolname, firstqtrabsenceexcused, firstqtrabsencenotexcused, firstqtrabsencetardy, firstqtrabsence, secondqtrabsenceexcused, secondqtrabsencenotexcused, secondqtrabsencetardy, secondqtrabsence, thirdqtrabsenceexcused, thirdqtrabsencenotexcused, thirdqtrabsencetardy, thirdqtrabsence, fourthqtrabsenceexcused, fourthqtrabsencenotexcused, fourthqtrabsencetardy, fourthqtrabsence, numberofabsences, lastifspdate, ifsplastdate, transportmodetypedetail, sasidno
+        FROM
+            personeducation
+        WHERE
+            personid = v_oldpersonid;
+
+
+        --Health info
+        INSERT INTO personhealthexamination
+            (personid, healthexamname, practitionername, outcomeresults, healthdomaintypekey, healthassessmenttypekey, healthprofessiontypekey, assessmentdate, notes, activeflag, updatedby, updatedon, insertedby, insertedon, effectivedate, expirationdate, medicalexamstatindc, medicalprofilekey, medicalexamkey, medicalexamcode, medicalexamdate)
+        SELECT
+            l_personid, healthexamname, practitionername, outcomeresults, healthdomaintypekey, healthassessmenttypekey, healthprofessiontypekey, assessmentdate, notes, activeflag, updatedby, updatedon, insertedby, insertedon, effectivedate, expirationdate, medicalexamstatindc, medicalprofilekey, medicalexamkey, medicalexamcode, medicalexamdate
+        FROM
+            personhealthexamination
+        WHERE
+            personid = v_oldpersonid;
+
+        --Adoption actor
+       INSERT INTO adoptioncaseactor ( adoptioncaseid, personid, actortypekey,  activeflag,  insertedby, updatedby)
+       VALUES( 
+                l_adoptioncaseid,
+                l_personid, 
+                'CHILD',
+                1, 
+                v_userid, 
+                v_userid
+            );
+  /*Add program area*/ 
+    INSERT INTO personprogramarea 
+      (personid, programkey, subprogramkey, 
+       objecttypekey, objectid, startdate,
+       insertedby, updatedby) 
+    VALUES( l_personid, l_programkey, l_subprogramkey, 
+      'adoptioncase', l_adoptioncaseid:: character varying, Now() :: DATE, 
+      v_userid, v_userid );
+     
+       RAISE  NOTICE  'address%',v_person->>'address';
+       RAISE  NOTICE  'contact%',v_person->>'contact';
+     
+       v_addressdata := v_person->>'address';
+    
+         FOR  v_address  IN  SELECT  *  FROM    json_array_elements(v_addressdata)  loop
+         
+                    INSERT INTO personaddress (personid,address,address2,personaddresstypekey,zipcode,city,state,country,county,
+                                               activeflag,insertedby,updatedby) 
+                    values (
+                            l_personid,
+                            v_address->>'address',
+                            v_address->>'address2',
+                            v_address->>'personaddresstypekey',
+                            v_address->>'zipcode',
+                            v_address->>'city',
+                            v_address->>'state',
+                            v_address->>'country',
+                            v_address->>'county',
+                            1,
+                            v_userid,
+                       v_userid
+                    );
+         
+         END LOOP;
+        
+        v_contactsdata:= v_person->>'contact';
+       
+        FOR  v_contacts  IN  SELECT  *  FROM    json_array_elements(v_contactsdata)  loop
+         
+                    INSERT INTO personphonenumber (personid,personphonetypekey,phonenumber,phoneextension,activeflag,insertedby,updatedby) 
+                    values (
+                        l_personid,
+                        v_contacts->>'personphonetypekey',
+                        v_contacts->>'phonenumber',
+                        v_contacts->>'phoneextension',
+                        1,
+                        v_userid,
+                        v_userid
+                    );
+
+         END LOOP;
+        END LOOP;
+
+
+    -- TODO- Once provider module is ready, we will get the person id based on the provider from prov approval person table
+    -- and just insert into the adoptioncaseactor the existing person ids instead of inserting new ones.
+    FOR  v_ag  IN  select *  from adoptionagreement ag where ag.adoptionplanningid=v_adoptionplanningid and ag.activeflag=1 LOOP
+ 
+        IF(v_ag.parent1providername is not null) THEN
+            -- Parent 1 as person with adoptive parent role
+            if v_parent1firstname is null then v_parent1firstname:='';
+           end if;
+            if v_parent1lastname is null then v_parent1lastname:='';
+           end if;
+            if v_parent2firstname is null then v_parent2firstname:='';
+           end if;
+            if v_parent2lastname is null then v_parent2lastname:='';
+           end if;
+        
+           INSERT INTO person (firstname, lastname, activeflag, insertedby, updatedby) 
+               values (
+                    --substring(v_ag.parent1providername,1,49),
+                    v_parent1firstname,
+                    --split_part(v_ag.parent1providername, ' ', 1),
+                    --split_part(v_ag.parent1providername, ' ', 2),
+                    v_parent1lastname,
+                    1,
+                    v_userid,
+                    v_userid
+               )
+            RETURNING "personid" INTO l_parent1personid;
+       
+      
+            INSERT INTO adoptioncaseactor (adoptioncaseid, personid, actortypekey, activeflag, insertedby, updatedby)
+                VALUES( 
+                    l_adoptioncaseid,
+                    l_parent1personid, 
+                    'ADOPTIVEPARENT',
+                    1, 
+                    v_userid, 
+                    v_userid
+                );
+        END IF;
+
+        IF(v_ag.parent2providername is not null) THEN
+            -- Parent 2 as person with adoptive parent role 
+           INSERT INTO person (firstname, lastname, activeflag, insertedby, updatedby) 
+               values (
+                    --substring(v_ag.parent2providername,1,49),
+                    v_parent2firstname,
+                    --split_part(v_ag.parent2providername, ' ', 1),
+                    --split_part(v_ag.parent2providername, ' ', 2),
+                    v_parent2lastname,
+                    1,
+                    v_userid,
+                    v_userid
+               )
+            RETURNING "personid" INTO l_parent2personid;
+       
+      
+            INSERT INTO adoptioncaseactor (adoptioncaseid, personid, actortypekey, activeflag, insertedby, updatedby)
+                VALUES( 
+                    l_adoptioncaseid,
+                    l_parent2personid, 
+                    'ADOPTIVEPARENT',
+                    1, 
+                    v_userid, 
+                    v_userid
+                );
+        END IF;
+
+    END LOOP;
+
+      
+   
+   SELECT routingintake INTO l_response 
+        FROM routingintake(
+            l_adoptioncaseid:: character varying ,v_userid,'ADPC',2,'Adoptioncase Created',l_supervisor,
+            true,false,false, 'Adoptioncase Created','Adoptioncase Created', 
+            v_servicecaseid:: character varying,'' , 1);
+           
+           
+          
+    INSERT INTO tb_client_eligibility 
+            (start_dt, 
+             end_dt, 
+             eligibility_type_cd, 
+             eligibility_status_cd, 
+             client_id, 
+             removal_id, 
+             create_user_id, 
+             update_user_id, 
+             delete_sw, 
+             adoption_id, 
+             case_id, 
+             data_valid_sw, 
+             client_merge_id, 
+             guardian_subsidy_id, 
+             transactionid, 
+             create_ts, 
+             update_ts)   
+  SELECT 
+   (SELECT ag.finalizationdate::date FROM  adoptionagreement ag
+         WHERE ag.adoptionplanningid = ac.adoptionplanningid order by ag.insertedon desc limit 1),
+   null,  
+   '2934', 
+   '2909', 
+   null, 
+   null,
+   ac.insertedby,
+   ac.updatedby, 
+   'N',
+   0,
+   (SELECT alternateid FROM  adoptionplanning ap
+         WHERE ap.adoptionplanningid = ac.adoptionplanningid order by ap.insertedon desc limit 1), -- send alternate id of adoption planning here 
+    null,
+    null,
+    null,
+    null,
+    now(),
+    now()
+   FROM adoptioncase ac where ac.adoptioncaseid=l_adoptioncaseid and ac.activeflag=1 limit 1 ;           
+           
+        /*Logged in user role details*/ 
+ 
+   SELECT  t.teamid  INTO  l_fromteamid 
+         FROM    teammemberassignment tma 
+     INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+     INNER JOIN team t on t.teamid = tm.teamid  and t.activeflag =1
+         WHERE  tma.SecurityUsersId = v_userid
+         AND   tma.activeflag =1;
+        
+        
+        SELECT   toworkeridno, responsibilitytypekey, fromldssid, toldssid, toteamid 
+                    INTO l_assignedsecurity,l_responsibilitytypekey,l_fromldssid,l_toldssid,l_toteamid 
+        FROM     caseassignment 
+           WHERE    objectid = v_servicecaseid AND objecttypekey = 'servicecase' ORDER BY insertedon DESC LIMIT 1;
+  
+
+    INSERT INTO caseassignment(fromworkeridno, toworkeridno, insertedby, updatedby, insertedon, updatedon, objecttypekey, objectid,startdate,fromteamid,toteamid,responsibilitytypekey,fromldssid,toldssid)
+   VALUES(l_supervisor,l_assignedsecurity,'admin','admin',now(),now(),'adoptioncase',l_adoptioncaseid,now(),l_fromteamid,l_toteamid,l_responsibilitytypekey,l_fromldssid,l_toldssid);
+ 
+
+     
+ RETURN QUERY  
+  SELECT l_adoptioncasenumber, l_adoptioncaseid,'Success':: character varying;
+ 
+ END;
+  
+
+
+$function$
+

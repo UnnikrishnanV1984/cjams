@@ -1,0 +1,136 @@
+CREATE OR REPLACE FUNCTION get_paymentafsfmis(v_paymentid integer, v_page integer DEFAULT NULL::integer, v_limit integer DEFAULT NULL::integer, v_fmspage integer DEFAULT NULL::integer, v_fmslimit integer DEFAULT NULL::integer)
+ RETURNS TABLE(totalcount bigint, history json, providername character varying, payment_id integer, payment_dt date, payment_type_nm character varying, payment_type_cd character varying, payment_status_cd character varying, payment_status_nm character varying, check_status_cd character varying, check_status_nm character varying, gross_amount_no numeric, check_status_dt date, interface_to_nm character varying, interface_to_cd character varying, afsorfmis json, provider_id integer, notes_tx character varying, offset_amount_no numeric)
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+\r
+DECLARE \r
+\r
+v_pagenumber   int;\r
+v_pageoffset  int;  \r
+v_fmspagenumber   int;\r
+v_fmspageoffset  int;  \r
+\r
+BEGIN  \r
+ \r
+ v_pagenumber  :=  v_page-1;\r
+ v_pageoffset  =  v_pagenumber  *  v_limit;\r
+\r
+ v_fmspagenumber  :=  v_fmspage-1;\r
+ v_fmspageoffset  =  v_fmspagenumber  *  v_fmslimit;\r
+    \r
+\r
+ \r
+RETURN QUERY \r
+ select count(1) over() as totalcount,\r
+  (select json_agg(x) from (\r
+   SELECT tpv.value_tx :: character varying,\r
+    up.fullname as entered_by,\r
+    tph.payment_history_id, \r
+    tph.payment_id, \r
+    tph.object_id, \r
+    tph.object_key, \r
+    tph.create_ts,\r
+    tph.create_user_id,  \r
+    tph.delete_sw, \r
+    tph.effective_end_dt, \r
+    c.countyname as local_dept, \r
+    (select uppn.phonenumber \r
+     from userprofilephonenumber uppn \r
+    where uppn.securityusersid = tph.create_user_id \r
+     and uppn.activeflag =1 \r
+    order by uppn.old_id desc \r
+    limit 1) as phone_no\r
+  FROM tb_payment_history tph\r
+   left join userprofile up on up.securityusersid=tph.create_user_id\r
+   left join teammemberassignment tma on tma.securityusersid= up.securityusersid and tma.activeflag=1 \r
+   left join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag=1 \r
+   left join team t on t.teamid = tm.teamid and t.activeflag=1\r
+   left join county c on t.countyid = c.countyid::character varying\r
+   left join tb_picklist_values tpv on trim(tpv.picklist_value_cd) :: character varying = trim (tph.object_id) :: character varying  and tpv.picklist_type_id=37\r
+  where tph.payment_id = v_paymentid \r
+   and tph.delete_sw = 'Y' \r
+  order by tph.payment_history_id desc\r
+  ) as x),\r
+  (CASE WHEN (tp.provider_nm is null OR tp.provider_nm='') THEN \r
+   CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) \r
+   ELSE \r
+   tp.provider_nm \r
+  END) as providername,\r
+  payhead.payment_id,\r
+  payhead.payment_dt,\r
+  (select value_tx from tb_picklist_values \r
+   where PICKLIST_type_id=2 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(payhead.payment_type_cd)\r
+  ) AS  payment_type_nm,\r
+  payhead.payment_type_cd,\r
+  tps.payment_status_cd,\r
+  (select value_tx from tb_picklist_values \r
+   where PICKLIST_type_id=133 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(tps.payment_status_cd)\r
+  ) as payment_status_nm,\r
+  payhead.check_status_cd, \r
+  (select value_tx from tb_picklist_values \r
+   where PICKLIST_type_id=37 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(payhead.check_status_cd)\r
+  ) as check_status_nm,\r
+  payhead.gross_amount_no,\r
+  payhead.check_status_dt,\r
+  (select value_tx from tb_picklist_values \r
+   where PICKLIST_type_id=1285 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(payhead.interface_to_cd)\r
+  ) as interface_to_nm,\r
+  payhead.interface_to_cd,\r
+  (select json_agg(x) from \r
+   (select count(1) over() as totalcount,\r
+   (select value_tx from tb_picklist_values \r
+    where PICKLIST_type_id=133 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(paystat.payment_status_cd)\r
+   )  as payment_status,\r
+   payhead1.gross_amount_no as paymentamountno,\r
+   tfr.warrant_no,\r
+   (case when tfr.warrant_written_dt is not null and btrim(tfr.warrant_written_dt) <> '' then\r
+    tfr.warrant_written_dt::date\r
+    else\r
+     null\r
+    end \r
+   ) as warrant_written_dt,\r
+   (CASE WHEN (tfr.create_ts is null) THEN \r
+    (case when tfr.warrant_written_dt is not null and btrim(tfr.warrant_written_dt) <> '' then\r
+     tfr.warrant_written_dt::date\r
+     else\r
+     null\r
+     end \r
+    )\r
+    ELSE \r
+    tfr.create_ts \r
+    END) as create_ts\r
+  from  tb_payment_header payhead1 \r
+   left join tb_fmis_response tfr  on \r
+    (select TRIM ( LEADING '0' FROM CAST (tfr.invoice_no AS TEXT)))=(select TRIM (LEADING '0' FROM CAST (payhead1.payment_id AS TEXT) ))\r
+   left join tb_payment_status paystat on paystat.payment_id = payhead1.payment_id\r
+  where payhead1.payment_id =payhead.payment_id \r
+  and tfr.delete_sw = 'N'   \r
+  \r
+  union \r
+  \r
+  select count(1) over() as totalcount,\r
+   tar.payment_status,\r
+   tar.payment_amount as paymentamountno,\r
+   tar.check_no as warrant_no,\r
+   tar.check_dt::date as warrant_written_dt,\r
+   tar.create_ts\r
+  from tb_afs_response tar\r
+  where tar.payment_id = payhead.payment_id \r
+   and tar.delete_sw = 'N' \r
+  LIMIT  v_fmslimit  OFFSET  v_fmspageoffset\r
+  ) as x)  as afsorfmis,\r
+ \r
+  payhead.provider_id,\r
+  payhead.notes_tx,payhead.offset_amount_no \r
+ from tb_payment_header payhead\r
+  left join tb_provider tp on tp.provider_id = payhead.provider_id \r
+  left join tb_payment_status tps on tps.payment_id = payhead.payment_id\r
+ where payhead.payment_id=v_paymentid \r
+  and payhead.delete_sw = 'N' \r
+ LIMIT  v_limit  OFFSET  v_pageoffset \r
+ ;\r
+END;\r
+\r
+$function$
+

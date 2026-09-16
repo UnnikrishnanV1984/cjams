@@ -1,0 +1,48 @@
+CREATE OR REPLACE FUNCTION as_getdatimeline(in_intakeserviceid uuid)
+ RETURNS TABLE(intaketype integer, intakeserviceid uuid, servicerequestnumber character varying, insertedon timestamp without time zone, datype character varying, dasubtype character varying, referredto character varying, assignedto text, createdby text)
+ LANGUAGE plpgsql
+AS $function$
+   
+BEGIN
+
+    RETURN QUERY
+
+ Select 1 as IntakeType, null as intakeserviceid, null as servicerequestnumber, ISR.insertedon, 'Intake' as DAType, null as DASubtype, null as ReferredTo
+ , UP1.lastname || ', ' || UP1.firstname as AssignedTo, UP.lastname || ', ' || UP.firstname as CreatedBy from IntakeserviceRequest ISR Join UserProfile UP On UP.securityusersid = ISR.insertedby
+ Join AreaTeamMemberServiceRequest ATMSR On ATMSR.intakeserviceid = ISR.intakeserviceid
+ Join as_teammemberassignment TMA On TMA.TeammemberId = ATMSR.TeammemberId
+ Join UserProfile UP1 On UP1.securityusersid = TMA.securityusersid
+ where ISR.intakeserviceid = in_intakeserviceid
+ And UP.activeflag = 1 And ATMSR.activeflag = 1 And TMA.activeflag = 1 And UP1.activeflag = 1
+ union
+ Select 2 as IntakeType, a.intakeserviceid, a.servicerequestnumber, a.insertedon, isrt.description DAType, srst.description DASubtype, rt.typedescription as ReferredTo, UP1.lastname || ', ' || UP1.firstname as  AssignedTo, null as CreatedBy from 
+ (
+ Select a.intakeserviceid, a.servicerequestnumber, a.intakeservreqtypeid, a.intakeservicerequestclassid, a.insertedon, a.insertedby 
+ from IntakeserviceRequest a where a.intakeserviceid = in_intakeserviceid
+ And a.activeflag = 1
+ union 
+ Select b.intakeserviceid, b.servicerequestnumber, b.intakeservreqtypeid, b.intakeservicerequestclassid, b.insertedon, b.insertedby from IntakeserviceRequest b 
+ where b.intakeserviceid in (
+ SELECT withintakeservicerequestid FROM IntakeServiceRequestCrossReference p INNER JOIN 
+ (Select CR1.FromIntakeServiceRequestId as intakeserviceid, CR2.FromIntakeServiceRequestId as crossreferedid From IntakeServiceRequestCrossReference CR1 
+ Left Join IntakeServiceRequestCrossReference CR2 On CR1.WithIntakeServiceRequestId = CR2.FromIntakeServiceRequestId 
+ Where CR1.FromIntakeServiceRequestId = in_intakeserviceid
+ And CR1.activeflag = 1 And CR2.activeflag = 1
+ ) s ON p.FromIntakeServiceRequestId = s.intakeserviceid OR p.FromIntakeServiceRequestId = s.crossreferedid
+ And p.activeflag = 1
+ )
+ 
+ ) a Join intakeservicerequesttype isrt On isrt.intakeservreqtypeid = a.intakeservreqtypeid
+ Join ServiceRequestSubType srst On srst.servicerequestsubtypeid = a.intakeservicerequestclassid
+ Left Join IntakeServiceRequestReferral isrr On isrr.intakeserviceid = a.intakeserviceid And isrr.activeflag = 1 
+ Left Join ReferredToType rt On rt.referredtotypekey = isrr.referredto And rt.activeflag = 1
+ Join AreaTeamMemberServiceRequest ATMSR On ATMSR.intakeserviceid = a.intakeserviceid
+ Join as_teammemberassignment TMA On TMA.TeammemberId = ATMSR.TeammemberId
+ Join UserProfile UP1 On UP1.securityusersid = TMA.securityusersid
+ Where isrt.activeflag = 1 And srst.activeflag = 1 
+ And ATMSR.activeflag = 1 And TMA.activeflag = 1 And UP1.activeflag = 1
+ 
+ order by IntakeType, insertedon;
+  END;
+$function$
+

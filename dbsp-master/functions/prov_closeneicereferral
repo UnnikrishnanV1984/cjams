@@ -1,0 +1,100 @@
+CREATE OR REPLACE FUNCTION prov_closeneicereferral(v_neicereferral100aid uuid, v_securityusersid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+v_providerid int;
+v_assignto json;
+v_routingstatustypeid int = 10;
+v_eventcode text = 'PRASS';
+v_nofitymsg character varying;
+v_typeofobject text = 'Provider';
+v_routingresp text;
+v_teamid uuid = '9a5b633b-d38b-4a72-b8b0-6dd8c5b0d146'; --PVPROV UNIT 
+v_agency text = 'LDSS';
+v_roletypekey text = 'OLMDJSOIGDIR';
+BEGIN
+
+ select providerid into v_providerid from neicereferral100a na where neicereferral100aid=v_neicereferral100aid;
+ if (v_providerid is not null) then
+  INSERT INTO publicproviderstatusmanagement
+   (provider_status_management_id, object_id, narrative, provider_status, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag, approval_status, dirty_status, start_dt, status_reason)
+   VALUES(gen_random_uuid(), v_providerid, '', 'Closed', now(), v_securityusersid, now(), v_securityusersid, 'N'::bpchar, 1, 'Requested For Approval', false, now(), '5410'); 
+ 
+  --SELECT userid into v_assignto FROM prov_getroutingusers(v_securityusersid,v_eventcode,null,v_agency) limit 1;
+  select row_to_json(a) into v_assignto from (select  tm.securityusersid ,t.teamname, cast (coalesce(rt.workload,0) as int),
+        cast(up.firstname || ' ' || up.lastname as character varying) ,tm.agency,up.email,
+        cast(tm.rolename as character varying),tm.loadnumber,
+        cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+        ,supervisor,tm.zipcode,tm.zipcodeplus,tm.juridiction,up.cjamspid, cast(coalesce(rt.casecount,0) as bigint),
+         r.roletypecode,r.roletypename,null::text from 
+        (SELECT distinct  tma.securityusersid,tma.teammemberid,r.roletypekey ,
+         cast(rm.teamtypekey as character varying) agency
+        ,tm.teamid, tm.loadnumber,r.name as rolename,
+        coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction      
+         FROM (select * from teammemberassignment union all select * from as_teammemberassignment t2 where t2.securityusersid not in (select t1.securityusersid from teammemberassignment t1 where t1.activeflag=1)) tma
+        INNER join teammember tm ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+        INNER JOIN team t on t.teamid = tm.teamid  AND  t.activeflag =1   
+  INNER JOIN muser m on m.securityusersid = tma.securityusersid 
+  INNER JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag = 1 
+  INNER JOIN role r on r.id = rm.roleid 
+        INNER join teammemberroletype  tmrt 
+          ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+         -- and tmrt.isupervisor   = true 
+        INNER join teamtype tty on tty.teamtypekey = tmrt.teamtypekey AND tty.activeflag= 1 
+        LEFT JOIN UserProfileAddress upa 
+          ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+        INNER join routingcONfig rc  
+         ON rc.targetrolekey  = r.roletypekey   AND rc.activeflag= 1
+        WHERE rc.eventcode = v_eventcode AND ( t.parentteamid in (v_teamid) OR t.teamid in (v_teamid))
+         
+        AND tma.activeflag =1  AND rm.teamtypekey =V_AGENCY
+  UNION 
+  SELECT  DISTINCT  m.securityusersid ,tma.teammemberid,r.roletypekey ,
+   cast(rm1.teamtypekey as character varying) agency,tm.teamid, tm.loadnumber,
+   r.name as rolename , 
+   coalesce(tmrt.isupervisor,false),upa.zipcode,upa.zipcodeplus,upa.county as juridiction
+  FROM       muser m 
+   INNER JOIN (select * from teammemberassignment union all select * from as_teammemberassignment t2 where t2.securityusersid not in (select t1.securityusersid from teammemberassignment t1 where t1.activeflag=1)) tma ON tma.securityusersid = m.securityusersid AND tma.activeflag =1 
+   INNER JOIN teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1 
+   INNER JOIN rolemapping rm1 on rm1.principalid = m.id and rm1.activeflag = 1 
+   INNER JOIN role r on r.id = rm1.roleid 
+   INNER JOIN teammemberroletype  tmrt ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1 --AND tmrt.isupervisor   = true 
+   INNER JOIN team t ON t.teamid = tm.teamid AND t.activeflag =1
+   INNER JOIN userprofile up ON up.securityusersid =m.securityusersid AND up.activeflag =1 AND up.expirationdate IS NULL 
+   INNER JOIN (SELECT  rm.principalid,rr.resourceid 
+       FROM rolemapping rm
+        INNER JOIN  role_resource rr ON rr.roleid = rm.roleid  AND rr.activeflag =1 AND rm.activeflag =1   
+       UNION ALL
+       SELECT  ur.userid::character varying ,ur.permissiongroupid  
+       FROM userresource UR  WHERE  ur.activeflag =1               
+      )rm ON rm.principalid = m.id::character varying 
+    LEFT JOIN  (SELECT pr.permissiongroupid, pr.resourceid   
+       FROM pgresource pr WHERE  pr.activeflag =1) pr ON pr.permissiongroupid = rm.resourceid    
+    LEFT JOIN  ( SELECT DISTINCT  r.roletypekey , rt.roletypecode,rt.roletypename FROM role r 
+       INNER JOIN roletype rt ON rt.shortname = r.name AND rt.activeflag =1 AND r.activeflag =1
+       ) r1 ON r1.roletypekey = tm.roletypekey 
+    LEFT JOIN UserProfileAddress upa ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1  
+  WHERE  pr.resourceid::character varying IN (SELECT resourceid::character varying from routingconfig where eventcode=v_eventcode  AND sourcerolekey =v_roletypekey) and rm1.teamtypekey = V_AGENCY
+  ) tm
+        inner join  userprofile up 
+                ON up.securityusersid = tm.securityusersid AND up.activeflag= 1 AND up.expirationdate IS NULL 
+ inner join team t on t.teamid = tm.teamid and t.activeflag= 1  
+        LEFT JOIN (SELECT * FROM "cjams".getuserworkloadcount()) rt ON   rt.securityusersid = tm.securityusersid 
+         left join( select distinct  r.roletypekey , rt.roletypecode,rt.roletypename from role r inner join roletype rt on 
+                 rt.shortname = r.name and rt.activeflag =1 and r.activeflag =1) r on
+                 r.roletypekey = tm.roletypekey
+        order by  useravailable desc, up.fullname, coalesce(rt.workload,0) limit 1 )a; 
+
+  v_nofitymsg = 'Public provider ' || v_providerid || ' closure Submitted for review';
+  select * into v_routingresp from prov_publicproviderrouting(v_providerid::character varying,v_securityusersid,v_assignto ->> 'securityusersid' ::character varying,v_routingstatustypeid,v_eventcode,v_nofitymsg,null,v_typeofobject,'','');
+
+ end if;
+
+    RETURN 'success';
+                                                      
+END;
+
+$function$
+

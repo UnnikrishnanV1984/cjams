@@ -1,0 +1,1 @@
+update intakeservreqcourtorder i set childpermanencyplankey = 'PRC', updatedby = 'CDM-11689' , updatedon = now() where intakeservreqcourtorderid = '1dcc6cae-762e-4f7f-ab25-91d55fb7450e' and servicecaseid = '3b25d77a-79d6-4ed5-8eae-4503b2da92d4';

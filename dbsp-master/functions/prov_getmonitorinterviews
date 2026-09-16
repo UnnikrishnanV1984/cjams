@@ -1,0 +1,59 @@
+CREATE OR REPLACE FUNCTION prov_getmonitorinterviews(v_monitoring_id character varying, v_record_type character varying, v_module_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+v_prgram character varying;
+v_provider_id character varying;
+v_reporting_start_date timestamp without time zone;
+v_reporting_end_date timestamp without time zone;
+ 
+ begin
+ select provider_id, prgram, monitoring_period_start_date, monitoring_period_end_date into v_provider_id,v_prgram, v_reporting_start_date,v_reporting_end_date from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  select a.*, 
+                (select json_agg(x) from ( 
+                    select count(1) over() as count,
+                                        ps.first_nm,ps.last_nm,
+                                        hh.first_nm as hh_first_nm,hh.last_nm as hh_last_nm,hh.provider_id as hh_provider_id,
+                                        p.firstname,p.lastname,
+                                        pmrd1.monitoring_record_value,
+                                        pmrd1.monitoring_record_data_id, pmrd1.findings,pm1.site_id,tp.provider_nm
+                                    from prov_monitoring_record_site pm1 
+                                    left join tb_provider tp on pm1.site_id = tp.provider_id
+                                    inner join prov_monitoring_record_data pmrd1   on pm1.monitoring_record_site_id = pmrd1.monitoring_record_site_id 
+                                    left join providerstaff ps                  on provider_staff_id::character varying = pm1.objectid and ps.delete_sw = 'N'
+                                   left join person p                          on p.personid = (select prs1.objectid ::uuid from prov_monitoring_record_site prs1 where prs1.objecttype != 'Parent'
+                              and pm1.monitoring_record_site_id = prs1.monitoring_record_site_id) and p.activeflag = 1
+                              left join tb_prov_cpa_adop_person hh        on hh.provider_cpa_adop_person_id = (select prs1.objectid from prov_monitoring_record_site prs1 where prs1.objecttype = 'Parent'
+                              and pm1.monitoring_record_site_id = prs1.monitoring_record_site_id) 
+                                    where  
+                                        pm1.monitoring_id = a.monitoring_id and pm1.delete_sw = 'N'
+                                        and pmrd1.record_question_id = a.record_question_id 
+                                    order by pmrd1.monitoring_record_value desc
+                ) x ) as members
+                from (
+                select distinct question , question_hint ,question_type,pm.monitoring_id , prq.record_question_id, prq.displayorder, pr.records_type
+                from prov_record_question prq 
+                    inner join prov_monitoring_record_data pmrd on prq.record_question_id = pmrd.record_question_id 
+                    inner join prov_monitoring_record_site pm on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                    inner join prov_monitoring m on pm.monitoring_id = m.monitoring_id and m.delete_sw = 'N'
+                    inner join prov_record pr on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                    where pr.module_name =v_module_name
+                    and pr.records_type = v_record_type
+                    and (case when v_reporting_start_date is null or pm.recordreviewdate is null  then pm.monitoring_id =v_monitoring_id 
+                        else pm.recordreviewdate::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end)
+                        and m.provider_id = v_provider_id 
+                        and pm.delete_sw = 'N'
+                        and (pr.prgram = v_prgram or pr.prgram is null)
+                    order by prq.displayorder, pr.records_type
+                ) a
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

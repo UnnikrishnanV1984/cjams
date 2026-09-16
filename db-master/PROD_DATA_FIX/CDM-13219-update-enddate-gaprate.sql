@@ -1,0 +1,1 @@
+update gapratesrevision set rateenddate = '2021-11-15 18:34:36', updatedby = 'CDM-13219', updatedon = now() where gaprateid = '774ad30b-8a09-4a96-ae77-48513428b995';

@@ -1,0 +1,239 @@
+CREATE OR REPLACE FUNCTION as_contactnotesadd(v_intakeserviceid uuid, v_newintakeserviceid uuid, v_securityusersid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+v_oldprogressnoteid RECORD;
+v_progressnote RECORD;
+v_CTVprogressnote RECORD;
+v_PNDprogressnote RECORD;
+v_CPprogressnote RECORD;
+v_RTprogressnote RECORD;
+v_PNRTCprogressnote RECORD;
+v_FCWprogressnote RECORD;
+v_TCWprogressnote RECORD;
+v_FSPprogressnote RECORD;
+v_TSPprogressnote RECORD;
+
+BEGIN  
+
+   INSERT INTO progressnote(
+      progressnotetypeid, title,
+      description, entitytype, entitytypeid,
+      insertedby, insertedon,
+      updatedby, updatedon,savemode,
+      progressnotesubtypeid, contactdate, contactname,
+      progressnotetypekey, contactroletypekey, contactphone,
+      contactemail,  activeflag, documentpropertiesid,
+      starttime, endtime, otherpersonName, isintake, uploadedfile, traveltime, stafftypekey, 
+      instantresults, contactstatus, drugscreen, initiationindicator,
+      progressnotepurposetypekey, old_id, 
+      progressnotereasontypekey,      
+      fromjurisdictionid, tojurisdictionid, transferdate, transfertime, attemptindicator)
+         
+   SELECT progressnotetypeid, title,
+      description, entitytype, v_newintakeserviceid,
+      insertedby, insertedon,
+      v_securityusersid, now(), savemode,
+      progressnotesubtypeid, contactdate, contactname,
+      progressnotetypekey, contactroletypekey, contactphone,
+      contactemail, 1, documentpropertiesid,
+      starttime, endtime, otherpersonName, isintake, uploadedfile, traveltime, stafftypekey, 
+      instantresults, contactstatus, drugscreen, initiationindicator,
+      progressnotepurposetypekey, old_id, 
+      progressnotereasontypekey, 
+      fromjurisdictionid, tojurisdictionid, transferdate, transfertime, attemptindicator
+    FROM progressnote
+   WHERE activeflag =1
+   AND entitytypeid = v_intakeserviceid ::character varying;
+   
+
+   /** ContactTrial Visit **/
+   FOR v_CTVprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid::character varying
+   LOOP
+   
+    INSERT INTO contacttrialvisit(
+         progressnoteid, issuedesc,
+         safetydesc, services_childdesc, services_parentdesc,
+         permanencystepdesc, placementdesc, educationdesc,
+         healthdesc, socialareadesc, financialliteracydesc,
+         familyplanningdesc, skillissuedesc, transitionplandesc,
+         activeflag, insertedby, insertedon, updatedby,
+         updatedon, effectivedate, old_id)
+    SELECT  v_CTVprogressnote.progressnoteid, ctv.issuedesc,
+      ctv.safetydesc, ctv.services_childdesc, ctv.services_parentdesc,
+      ctv.permanencystepdesc, ctv.placementdesc, ctv.educationdesc,
+      ctv.healthdesc, ctv.socialareadesc, ctv.financialliteracydesc,
+      ctv.familyplanningdesc, ctv.skillissuedesc, ctv.transitionplandesc,
+      1, ctv.insertedby, ctv.insertedon, v_securityusersid,
+      now(), ctv.effectivedate, ctv.old_id
+    FROM contacttrialvisit ctv 
+    WHERE ctv.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid ::character varying)
+    AND ctv.activeflag = 1;
+   END loop;
+  
+   /** Progress Note Details **/
+   FOR v_PNDprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid ::character varying
+   LOOP
+    INSERT INTO progressnotedetail(
+      progressnoteid, description,
+      activeflag, effectivedate, expirationdate,
+      insertedby, insertedon, updatedby, updatedon,
+       old_id)
+    SELECT  v_PNDprogressnote.progressnoteid, pnd.description,
+      1, pnd.effectivedate, pnd.expirationdate,
+      insertedby, insertedon, v_securityusersid, now(),
+       pnd.old_id
+    FROM progressnotedetail pnd
+    WHERE pnd.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid ::character varying)
+    AND pnd.activeflag = 1;
+   END LOOP;
+  
+   /** Contact Participant **/   
+   
+   FOR v_CPprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid ::character varying
+   LOOP
+    INSERT INTO contactparticipant(
+      progressnoteid, participanttypekey,
+      intakeservicerequestactorid, firstname, lastname,
+      address1, address2, city, state, zipcode, email,
+      phonenumber, activeflag, effectivedate,
+      insertedby, insertedon, updatedby, updatedon, old_id)
+      
+    SELECT  v_CPprogressnote.progressnoteid, cp.participanttypekey,
+      (
+       SELECT isra.intakeservicerequestactorid FROM intakeservicerequestactor isra
+       JOIN actor act ON act.actorid = isra.actorid 
+       WHERE isra.intakeserviceid = v_newintakeserviceid AND isra.activeflag = 1 AND act.activeflag = 1 AND act.personid IN (
+       SELECT act2.personid FROM intakeservicerequestactor isra2
+       JOIN actor act2 ON act2.actorid = isra2.actorid WHERE isra2.intakeservicerequestactorid = cp.intakeservicerequestactorid) 
+       AND isra.intakeservicerequestpersontypekey IN (
+       SELECT intakeservicerequestpersontypekey FROM intakeservicerequestactor WHERE intakeservicerequestactorid = cp.intakeservicerequestactorid)
+       ), cp.firstname, cp.lastname, cp.address1, cp.address2, cp.city, cp.state, cp.zipcode, cp.email,
+      cp.phonenumber, 1, cp.effectivedate, cp.insertedby, cp.insertedon, v_securityusersid, now(), cp.old_id
+    FROM contactparticipant cp
+    WHERE cp.progressnoteid in (select progressnoteid from progressnote pn1 where pn1.entitytypeid=v_intakeserviceid :: character varying
+     and pn1.insertedon = v_CPprogressnote.insertedon and (pn1.progressnotesubtypeid IS NULL OR pn1.progressnotesubtypeid = v_CPprogressnote.progressnotesubtypeid)
+     and pn1.contactdate = v_CPprogressnote.contactdate and (pn1.progressnotetypekey IS NULL OR pn1.progressnotetypekey = v_CPprogressnote.progressnotetypekey) LIMIT 1)
+    AND cp.activeflag = 1;
+   END LOOP;   
+   
+   /** Progress Note Role Type 
+   FOR v_RTprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid ::character varying
+   LOOP
+    INSERT INTO progressnoteroletype(
+      progressnoteid, contactroletypekey,
+      updatedby, updatedon, insertedby, insertedon, activeflag,
+      effectivedate, expirationdate, old_id)
+      
+    SELECT  v_RTprogressnote.progressnoteid, rt.contactroletypekey,
+      v_securityusersid, now(), v_securityusersid, now(), 1,
+      rt.effectivedate, rt.expirationdate, rt.old_id
+    FROM progressnoteroletype rt
+    WHERE rt.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid  ::character varying)
+    AND rt.activeflag = 1;
+   END LOOP;**/
+  
+   /** Progress Note Reason Type Config **/   
+   
+   FOR v_PNRTCprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid  ::character varying
+   LOOP
+    INSERT INTO progressnotereasontypeconfig(
+    progressnoteid, personid,
+    "name", primaryphoneno, email, relationship, activeflag,
+    updatedby, updatedon, insertedby, insertedon,
+    effectivedate, old_id, "role")
+      
+    SELECT  v_PNRTCprogressnote.progressnoteid, pnrtc.personid,
+        pnrtc."name", pnrtc.primaryphoneno, pnrtc.email, 
+        pnrtc.relationship, 1,
+        v_securityusersid, now(), insertedby, insertedon, 
+        pnrtc.effectivedate, pnrtc.old_id, pnrtc."role"
+    FROM progressnotereasontypeconfig pnrtc
+    WHERE pnrtc.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid  ::character varying)
+    AND pnrtc.activeflag = 1;
+   END LOOP;  
+   
+   /** Progress Note From CaseWorker **/   
+   
+   FOR v_FCWprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid  ::character varying
+   LOOP
+    INSERT INTO progressnotefromcaseworkerconfig(
+     progressnoteid, fromcaseworker, activeflag, updatedby, updatedon,
+     insertedby, insertedon, effectivedate, old_id)
+     
+    SELECT  v_FCWprogressnote.progressnoteid,
+      pnfcwc.fromcaseworker, 1, v_securityusersid, now(),
+      insertedby, insertedon, pnfcwc.effectivedate,pnfcwc.old_id
+    FROM progressnotefromcaseworkerconfig pnfcwc
+    WHERE pnfcwc.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid  ::character varying)
+    AND pnfcwc.activeflag = 1;
+   END LOOP;
+  
+   
+   /** Progress Note To CaseWorker **/   
+   
+   FOR v_TCWprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid  ::character varying
+   LOOP
+    INSERT INTO progressnotetocaseworkerconfig(
+     progressnoteid, tocaseworker, activeflag, updatedby, updatedon,
+     insertedby, insertedon, effectivedate, old_id)
+     
+    SELECT  v_TCWprogressnote.progressnoteid,
+      pntcwc.tocaseworker, 1, v_securityusersid, now(),
+      insertedby, insertedon, pntcwc.effectivedate,pntcwc.old_id
+    FROM progressnotetocaseworkerconfig pntcwc
+    WHERE pntcwc.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid  ::character varying)
+    AND pntcwc.activeflag = 1;
+   END LOOP;
+  
+   
+   /** Progress Note From Supervisor **/   
+   
+   FOR v_FSPprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid  ::character varying
+   LOOP
+    INSERT into progressnotefromsupervisorconfig(
+     progressnoteid, fromsupervisor, activeflag, updatedby, updatedon,
+     insertedby, insertedon, effectivedate, old_id)
+     
+    SELECT  v_FSPprogressnote.progressnoteid,
+      pnfspc.fromsupervisor, 1, v_securityusersid, now(),
+      insertedby, insertedon, pnfspc.effectivedate,pnfspc.old_id
+    FROM progressnotefromsupervisorconfig pnfspc
+    WHERE pnfspc.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid  ::character varying)
+    AND pnfspc.activeflag = 1;
+   END LOOP;
+  
+   
+   /** Progress Note To Supervisor **/   
+   
+   FOR v_TSPprogressnote IN 
+    SELECT * FROM progressnote WHERE activeflag =1 AND entitytypeid =v_newintakeserviceid  ::character varying
+   LOOP
+    INSERT INTO progressnotetosupervisorconfig(
+     progressnoteid, tosupervisor, activeflag, updatedby, updatedon,
+     insertedby, insertedon, effectivedate, old_id)
+     
+    SELECT  v_TSPprogressnote.progressnoteid,
+      pntspc.tosupervisor, 1, v_securityusersid, now(),
+      insertedby, insertedon, pntspc.effectivedate,pntspc.old_id
+    FROM progressnotetosupervisorconfig pntspc
+    WHERE pntspc.progressnoteid in (select progressnoteid from progressnote where entitytypeid=v_intakeserviceid  ::character varying)
+    AND pntspc.activeflag = 1;
+   END LOOP;
+  
+   RETURN 'Successfull';
+end;
+
+$function$
+

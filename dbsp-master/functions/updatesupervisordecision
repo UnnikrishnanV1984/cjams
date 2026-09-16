@@ -1,0 +1,175 @@
+CREATE OR REPLACE FUNCTION updatesupervisordecision(searchobj json)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  v_timestamp timestamp;
+  v_returnstatus character varying;
+  v_vendorid character varying;
+  v_securityuserid character varying;
+ v_vendorapplicantid uuid;
+ v_providerid int;
+ v_decisionkey character varying;
+ v_paymentaffiliate character varying;
+ v_paymentaddress boolean;
+ v_approvalcomments character varying;
+ v_updateservicessearch character varying;
+v_narrative character varying;
+is1099indicator_f boolean;
+v_is1099indicator CHARACTER VARYING;
+ismedicalaidprov_f boolean;
+v_ismedicalaidprov CHARACTER VARYING;
+v_isserviceplan boolean;
+v_categorycd character varying;
+v_providertype   character varying;
+v_provider_idcreated character VARYING;
+
+BEGIN 
+v_vendorapplicantid := searchobj ->> 'vendorapplicantid';
+v_vendorid := searchobj ->> 'vendorid';
+v_decisionkey := searchobj ->> 'ref_key';
+v_securityuserid := searchobj ->> 'securityuserid';
+v_approvalcomments := searchobj ->> 'approvalcomments';
+v_narrative := searchobj ->> 'narrative';
+v_providerid := (searchobj ->> 'provider_id')::int;
+v_isserviceplan := (searchobj ->> 'isserviceplan')::boolean;
+v_timestamp := now()::timestamp with time zone;
+
+select providerid into v_provider_idcreated from tb_vendor_applicant
+ where vendorapplicantid=v_vendorapplicantid and delete_sw='N';
+
+if (v_provider_idcreated is not null and v_provider_idcreated >1) then 
+v_returnstatus:= 'Already approved. '||v_provider_idcreated;
+else
+
+IF (v_providerid is not null) then 
+if(v_decisionkey = 'APR')then 
+update tb_vendor_applicant set status='Active',approvaldate=v_timestamp,approvalcomments=v_approvalcomments,providerid=v_providerid,narrative=coalesce(v_narrative,narrative) where vendorapplicantid=v_vendorapplicantid and delete_sw='N';
+
+INSERT INTO tb_provider_services
+( provider_id, service_id, start_dt, end_dt, paid_cd
+, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+(select v_providerid,ts.service_id,tvs.startdate,tvs.enddate,ts.paid_non_paid_cd,
+v_timestamp,v_securityuserid,v_timestamp,v_securityuserid,'N' from tb_vendor_applicant tva 
+inner join tb_vendor_applicant_services tvs on tvs.vendorapplicantid = tva.vendorapplicantid and tvs.delete_sw='N'
+inner join tb_services ts on ts.service_id=tvs.service_id and ts.delete_sw='N'
+where tva.vendorapplicantid=(v_vendorapplicantid)::uuid and tva.delete_sw='N');
+
+--select updateservicessearch into v_updateservicessearch from updateservicessearch();
+
+INSERT INTO tb_provider_phone(
+ object_id, phone_no, phone_type, activeflag, insertedby, insertedon, updatedby, updatedon, delete_sw)
+SELECT v_providerid, phonenumber, phonetypekey, 1, v_securityuserid, v_timestamp, v_securityuserid, v_timestamp, delete_sw 
+from tb_vendor_phone where vendorapplicantid = (v_vendorapplicantid)::uuid and delete_sw='N';
+
+--INSERT INTO tb_provider_addresses
+--( parent_key_id, adr_type_cd, adr_format_cd,
+--adr_street_nm, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no,
+--adr_default_sw, adr_start_dt, adr_end_dt, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+--(select v_providerid, '3357', 'S', 
+--adr_1,adr_city_nm,adr_county_cd,adr_state_cd,adr_zip_no,'Y',adr_start_dt,adr_end_dt,
+--v_timestamp,v_securityuserid,v_timestamp,v_securityuserid,'N'
+--from tb_vendor_addresses 
+--where isaddress=true and vendorapplicantid=(v_vendorapplicantid)::uuid and delete_sw='N');
+
+
+
+
+select issamepaymentaddress, is1099indicator, ismedicalaidprov into v_paymentaddress,is1099indicator_f,ismedicalaidprov_f  from tb_vendor_applicant where vendorapplicantid=(v_vendorapplicantid)::uuid and delete_sw='N';
+
+v_paymentaffiliate := '3367';
+if(v_paymentaddress) then 
+v_paymentaffiliate := '3366';
+end if;
+
+if(ismedicalaidprov_f) then 
+v_ismedicalaidprov := 'Y';
+end if;
+
+if(is1099indicator_f) then 
+v_is1099indicator := 'Y';
+else 
+v_is1099indicator := 'N';
+end if;
+
+if (v_isserviceplan) then 
+  v_categorycd = '1787';
+  v_providertype = 'Service Plan';
+else
+v_categorycd = '3304';
+v_providertype = 'Vendor';
+end if;
+
+INSERT INTO tb_provider
+ (provider_id, provider_category_cd, provider_status_cd, pay_to_affiliate_cd, create_ts, create_user_id, update_ts,update_user_id,
+ provider_prefix_cd, provider_first_nm , provider_last_nm , provider_middle_nm,provider_suffix_cd, prov_tax_type_cd,tax_id_no , business_end_tm,business_start_tm,
+ indicator_1099_sw,medicaid_sw,medical_license_no_tx,medical_speciality_tx,county_cd,MAIL_CODE_TX,
+ adm_contact_prefix_cd, adm_contact_first_nm ,adm_contact_middle_nm,adm_contact_last_nm ,adm_contact_suffix_cd, provider_nm,county_cd_tx)
+(select v_providerid,v_categorycd::character varying,'1791',v_paymentaffiliate,v_timestamp,v_securityuserid,v_timestamp,v_securityuserid, 
+primary_prefix_cd,primary_first_nm,primary_last_nm,primary_middle_nm,primary_suffix_cd,taxidtype,taxid,regularto,regularfrom,
+v_is1099indicator,v_ismedicalaidprov,medlicense,speciality,jurisdiction,'000',
+admin_prefix_cd,admin_first_nm,admin_middle_nm,admin_last_nm,admin_suffix_cd,org_nm,jurisdiction 
+from tb_vendor_applicant  where vendorapplicantid=(v_vendorapplicantid)::uuid);
+
+ INSERT INTO tb_provider_picklist (provider_id, program_id,picklist_type_id,picklist_value_cd, value_desc, create_ts,create_user_id,update_ts,update_user_id)
+ VALUES(v_providerid, null, 155, v_categorycd::character varying, v_providertype,                              
+ now(), v_securityuserid,now(), v_securityuserid); 
+
+INSERT INTO tb_provider_addresses
+(parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, adr_default_sw, adr_start_dt, adr_end_dt, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx, adr_county_cd_tx)
+SELECT v_providerId, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, adr_default_sw,  adr_start_dt, adr_end_dt, now(), v_securityuserid, now(), v_securityuserid, delete_sw, adr_street_tx, adr_county_cd_tx
+FROM tb_provider_applicant_addresses pra
+WHERE pra.parent_key_id = v_vendorid;--v_vendorapplicantid;
+
+
+
+INSERT INTO providerassignment(
+             fromworkeridno, fromsupervisoridno, toworkeridno, 
+            tosupervisoridno, objecttypekey, objectid, activeflag, startdate, 
+            enddate, fromteamid, toteamid, remarks, statustypekey, fromldssid, 
+            toldssid, assigndate, isrestricted, assigndescription, summary, 
+            insertedby, updatedby, insertedon, updatedon)
+    SELECT fromworkeridno, fromsupervisoridno, toworkeridno, 
+       tosupervisoridno, 'Vendor', v_providerId::character varying, activeflag, startdate, 
+       enddate, fromteamid, toteamid, remarks, statustypekey, fromldssid, 
+       toldssid, assigndate, isrestricted, assigndescription, summary, 
+       insertedby, updatedby, insertedon, updatedon
+  FROM providerassignment where objectid = v_vendorid::character varying order by insertedon desc limit 1;
+
+  insert into as_tb_provider_license(
+    object_id, 
+    program_id, license_type_cd, license_status_cd, license_issue_dt, license_expiry_dt, license_modification_dt, 
+    license_no, licensing_agency_cd, revoke_dt, license_effective_date, 
+    delete_sw, active_sw, comments_tx, create_ts, create_user_id, update_ts, update_user_id)
+  select 
+    v_providerId::character varying, 
+    program_id, license_type_cd, license_status_cd, license_issue_dt, license_expiry_dt, license_modification_dt, 
+    license_no, licensing_agency_cd, revoke_dt, license_effective_date, 
+    'N', 'Y', comments_tx, now(), v_securityuserid, now(), v_securityuserid 
+  from as_tb_provider_license 
+  where object_id = v_vendorid::character varying and delete_sw='N';
+
+--  elsif (v_decisionkey = 'REJ') then 
+-- update tb_vendor_applicant set status='Rejected',approvalcomments=v_approvalcomments,narrative=coalesce(v_narrative,narrative) where vendorapplicantid=(v_vendorapplicantid)::uuid and delete_sw='N'; 
+end if;
+
+v_returnstatus:=v_providerid;
+
+else
+  if(v_decisionkey = 'REJ')then 
+    update tb_vendor_applicant set status='Rejected',narrative=coalesce(v_narrative,narrative) where vendorapplicantid=v_vendorapplicantid and delete_sw='N';
+    v_returnstatus:='Rejected';
+  else 
+    v_returnstatus:='Failure';
+  end if;
+end if;
+ 
+end if;
+return v_returnstatus;
+
+END;
+
+$function$
+

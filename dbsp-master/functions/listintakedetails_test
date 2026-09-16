@@ -1,0 +1,221 @@
+CREATE OR REPLACE FUNCTION listintakedetails_test(securityusersid character varying, status character varying, pagenumber bigint, pagesize bigint, intakeno character varying)
+ RETURNS TABLE(totalcount bigint, id integer, intakenumber character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, narrative text, raname character varying, entityname character varying, cruworkername character varying, isreview boolean, issupervisor boolean, datesubmitted timestamp without time zone, dateclosed timestamp without time zone, remarks text, reviewstatus character varying, disposition character varying, intakestatus character varying, timeleft character varying, jsondata jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+                          
+
+  DECLARE    v_status int; 
+        v_UserSID character varying;
+        v_activeflag int;
+        v_pageoffset int;
+        v_pagenumber int;
+    v_statustext character varying;
+  
+BEGIN
+    v_activeflag:= 1;
+    v_UserSID:= securityusersid;
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+    v_statustext:= status;
+ if (status='pending') THEN
+  v_status:=1;
+   
+ ELSIF  (status='reopen') THEN
+  v_status:=7;
+     v_activeflag:= 0;
+  ELSIF  (status='approved') THEN
+ --v_status:=3;
+    v_status:=8;
+   ELSIF  (status='closed') THEN
+ v_status:=8;
+     
+end if;
+ 
+  RAISE NOTICE 'v_status%',v_status;
+    RAISE NOTICE 'v_activeflag%',v_activeflag;
+/*Get Individual Intake details */    
+    IF (LOWER(status)='intake') THEN 
+     RETURN QUERY 
+         SELECT  count(1)  over(),IDAS.id,IDAS.IntakeNumber ,               
+            IDAS.DateRecieved,  
+            (to_char(
+          IDAS.TimeRecieved::timestamp,
+             'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone  at time zone'America/New_York',  
+            IDAS.Narrative, IDAS.RAName,  IDAS.EntityName,  
+            cast(IDAS.CRUWorkerName  as character varying) ,
+            false,false ,
+            (select max(insertedon ) from routing where objectid= IDAS.IntakeNumber  and isreviewrequest =true),
+            IDAS.insertedon ::timestamp ,
+            cast ('' as text) ,cast ('' as character varying) ,dispositiondescription,
+            cast( statusdescription as character varying),
+               cast( case DAS.submitteddate when null then '' else
+                case 
+                    when  age(  now()::TIMESTAMP)  - age(DAS.submitteddate::TIMESTAMP + interval '2h' )  > '0:00' then
+                cast( age( now()::TIMESTAMP)  - age(  DAS.submitteddate::TIMESTAMP + interval '2h' ) as character varying(5))
+                     else 'Overdue' end    
+                end as character varying),
+            IDAS.jsondata
+        FROM (select (to_char(
+          submitteddate::timestamp,
+             'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone submitteddate,
+              DAS1.IntakeNumber from  IntakeDAStatus DAS1) DAS inner join IntakeDAStaging IDAS  
+        ON IDAS.IntakeNumber =DAS.IntakeNumber  
+        WHERE IDAS.IntakeNumber like intakeno||'%'
+        
+        AND  IDAS.Activeflag = 1;
+       
+         
+   else 
+   IF (v_status=7) THEN
+        RETURN QUERY
+
+               SELECT  count(1)  over(),
+                IDAS.id,IDAS.IntakeNumber ,  IDAS.DateRecieved,  
+                (to_char(
+          IDAS.TimeRecieved::timestamp,
+             'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone,  
+                IDAS.Narrative, IDAS.RAName, IDAS.EntityName,  
+                cast(up.lastname ||', '|| up.firstname as character varying) ,
+                coalesce(r.isreviewrequest,false),
+                coalesce(rt.isupervisor,false) ,
+                r.insertedon, (to_char(
+               r.updatedon::timestamp,
+                  'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone ,
+                                 r.remarks,
+                cast(case lower(coalesce(rts.typedescription,'Pending'))
+                    when 'pending' then 'Draft' else 
+                case when tosecurityusersid = intakeuser and r.routingstatustypeid = 1 then 'Reopen' else 
+                    rts.typedescription end end as character varying)  ,
+                dispositiondescription,
+                statusdescription,
+                cast( case r.insertedon when null then '' else
+                case 
+                    when  age(  now()::TIMESTAMP)  - age(r.insertedon::TIMESTAMP + interval '2h' )  > '0:00' then
+                cast( age( now()::TIMESTAMP)  - age(  r.insertedon::TIMESTAMP + interval '2h' ) as character varying(5))
+                     else 'Overdue' end    
+                end as character varying),
+                null::jsonb
+            FROM IntakeDAStaging IDAS 
+            INNER JOIN IntakeDAStatus IDS on IDS.intakenumber = IDAS.intakenumber
+            and ids.status =v_status 
+            LEFT JOIN  routing r ON r.objectid = IDAS.intakenumber
+                AND (r.activeflag =1 or r.activeflag = v_activeflag)
+            LEFT JOIN routingstatustype RTs ON RTs.sequencenumber = r.routingstatustypeid 
+                and rts.activeflag =1 
+            LEFT JOIN teammemberroletype rt on rt.roletypekey = r.toroleid 
+                AND rt.activeflag =1
+            INNER JOIN userprofile up on up.securityusersid = IDAS.CRUWorkerName 
+            WHERE IDAS.IntakeNumber like intakeno||'%'
+                AND (case v_status when 1 then lower(IDAS.Status) = 'pending' else 
+                r.routingstatustypeid =v_status end 
+                OR case IDAS.intakeuser  when v_UserSID then r.routingstatustypeid =6
+                     else  r.routingstatustypeid =v_status end
+                    )
+                AND  IDAS.Activeflag = 1
+                AND ( coalesce(r.tosecurityusersid,IDAS.InsertedBy)  =v_UserSID 
+                   OR  case right(fromroleid,2) when 'IW' then IDAS.InsertedBy   =v_UserSID 
+                        else r.tosecurityusersid  =v_UserSID  end )
+     
+            ORDER BY  IDAS.id DESC LIMIT pagesize OFFSET v_pageoffset ; 
+ELSIF (v_status =8) THEN
+   RETURN QUERY
+
+               SELECT  count(1)  over(),
+                IDAS.id,IDAS.IntakeNumber ,  IDAS.DateRecieved,  
+                (to_char(
+          IDAS.TimeRecieved::timestamp,
+             'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone,  
+                IDAS.Narrative, IDAS.RAName, IDAS.EntityName,  
+                cast(up.lastname ||', '|| up.firstname as character varying) ,
+                coalesce(r.isreviewrequest,false),
+                coalesce(rt.isupervisor,false) ,
+                r.insertedon, (to_char(
+               r.updatedon::timestamp,
+                  'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone  ,
+                r.remarks,
+                cast(case lower(coalesce(rts.typedescription,'Pending'))
+                    when 'pending' then 'Draft' else 
+                case when tosecurityusersid = intakeuser and r.routingstatustypeid = 1 then 'Reopen' else 
+                    rts.typedescription end end as character varying)  ,
+                dispositiondescription,
+                statusdescription,
+                cast( case r.insertedon when null then '' else
+                case 
+                    when  age(  now()::TIMESTAMP)  - age(r.insertedon::TIMESTAMP + interval '2h' )  > '0:00' then
+                cast( age( now()::TIMESTAMP)  - age(  r.insertedon::TIMESTAMP + interval '2h' ) as character varying(5))
+                     else 'Overdue' end    
+                end as character varying),
+                null::jsonb
+            FROM IntakeDAStaging IDAS 
+            LEFT JOIN  routing r ON r.objectid = IDAS.intakenumber
+                AND (r.activeflag =1 or r.activeflag = v_activeflag)
+            LEFT JOIN routingstatustype RTs ON RTs.sequencenumber = r.routingstatustypeid 
+                and rts.activeflag =1 
+            LEFT JOIN teammemberroletype rt on rt.roletypekey = r.toroleid 
+                AND rt.activeflag =1
+            INNER JOIN userprofile up on up.securityusersid = IDAS.CRUWorkerName 
+            WHERE IDAS.IntakeNumber like intakeno||'%'
+                AND  r.routingstatustypeid IN (8,2)
+               
+                AND  IDAS.Activeflag = 1
+                AND ( coalesce(r.tosecurityusersid,IDAS.InsertedBy)  =v_UserSID 
+                   OR  case right(fromroleid,2) when 'IW' then IDAS.InsertedBy   =v_UserSID 
+                        else r.tosecurityusersid  =v_UserSID  end )
+
+            ORDER BY  IDAS.id DESC LIMIT pagesize OFFSET v_pageoffset ; 
+
+  ELSE 
+
+      RETURN QUERY
+
+               SELECT  count(1)  over(),
+                IDAS.id,IDAS.IntakeNumber ,  IDAS.DateRecieved,  
+                (to_char(
+          IDAS.TimeRecieved::timestamp,
+             'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone  at time zone'America/New_York',
+                IDAS.Narrative, IDAS.RAName, IDAS.EntityName,  
+                cast(up.lastname ||', '|| up.firstname as character varying) ,
+                coalesce(r.isreviewrequest,false),
+                coalesce(rt.isupervisor,false) ,
+                r.insertedon,r.updatedon ,r.remarks,
+                cast(case lower(coalesce(rts.typedescription,'Pending'))
+                    when 'pending' then 'Draft' else 
+                case when tosecurityusersid = intakeuser and r.routingstatustypeid = 1 then 'Reopen' else 
+                    rts.typedescription end end as character varying)  ,
+                dispositiondescription,
+                statusdescription,
+                cast( case r.insertedon when null then '' else
+                case 
+                    when  age(  now()::TIMESTAMP)  - age(r.insertedon::TIMESTAMP + interval '2h' )  > '0:00' then
+                cast( age( now()::TIMESTAMP)  - age(  r.insertedon::TIMESTAMP + interval '2h' ) as character varying(5))
+                     else 'Overdue' end    
+                end as character varying),
+                null::jsonb
+            FROM IntakeDAStaging IDAS 
+            LEFT JOIN  routing r ON r.objectid = IDAS.intakenumber
+                AND (r.activeflag =1 or r.activeflag = v_activeflag)
+            LEFT JOIN routingstatustype RTs ON RTs.sequencenumber = r.routingstatustypeid 
+                and rts.activeflag =1 
+            LEFT JOIN teammemberroletype rt on rt.roletypekey = r.toroleid 
+                AND rt.activeflag =1
+            INNER JOIN userprofile up on up.securityusersid = IDAS.CRUWorkerName 
+            WHERE IDAS.IntakeNumber like intakeno||'%'
+                AND (case v_status when 1 then lower(IDAS.Status) = 'pending' else 
+                r.routingstatustypeid =v_status end 
+                OR case IDAS.intakeuser  when v_UserSID then r.routingstatustypeid =6
+                     else  r.routingstatustypeid =v_status end
+                    )
+                AND  IDAS.Activeflag = 1
+                AND ( coalesce(r.tosecurityusersid,IDAS.InsertedBy)  =v_UserSID 
+                   OR  case right(fromroleid,2) when 'IW' then IDAS.InsertedBy   =v_UserSID 
+                        else r.tosecurityusersid  =v_UserSID  end )
+
+            ORDER BY  IDAS.id DESC LIMIT pagesize OFFSET v_pageoffset ; 
+  END IF;
+ end if;
+                          
+END;
+
+$function$
+

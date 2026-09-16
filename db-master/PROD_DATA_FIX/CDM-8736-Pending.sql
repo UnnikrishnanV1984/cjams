@@ -1,0 +1,1 @@
+delete from routing where objectid = '1757390'and routingstatustypeid = '40' and activeflag = '1' and routingid = '14475efb-1e6d-454b-bff3-8f7e51b16162';

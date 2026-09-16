@@ -1,0 +1,2 @@
+update intakeservicerequest set intakeserreqstatustypeid = '7995cecb-062d-406c-8ea9-b1da4b1877d8', updatedon = now(),updatedby = 'CDM-11826' where servicerequestnumber = 'CW2939038';
+update intakeservicerequestdispositioncode set intakeserreqstatustypeid = '7995cecb-062d-406c-8ea9-b1da4b1877d8', updatedon = now(),updatedby = 'CDM-11826' where intakeserviceid = 'e6d9f4ac-a477-40a3-a006-1171a5fa9db6';

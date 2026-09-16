@@ -1,0 +1,43 @@
+DROP FUNCTION IF EXISTS cjams.listservicecase(uuid, character varying, bigint,  bigint);
+CREATE OR REPLACE FUNCTION cjams.listservicecase(v_intakeserviceid uuid, v_userid character varying, pagenumber bigint, pagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+	v_pageoffset  int;
+	v_pagenumber  int;  
+	l_servicecase json;
+	--v_intakeserviceid uuid;
+	
+BEGIN
+
+v_pagenumber  :=  pagenumber-1;
+v_pageoffset  =  v_pagenumber  *  pagesize;
+
+	  /*SELECT intakeserviceid INTO v_intakeserviceid
+		FROM intakeservicerequestactor WHERE intakeservicerequestactorid= v_personid 
+        AND activeflag =1 AND intakeservicerequestpersontypekey IN('RC','BIOCHILD','CHILD');*/
+			   
+SELECT json_agg(e) INTO l_servicecase FROM(
+	SELECT 
+		DISTINCT SC.servicecaseid,
+		SC.servicecasenumber,SC.caseheadname AS legalguardian,
+		SC.startdate,SC.statustypekey,SC.enddate,ac.ishouseholdmember
+	FROM servicecase SC 
+	INNER JOIN actor ac on ac.servicecaseid =SC.servicecaseid and  ac.activeflag =1 
+	WHERE SC.activeflag=1 AND ac.personid IN ( SELECT personid 
+	FROM intakeservicerequestactor WHERE intakeserviceid= v_intakeserviceid 
+				   AND activeflag =1 )
+	/*AND SC.insertedby = v_userid */	AND ac.ishouseholdmember = 1	
+	--and (dispositioncode is null or dispositioncode <> 'Closed'	)
+	
+	--LIMIT 6
+	--pagesize  OFFSET  v_pageoffset																				
+)e;
+
+RETURN l_servicecase;
+END;
+
+$function$
+;

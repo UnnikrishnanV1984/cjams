@@ -1,0 +1,23 @@
+CREATE OR REPLACE FUNCTION cjams.get_provideraddress(v_providerid bigint)
+ RETURNS TABLE(location_address json,payment_address json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+
+	
+BEGIN 
+
+
+	return query
+		
+	select (select json_agg(x) from (select concat_ws(' ',tpa.adr_street_no,tpa.adr_street_nm,tpa.adr_box_no,tpa.adr_city_nm,tpv.value_tx ,tpa.adr_state_cd,tpa.adr_zip5_no) as address from 
+tb_provider_addresses tpa
+left join tb_picklist_values tpv on trim(tpv.picklist_value_cd) = trim(tpa.adr_county_cd) where tpa.parent_key_id=tp.provider_id::character varying and tpa.delete_sw='N' and tpa.adr_type_cd='3356' limit 1 ) as x) as location_address,(select json_agg(x) from (select concat_ws(' ',tpa.adr_street_no,tpa.adr_street_nm,tpa.adr_box_no,tpa.adr_city_nm,tpv.value_tx,tpa.adr_state_cd,tpa.adr_zip5_no) as address from 
+tb_provider_addresses tpa
+left join tb_picklist_values tpv on trim(tpv.picklist_value_cd) = trim(tpa.adr_county_cd) where tpa.parent_key_id=tp.provider_id::character varying and tpa.delete_sw='N' and tpa.adr_type_cd='3357' limit 1 ) as x) as payment_address from tb_provider tp 
+where tp.provider_id=v_providerid and tp.delete_sw='N';
+END;
+
+$function$

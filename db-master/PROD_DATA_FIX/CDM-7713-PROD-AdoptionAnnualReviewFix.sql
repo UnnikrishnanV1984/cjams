@@ -1,0 +1,8 @@
+INSERT INTO cjams.routing
+(eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES('ADYR', '66a80882-f231-4882-a573-1b5a32c8e271', 'ef3affc6-c4db-447c-b057-1588c38ccf42', '85802412-97aa-4f41-8e35-52f682c643f8', 'CWCW', 'CWSP', '3a91ee49-42e5-4f38-8750-b6d38f59be55', 15, 1, '66a80882-f231-4882-a573-1b5a32c8e271', '2020-11-30'::date, 'CDM-7713', now(), true, 'Adoption Annual Review Submitted for Review', NULL, 'Adoption Annual Review Submitted for Review', '3037254', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+INSERT INTO cjams.routing
+(eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES('ADYR', '779c606f-02a5-4930-9ce0-d3da420adbb9', '4362542d-57db-4ff4-8e8e-697aab08955f', '3cbfe95b-bcf4-4a18-a51a-98e41aee9d0a', 'CWSP', 'CWCW', '04f200d4-4b02-47fd-89ef-9a46a1b52e48', 16, 1, 'admin3', '2006-12-26 16:55:40', 'EKE849516', '2006-12-26 16:55:40', false, 'Migration Annual Review', '23590', NULL, NULL, NULL, '6003226', '6003195', NULL, NULL, 'Data Migration', '2020-05-16', NULL, NULL);
+

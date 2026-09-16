@@ -1,0 +1,85 @@
+DROP FUNCTION IF EXISTS getrestitutionfilecontent(uuid, bigint, bigint);
+
+CREATE OR REPLACE FUNCTION getrestitutionfilecontent(v_contentid uuid, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, ismatched boolean, matchedpersondetails jsonb, restitutionpaymentflatfileid uuid, asofdate character varying, lockboxno character varying, vakaccountnumber character varying, contentflatfilefirstname character varying, contentflatfilelastname character varying, contentflatfileaddressline1 character varying, contentflatfileaddressline2 character varying, contentflatfilecity character varying, contentflatfilestate character varying, contentflatfilezip character varying, contentflatfilecustomernumber character varying, contentflatfilecheckno character varying, contentflatfilecheckamt numeric, contentflatfilepaymentno bigint, flatfilefilename character varying, flatfilepathname text, matchedrestitutionacc jsonb, approvedrestitutionacc jsonb, approvedpersondetails character varying, paidamount numeric, balance numeric)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  v_pagenumber int;
+	v_pageoffset int;
+ 
+
+	
+BEGIN 
+
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+	v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+	v_liPageNumber := 1;	
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select count(1) over() as totalcount,rfc.ismatched,(SELECT Json_agg(person) FROM (select p.personid,p.firstname,p.lastname,p.cjamspid,p.dob,p.gendertypekey from person p
+where p.personid=ir.youthpersonid)person) :: jsonb  as matchedpersondetails,rfc.restitutionpaymentflatfileid,rfc.asofdate,rfc.lockboxno,rfc.vakaccountnumber,rfc.firstname as contentflatfilefirstname,rfc.lastname as contentflatfilelastname,
+rfc.addressline1 as contentflatfileaddressline1,rfc.addressline2 as contentflatfileaddressline2,rfc.city as contentflatfilecity,rfc.state as contentflatfilestate,
+rfc.zip as contentflatfilezip,rfc.customernumber as contentflatfilecustomernumber, rfc.checkno as contentflatfilecheckno ,rfc.checkamt as contentflatfilecheckamt, -- Gavaskar Commented by 07/02/2019
+--(select sum(allocatedamount) from intakeserreqrestitutionpayment 
+ --where restitutionpaymentflatfilecontentid = rfc.restitutionpaymentflatfilecontentid and activeflag=1) as contentflatfilecheckamt,
+rfc.paymentno as contentflatfilepaymentno,rpf.filename as flatfilefilename,rpf.pathname as flatfilepathname, 
+(SELECT Json_agg(actor) FROM (
+   select  restitutionno,isr.intakeserreqrestitutionid,intakeserviceid,ir.installmentamount,intakenumber,json_build_object('youthpersonid',isr.youthpersonid,'youthfirstname',pp.firstname,
+  'youthlastname', pp.lastname ,'youthcjamspid', pp.cjamspid, 'youthdob',pp.dob, 'youthgendertypekey',pp.gendertypekey ) as youthpersondetails,
+  json_build_object('victimpersonid',isr.victimpersonid,'victimfirstname',pv.firstname,
+  'victimlastname', pv.lastname ,'victimcjamspid', pv.cjamspid, 'victimdob',pv.dob, 'victimgendertypekey',pv.gendertypekey ) as victimpersondetails,
+    json_build_object('liablepersonid',isr.liablepersonid,'liablefirstname',pl.firstname,
+  'liablelastname', pl.lastname ,'liablecjamspid', pl.cjamspid, 'liabledob',pl.dob, 'liablegendertypekey',pl.gendertypekey,'liablepersonrelationtypekey',liablepersonrelationtypekey) as liablepersondetails,
+   restitutiontype,ct.countyname,ismultipleinvolvedpersons,coalesce(isr.payment,0) as payment,isr.duedate,
+   frequency,courtdeferredduedate,status,
+   inactivereasontype,paymentstartdate,transfernotes, (coalesce(isr.payment,0) - coalesce(isr.paidamount,0)) as balance,
+   coalesce(isr.paidamount,0) as paidamount,  coalesce(isr.allocatedamount,0) as allocatedamount
+   
+   from intakeserreqrestitution isr
+   join county ct on ct.countyid = isr.countyid 
+   join person pp on pp.personid= isr.youthpersonid
+   join person pv on pv.personid = isr.victimpersonid 
+   join person pl on pl.personid = isr.liablepersonid
+   where isr.youthpersonid=ir.youthpersonid and isr.activeflag=1 and isr.approvestatus='RSTAPR'
+)actor) :: jsonb as matchedrestitutionacc,
+(SELECT Json_agg(actor) FROM (
+   select memofirstname as restitutionno,isr.intakeserreqrestitutionid,intakenumber,json_build_object('youthpersonid',isr.youthpersonid,'youthfirstname',pp.firstname,
+  'youthlastname', pp.lastname ,'youthcjamspid', pp.cjamspid, 'youthdob',pp.dob, 'youthgendertypekey',pp.gendertypekey ) as youthpersondetails,
+  json_build_object('victimpersonid',isr.victimpersonid,'victimfirstname',pv.firstname,
+  'victimlastname', pv.lastname ,'victimcjamspid', pv.cjamspid, 'victimdob',pv.dob, 'victimgendertypekey',pv.gendertypekey ) as victimpersondetails,
+ (coalesce(irps.payment,0) - coalesce(irps.paidamount,0)) as balance,
+   coalesce(irps.paidamount,0) as paidamount,  coalesce(isr.allocatedamount,0) as allocatedamount,irps.restitutiontype,irps.duedate
+   
+   from intakeserreqrestitutionpayment isr
+   join person pp on pp.personid= isr.youthpersonid
+   join person pv on pv.personid = isr.victimpersonid 
+   join intakeserreqrestitution irps on irps.intakeserreqrestitutionid= isr.intakeserreqrestitutionid
+   where isr.restitutionpaymentflatfilecontentid=rfc.restitutionpaymentflatfilecontentid
+)actor) :: jsonb  as approvedrestitutionacc,''::character varying as approvedpersondetails,ir.paidamount,
+rfc.checkamt as balance -- Gavaskar Commented by 07/02/2019
+--(select (coalesce(rfc.checkamt,0) - sum(allocatedamount)) from intakeserreqrestitutionpayment 
+ --where restitutionpaymentflatfilecontentid = rfc.restitutionpaymentflatfilecontentid and activeflag=1)
+from restitutionpaymentflatfilecontent rfc 
+join restitutionpaymentflatfile rpf on rpf.restitutionpaymentflatfileid = rfc.restitutionpaymentflatfileid
+left join intakeserreqrestitution ir on ir.restitutionno = rfc.customernumber::int and ir.activeflag=1 and lower(ir.status) = 'active'
+and ir.approvestatus = 'RSTAPR'
+where rfc.restitutionpaymentflatfilecontentid=v_contentid and rfc.activeflag=1 --and ir.approvestatus = 'RSTAPR'
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+	
+
+END;
+
+$function$
+;

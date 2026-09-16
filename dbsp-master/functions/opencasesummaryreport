@@ -1,0 +1,50 @@
+CREATE OR REPLACE FUNCTION opencasesummaryreport(i_startdate timestamp without time zone, i_enddate timestamp without time zone, i_areacode character varying, p_pagesize integer, p_pageoffset integer, p_nolimit boolean)
+ RETURNS TABLE(reccnt bigint, todaydate character varying, account_area character varying, opencases bigint, balamount numeric, formalcnt bigint, informalcnt bigint)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+   RETURN QUERY
+        SELECT count (*) OVER ()
+                  AS reccnt,
+               CAST (to_char (now (), 'MM/DD/YYYY') AS CHARACTER VARYING)
+                  AS todaydate,
+               CAST (irp.accountarea AS CHARACTER VARYING)
+                  AS account_area,
+               count (ir.restitutionno)
+                  AS opencases,
+               sum (
+                    (  coalesce (ir.payment, 0)
+                     - coalesce (ir.waivedamount, 0)
+                     + coalesce (ir.additionalamount, 0))
+                  - coalesce (ir.paidamount, 0))
+                  balamount,
+               sum (CASE WHEN ir.restitutiontype = 'court' THEN 1 ELSE 0 END)
+                  AS formalcnt,
+               sum (CASE WHEN ir.restitutiontype = 'intake' THEN 1 ELSE 0 END)
+                  AS informalcnt
+          FROM intakeserreqrestitution ir
+               LEFT JOIN person p
+                  ON p.personid = ir.youthpersonid AND p.activeflag = 1
+               JOIN intakeserreqrestitutionpayment irp
+                  ON     irp.intakeserreqrestitutionid =
+                         ir.intakeserreqrestitutionid
+                     AND irp.activeflag = 1
+               JOIN restitutionpaymentflatfilecontent rpff
+                  ON     irp.restitutionpaymentflatfilecontentid =
+                         rpff.restitutionpaymentflatfilecontentid
+                     AND rpff.activeflag = 1
+         WHERE     ir.status = 'Active'
+               AND ir.insertedon BETWEEN i_startdate AND i_enddate
+               AND CASE
+                      WHEN i_areacode IS NOT NULL
+                      THEN
+                         irp.accountarea = i_areacode
+                      ELSE
+                         TRUE
+                   END
+      GROUP BY todaydate, accountarea
+         LIMIT (CASE WHEN p_nolimit IS FALSE THEN p_pagesize ELSE NULL END)
+        OFFSET (CASE WHEN p_nolimit IS FALSE THEN p_pageoffset ELSE NULL END);
+END;
+$function$
+

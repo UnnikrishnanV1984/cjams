@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION as_geticpcdocumentlist(p_intakeserviceid uuid)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, youthname character varying, cjamspid bigint, intakenumber character varying, icpcstatus character varying, requestedon timestamp without time zone, intakeservicerequesticpcid uuid, documnetcomment text, assignedby character varying, updatedon timestamp without time zone, icpcdocument jsonb)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+BEGIN 
+
+ 
+RETURN Query
+
+ SELECT 
+  COUNT(1) OVER() totalCOUNT, 
+  ISR.intakeserviceid,
+  ISR.servicerequestnumber,  
+  (trim( p.lastname ) || ', ' || trim( p.firstname ))::CHARACTER VARYING youthname,
+  p.cjamspid,  
+  ISR.intakenumber,
+  ICP.icpcstatus,
+  ICP.insertedon as requestedon,
+  ICP.intakeservicerequesticpcid,
+  ICP."comments" as documnetcomment,
+  up.displayname as assignedby,
+  R.insertedon as updatedon,
+      (SELECT Json_agg(icpcdocuments) 
+   FROM (SELECT icpcd.intakeservicerequesticpcdocumentid,
+   icpcd.intakeservicerequesticpcid,
+   icpcd.icpcdocumenttypekey,
+   icpcd.s3bucketpathname,
+   rv.description as documnetname,
+   icpcd.originalfilename
+   
+   
+     FROM intakeservicerequesticpcdocument icpcd
+     inner join referencevalues rv on icpcd.icpcdocumenttypekey=rv.ref_key
+     WHERE ICP.intakeservicerequesticpcid = icpcd.intakeservicerequesticpcid 
+     AND icpcd.activeflag = 1)
+     icpcdocuments) :: jsonb AS icpcdocument
+  
+
+from intakeservicerequesticpc ICP
+
+INNER join intakeservicerequest ISR on ICP.intakeserviceid= ISR.intakeserviceid
+inner join intakeservicerequestactor ISRT on ISRT.intakeserviceid=ISR.intakeserviceid and ISRT.activeflag=1 and ISRT.intakeservicerequestpersontypekey='Youth'
+inner join actor AC on AC.actorid=ISRT.actorid and AC.activeflag=1
+inner join person P on p.personid=AC.personid and p.activeflag=1
+inner join routing R on R.objectid::character varying=ICP.intakeservicerequesticpcid::character varying  and R.activeflag=1
+left join userprofile up on up.securityusersid::character varying=R.tosecurityusersid::character varying
+
+where   ISR.intakeserviceid =p_intakeserviceid
+order by ICP.insertedon desc;
+  
+
+    
+END;
+
+$function$
+

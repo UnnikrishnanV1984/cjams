@@ -1,0 +1,42 @@
+CREATE OR REPLACE FUNCTION getpersonfamilyinfo(v_personid uuid, pagenumber bigint, pagesize bigint, v_activeflag integer)
+ RETURNS TABLE(totalcount bigint, updatedname text, createdname text, updatedpid bigint, createdpid bigint, personfamilyinfoid uuid, numofsiblings integer, numofpersons integer, grossincome numeric, primarysource character varying, titleiveeligible boolean, amoutwillpay numeric, notes text, placeofbirth character varying, historyfamilyprob boolean, runaway boolean, ungovernable boolean, stealing boolean, truancy boolean, assaultive boolean, residential boolean, outpatient boolean, insertedby character varying, insertedon timestamp without time zone, updatedby character varying, updatedon timestamp without time zone, maritalstatus json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset int;
+ v_pagenumber int;
+DECLARE 
+ totalcount integer;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+  
+RETURN query
+
+SELECT count(1)   over() as totalcount, CONCAT(up.firstname,' ',up.lastname) as updatedname,CONCAT(up1.firstname,' ',up1.lastname) as createdname, 
+up.cjamspid as updatedpid, up1.cjamspid as createdpid,
+personfamilyinfo.personfamilyinfoid,personfamilyinfo.numofsiblings,personfamilyinfo.numofpersons,
+personfamilyinfo.grossincome,personfamilyinfo.primarysource,personfamilyinfo.titleiveeligible,
+personfamilyinfo.amoutwillpay,personfamilyinfo.notes,
+personfamilyinfo.placeofbirth,personfamilyinfo.historyfamilyprob,personfamilyinfo.runaway,
+personfamilyinfo.ungovernable,personfamilyinfo.stealing,personfamilyinfo.truancy,
+personfamilyinfo.assaultive,personfamilyinfo.residential,personfamilyinfo.outpatient,
+personfamilyinfo.insertedby,personfamilyinfo.insertedon,personfamilyinfo.updatedby,
+personfamilyinfo.updatedon,(
+SELECT row_to_json(d)
+    from (  (select person.maritalstatustypekey,maritalstatustype.typedescription from person,maritalstatustype where personid=(select
+  case when exists (select personrelation.personrelativeid from personrelation where personid=v_personid and actorrelationshipkey='father' and activeflag=1)
+    then (select personrelation.personrelativeid from personrelation where personid=v_personid and actorrelationshipkey='father' and activeflag=1)
+   when exists (select personrelation.personrelativeid from personrelation where personid=v_personid and actorrelationshipkey='mother' and activeflag=1)
+    then (select personrelation.personrelativeid from personrelation where personid=v_personid and actorrelationshipkey='mother' and activeflag=1)
+    else null
+  end) and maritalstatustype.maritalstatustypekey = person.maritalstatustypekey)) d ) as maritalstatus
+from personfamilyinfo,userprofile up,userprofile up1
+where personid=v_personid and personfamilyinfo.activeflag=v_activeflag and up.securityusersid  = personfamilyinfo.updatedby and  up1.securityusersid  = personfamilyinfo.insertedby
+ORDER BY personfamilyinfo.insertedon NULLS FIRST
+LIMIT pagesize OFFSET v_pageoffset;
+END;
+
+$function$
+

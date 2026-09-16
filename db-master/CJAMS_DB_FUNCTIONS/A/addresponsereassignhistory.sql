@@ -1,0 +1,40 @@
+DROP FUNCTION IF EXISTS cjams.addresponsereassignhistory(v_servicerequestid uuid, v_initialresponsetypekey character varying, v_responsetypekey character varying, v_reasonforchange character varying, v_notes character varying, v_securityuserid  character varying, v_subreasonforchange json);
+CREATE OR REPLACE FUNCTION cjams.addresponsereassignhistory(v_servicerequestid uuid, v_initialresponsetypekey character varying, v_responsetypekey character varying, v_reasonforchange character varying, v_notes character varying, v_securityuserid character varying, v_subreasonforchange character varying[])
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  v_status character varying; 
+  l_subreason character varying;
+  l_intakeservicerequestsdmid uuid;
+  l_reassignhistoryid uuid;
+  
+BEGIN
+    
+	v_status := 'failed';
+	
+	SELECT intakeservicerequestsdmid INTO l_intakeservicerequestsdmid FROM intakeservicerequestsdm WHERE intakeserviceid = v_servicerequestid ORDER BY updatedon DESC LIMIT 1;
+	
+	IF l_intakeservicerequestsdmid IS NOT NULL THEN
+
+		INSERT INTO responsereassignhistory(reassignhistoryid,referralid,initialresponsetypekey,responsetypekey,changereasontypekey,"comments",insertedon,insertedby,activeflag)
+		VALUES(gen_random_uuid(), l_intakeservicerequestsdmid, v_initialresponsetypekey, v_responsetypekey, v_reasonforchange, v_notes, now(), v_securityuserid, 1)
+		RETURNING reassignhistoryid into l_reassignhistoryid;
+			
+		IF l_reassignhistoryid IS NOT NULL THEN 
+			
+			FOR l_subreason IN select unnest(v_subreasonforchange) LOOP
+				INSERT INTO alternativeresponsetype(arpicklistid,summaryid,picklisttypeid, picklistvaluetypekey, insertedon, insertedby, activeflag, reassignhistoryid, historyid, fk_id)
+				VALUES(gen_random_uuid(),'00000000-0000-0000-0000-000000000000',10040, l_subreason, now(), v_securityuserid, 1, l_reassignhistoryid, 1, 'XXXX');
+			END LOOP;
+
+			v_status := 'success';
+		END IF;
+	
+	END IF;
+RETURN v_status;			
+
+END;
+$function$
+;

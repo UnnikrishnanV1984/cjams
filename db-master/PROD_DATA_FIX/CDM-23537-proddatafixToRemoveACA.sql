@@ -1,0 +1,15 @@
+/*
+   Issue Description: CDM-23537
+   Category/ Module  : Prod data fix to remove ACA and disclosure checklist
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+    Need to do data fix
+*/
+
+-- INSERT INTO cjams.adoptionapplicabilityinfo
+-- (adoptionapplicabilityid, removalid, clientid, childbirthdate, expectedadoptiondate, childagetable1618, childagetable418, childagetable1418, childagetable218, childagetable1218, childagetable018, childagetable1018, childagetable218dublicate, childagetable818, childagetable018dublicate, childagetable618, childagetablechildagenoneoftheagesapply, hasthechildbeenincare60monthsormore, issiblingtochildwhoqualifiesasapplchildbyage, acourtorder, bavoluntaryplacementagreement, voluntaryrelinquishment, childmeetsssimedicaldisabledeligliblerequirements, isthechildresidinginafosterfamilyhome, canchildreturntohome, descriptionofreturnhome, childmeetallmedicaldisabilityrequirementsforssi, child617yearsofage, physicalmentalemotionaldisability, emotionaldisturbance, siblinginformationcheck, recognizedhighriskofphysicaldisability, raceethnicityofchild, unsuccessfulreasonableeffortsstatusrecords, fosterparentemotionalbonding, childspreviouslyadopted, previousadoptiveparentstpr, adoptiveparentstprdate, childscurrentivefostercareeligibilitystatus, childsssieligibilitystatus, childreceivingssiatremoval, childhasemotionaldisturbance, removalcourtorderdate, dateoffirstcourtorderwithctw, childremovaldate, dtof1stcowithbiorctwfindingifconvtocina, dateofrelinquishment, startdateofreceivingssi, physicaladdressofchild, unsuccessfulreasonableeffortsstatusrecordsdescription, fosterparentemotionalbondingdescription, childsivestatusofpreviousadoption, columns2save, caseworkername, submissiondate, caseworkersignature, resubmissioncaseworkername, resubmissiondate, resubmissioncaseworkersignature, resubmissioncount, ivestatus, ivecomment, raceorethnicitywithoneofthesabove, adoptionapplicabilitystartdt, eligiblesiblingsinfo, childagetable, insertedby, insertedon, updatedby, updatedon, activeflag)
+-- VALUES('03c37ff9-99ae-4fcf-ba17-1d03da5a2592'::uuid, 251893, 4330260, '2018-10-04 04:00:00.000', '2022-08-01 04:00:00.000', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'NO', 'NO', 'YES', 'NO', 'NO', 'NO', 'NO', 'YES', NULL, 'NO', NULL, NULL, NULL, false, NULL, NULL, 'YES', 'YES', 'NO', NULL, NULL, 'YES', 'NO', 'NO', NULL, '2021-03-15 04:00:00.000', '2021-03-15 04:00:00.000', NULL, NULL, NULL, NULL, NULL, 'Child was placed with an approved BCDSS foster family and has bonded with them. ', NULL, NULL, NULL, 'Debra Dawson', '2022-08-02 19:00:58.488', NULL, NULL, NULL, NULL, 1, 'REVIEW', NULL, NULL, '2022-08-02 19:00:58.074', '[]'::json, NULL, '8a06aed2-7164-477d-979f-071786254036', '2022-06-22 11:55:17.712', '8a06aed2-7164-477d-979f-071786254036', '2022-08-02 15:01:52.230', 0);
+
+DELETE FROM cjams.adoptionapplicabilityinfo
+WHERE adoptionapplicabilityid='03c37ff9-99ae-4fcf-ba17-1d03da5a2592'::uuid;

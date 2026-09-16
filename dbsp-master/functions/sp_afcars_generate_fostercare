@@ -1,0 +1,2779 @@
+CREATE OR REPLACE FUNCTION sp_afcars_generate_fostercare(vdt_from character varying, vdt_to character varying, OUT vs_err_output_sqlcode integer)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s)
+-- 03/15/2021 Vineet Tirodkar 
+-- Modifications: 1)Use the exitdate column of intakeservreqchildremoval for Child Removal Return Date 
+--                2)Consider approved removals only using routing table 
+--      3)Changes to include clients turing 18 between the reporting period  
+-- 03/31/2021 Vineet Tirodkar - Modifications for calculate Age for discharge using f_age (CIDM-2505)
+-- 04/12/2021 Vineet Tirodkar - Modifications to change VS_END_DATE, VS_TPC_EXIT_DATE & VS_PERIOD_END_DT data types as VARCHAR(50) from VARCHAR (20) 
+-- 04/19/2021 Vineet Tirodkar - Modifications to add active flag and Delete_sw columns in all missing queries.
+-- 04/26/2021 Vineet Tirodkar - Modifications to the logic of ELEMENT #3 -- Local Agency (FIPS Code) 
+------------------------------------------------------------------------------------------------------------
+DECLARE
+ SQLSTATE            CHARACTER(5)            DEFAULT '00000';
+ SQLCODE                                             INTEGER DEFAULT 0;
+
+ -- OUTPUT FIELDS
+ OUT_PLACEMENT_ID             VARCHAR;
+ OUT_CLIENT_ID           INTEGER DEFAULT 0;
+ OUT_STATE_CD           VARCHAR(2)      DEFAULT     '24';
+ OUT_USER_ID           VARCHAR(10)  DEFAULT     'INTERFACE';
+ OUT_REPORT_PD_END_DT               VARCHAR(6);
+ OUT_LOCAL_AGENCY_CD            VARCHAR(30);
+ OUT_RECORD_NO               VARCHAR(12)  DEFAULT     '';
+ OUT_PERIODIC_REVIEW_DT                  VARCHAR(20)   DEFAULT     NULL;
+ OUT_CHILD_DOB                                VARCHAR(20)     DEFAULT     NULL;
+ OUT_GENDER_CD                                VARCHAR(40);
+ OUT_CHILD_DIAGNOSED_CD                           VARCHAR(1)      DEFAULT     '';
+ OUT_MENTAL_RETARDATION_CD                          VARCHAR(1);
+ OUT_VISUAL_HEARING_CD                           VARCHAR(1);
+ OUT_PHYSICAL_DISABLED_CD                          VARCHAR(1);
+ OUT_EMOTIONAL_DISTURBED_CD                          VARCHAR(1);
+ OUT_OTHER_DIAGNOSED_CONDITION_CD                    VARCHAR(1);
+ OUT_CHILD_ADOPTED_CD                           VARCHAR(1)      DEFAULT     NULL;
+ OUT_AGE_ADOPTION_LEGALIZED                          VARCHAR(1)      DEFAULT     NULL;
+ OUT_RACE_AI_CD                                VARCHAR(1)      DEFAULT        '0';
+ OUT_RACE_ASIAN_CD                               VARCHAR(1)      DEFAULT        '0';
+ OUT_RACE_BLACK_CD                               VARCHAR(1)      DEFAULT        '0';
+ OUT_RACE_HAWAIIAN_CD                              VARCHAR(1)      DEFAULT        '0';
+ OUT_RACE_WHITE_CD                               VARCHAR(1)      DEFAULT        '0';
+ OUT_RACE_UN_CD                                VARCHAR(1)      DEFAULT        '0';
+ OUT_HISPANIC_CD                            VARCHAR(30)     DEFAULT        '';
+ OUT_FIRST_REMOVAL_DT                           VARCHAR(20);
+ OUT_NUM_REMOVALS                               VARCHAR(5)      DEFAULT         NULL;
+ OUT_LAST_DISCHARGE_DT                              VARCHAR(20)     DEFAULT         NULL;
+ OUT_LATEST_REMOVAL_DT                           VARCHAR(20)  DEFAULT         NULL;
+ OUT_REMOVAL_TRANSACTION_DT                          VARCHAR(20)  DEFAULT         NULL;
+ OUT_PLACEMENT_DT                               VARCHAR(20)  DEFAULT         NULL;
+ OUT_NUM_PLACEMENTS                               VARCHAR(2)      DEFAULT         ' '; 
+ OUT_REMOVAL_TYPE_CD                           VARCHAR(30)  DEFAULT         NULL;
+ OUT_PHYSICAL_ABUSE                            VARCHAR(1)      DEFAULT         '0';
+ OUT_SEXUAL_ABUSE                               VARCHAR(1)      DEFAULT         '0';
+ OUT_NEGLECT                                VARCHAR(1)      DEFAULT         '0';
+ OUT_PAR_ALCOHOL_ABUSE                           VARCHAR(1)      DEFAULT         '0';
+ OUT_PAR_DRUG_ABUSE                            VARCHAR(1)      DEFAULT         '0';
+ OUT_CHILD_ALCOHOL_ABUSE                          VARCHAR(1)      DEFAULT         '0';
+ OUT_CHILD_DRUG_ABUSE                           VARCHAR(1)      DEFAULT         '0';
+ OUT_CHILD_DISABILITY                           VARCHAR(1)      DEFAULT         '0';
+ OUT_CHILD_BEHAVIOR                            VARCHAR(1)      DEFAULT         '0';
+ OUT_PARENT_DEATH                               VARCHAR(1)      DEFAULT         '0';
+ OUT_PARENT_INCARCERATION                          VARCHAR(1)      DEFAULT         '0';
+ OUT_CARETAKER_ILLNESS                           VARCHAR(1)      DEFAULT         '0';
+ OUT_ABANDONMENT                               VARCHAR(1)      DEFAULT         '0';
+ OUT_RELINQUISHMENT                            VARCHAR(1)      DEFAULT         '0';
+ OUT_INADEQUATE_HOUSING                           VARCHAR(1)      DEFAULT         '0';
+ OUT_PLACEMENT_SETTING_CD                          VARCHAR(1)      DEFAULT         NULL;
+ OUT_PLACEMENT_STATE                        VARCHAR(10)     DEFAULT         NULL;
+ OUT_CASE_PLAN_GOAL_CD                           VARCHAR(50)     DEFAULT         '7';
+ OUT_CARETAKER1_BIRTH_YEAR                          VARCHAR(10);
+ OUT_CARETAKER2_BIRTH_YEAR                          VARCHAR(10);
+ OUT_MOTHER_TPR_DT                               VARCHAR(20);
+ OUT_FATHER_TPR_DT                               VARCHAR(20);
+ OUT_FOSTER_FAMILY_STRUCTURE_CD                      VARCHAR(50); --      DEFAULT      '0';
+
+ --FOSTERCARE1
+ OUT_FOSTERCARE1_BIRTH_YEAR                          VARCHAR(10);
+ OUT_FOSTERCARE2_BIRTH_YEAR                          VARCHAR(10);
+ OUT_FOSTERCARE1_RACE_AI_CD                          VARCHAR(1);
+ OUT_FOSTERCARE1_RACE_ASIAN_CD                      VARCHAR(1);
+ OUT_FOSTERCARE1_RACE_BLACK_CD                      VARCHAR(1);
+ OUT_FOSTERCARE1_RACE_HAWAIIAN_CD                    VARCHAR(1);
+ OUT_FOSTERCARE1_RACE_WHITE_CD                      VARCHAR(1);
+ OUT_FOSTERCARE1_RACE_UN_CD                          VARCHAR(1);
+ OUT_FOSTERCARE1_HISPANIC_CD                      VARCHAR(1)      DEFAULT        '0';
+
+ --FOSTERCARE2
+ OUT_FOSTERCARE2_RACE_AI_CD                          VARCHAR(1);
+ OUT_FOSTERCARE2_RACE_ASIAN_CD                      VARCHAR(1);
+ OUT_FOSTERCARE2_RACE_BLACK_CD                      VARCHAR(1);
+ OUT_FOSTERCARE2_RACE_HAWAIIAN_CD                    VARCHAR(1);
+ OUT_FOSTERCARE2_RACE_WHITE_CD                      VARCHAR(1);
+ OUT_FOSTERCARE2_RACE_UN_CD                          VARCHAR(1);
+ OUT_FOSTERCARE2_HISPANIC_CD                         VARCHAR(1)      DEFAULT   '0';
+
+ OUT_DISCHARGE_DT                               VARCHAR(50);
+ OUT_DISCHARGE_TRANSACTION_DT                      VARCHAR(50);
+ OUT_DISCHARGE_REASON_CD                            VARCHAR(1)      DEFAULT     '0';
+ OUT_IV_E_FOSTERCARE_SW                           VARCHAR(1)      DEFAULT     '0';
+ OUT_IV_E_ADOPTION_SW                           VARCHAR(1)      DEFAULT     '0';
+ OUT_IV_A_SW                                VARCHAR(1);
+ OUT_IV_D_SW                                VARCHAR(1);
+ OUT_XIX_SW                                    VARCHAR(1);
+ OUT_SSI_OR_SSA_SW                               VARCHAR(1)      DEFAULT     '0';
+ OUT_FOSTERCARE_PAYMENT_AMT                          VARCHAR(30)     DEFAULT     '00000';
+ OUT_LAST_REMOVAL_ID                            BIGINT;
+ OUT_CARETAKER_FAMILY_STRUCTURE_CD                   VARCHAR(1)      DEFAULT   '5';
+
+ -- ERROR HANDLING FIELDS
+ VS_ERR_OUTPUT_STATE                                 VARCHAR(5)         DEFAULT '00000';
+ VS_ERR_EXCEP_MESSAGE         VARCHAR;
+ VS_ERR_MESSAGE                             VARCHAR(1000);
+ VS_ERR_EXCEP_FLAG                                   INTEGER   DEFAULT 0; 
+
+ VS_YEAR            VARCHAR(10)  DEFAULT     NULL;
+ VS_MONTH            VARCHAR(2)      DEFAULT     NULL;
+ VS_DAY             VARCHAR(2)      DEFAULT     NULL;
+
+ VS_LAST_DISCHARGE_DT1                              VARCHAR(20); 
+ VS_FIRST_REMOVAL_DT1                           VARCHAR(20);
+ VS_FIRST_REMOVAL_DT2                           VARCHAR(20);
+ VS_LATEST_REMOVAL_DT1                           VARCHAR(20);
+ VS_LATEST_REMOVAL_DT2                           VARCHAR(20);
+ VS_REMOVAL_TRANSACTION_DT1                          VARCHAR(20);
+ VS_PL_PLACEMENTS         INTEGER;
+ VS_CPA_HOME_PLACEMENTS        INTEGER; 
+ VS_NO_FEDERAL_SUPPORT_SW                          VARCHAR(1)      DEFAULT     '1';
+
+ VS_CASE_ID            VARCHAR;
+ VS_COUNT            INTEGER   DEFAULT 0;
+
+ VS_LAST_REMOVAL_DT                               DATE;
+ VS_RETURN_DT                                DATE;
+ VS_ELEM_65_CNT          INTEGER   DEFAULT 0;
+ VS_STAFF_ID           VARCHAR;
+ VS_SERVICECASEID          VARCHAR;
+ VS_PERMANENCYPLANTYPE         VARCHAR;
+ VS_ALTPROVIDERID          INTEGER;
+ VS_ALTPROVIDERID1         INTEGER;
+ VS_ALTPROVIDERID2         INTEGER;
+ VS_ALT_PROVIDERID         INTEGER;
+ VS_APPROVAL_PERSONID        INTEGER;
+ VS_FAMILY_STRUCTURE         VARCHAR;
+ VS_PLCMNT_TYPE_KEY         VARCHAR;
+ VS_NUM_REMOVALS1         INTEGER;
+ VS_NUM_REMOVALS2         INTEGER;
+ VS_MOTHER_PID          VARCHAR;
+ VS_FATHER_PID          VARCHAR;
+ VS_INTAKE_ACTOR_ID         VARCHAR;
+ VS_CPA_PRVDR_ID          INTEGER;
+ VS_COUNT1           INTEGER;
+ VS_AGE            INTEGER;
+ VS_IVE_STATUS          VARCHAR;
+ VS_TEP_STRT_DT          DATE;
+ VS_TEP_END_DATE          VARCHAR;
+ VS_TEP_TRANS_DT          DATE;
+ VS_LAST_DISCHARGE_CT        INTEGER;
+ VS_REMOVAL_ID          VARCHAR(50);
+ VS_END_DATE           VARCHAR(50); -- (20)
+ VS_TPC_EXIT_DATE         VARCHAR(50); -- (20)
+ VS_PERIOD_END_DT         VARCHAR(50); -- (20) 
+ VS_PLACEMENT_ID          VARCHAR; 
+ VS_PLACEMENT_ID2         VARCHAR; 
+ VS_PRVDR_ID           VARCHAR; 
+ VS_END_DATE_TIME         VARCHAR; 
+ VS_PLACEMENT_KEY         VARCHAR;
+ VS_BDAY_18           VARCHAR;
+ VS_FLAG            INTEGER;
+ VS_BIO_CLIENTID          INTEGER;
+ VS_PAYMENT_MONTH         INTEGER;
+ VS_PAYMENT_YEAR          INTEGER;
+ VS_RECORD_COUNT          INTEGER;
+
+------------------------------------------------------------------------------------------------------------
+REM_CUR CURSOR FOR
+ SELECT distinct cjamspid, 
+  removaldate::DATE,
+  exitdate::DATE, 
+  removalid::BIGINT,
+  placementid,
+  servicecasenumber, 
+  altproviderid FROM 
+ (WITH cte as (
+  SELECT  distinct p.cjamspid, 
+   icr.removaldate::DATE,
+   icr.exitdate::DATE, 
+   icr.removalid::BIGINT,
+   pl.placementid,
+   sc.servicecasenumber, 
+   pl.altproviderid
+  FROM  intakeservreqchildremoval icr  
+   join routing rur on rur.objectid = icr.intakeservreqchildremovalid::character varying
+    and rur.eventcode = 'CHRR'
+    and rur.activeflag = 1
+    and rur.routingstatustypeid = '16'
+   join serviceCASE sc on icr.servicecaseid = sc.servicecaseid 
+    and icr.activeflag = 1
+   left join placement pl on icr.intakeservreqchildremovalid = pl.intakeservreqchildremovalid 
+    and pl.activeflag = 1
+   join person p ON p.personid = icr.personid 
+    and p.activeflag = 1
+   -- join routing ru on ru.objectid = sc.servicecaseid::character varying -- and ru.eventcode='INVT'
+   -- join userprofile up on up.securityusersid=ru.tosecurityusersid -- and up.activeflag=1
+   -- join userprofileaddress upa on upa.securityusersid = up.securityusersid
+   -- join tb_picklist_values tpvp on lower(replace(tpvp.value_tx,' ','')) = lower(replace(upa.county,' ',''))
+  WHERE  ((icr.removaldate::DATE >=  vdt_from::date  AND icr.removaldate::DATE <= vdt_to ::DATE) OR
+   ((nullif(icr.returntransts,'1900-01-01')::date >= vdt_from::date 
+    OR nullif(icr.returntransts,'1900-01-01') is null) 
+   and icr.removaltransts::date <= vdt_to::DATE) 
+   AND (((icr.removaltime is null  or icr.returntime is null) 
+     and coalesce(nullif(icr.returntransts,'1900-01-01')::date, vdt_to::DATE + interval '1 day' ) <> icr.removaltransts::date )
+    or ( (icr.removaltime is not null and icr.returntime is not null)
+     and
+     ((((icr.exitdate::date - icr.removaldate::date ) * 24 )  - COALESCE(EXTRACT(hour from icr.removaltime),0)  + COALESCE(EXTRACT(hour from icr.returntime),0))  -  COALESCE(EXTRACT(minute from icr.removaltime),0) * 0.01   + COALESCE(EXTRACT(minute from icr.returntime),0)  * 0.01  -  COALESCE(EXTRACT(second from icr.removaltime),0) * 0.0001 + COALESCE(EXTRACT(second from icr.returntime),0) * 0.0001) >= 24
+    )))
+   AND (pl.placementid is null OR pl.placementid in (       
+    select pl.placementid 
+     from placement pl
+    where pl.intakeservreqchildremovalid = icr.intakeservreqchildremovalid
+     and ( pl.startdatetime::DATE <= vdt_to ::DATE)
+     and pl.activeflag = 1
+    order by pl.startdatetime 
+    desc limit 1)
+    )
+    -- and tpvp.category_tx = '043'
+    -- and tpvp.category_tx IN ('001','003','005','009','011','013','015','017','019','021','023','025','027','031','033') 
+   -- AND ((DATE_PART('year', vdt_to::date) - DATE_PART('year', p.dob::date))::integer < 18)
+   and ( f_age(p.dob::date) <= 18
+     or
+     (
+     (p.dob::date + interval '18 years')::date >= vdt_from::date 
+      and 
+     (p.dob::date + interval '18 years')::date <= vdt_to::date
+     )
+    )
+   -- Unit Testing 
+   -- and p.cjamspid= 2107590   
+    )
+  SELECT cjamspid, removaldate, exitdate, removalid, placementid, servicecasenumber, altproviderid,
+   LAG(cjamspid,1) OVER () as prevcjamspid
+  FROM cte)
+ WHERE CASE WHEN cjamspid = prevcjamspid THEN false else true end 
+ UNION
+ SELECT distinct cjamspid, 
+  removaldate::DATE,
+  exitdate::DATE, 
+  removalid::BIGINT,
+  placementid,
+  servicecasenumber, 
+  altproviderid FROM 
+ (WITH cte as (
+  SELECT  distinct p.cjamspid, 
+   icr.removaldate::DATE,
+   icr.exitdate::DATE, 
+   icr.removalid::BIGINT,
+   pl.placementid,
+   sc.servicecasenumber, 
+   pl.altproviderid
+  FROM  intakeservreqchildremoval icr  
+   join routing rur on rur.objectid = icr.intakeservreqchildremovalid::character varying
+    and rur.eventcode = 'CHRR'
+    and rur.activeflag = 1
+    and rur.routingstatustypeid = '16'
+   join serviceCASE sc on icr.serviceCASEid = sc.serviceCASEid 
+    and icr.activeflag = 1
+   left join placement pl on icr.intakeservreqchildremovalid = pl.intakeservreqchildremovalid 
+    and pl.activeflag = 1
+   join person p on p.personid = icr.personid 
+    and p.activeflag = 1
+   -- join routing ru on ru.objectid = sc.servicecaseid::character varying-- and ru.eventcode='INVT'
+   -- join userprofile up on up.securityusersid = ru.tosecurityusersid -- and up.activeflag=1
+   --- join userprofileaddress upa on upa.securityusersid = up.securityusersid
+   -- join tb_picklist_values tpvp on lower(replace(tpvp.value_tx,' ','')) = lower(replace(upa.county,' ',''))
+   join tb_client_eligibility tce on tce.client_id  = p.cjamspid 
+    and tce.eligibility_type_cd = '2931' 
+    and tce.removal_id = icr.removalid
+    and tce.delete_sw = 'N'
+   join tb_eligibility_period tep on tep.eligibility_id = tce.eligibility_id 
+    and tep.delete_sw = 'N' 
+    and trim(tep.status_cd) in ('2912','2913') 
+  WHERE  ((icr.removaldate::DATE >=  vdt_from::date  AND icr.removaldate::DATE <= vdt_to ::DATE) OR
+     ((nullif(icr.returntransts,'1900-01-01')::date >= vdt_from::date OR nullif(icr.returntransts,'1900-01-01') is null) and icr.removaltransts::date <= vdt_to::DATE) 
+    AND 
+    (((icr.removaltime is null  or icr.returntime is null) 
+     and coalesce(nullif(icr.returntransts,'1900-01-01')::date, vdt_to::DATE + interval '1 day' ) <> icr.removaltransts::date )
+    or ( (icr.removaltime is not null and icr.returntime is not null)
+     and
+     ((((icr.exitdate::date - icr.removaldate::date ) * 24 )  - COALESCE(EXTRACT(hour from icr.removaltime),0)  + COALESCE(EXTRACT(hour from icr.returntime),0))  -  COALESCE(EXTRACT(minute from icr.removaltime),0) * 0.01   + COALESCE(EXTRACT(minute from icr.returntime),0)  * 0.01  -  COALESCE(EXTRACT(second from icr.removaltime),0) * 0.0001 + COALESCE(EXTRACT(second from icr.returntime),0) * 0.0001) >= 24
+    )))
+    AND (pl.placementid is null OR pl.placementid in (       
+     select pl.placementid 
+      from placement pl
+     where pl.intakeservreqchildremovalid = icr.intakeservreqchildremovalid
+      and ( pl.startdatetime::DATE <= vdt_to ::DATE)
+      and pl.activeflag = 1
+     order by pl.startdatetime desc 
+     limit 1)
+     )
+     -- and tpvp.category_tx = '043'  
+     -- and tpvp.category_tx IN ('001','003','005','009','011','013','015','017','019','021','023','025','027','031','033') 
+    AND ((DATE_PART('year', vdt_to::date) - DATE_PART('year', p.dob::date))::integer BETWEEN 18 AND 21)
+    -- Unit Testing 
+    -- and p.cjamspid= 2107590  
+    )
+  SELECT cjamspid, removaldate, exitdate, removalid, placementid, servicecasenumber, altproviderid,
+   LAG(cjamspid,1) OVER () as prevcjamspid
+  FROM cte)
+ WHERE CASE WHEN cjamspid = prevcjamspid THEN false else true end;
+BEGIN 
+
+ VS_ERR_OUTPUT_SQLCODE:= 0 ; --
+
+ RAISE NOTICE '>>>>>>>>>>>>>>>>Procedure Started>>>>>>>>>>>>>>>>>>>';
+
+ VS_RECORD_COUNT := 0;
+
+ SELECT  COUNT(*) INTO VS_COUNT FROM    afcarsfostercare_new ;  
+ IF VS_COUNT > 0 THEN
+  DELETE FROM afcarsfostercare_new;
+ END IF; --  
+
+ OPEN REM_CUR ;
+ LOOP
+
+  FETCH  REM_CUR INTO OUT_CLIENT_ID, VS_LAST_REMOVAL_DT, VS_RETURN_DT, OUT_LAST_REMOVAL_ID,
+   OUT_PLACEMENT_ID, VS_CASE_ID,VS_ALTPROVIDERID;
+
+  EXIT WHEN NOT FOUND;
+
+  BEGIN
+   VS_RECORD_COUNT := VS_RECORD_COUNT + 1;
+   
+   SELECT servicecaseid INTO VS_SERVICECASEID FROM servicecase WHERE servicecasenumber = VS_CASE_ID::VARCHAR; 
+     
+   RAISE NOTICE 'RECORD NUMBER;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>%', VS_RECORD_COUNT;
+   RAISE NOTICE 'VS_CASE_ID;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>%', VS_CASE_ID;
+   RAISE NOTICE 'VS_SERVICECASEID;>>>>>>>>>>>>>>>>>>>>>>>>%', VS_SERVICECASEID;
+   RAISE NOTICE 'OUT_CLIENT_ID;>>>>>>>>>>>>>>>>>>>>>>>>>>>%', OUT_CLIENT_ID;
+   RAISE NOTICE 'VS_ALTPROVIDERID;>>>>>>>>>>>>>>>>>>>>>>>>>>>%', VS_ALTPROVIDERID;
+   RAISE NOTICE 'OUT_LAST_REMOVAL_ID;>>>>>>>>>>>>>>>>>>>>>%', OUT_LAST_REMOVAL_ID;
+   RAISE NOTICE 'VS_LAST_REMOVAL_DT;>>>>>>>>>>>>>>>>>>>>>%', VS_LAST_REMOVAL_DT;               
+   RAISE NOTICE 'VS_RETURN_DT;>>>>>>>>>>>>>>>>>>>>>>>>>>>%', VS_RETURN_DT; 
+   
+
+   EXCEPTION WHEN OTHERS THEN
+    VS_ERR_OUTPUT_STATE := SQLSTATE;
+    VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+    VS_ERR_EXCEP_FLAG := 1;
+
+  END;
+
+  IF  COALESCE(OUT_LAST_REMOVAL_ID,0)  > 0 THEN
+    
+   SELECT routing.tosecurityusersid into VS_STAFF_ID
+    FROM  routing 
+   WHERE ((routing.objectid = VS_SERVICECASEID ) ) 
+    and routing.activeflag = 1 
+    and routing.eventcode IN ('SRVC','INVT')
+    and coalesce(routing.tosecurityusersid,'') != ''
+   LIMIT 1;
+   
+   
+   RAISE NOTICE 'VS_STAFF_ID;>>>>>>>>>>>>>>>>>>>>>>>>>>>>%', VS_STAFF_ID; 
+ 
+   ---******* ELEMENT #2******* -- Reporting period Ending Date
+   VS_YEAR := SUBSTRING(vdt_to,1,4);
+   VS_MONTH := SUBSTRING(vdt_to,6,2);
+   OUT_REPORT_PD_END_DT := LTRIM(VS_YEAR) ||  LTRIM(VS_MONTH);
+
+
+   --*******ELEMENT #3*******  -- Local Agency (FIPS Code) Starts here     
+
+   BEGIN
+    RAISE NOTICE 'Element #03 %', timeofday();
+    
+    OUT_LOCAL_AGENCY_CD := NULL;
+    
+    --- Get for Child Assignment  
+    select af.afcars_ref_cd 
+     INTO OUT_LOCAL_AGENCY_CD 
+    from caseassignment ca  
+     join caseassignmentactor cr on cr.caseassignmentid = ca.caseassignmentid 
+      and cr.activeflag  = 1
+     join intakeservicerequestactor isr on isr.intakeservicerequestactorid  = cr.intakeservicerequestactorid 
+      and isr.activeflag = 1
+     join county c on c.countyid:: character varying = ca.toldssid::character varying
+     JOIN afcars_ref_code af on (lower(trim(c.countyname)) = lower(trim(af.cjams_cd)) OR 
+      lower(replace(c.countyname,' ','')) = lower(replace(af.cjams_cd,' ','')))
+      and af.afcars_ref_type = 'County Code'   
+    where ca.objectid::character varying = VS_SERVICECASEID::character varying
+     and lower(ca.responsibilitytypekey) = 'child'
+     and ca.activeflag = 1
+     and ca.startdate <= vdt_to::date 
+     and (ca.enddate >= vdt_from::date OR ca.enddate IS NULL) 
+     and isr.personid = (select p.personid from person p where p.cjamspid = OUT_CLIENT_ID)
+    order by ca.insertedon desc
+    limit 1;
+
+    
+    IF OUT_LOCAL_AGENCY_CD is null OR btrim(OUT_LOCAL_AGENCY_CD) = '' THEN
+     -- Get the Family Assignment
+     select af.afcars_ref_cd 
+      INTO OUT_LOCAL_AGENCY_CD 
+     from caseassignment ca  
+      join county c on c.countyid:: character varying = ca.toldssid::character varying
+      JOIN afcars_ref_code af on (lower(trim(c.countyname)) = lower(trim(af.cjams_cd)) OR 
+       lower(replace(c.countyname,' ','')) = lower(replace(af.cjams_cd,' ','')))
+       and af.afcars_ref_type = 'County Code'
+     where ca.objectid::character varying = VS_SERVICECASEID::character varying
+      and lower(ca.responsibilitytypekey) = 'family'
+      and ca.activeflag = 1
+      and ca.startdate <= vdt_to::date 
+      and (ca.enddate >= vdt_from::date OR ca.enddate IS NULL) 
+     order by ca.insertedon desc
+     limit 1;
+    END IF;
+    
+    
+    IF OUT_LOCAL_AGENCY_CD is null OR btrim(OUT_LOCAL_AGENCY_CD) = '' THEN
+     -- Get most recent Family Assignment
+     select af.afcars_ref_cd 
+      INTO OUT_LOCAL_AGENCY_CD 
+     from caseassignment ca  
+      join county c on c.countyid:: character varying = ca.toldssid::character varying
+      JOIN afcars_ref_code af on (lower(trim(c.countyname)) = lower(trim(af.cjams_cd)) OR 
+       lower(replace(c.countyname,' ','')) = lower(replace(af.cjams_cd,' ','')))
+       and af.afcars_ref_type = 'County Code'
+     where ca.objectid::character varying = VS_SERVICECASEID::character varying
+      and lower(ca.responsibilitytypekey) = 'family'
+      and ca.activeflag = 1
+     order by ca.insertedon desc
+     limit 1;
+    END IF;
+  
+    -- Old Logic
+    /*
+    SELECT  af.afcars_ref_cd  
+     INTO OUT_LOCAL_AGENCY_CD 
+    FROM userprofileaddress up 
+     JOIN afcars_ref_code af on (lower(trim(up.county)) = lower(trim(af.cjams_cd)) OR 
+      lower(replace(up.county,' ','')) = lower(replace(af.cjams_cd,' ','')))
+      and af.afcars_ref_type = 'County Code'
+     JOIN routing ru on ru.tosecurityusersid = up.securityusersid       
+    WHERE ru.objectid = VS_SERVICECASEID 
+     AND ru.eventcode IN ('SRVC', 'INVT') 
+     and ru.activeflag = 1 
+     AND up.activeflag = 1 
+    LIMIT 1;
+    */
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR OUT_LOCAL_AGENCY_CD #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+         
+   END; 
+
+   --*******ELEMENT #3*******  -- Local Agency (FIPS Code) ENDs here     
+
+   --*******ELEMENT #4*******  --Record Number starts here   
+
+   BEGIN
+ 
+    RAISE NOTICE 'Element #04 %', timeofday();                      
+    SELECT F_AFCARS_ENCRYPT(CAST(OUT_CLIENT_ID AS VARCHAR)) INTO OUT_RECORD_NO;
+ 
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+          
+   END; 
+
+   --*******ELEMENT #4*******  --Record Number ENDs here 
+
+   --*******ELEMENT #6,7,9,16*******  -- Date of Birth , Sex AND Hispanic starts here      
+   BEGIN
+  
+    RAISE NOTICE 'Element #06, #07, #09, #16 %', timeofday();   
+    SELECT 
+     CASE WHEN p.dob IS NULL THEN 
+     CONCAT(EXTRACT(year FROM CURRENT_DATE - '5 year'::interval),EXTRACT(month FROM CURRENT_DATE - '1 month'::interval),'15') 
+     ELSE DATE(p.dob):: character varying 
+     END,
+     CASE  WHEN (p.gendertypekey IS not null and ( p.gendertypekey = 'M')) then '1' 
+       WHEN (p.gendertypekey IS not null and ( p.gendertypekey = 'F')) THEN  '2'
+       ELSE ''
+     END   ,
+     CASE 
+      WHEN p.ethnicgrouptypekey = 'H' THEN '1'
+      WHEN p.ethnicgrouptypekey = 'X' THEN '2'
+      WHEN p.ethnicgrouptypekey = 'U' THEN '3'
+      else ''
+     END     ,
+     CASE WHEN p.everbeenadoptedflag = 1 then '1'
+       WHEN p.everbeenadoptedflag = 0 then '2'
+       WHEN p.everbeenadoptedflag = 2 then '3'
+      ELSE ''  
+     END      
+    INTO     
+     OUT_CHILD_DOB,
+     OUT_GENDER_CD,
+     OUT_HISPANIC_CD,
+     OUT_CHILD_ADOPTED_CD
+    FROM person p
+    LEFT JOIN gendertype gt ON gt.gendertypekey=p.gendertypekey AND gt.activeflag=1
+    WHERE p.cjamspid=OUT_CLIENT_ID;  
+
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+         
+   END;
+
+   --*******ELEMENT #6*******  -- Date of Birth , Sex AND Hispanic ENDs here   
+
+   --*******ELEMENT #8*******  -- Race starts here      
+   BEGIN
+ 
+    RAISE NOTICE 'Element #08 %', timeofday();
+    SELECT case  when COUNT(*) FILTER (WHERE pr.racetypekey  like '%AI%'   ) > 0 then '1' 
+        when COUNT(*) FILTER (WHERE pr.racetypekey  like '%AN%' ) > 0 then '1' 
+        else '0' 
+      end, 
+      case when COUNT(*) FILTER (WHERE pr.racetypekey  like '%AS%') > 0 then '1' else '0' end, 
+      case when COUNT(*) FILTER (WHERE pr.racetypekey  like '%BA%') > 0 then '1' else '0' end, 
+      case when COUNT(*) FILTER (WHERE pr.racetypekey  like '%WH%') > 0 then '1' else '0' end, 
+      case when COUNT(*) FILTER (WHERE pr.racetypekey  like '%PI%') > 0 then '1' else '0' end,
+      case when COUNT(*) FILTER (WHERE pr.racetypekey  like '%UN%'   ) > 0 then '1' 
+       when COUNT(*) FILTER (WHERE pr.racetypekey  like '%DC%' ) > 0 then '1' 
+       else '0' 
+      end
+    INTO  OUT_RACE_AI_CD,
+      OUT_RACE_ASIAN_CD,
+      OUT_RACE_BLACK_CD,
+      OUT_RACE_WHITE_CD,
+      OUT_RACE_HAWAIIAN_CD,
+      OUT_RACE_UN_CD
+    FROM  personracetypemap  pr
+    WHERE  pr.personid = ( select p.personid from person p where p.cjamspid=OUT_CLIENT_ID)
+    AND pr.activeflag = 1;
+  
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;        
+   END;
+
+   --*******ELEMENT #6*******  --Race ENDs here   
+
+   --*******ELEMENT #NO # 10,11,12,13,14,15*******  --NO # 10,11,12,13,14,15 starts here   
+   BEGIN 
+  
+    RAISE NOTICE 'Element #10, #11, #12, #13, #14, #15 %', timeofday();
+    select 
+     case  when  COUNT(*) FILTER (WHERE PD.disabilityconditiontypekey like 'Yes') > 0 then '1'
+       when  COUNT(*) FILTER (WHERE PD.disabilityconditiontypekey like 'Unknown') > 0 then '3' 
+       when  COUNT(*) FILTER (WHERE PD.disabilityconditiontypekey like 'No') > 0  then '2' 
+       else '3' 
+     end
+    into OUT_CHILD_DIAGNOSED_CD
+    
+    FROM persondisability PD join  
+     person PP on PP.personid = PD.personid AND PP.cjamspid = OUT_CLIENT_ID
+    WHERE  PD.activeflag = 1 
+      and PP.activeflag = 1 
+      --and PD.disabilityflag = 1
+      AND   (PD.startdate <= vdt_to::DATE OR PD.startdate IS NULL)
+      AND (PD.enddate IS NULL OR PD.enddate >= VDT_FROM::DATE);
+   
+  
+    IF OUT_CHILD_DIAGNOSED_CD = '1' THEN 
+ 
+     select  case when  COUNT(*) FILTER (WHERE PD.disabilitytypekey IN ('INDIS', 'MRD')) > 0 then '1' else  '0' end,
+       case when  COUNT(*) FILTER (WHERE PD.disabilitytypekey IN ('VIDY', 'HDY')) > 0 then '1' else  '0' end,
+       case when  COUNT(*) FILTER (WHERE PD.disabilitytypekey IN ('PYDY')) > 0 then '1' else  '0' end,
+       case when  COUNT(*) FILTER (WHERE PD.disabilitytypekey IN ('EMDY')) > 0 then '1' else  '0' end,
+       case when  COUNT(*) FILTER (WHERE PD.disabilitytypekey IN ('ODY','AUTDIS')) > 0 then '1' else  '0' end 
+     into  OUT_MENTAL_RETARDATION_CD, --11
+       OUT_VISUAL_HEARING_CD,
+       OUT_PHYSICAL_DISABLED_CD,
+       OUT_EMOTIONAL_DISTURBED_CD,
+       OUT_OTHER_DIAGNOSED_CONDITION_CD  --15
+      
+      FROM persondisability PD join  
+       person PP on PP.personid = PD.personid
+      WHERE  PD.activeflag = 1 
+        and PP.activeflag = 1 
+        --and PD.disabilityflag = 1 
+        and pd.disabilityconditiontypekey = 'Yes'
+        AND PP.cjamspid = OUT_CLIENT_ID
+        AND   (PD.startdate <= vdt_to::DATE OR PD.startdate IS NULL)
+        AND (PD.enddate IS NULL OR PD.enddate >= VDT_FROM::DATE);
+      
+    ELSE 
+
+     OUT_MENTAL_RETARDATION_CD:= '0';--
+     OUT_VISUAL_HEARING_CD:= '0';--
+     OUT_PHYSICAL_DISABLED_CD:= '0';--
+     OUT_EMOTIONAL_DISTURBED_CD:= '0';--
+     OUT_OTHER_DIAGNOSED_CONDITION_CD:= '0';--
+   
+    END IF ;--
+ 
+   
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+         
+    
+   END ;
+   --*******ELEMENT #NO # 10,11,12,13,14,15*******  --NO # 10,11,12,13,14,15 ENDs here    
+
+   --*******ELEMENT #17*******  --17. If Yes, How Old Was Child WHEN Adoption Was Legalized? starts here    
+   BEGIN 
+
+    RAISE NOTICE 'Element #17 %', timeofday();
+    OUT_AGE_ADOPTION_LEGALIZED = '';
+    IF OUT_CHILD_ADOPTED_CD NOT IN ('2','3') THEN 
+   
+     SELECT case when previousadoptionagetypekey = '46' THEN '4'
+       when previousadoptionagetypekey = '47' THEN '2'
+       when previousadoptionagetypekey = '48' THEN '3'
+       when previousadoptionagetypekey = '49' THEN '1'
+       when previousadoptionagetypekey = '51' THEN '5'
+       else ' ' end
+      INTO OUT_AGE_ADOPTION_LEGALIZED
+      FROM person
+      WHERE cjamspid = OUT_CLIENT_ID and activeflag = 1;
+
+    END IF;-- 
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+
+   END;
+   --*******ELEMENT #17*******  --17. If Yes, How Old Was Child WHEN Adoption Was Legalized? ENDs here   
+
+ 
+   --*******ELEMENT #NO # 19 *******  --NO #  Total Number of Removals FROM Home to Date  starts here   
+   BEGIN 
+
+    RAISE NOTICE 'Element #19 %', timeofday();
+    SELECT COUNT(*) INTO VS_NUM_REMOVALS1
+     FROM (WITH cte as (
+     SELECT distinct iscr.removaldate, iscr.exitdate
+      FROM intakeservreqchildremoval iscr  
+       join person p on p.personid = iscr.personid 
+        and p.activeflag = 1
+       join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+        and rur.eventcode = 'CHRR'
+        and rur.activeflag = 1
+        and rur.routingstatustypeid = '16' 
+     WHERE p.cjamspid = OUT_CLIENT_ID
+      AND iscr.removaldate <= vdt_to::date 
+      AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+      AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+      and iscr.activeflag = 1
+      ORDER BY iscr.removaldate asc)
+     SELECT
+      removaldate, exitdate, 
+      LAG(exitdate,1) OVER () as prevreturndate
+     FROM cte)
+    WHERE CASE WHEN removaldate = prevreturndate THEN false else true end;
+  
+    VS_BIO_CLIENTID := NULL;  
+    select  pa.cjamspid 
+     INTO VS_BIO_CLIENTID
+    from  adoptioncase ac 
+     join adoptionlink al on al.adoptioncaseid = ac.adoptioncaseid
+     join adoptioncaseactor aca on aca.adoptioncaseid = ac.adoptioncaseid and aca.actortypekey = 'CHILD'
+     join person pr on pr.personid = aca.personid and pr.activeflag = 1 
+     join biologicaladoptionlink bol on al.preadoptionclientid = bol.preadoptiveclientid
+     join adoptionbreakthelink abl ON abl.adoptionplanningid = bol.preadoptivecaseid
+     join person pa on pa.personid = BOL.preadoptiveclientid and pa.activeflag = 1
+    WHERE  pr.cjamspid = OUT_CLIENT_ID
+     and ac.activeflag = 1;
+
+    VS_NUM_REMOVALS2 := 0;
+    IF (VS_BIO_CLIENTID IS NOT NULL) THEN
+     RAISE NOTICE 'BIO CLIENT ID %', VS_BIO_CLIENTID;
+    
+     SELECT COUNT(*) INTO VS_NUM_REMOVALS2
+     FROM (WITH cte as (
+      SELECT distinct iscr.removaldate, iscr.exitdate
+       FROM intakeservreqchildremoval iscr  
+        join person p on p.personid = iscr.personid 
+         and p.activeflag = 1
+        join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+         and rur.eventcode = 'CHRR'
+         and rur.activeflag = 1
+         and rur.routingstatustypeid = '16' 
+      WHERE p.cjamspid = VS_BIO_CLIENTID
+       AND iscr.removaldate <= vdt_to::date 
+       AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+       AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+       and iscr.activeflag = 1
+       ORDER BY iscr.removaldate asc)
+      SELECT
+       removaldate, exitdate, 
+       LAG(exitdate,1) OVER () as prevreturndate
+      FROM cte)
+     WHERE CASE WHEN removaldate = prevreturndate THEN false else true end;
+    END IF;
+   
+    OUT_NUM_REMOVALS := VS_NUM_REMOVALS1 + VS_NUM_REMOVALS2 ;--
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+   END; 
+
+   --*******ELEMENT #NO # 19  *******  --NO #  Total Number of Removals FROM Home to Date  ENDs here    
+
+    
+   --*******ELEMENT #NO # 18,23 *******  --NO #   starts here   
+
+   BEGIN 
+ 
+    RAISE NOTICE 'Element #18, #23 %', timeofday();
+    select  min(sdt) 
+     into OUT_FIRST_REMOVAL_DT
+    from ( 
+      (SELECT removaldate as sdt
+       FROM (WITH cte as (
+        SELECT iscr.removaldate, iscr.exitdate
+         FROM intakeservreqchildremoval iscr  
+          join person p on p.personid = iscr.personid 
+           and p.activeflag = 1
+          join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+           and rur.eventcode = 'CHRR'
+           and rur.activeflag = 1
+           and rur.routingstatustypeid = '16' 
+        WHERE p.cjamspid = OUT_CLIENT_ID
+         AND iscr.removaldate <= vdt_to::date 
+         AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+         AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+         and iscr.activeflag = 1
+         order by iscr.removaldate asc
+        )
+        SELECT
+         removaldate, exitdate, 
+         LAG(exitdate,1) OVER () as prevreturndate
+        FROM cte)
+      WHERE CASE WHEN removaldate = prevreturndate THEN false else true end)
+      UNION  
+      (SELECT removaldate as sdt
+       FROM (WITH cte as (
+        SELECT iscr.removaldate, iscr.exitdate
+         FROM intakeservreqchildremoval iscr  
+          join person p on p.personid = iscr.personid 
+           and p.activeflag = 1
+          join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+           and rur.eventcode = 'CHRR'
+           and rur.activeflag = 1
+           and rur.routingstatustypeid = '16' 
+        WHERE p.cjamspid = VS_BIO_CLIENTID
+         AND iscr.removaldate <= vdt_to::date 
+         AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+         AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+         and iscr.activeflag = 1
+         order by iscr.removaldate asc
+        )
+        SELECT
+         removaldate, exitdate, 
+         LAG(exitdate,1) OVER () as prevreturndate
+        FROM cte)
+      WHERE CASE WHEN removaldate = prevreturndate THEN false else true end)
+      UNION
+      (SELECT MIN(startdatetime) as sdt
+       FROM placement pl
+       JOIN person p on p.personid = pl.personid
+       JOIN livingarrangement la on la.placementid = pl.placementid
+       WHERE p.cjamspid = OUT_CLIENT_ID
+       and pl.activeflag = 1
+       and (pl.isvoided is null or pl.isvoided != 1)
+       and pl.placementtypekey = 'LA'
+       and la.livingarrangementtypekey NOT IN ('BP', 'MH', 'IMCNA', 'REC','PSYH','IPC','OHA','ADPN','PLMT',
+                'RFKH','SJD','RNW','Father''s Home','TVH'))) B;
+           
+    IF (OUT_FIRST_REMOVAL_DT IS NOT NULL) THEN
+     RAISE NOTICE 'OUT_FIRST_REMOVAL_DT %', OUT_FIRST_REMOVAL_DT;
+     VS_FIRST_REMOVAL_DT1 := OUT_FIRST_REMOVAL_DT;
+     VS_END_DATE := NULL;
+    
+     SELECT COALESCE(
+      (SELECT pl.enddatetime
+       FROM livingarrangement la
+       JOIN placement pl on pl.placementid = la.placementid
+       JOIN person p on p.personid = pl.personid
+       WHERE p.cjamspid = OUT_CLIENT_ID
+        and pl.startdatetime::date = OUT_FIRST_REMOVAL_DT::date
+        and pl.activeflag = 1
+        and (pl.isvoided is null or pl.isvoided != 1)
+        and pl.placementtypekey = 'LA'
+        and la.activeflag = 1        
+        and la.livingarrangementtypekey IN ('MH','SJD','PSYH','IPC','IMCNA','REC',
+            'Inpatient Medical Care - Non-Acute','Inpatient Psychiatric Care')
+       ORDER BY pl.startdatetime LIMIT 1),NULL) INTO VS_END_DATE ; 
+     
+     RAISE NOTICE 'VS_END_DATE %', VS_END_DATE;
+    
+     IF (VS_END_DATE IS NOT NULL) THEN
+      VS_FIRST_REMOVAL_DT2 := NULL;
+      SELECT pl.startdatetime      
+      INTO VS_FIRST_REMOVAL_DT2
+      FROM placement pl
+      JOIN person p on p.personid = pl.personid
+      WHERE p.cjamspid = OUT_CLIENT_ID
+       and pl.startdatetime::date >= VS_END_DATE::DATE
+       and pl.activeflag = 1
+       and (pl.isvoided is null or pl.isvoided != 1)
+       ORDER BY pl.startdatetime ASC
+      LIMIT 1;
+     
+      IF (VS_FIRST_REMOVAL_DT2 IS NOT NULL) 
+       AND VS_END_DATE < OUT_FIRST_REMOVAL_DT THEN -- 04/23
+       -- OUT_LATEST_REMOVAL_DT := VS_LATEST_REMOVAL_DT2;
+       OUT_FIRST_REMOVAL_DT := VS_END_DATE;
+      END IF;
+      
+      RAISE NOTICE 'VS_FIRST_REMOVAL_DT2 %', VS_FIRST_REMOVAL_DT2;
+     END IF;
+    END IF;
+  
+         
+    OUT_PLACEMENT_DT = NULL;
+      
+    SELECT MAX (sdt) 
+     INTO OUT_PLACEMENT_DT 
+    FROM ((SELECT startdatetime as sdt, enddatetime as edt
+    FROM (WITH cte as (
+      SELECT pl.providerid, pl.altproviderid, pl.startdatetime, pl.enddatetime
+      FROM  placement pl 
+      JOIN person p on p.personid = pl.personid
+      WHERE p.cjamspid = OUT_CLIENT_ID
+       AND pl.startdatetime <= vdt_to::date + interval '21 day' 
+       and pl.activeflag = 1
+       AND pl.isvoided != 1 and pl.placementtypekey = 'PRPL'
+       order by pl.providerid, pl.startdatetime asc
+      )
+      SELECT
+       providerid, altproviderid, startdatetime, enddatetime, 
+       LAG(enddatetime,1) OVER (ORDER BY startdatetime) as previousenddatetime,
+       LAG(providerid,1) OVER (ORDER BY startdatetime) as previousproviderid,
+       LAG(altproviderid,1) OVER (ORDER BY startdatetime) as previousaltproviderid
+      FROM cte)
+     WHERE CASE WHEN (altproviderid = previousaltproviderid AND  startdatetime = previousenddatetime) THEN false else true end
+     ORDER by enddatetime desc nulls first, startdatetime DESC )
+    UNION
+    (SELECT livingstartdate as sdt, livingenddate as edt 
+    FROM (WITH cte as (
+      SELECT  la.livingarrangementtypekey, la.livingstartdate, la.livingenddate
+      FROM livingarrangement la
+      JOIN person p on p.personid = la.personid
+      WHERE p.cjamspid = OUT_CLIENT_ID    
+       AND la.livingstartdate <= vdt_to::date 
+       AND la.livingarrangementtypekey IN ('SJD','IMCNA','TVH','FH','ACI','SHA','RNW','RFKH',
+                 'Father''s Home')
+       and la.activeflag = 1
+       ORDER BY la.livingarrangementtypekey, la.livingstartdate ASC
+      )
+      SELECT 
+       livingarrangementtypekey, livingstartdate, livingenddate,
+       LAG(livingenddate,1) OVER (ORDER BY livingarrangementtypekey) as previousenddate,
+         LAG(livingarrangementtypekey,1) OVER (ORDER BY livingarrangementtypekey) as previouskey
+     FROM cte)   
+     WHERE CASE WHEN (livingarrangementtypekey = previouskey AND  livingstartdate = previousenddate) THEN false else true end
+    ORDER by livingenddate desc nulls first, livingstartdate DESC ) 
+    ) C; 
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+  
+  
+   END;--
+
+   --*******ELEMENT #NO # 18,23 *******  --NO #   ends here   
+      
+   --*******ELEMENT #NO # 21,22 *******  --NO #   starts here    
+
+   BEGIN
+    RAISE NOTICE 'Element #21, 22 %', timeofday();
+    OUT_LATEST_REMOVAL_DT := NULL;
+    VS_LATEST_REMOVAL_DT1 := NULL;
+    SELECT intakeservreqchildremovalid, removaldate, transdate 
+     INTO VS_REMOVAL_ID, OUT_LATEST_REMOVAL_DT, OUT_REMOVAL_TRANSACTION_DT 
+    FROM (WITH cte as (
+     SELECT iscr.intakeservreqchildremovalid, iscr.removaldate, iscr.exitdate,coalesce (iscr.removaltransts, iscr.insertedon) as transdate --, iscr.servicecaseid
+      FROM intakeservreqchildremoval iscr  
+       join person p on iscr.personid = p.personid and p.activeflag = 1 
+       join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+        and rur.eventcode = 'CHRR'
+        and rur.activeflag = 1
+        and rur.routingstatustypeid = '16'
+     WHERE p.cjamspid = OUT_CLIENT_ID
+      AND iscr.removaldate <= vdt_to::date 
+      AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+      AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+      and iscr.activeflag = 1
+      order by iscr.removaldate asc
+     )
+     SELECT
+      intakeservreqchildremovalid, removaldate, exitdate, transdate, -- servicecaseid,
+      LAG(exitdate,1) OVER () as prevreturndate
+     -- ,LAG(servicecaseid,1) OVER () as prevservicecaseid
+     FROM cte)
+    WHERE CASE WHEN removaldate = prevreturndate THEN false else true end
+    -- WHERE CASE WHEN removaldate = prevreturndate AND servicecaseid = prevservicecaseid THEN false else true end
+    ORDER by removaldate desc nulls first limit 1;
+  
+    IF (OUT_LATEST_REMOVAL_DT IS NOT NULL) THEN
+     RAISE NOTICE 'OUT_LATEST_REMOVAL_DT %', OUT_LATEST_REMOVAL_DT;
+     VS_LATEST_REMOVAL_DT1 := OUT_LATEST_REMOVAL_DT;
+     VS_END_DATE := NULL;
+     
+     SELECT COALESCE(
+     (SELECT pl.enddatetime
+      FROM livingarrangement la
+      JOIN placement pl on pl.placementid = la.placementid
+      JOIN person p on p.personid = pl.personid
+      WHERE p.cjamspid = OUT_CLIENT_ID
+       and pl.startdatetime::date = OUT_LATEST_REMOVAL_DT::date
+       and pl.activeflag = 1
+       and (pl.isvoided is null or pl.isvoided != 1)
+       and pl.placementtypekey = 'LA' 
+       and la.activeflag = 1
+       and la.livingarrangementtypekey IN ('MH','SJD','PSYH','IPC','IMCNA','REC',
+              'Inpatient Medical Care - Non-Acute','Inpatient Psychiatric Care')
+      ORDER BY pl.startdatetime LIMIT 1),NULL) INTO VS_END_DATE ; 
+    
+     RAISE NOTICE 'VS_END_DATE %', VS_END_DATE;
+   
+     IF (VS_END_DATE IS NOT NULL) THEN
+      VS_LATEST_REMOVAL_DT2 := NULL;
+      VS_REMOVAL_TRANSACTION_DT1 := NULL;
+      
+      SELECT pl.startdatetime, coalesce(pl.insertedon, pl.startdatetime)
+       INTO VS_LATEST_REMOVAL_DT2, VS_REMOVAL_TRANSACTION_DT1
+      FROM placement pl
+      JOIN person p on p.personid = pl.personid
+      WHERE p.cjamspid = OUT_CLIENT_ID
+       and pl.startdatetime::date >= VS_END_DATE::DATE
+       and pl.activeflag = 1
+       and pl.intakeservreqchildremovalid::character varying = VS_REMOVAL_ID
+       and (pl.isvoided is null or pl.isvoided != 1)
+       ORDER BY pl.startdatetime ASC
+      LIMIT 1;
+      
+      IF (VS_LATEST_REMOVAL_DT2 IS NOT NULL) THEN
+       OUT_LATEST_REMOVAL_DT := VS_END_DATE;
+       OUT_REMOVAL_TRANSACTION_DT := VS_REMOVAL_TRANSACTION_DT1;
+      END IF;
+      
+      RAISE NOTICE 'VS_LATEST_REMOVAL_DT2 %', OUT_LATEST_REMOVAL_DT;
+     END IF;
+    END IF;
+  
+    IF (OUT_REMOVAL_TRANSACTION_DT IS NOT NULL AND OUT_LATEST_REMOVAL_DT IS NOT NULL) THEN
+     SELECT CASE WHEN OUT_REMOVAL_TRANSACTION_DT::DATE < OUT_LATEST_REMOVAL_DT::DATE THEN OUT_LATEST_REMOVAL_DT ELSE OUT_REMOVAL_TRANSACTION_DT END 
+      INTO OUT_REMOVAL_TRANSACTION_DT;
+    END IF;
+  
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+  
+
+   END; 
+
+   --*******ELEMENT #NO # 21,22 *******  --NO #   ENDs here   
+
+   ---************* ELEMENT NO #20  *******************************
+
+   BEGIN 
+
+    RAISE NOTICE 'Element #20 %', timeofday();
+    
+    IF OUT_NUM_REMOVALS::integer  > 1 then 
+     IF VS_NUM_REMOVALS2 > 0 THEN
+  
+      SELECT exitdate as sdt
+       INTO OUT_LAST_DISCHARGE_DT
+      FROM (WITH cte as (
+       SELECT distinct iscr.removaldate, coalesce(iscr.exitdate, iscr.returntime) as exitdate
+        FROM intakeservreqchildremoval iscr  
+         join person p on p.personid = iscr.personid 
+          and p.activeflag = 1
+         join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+          and rur.eventcode = 'CHRR'
+          and rur.activeflag = 1
+          and rur.routingstatustypeid = '16' 
+       WHERE p.cjamspid IN (OUT_CLIENT_ID, VS_BIO_CLIENTID)
+        AND iscr.removaldate <= vdt_to::date 
+        AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+        AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+        and iscr.activeflag = 1
+        order by iscr.removaldate desc
+       )
+       SELECT
+        removaldate, exitdate, 
+        LAG(exitdate,1) OVER () as prevreturndate
+       FROM cte)
+      WHERE CASE WHEN removaldate = prevreturndate THEN false else true end
+       AND exitdate < OUT_LATEST_REMOVAL_DT::date
+      ORDER by exitdate desc nulls last limit 1;
+ 
+     ELSE
+      SELECT exitdate as sdt
+       INTO OUT_LAST_DISCHARGE_DT
+      FROM (WITH cte as (
+       SELECT distinct iscr.removaldate, coalesce(iscr.exitdate, iscr.returntime) as exitdate
+         FROM intakeservreqchildremoval iscr  
+        JOIN  person p ON p.personid = iscr.personid 
+         and p.activeflag = 1
+        join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+         and rur.eventcode = 'CHRR'
+         and rur.activeflag = 1
+         and rur.routingstatustypeid = '16' 
+       WHERE p.cjamspid = OUT_CLIENT_ID
+        AND iscr.removaldate <= vdt_to::date 
+        AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+        AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+        and iscr.activeflag = 1
+        order by iscr.removaldate asc
+       )
+       SELECT
+        removaldate, exitdate, 
+        LAG(exitdate,1) OVER () as prevreturndate
+       FROM cte)
+      WHERE CASE WHEN removaldate = prevreturndate THEN false else true end
+       AND exitdate < OUT_LATEST_REMOVAL_DT::date
+      ORDER by exitdate desc nulls last limit 1;
+     END IF;
+     
+     VS_LAST_DISCHARGE_CT := 0;
+     VS_LAST_DISCHARGE_DT1 := NULL;   
+     
+     IF (OUT_LAST_DISCHARGE_DT IS NOT NULL) THEN
+      SELECT count(*), max(exitdate) 
+       INTO VS_LAST_DISCHARGE_CT, VS_LAST_DISCHARGE_DT1
+      FROM intakeservreqchildremoval iscr  
+       join  person p on p.personid = iscr.personid 
+        and p.activeflag = 1
+       join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+        and rur.eventcode = 'CHRR'
+        and rur.activeflag = 1
+        and rur.routingstatustypeid = '16' 
+      WHERE p.cjamspid = OUT_CLIENT_ID
+       and iscr.activeflag = 1
+       AND removaldate = OUT_LAST_DISCHARGE_DT::DATE
+       AND exitdate is not null
+       AND exitdate < OUT_LATEST_REMOVAL_DT::date;
+     
+      IF (VS_LAST_DISCHARGE_CT > 0 AND VS_LAST_DISCHARGE_DT1 IS NOT NULL) THEN
+       OUT_LAST_DISCHARGE_DT = VS_LAST_DISCHARGE_DT1;
+      END IF;
+     END IF;
+    ELSE
+     OUT_LAST_DISCHARGE_DT := '';--
+    END IF ;--
+ 
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+ 
+   END;--
+
+   ---************* ELEMENT NO #20  *******************************   ENDS HERE
+
+
+   --*******ELEMENT #NO # 24 *******  --NO # 24 Number of Previous Placement Settings During This Removal Episode? starts here   
+
+   BEGIN 
+
+    RAISE NOTICE 'Element #24 %', timeofday();
+    
+    VS_PL_PLACEMENTS := 0;
+    VS_CPA_HOME_PLACEMENTS := 0;
+    
+    SELECT min(iscr.removaldate) INTO VS_LATEST_REMOVAL_DT1
+    FROM intakeservreqchildremoval iscr  
+     join person p on iscr.personid = p.personid and p.activeflag = 1 
+     join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+      and rur.eventcode = 'CHRR'
+      and rur.activeflag = 1
+      and rur.routingstatustypeid = '16'
+    WHERE p.cjamspid = OUT_CLIENT_ID
+     and iscr.activeflag = 1
+     AND iscr.removaldate <= vdt_to::date 
+     AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+     AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+     -- AND (iscr.exitdate IS NULL OR iscr.exitdate::date >= vdt_from::date);
+     AND ((CASE WHEN iscr.exitdate IS NOT NULL THEN iscr.exitdate::date >= vdt_from::date ELSE 
+      (CASE WHEN iscr.returntransts IS NOT NULL AND iscr.returntransts != '1900-01-01' THEN iscr.returntransts::date >= vdt_from::date ELSE TRUE END)  END)
+       OR
+      (CASE WHEN iscr.returntransts IS NOT NULL AND iscr.returntransts != '1900-01-01' THEN iscr.returntransts::date >= vdt_from::date ELSE TRUE END));
+
+    SELECT COUNT(*) INTO VS_PL_PLACEMENTS FROM (
+    SELECT DISTINCT(placementid) FROM(
+     SELECT DISTINCT placementid 
+     FROM (WITH cte as (
+       SELECT pl.placementid, pl.altproviderid, pl.startdatetime, pl.enddatetime
+       FROM placement pl 
+       JOIN person p on p.personid = pl.personid
+       JOIN afcarsreference ar on ar.statepicklistvaluetypekey = pl.service_id::varchar
+       WHERE p.cjamspid = OUT_CLIENT_ID
+        AND pl.startdatetime <= vdt_to::date 
+        and pl.activeflag = 1
+        AND pl.startdatetime >= VS_LATEST_REMOVAL_DT1::date
+        AND (pl.isvoided is null or pl.isvoided != 1) and pl.placementtypekey = 'PRPL'
+        AND (pl.enddatetime IS NULL OR pl.startdatetime <> pl.enddatetime)
+        AND ar.afcarsvaluetypekey != 1
+        order by pl.startdatetime asc
+       )
+       SELECT
+        placementid, altproviderid, startdatetime, enddatetime, 
+        LAG(enddatetime,1) OVER (ORDER BY startdatetime) as previousenddatetime,
+        LAG(altproviderid,1) OVER (ORDER BY startdatetime) as previousproviderid
+       FROM cte)
+     WHERE CASE WHEN (altproviderid = previousproviderid AND  (startdatetime = previousenddatetime OR startdatetime::date  = previousenddatetime::date + interval '1 day')) THEN false else true end
+     UNION
+     SELECT DISTINCT(placementid) 
+      FROM(WITH cte as (
+     SELECT DISTINCT pl.placementid, lv.livingarrangementtypekey, lv.livingstartdate, lv.livingenddate  
+      from livingarrangement lv
+      JOIN placement pl  ON pl.placementid = lv.placementid
+      JOIN person p on p.personid = pl.personid AND p.activeflag=1    
+      WHERE  p.cjamspid = OUT_CLIENT_ID
+       AND pl.startdatetime <= vdt_to::date 
+       and pl.activeflag = 1
+       and lv.activeflag = 1
+       AND pl.startdatetime >= VS_LATEST_REMOVAL_DT1::date
+       AND (pl.isvoided is null or pl.isvoided != 1)
+       AND CASE WHEN lv.livingenddate IS NOT NULL THEN 
+         (lv.livingstartdate::date <> lv.livingenddate::date AND lv.livingenddate <= vdt_to::date)
+        ELSE 
+         TRUE 
+        END 
+       AND lv.livingarrangementtypekey NOT IN ('TVH','FH','OTH','UNK','COLG',
+             'ICPC Foster Home (incoming)','Father''s Home','Mother''s Home',
+             'Placement','BP','Halfway House') 
+       AND CASE WHEN lv.livingarrangementtypekey IN ('IMCNA','IPC','SJD','REC','MD','RNW',
+          'SUMC','MH','Inpatient Psychiatric Care','Inpatient Medical Care - Non-Acute','RFKH') 
+        THEN 
+         DATE_PART('day', coalesce(lv.livingenddate, now())::timestamp - lv.livingstartdate::timestamp) > 30
+        ELSE 
+         TRUE 
+        END)
+     SELECT placementid, livingarrangementtypekey, livingstartdate, livingenddate, 
+       LAG(livingstartdate,1) OVER (ORDER BY livingstartdate) as previousstartdatetime,
+       LAG(livingenddate,1) OVER (ORDER BY livingstartdate) as previousenddatetime,
+       LAG(livingarrangementtypekey,1) OVER (ORDER BY livingstartdate) as previouskey
+     FROM cte)
+     WHERE CASE WHEN ((livingarrangementtypekey = previouskey AND  livingstartdate = previousenddatetime)  OR (livingstartdate::date = livingenddate::date) OR (livingstartdate::date = previousstartdatetime::date)) THEN false else true end)) 
+    WHERE placementid NOT IN (
+     SELECT DISTINCT pl.placementid 
+      FROM TB_PLACEMENT_CPA_HOMES tpc 
+       JOIN PLACEMENT pl ON pl.alternateid = tpc.placement_id 
+       JOIN person p on p.personid = pl.personid
+      WHERE p.cjamspid = OUT_CLIENT_ID
+       AND pl.startdatetime <= vdt_to::date 
+       and pl.activeflag = 1
+       AND pl.startdatetime >= VS_LATEST_REMOVAL_DT1::date   
+       AND (pl.isvoided is null or pl.isvoided != 1)
+       AND pl.alternateid is not null AND pl.contractprogramid is not null 
+       AND tpc.delete_sw = 'N'
+       AND tpc.entry_dt <= vdt_to::DATE
+       AND tpc.entry_dt >= VS_LATEST_REMOVAL_DT1::date);
+   
+      
+    SELECT COUNT(*) INTO VS_CPA_HOME_PLACEMENTS
+     FROM (WITH cte as (
+     SELECT tpc.placement_cpa_home_id, tpc.placement_id, tpc.provider_id, tpc.entry_dt,tpc.exit_dt
+      FROM TB_PLACEMENT_CPA_HOMES tpc 
+      JOIN PLACEMENT pl ON pl.alternateid = tpc.placement_id 
+      JOIN person p on p.personid = pl.personid
+     WHERE p.cjamspid = OUT_CLIENT_ID
+      AND pl.startdatetime <= vdt_to::date 
+      and pl.activeflag = 1
+      AND pl.startdatetime >= VS_LATEST_REMOVAL_DT1::date
+      AND (pl.isvoided is null or pl.isvoided != 1)
+      AND pl.alternateid is not null 
+      AND pl.contractprogramid is not null 
+      and (pl.isvoided is null or pl.isvoided != 1)
+      and tpc.delete_sw = 'N'
+      AND tpc.entry_dt <= vdt_to::DATE
+      AND tpc.entry_dt >= VS_LATEST_REMOVAL_DT1::date
+      AND (tpc.exit_dt IS NULL OR tpc.entry_dt::date <> tpc.exit_dt::date)
+      ORDER BY tpc.entry_dt
+     )
+     SELECT provider_id, entry_dt,exit_dt,
+      LAG(exit_dt,1) OVER (ORDER BY entry_dt) as previousexit_dt,
+      LAG(provider_id,1) OVER (ORDER BY entry_dt) as previousproviderid
+     FROM cte)
+    WHERE CASE WHEN (provider_id = previousproviderid AND  (entry_dt = previousexit_dt OR entry_dt::date  = previousexit_dt::date + interval '1 day')) THEN false else true end;
+ 
+    RAISE NOTICE 'VS_PL_PLACEMENTS: %', VS_PL_PLACEMENTS; 
+    RAISE NOTICE 'VS_CPA_HOME_PLACEMENTS: %', VS_CPA_HOME_PLACEMENTS; 
+    
+    IF (VS_PL_PLACEMENTS = 0 AND VS_CPA_HOME_PLACEMENTS = 0) THEN
+     OUT_NUM_PLACEMENTS = '00';
+    ELSE  
+     OUT_NUM_PLACEMENTS = VS_PL_PLACEMENTS + VS_CPA_HOME_PLACEMENTS; 
+    END IF;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+ 
+
+   END; 
+
+   --*******ELEMENT #NO # 24  *******  --NO #  Number of Previous Placement Settings During This Removal Episode? ENDs here    
+    
+   --*******ELEMENT #NO # 25 *******  --NO #25. Manner of Removal FROM Home for Current Removal Episode starts here 
+    
+   BEGIN 
+    RAISE NOTICE 'Element #25 %', timeofday();
+
+    SELECT CASE WHEN removaltypekey in ( 'TLV', 'CDVP', 'EHA') THEN '1' 
+      WHEN removaltypekey = 'JD' THEN '2'
+      ELSE '3'
+      END 
+     INTO OUT_REMOVAL_TYPE_CD
+    FROM intakeservreqchildremoval r 
+     join routing rur on rur.objectid = r.intakeservreqchildremovalid::character varying
+      and rur.eventcode = 'CHRR'
+      and rur.activeflag = 1
+      and rur.routingstatustypeid = '16'
+    WHERE r.serviceCASEid ::character varying  = VS_SERVICECASEID
+     and r.activeflag = 1
+    order by r.insertedon desc limit 1;
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+   END; 
+
+   --*******ELEMENT #NO # 25  *******  --NO #25. Manner of Removal FROM Home for Current Removal Episode ENDs here 
+
+   --*******ELEMENT #NO # 26 to 40  *******  --NO #26 to 40 starts here 
+   BEGIN 
+
+    RAISE NOTICE 'Element #26, #27, #28, #29, #30, #31, #32, #33, #34, #35, #36, #37, #38, #39, #40 %', timeofday();   --sree
+    /*  SELECT 
+    sum(CASE WHEN icr.removalreasontypekey = 'PA' THEN 1 ELSE 0 end)::varchar   OUT_PHYSICAL_ABUSE,
+    sum(CASE WHEN icr.removalreasontypekey = 'SA' THEN 1 ELSE 0 end)::varchar OUT_SEXUAL_ABUSE,
+    sum(CASE WHEN icr.removalreasontypekey = 'HG' THEN 1 ELSE 0 end)::varchar  OUT_NEGLECT,
+    sum(CASE WHEN icr.removalreasontypekey = 'AAP' THEN 1 ELSE 0 end)::varchar  OUT_PAR_ALCOHOL_ABUSE,
+    sum(CASE WHEN icr.removalreasontypekey = 'DAP' THEN 1 ELSE 0 end)::varchar  OUT_PAR_DRUG_ABUSE,
+    sum(CASE WHEN icr.removalreasontypekey = 'AAC' THEN 1 ELSE 0 end)::varchar  OUT_CHILD_ALCOHOL_ABUSE,
+    sum(CASE WHEN icr.removalreasontypekey = 'DAC' THEN 1 ELSE 0 end)::varchar  OUT_CHILD_DRUG_ABUSE,
+    sum(CASE WHEN icr.removalreasontypekey = 'CD' THEN 1 ELSE 0 end)::varchar  OUT_CHILD_DISABILITY,
+    sum(CASE WHEN icr.removalreasontypekey = 'CBP' THEN 1 ELSE 0 end)::varchar  OUT_CHILD_BEHAVIOR,
+    sum(CASE WHEN icr.removalreasontypekey = 'DP' THEN 1 ELSE 0 end)::varchar  OUT_PARENT_DEATH,
+    sum(CASE WHEN icr.removalreasontypekey = 'IP' THEN 1 ELSE 0 end)::varchar  OUT_PARENT_INCARCERATION,
+    sum(CASE WHEN icr.removalreasontypekey = 'CIIO' THEN 1 ELSE 0 end)::varchar  OUT_CARETAKER_ILLNESS,
+    sum(CASE WHEN icr.removalreasontypekey = 'ADT' THEN 1 ELSE 0 end)::varchar  OUT_ABANDONMENT,
+    sum(CASE WHEN icr.removalreasontypekey = 'RLQ' THEN 1 ELSE 0 end)::varchar  OUT_RELINQUISHMENT,
+    sum(CASE WHEN icr.removalreasontypekey = 'IDH' THEN 1 ELSE 0 end)::varchar  OUT_INADEQUATE_HOUSING */
+  
+    SELECT
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'PA') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'SA') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'HG') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'AAP') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'DAP') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'AAC') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'DAC') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'CD') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'CBP') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'DP') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'IP') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'CIIO') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'ADT') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'RLQ') > 0 then '1'  else '0' end,
+     case  when COUNT(*) FILTER (WHERE icr.removalreasontypekey = 'IDH') > 0 then '1'  else '0' end
+   
+    into 
+     OUT_PHYSICAL_ABUSE,   
+     OUT_SEXUAL_ABUSE,   
+     OUT_NEGLECT,   
+     OUT_PAR_ALCOHOL_ABUSE,  
+     OUT_PAR_DRUG_ABUSE,   
+     OUT_CHILD_ALCOHOL_ABUSE,  
+     OUT_CHILD_DRUG_ABUSE,  
+     OUT_CHILD_DISABILITY,  
+     OUT_CHILD_BEHAVIOR,   
+     OUT_PARENT_DEATH,   
+     OUT_PARENT_INCARCERATION,  
+     OUT_CARETAKER_ILLNESS,  
+     OUT_ABANDONMENT,   
+     OUT_RELINQUISHMENT,   
+     OUT_INADEQUATE_HOUSING
+   
+    from intakeservreqchildremoval iscr
+     join intakeservreqchildremovalreason icr on icr.intakeservreqchildremovalid = iscr.intakeservreqchildremovalid 
+     join person p on iscr.personid = p.personid 
+      and p.activeflag = 1 
+     join routing rur on rur.objectid = iscr.intakeservreqchildremovalid::character varying
+      and rur.eventcode = 'CHRR'
+      and rur.activeflag = 1
+      and rur.routingstatustypeid = '16' 
+    WHERE p.cjamspid = OUT_CLIENT_ID
+     and iscr.activeflag = 1
+     AND iscr.removaldate <= vdt_to::date 
+     AND (iscr.exitdate IS NULL OR iscr.removaldate <> iscr.exitdate)
+     AND (iscr.exitdate IS NULL OR (iscr.removaldate + interval '1 day') <> iscr.exitdate)
+     -- AND (iscr.exitdate IS NULL OR iscr.exitdate::date >= vdt_from::date);
+     AND ((CASE WHEN iscr.exitdate IS NOT NULL THEN iscr.exitdate::date >= vdt_from::date ELSE 
+      (CASE WHEN iscr.returntransts IS NOT NULL AND iscr.returntransts != '1900-01-01' THEN iscr.returntransts::date >= vdt_from::date ELSE TRUE END)  END)
+       OR
+       (CASE WHEN iscr.returntransts IS NOT NULL AND iscr.returntransts != '1900-01-01' THEN iscr.returntransts::date >= vdt_from::date ELSE TRUE END));
+        
+    /* Select case when OUT_PHYSICAL_ABUSE::integer >= 1 then '1' else '0'  end into OUT_PHYSICAL_ABUSE;--
+     Select case when OUT_SEXUAL_ABUSE::integer >= 1 then '1' else '0' end into OUT_SEXUAL_ABUSE;--
+     Select case when OUT_NEGLECT::integer >= 1 then '1'  else '0' end into OUT_NEGLECT;--
+     Select case when OUT_PAR_ALCOHOL_ABUSE::integer >= 1 then  '1' else '0' end into OUT_PAR_ALCOHOL_ABUSE;--
+     Select case when OUT_PAR_DRUG_ABUSE::integer >= 1 then '1' else '0' end into OUT_PAR_DRUG_ABUSE;--
+     Select case when OUT_CHILD_ALCOHOL_ABUSE::integer >= 1 then '1' else '0' end into OUT_CHILD_ALCOHOL_ABUSE;--
+     Select case when OUT_CHILD_DRUG_ABUSE::integer >= 1 then '1' else '0' end into OUT_CHILD_DRUG_ABUSE;--
+     Select case when OUT_CHILD_DISABILITY::integer >= 1 then '1' else '0' end into OUT_CHILD_DISABILITY;--
+     Select case when OUT_CHILD_BEHAVIOR::integer >= 1 then '1' else '0' end into OUT_CHILD_BEHAVIOR;--
+     Select case when OUT_PARENT_DEATH::integer >= 1 then '1' else '0' end into OUT_PARENT_DEATH;--
+     Select case when OUT_PARENT_INCARCERATION::integer >= 1 then '1' else '0' end into OUT_PARENT_INCARCERATION;--
+     Select case when OUT_CARETAKER_ILLNESS::integer >= 1 then '1' else '0' end into OUT_CARETAKER_ILLNESS;--
+     Select case when OUT_ABANDONMENT::integer >= 1 then  '1' else '0' end into OUT_ABANDONMENT;--
+     Select case when OUT_RELINQUISHMENT::integer >= 1 then  '1' else '0' end into OUT_RELINQUISHMENT;--
+     Select case when OUT_INADEQUATE_HOUSING::integer >= 1 then '1' else '0' end into OUT_INADEQUATE_HOUSING ;--  */
+  
+          
+          
+    EXCEPTION WHEN OTHERS THEN
+      VS_ERR_OUTPUT_STATE := SQLSTATE;
+      VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+      VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+      VS_ERR_EXCEP_FLAG := 1;
+      VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;           
+          
+   END; 
+
+
+   --*******ELEMENT #NO # 26 to 40  *******  --NO #26 to 40 ends here 
+
+    
+   --*******ELEMENT #NO # 41 ,42*******  --NO #41 ,42Number of Previous Placement Settings During This Removal Episode? starts here   
+
+
+   BEGIN 
+ 
+    RAISE NOTICE 'Element #41, #42 %', timeofday();
+    -- get latest placement LA / PRPL 
+    VS_PLACEMENT_KEY = NULL;
+    VS_ALTPROVIDERID2 = NULL;
+    VS_PLACEMENT_ID2 = NULL;
+    VS_PRVDR_ID = NULL;
+    VS_END_DATE_TIME = NULL;
+ 
+    Select  pl.placementtypekey, pl.placementid, pl.altproviderid, pl.providerid::character varying, pl.enddatetime
+    into  VS_PLACEMENT_KEY, VS_PLACEMENT_ID2, VS_ALTPROVIDERID2, VS_PRVDR_ID, VS_END_DATE_TIME
+    from  placement pl
+     -- left join livingarrangement lv on lv.placementid = pl.placementid and livingarrangementtypekey != 'Placement'
+    where  pl.personid = ( Select personid from person where cjamspid = OUT_CLIENT_ID )
+      and pl.startdatetime <= vdt_to::date 
+      and pl.activeflag = 1 
+      and (pl.isvoided IS NULL OR pl.isvoided != 1)
+      and (case when pl.placementtypekey = 'LA' then 
+        (select count(*) from livingarrangement l1 
+         where l1.placementid = pl.placementid 
+          and l1.livingarrangementtypekey NOT IN ('Adoption', 'ADPN', 'Placement'))::integer > 0 
+       else 
+        true 
+       end)
+    order by pl.enddatetime desc nulls first, pl.startdatetime desc limit 1;--
+ 
+    IF (VS_PLACEMENT_ID2 IS NOT NULL AND VS_END_DATE_TIME IS NOT NULL AND VS_PLACEMENT_KEY = 'LA') THEN
+     
+     VS_ALTPROVIDERID1 = NULL;
+     VS_PLACEMENT_ID = NULL;
+      
+     Select   pl.placementid, pl.altproviderid
+     into  VS_PLACEMENT_ID, VS_ALTPROVIDERID1
+      from  placement pl
+       where  pl.personid = (Select personid from person where cjamspid = OUT_CLIENT_ID)
+       and pl.startdatetime <= vdt_to::date  + interval '30 day' 
+       AND pl.startdatetime::DATE = VS_END_DATE_TIME::DATE
+       AND pl.placementtypekey = 'PRPL' 
+       and pl.activeflag = 1 
+       and (pl.isvoided IS NULL OR pl.isvoided != 1)
+      order by pl.enddatetime desc nulls first, pl.startdatetime desc limit 1 ;
+      
+     IF (VS_PLACEMENT_ID IS NOT NULL) THEN
+       VS_PLACEMENT_KEY = 'PRPL';
+       VS_ALTPROVIDERID2 = VS_ALTPROVIDERID1;
+       VS_PLACEMENT_ID2 = VS_PLACEMENT_ID;
+     END IF;
+   
+    END IF;
+ 
+    If  VS_PLACEMENT_KEY = 'PRPL' then 
+     IF (VS_ALTPROVIDERID2 IS NOT NULL) THEN 
+      SELECT  CASE WHEN TBPA1.adr_state_cd = 'MD' THEN '2' 
+         WHEN TBPA1.adr_state_cd != 'MD' AND TBPA1.adr_state_cd IS NOT NULL THEN '1' 
+         ELSE '2' 
+        END 
+       INTO OUT_PLACEMENT_STATE
+       FROM tb_provider as p
+        INNER JOIN tb_provider_addresses TBPA1  ON TBPA1.parent_key_id = p.provider_id::character varying 
+         AND TBPA1.delete_sw = 'N' 
+        WHERE p.provider_id = VS_ALTPROVIDERID2 
+         AND p.delete_sw = 'N' 
+         AND TBPA1.adr_end_dt IS NULL 
+         AND TBPA1.adr_default_sw='Y' 
+         AND TBPA1.adr_type_cd='3357'
+       LIMIT 1;
+     END IF;    
+
+     SELECT ar.afcarsvaluetypekey
+     INTO  OUT_PLACEMENT_SETTING_CD 
+     FROM  placement P
+       Inner join afcarsreference ar on ar.statepicklistvaluetypekey = p.service_id::varchar
+     WHERE p.placementid::varchar = VS_PLACEMENT_ID2
+      and p.activeflag = 1;
+
+    
+    elsif  VS_PLACEMENT_KEY = 'LA' then 
+  
+     SELECT ar.afcarsvaluetypekey,
+       CASE  WHEN la.statetypekey = 'MD' THEN '2' 
+         WHEN la.statetypekey != 'MD' AND la.statetypekey IS NOT NULL THEN '1' 
+         ELSE '' 
+       END 
+     INTO  OUT_PLACEMENT_SETTING_CD,OUT_PLACEMENT_STATE
+     FROM  placement P
+       INNER JOIN livingarrangement LA ON la.placementid = P.placementid
+        and la.activeflag = 1 
+       Inner join afcarsreference ar on ar.statepicklistvaluetypekey =  
+        (Select case  when lv.livingarrangementtypekey = 'TVH' then '10460'
+         when lv.livingarrangementtypekey = 'SHA' then '74'
+         when lv.livingarrangementtypekey = 'BP' then '1511'
+         when lv.livingarrangementtypekey = 'COLG' then '1550'
+         when lv.livingarrangementtypekey = 'ACI' then '1514'
+         when lv.livingarrangementtypekey = 'FH' then '1520'
+         when lv.livingarrangementtypekey = 'RFKH' then '1532'
+         when lv.livingarrangementtypekey = 'SJD' then '1550'
+         when lv.livingarrangementtypekey = 'RNW' then '6589'
+         when lv.livingarrangementtypekey = 'IMCNA' then '8107'
+         when lv.livingarrangementtypekey = 'Father''s Home' then '1520'
+         when lv.livingarrangementtypekey = 'OHA' then '1520'
+         when lv.livingarrangementtypekey = 'Inpatient Psychiatric Care' then '1550'
+         when lv.livingarrangementtypekey = 'DJS' then '1550'
+         when lv.livingarrangementtypekey = 'Homeless Shelter' then '1550'
+         when lv.livingarrangementtypekey = 'REC' then '1550'
+         when lv.livingarrangementtypekey = 'UNK' then '1550'
+         when lv.livingarrangementtypekey = 'UNKNOWN' then '1550'
+         when lv.livingarrangementtypekey = 'MH' then '1550'
+        end 
+       from  livingarrangement lv 
+       where  lv.placementid::varchar = VS_PLACEMENT_ID2 
+       order by lv.insertedon desc limit 1 )
+     WHERE  p.placementid::varchar = VS_PLACEMENT_ID2
+      and p.activeflag = 1 ;
+      -- and p.startdatetime <= vdt_to::date  ;--
+    
+     IF (OUT_PLACEMENT_STATE IS NULL) THEN
+      SELECT CASE  WHEN la.statetypekey = 'MD' THEN '2' 
+          WHEN la.statetypekey != 'MD' AND la.statetypekey IS NOT NULL THEN '1' 
+         ELSE '' 
+        END 
+       INTO  OUT_PLACEMENT_STATE
+       FROM  placement P
+        INNER JOIN livingarrangement LA ON la.placementid = P.placementid
+         and la.activeflag = 1 
+       WHERE  p.placementid::varchar = VS_PLACEMENT_ID2
+        and p.activeflag = 1;
+     END IF;
+    
+    End if;--
+  
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ; 
+   END; 
+ 
+   --*******ELEMENT #NO # 41 ,42 *******  --NO # 41,42 Number of Previous Placement Settings During This Removal Episode? ENDs here     
+    
+
+   --*******ELEMENT #NO # 43*******  --NO #43. Most Recent CASE Plan Goal starts here   
+   BEGIN 
+ 
+    RAISE NOTICE 'Element #43 %', timeofday();
+
+    SELECT pp.primarypermanencytype
+     INTO   VS_PERMANENCYPLANTYPE
+    FROM   permanencyplan  pp
+     INNER JOIN intakeservicerequestactor isr1 ON pp.intakeservicerequestactorid=isr1.intakeservicerequestactorid  
+      AND isr1.activeflag=1
+     INNER JOIN person p1 ON p1.personid=isr1.personid AND p1.activeflag  =  1
+    WHERE  pp.serviceCASEid :: character varying = VS_SERVICECASEID 
+      and pp.establisheddate <= vdt_to ::date -- + interval '30 day'  
+      and pp.activeflag = 1
+      and p1.cjamspid = OUT_CLIENT_ID
+     --and  placementid::varchar = OUT_PLACEMENT_ID
+    order by pp.establisheddate desc limit 1;
+ 
+
+    -- Select Case when VS_PERMANENCYPLANTYPE in ( 'ADOPTR' , 'ADOPTNR'  ) then '3'
+    Select  Case  when VS_PERMANENCYPLANTYPE in ( 'ADOPTNR'  ) then '3'
+     when VS_PERMANENCYPLANTYPE in ( 'Guardianship') then '6'
+     when VS_PERMANENCYPLANTYPE in ( 'Reunification' ) then '1'
+     when VS_PERMANENCYPLANTYPE in ( 'CRLTC' ) then '4'
+     -- when VS_PERMANENCYPLANTYPE in ( 'GUARDR' ) then '2'
+     when VS_PERMANENCYPLANTYPE in ( 'GUARDR','ADOPTR' ) then '2'
+     when VS_PERMANENCYPLANTYPE in ('APPLA'  ) then '5'
+     else '7'
+     end 
+    into OUT_CASE_PLAN_GOAL_CD;--
+ 
+    IF (OUT_CASE_PLAN_GOAL_CD = ' ') THEN
+     SELECT CASE WHEN (vdt_to::date - OUT_LATEST_REMOVAL_DT::DATE)::INTEGER < 60 THEN '7' ELSE ' ' END 
+      INTO OUT_CASE_PLAN_GOAL_CD;
+    END IF;
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ; 
+   END; 
+ 
+   --*******ELEMENT #NO # 44,45*******  --NO #44,45 Caretaker Family Structure  45. Year of Birth (1st Principal Caretaker) starts here   
+
+   BEGIN 
+
+    RAISE NOTICE 'Element #44 #45 %', timeofday();
+    OUT_CARETAKER1_BIRTH_YEAR := NULL;
+    SELECT 
+     CASE WHEN ir.familystructuretypekey in  ('290', '291', '292') then '1'
+      WHEN ir.familystructuretypekey in ('294', '296', '298', '299') then '2'
+      WHEN ir.familystructuretypekey in ('288',  '293') then '3'
+      WHEN ir.familystructuretypekey in ('289',  '295', '296') then '4'
+      WHEN ir.familystructuretypekey = '297' then '5'
+      ELSE '5'
+     END, 
+     DATE_PART('year', p.dob::date):: integer as yearofbirthfirstcaretaker   
+    INTO OUT_CARETAKER_FAMILY_STRUCTURE_CD,OUT_CARETAKER1_BIRTH_YEAR
+    FROM person p
+     JOIN intakeservreqchildremoval ir ON ir.primarycaregiveractorid = p.personid 
+      and ir.activeflag = 1
+     join person p1 on p1.personid  = ir.personid 
+      and p1.activeflag = 1
+     join routing rur on rur.objectid = ir.intakeservreqchildremovalid::character varying
+      and rur.eventcode = 'CHRR'
+      and rur.activeflag = 1
+      and rur.routingstatustypeid = '16'
+    WHERE p1.cjamspid = OUT_CLIENT_ID 
+     AND ir.removaldate::DATE <= vdt_to::DATE 
+    ORDER BY ir.removaldate DESC LIMIT 1;
+    
+    if OUT_CARETAKER_FAMILY_STRUCTURE_CD is null then 
+     OUT_CARETAKER_FAMILY_STRUCTURE_CD = 5;
+    end if; 
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;
+          
+   END;
+
+   --*******ELEMENT #NO # 44,45*******  --NO #44,45 Caretaker Family Structure  45. Year of Birth (1st Principal Caretaker) ENDs here   
+
+   --*******ELEMENT #NO # 46*******  --NO #46 -  Year of Birth (2nd Principal Caretaker - if applicable) starts here   
+   BEGIN 
+ 
+    RAISE NOTICE 'Element #46 %', timeofday();
+    OUT_CARETAKER2_BIRTH_YEAR := NULL;
+
+    SELECT DATE_PART('year', p.dob::date):: integer as yearofbirthfirstcaretaker INTO OUT_CARETAKER2_BIRTH_YEAR
+    from person p
+     join intakeservreqchildremoval ir on ir.seccaregiveractorid = p.personid 
+      and ir.activeflag = 1
+     join person p1 on p1.personid  = ir.personid 
+      and p1.activeflag = 1
+     join routing rur on rur.objectid = ir.intakeservreqchildremovalid::character varying
+      and rur.eventcode = 'CHRR'
+      and rur.activeflag = 1
+      and rur.routingstatustypeid = '16'
+     WHERE p1.cjamspid = OUT_CLIENT_ID LIMIT 1;
+     
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;        
+   END;
+
+   --*******ELEMENT #NO # 46*******  --NO #46 -  Year of Birth (2nd Principal Caretaker - if applicable) ENDs here   
+
+   --*******ELEMENT #NO # 47*******  --NO #47 -  Date of Mother's Parental Rights Termination (if applicable)  starts here   
+   BEGIN
+
+    RAISE NOTICE 'Element #47 %', timeofday();
+    select  ar.person2id, ar.intakeservicerequestactorid
+    into  VS_MOTHER_PID, VS_INTAKE_ACTOR_ID
+    FROM  intakeservicerequestactor ia
+      LEFT JOIN actorrelationship ar on ar.intakeservicerequestactorid = ia.intakeservicerequestactorid
+       and ar.activeflag = 1
+      JOIN person p on p.personid = ia.personid and p.cjamspid = OUT_CLIENT_ID
+      JOIN person p2 on p2.personid = ar.person2id and p2.gendertypekey = 'F' and p2.cjamspid != OUT_CLIENT_ID
+      WHERE  ar.relationshiptypekey in  ('BGCHLD') 
+     and ia.activeflag = 1
+      LIMIT 1;
+
+    
+    SELECT
+     CASE WHEN tpr.terminationtypekey IN ('PARDEATH', '3608') then p.dateofdeath
+      ELSE tpr.tprdecisiondate
+     end
+    INTO
+     OUT_MOTHER_TPR_DT
+    FROM tprdetails tpr
+    JOIN intakeservicerequestactor ia on ia.intakeservicerequestactorid = tpr.intakeservicerequestactorid
+     and ia.activeflag = 1
+    JOIN tprrecommendation tprc on tprc.tprrecommendationid = tpr.tprrecommendationid
+     and tprc.activeflag = 1
+    JOIN person p on p.personid = ia.personid
+    where ia.personid::VARCHAR = VS_MOTHER_PID
+     AND tprc.intakeservicerequestactorid::VARCHAR = VS_INTAKE_ACTOR_ID
+     and tpr.activeflag = 1
+    -- and ia.serviceCASEid  :: character varying= VS_SERVICECASEID       
+      order by tpr.insertedon desc limit 1 ;
+ 
+    RAISE NOTICE 'OUT_MOTHER_TPR_DT;>>>>>>>>>>>>>>>>>>>>>>>>>>>>>%', OUT_MOTHER_TPR_DT;
+
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;         
+   END;    
+
+   --*******ELEMENT #NO # 47*******  --NO #47 -  Date of Mother's Parental Rights Termination (if applicable)  ENDs here   
+
+   --*******ELEMENT #NO # 48*******  --NO #48. Date of Father's Parental Rights Termination (if applicable)   starts here   
+   BEGIN 
+
+    RAISE NOTICE 'Element #48 %', timeofday();
+    select  ar.person2id, ar.intakeservicerequestactorid
+    into  VS_FATHER_PID, VS_INTAKE_ACTOR_ID
+    FROM  intakeservicerequestactor ia
+      JOIN actorrelationship ar on ar.intakeservicerequestactorid = ia.intakeservicerequestactorid
+       and ar.activeflag = 1
+      JOIN person p on p.personid = ia.personid and p.cjamspid = OUT_CLIENT_ID
+      JOIN person p2 on p2.personid = ar.person2id and p2.gendertypekey = 'M' and p2.cjamspid != OUT_CLIENT_ID
+    WHERE ar.relationshiptypekey in  ('BGCHLD','BGFTHR','DAUALG') 
+     and ia.activeflag = 1
+    ORDER BY ar.relationshiptypekey asc, ar.insertedon 
+    desc LIMIT 1;
+
+    SELECT
+     CASE WHEN tpr.terminationtypekey IN ('PARDEATH', '3608') then p.dateofdeath
+      ELSE tpr.tprdecisiondate
+     end
+    INTO
+     OUT_FATHER_TPR_DT
+    FROM tprdetails tpr
+     JOIN intakeservicerequestactor ia on ia.intakeservicerequestactorid = tpr.intakeservicerequestactorid
+      and ia.activeflag = 1
+     JOIN tprrecommendation tprc on tprc.tprrecommendationid = tpr.tprrecommendationid
+      and tprc.activeflag = 1
+     JOIN person p on p.personid = ia.personid
+    where ia.personid::VARCHAR = VS_FATHER_PID
+     AND tprc.intakeservicerequestactorid::VARCHAR = VS_INTAKE_ACTOR_ID
+     and tpr.activeflag = 1
+    -- and ia.serviceCASEid  :: character varying= VS_SERVICECASEID       
+      order by tpr.insertedon desc limit 1 ;
+    
+
+    EXCEPTION WHEN OTHERS THEN
+      VS_ERR_OUTPUT_STATE := SQLSTATE;
+      VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+      VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+      VS_ERR_EXCEP_FLAG := 1;
+      VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;        
+   END; 
+ 
+   --*******ELEMENT #NO # 48*******  --NO #48. Date of Father's Parental Rights Termination (if applicable) ENDs here   
+
+   -- 49 Foster family structure -- 50 year of birth  -- 52 .Race of 1st Foster Caretaker, -- 53 .Hispanic or Latino Ethnicity of 1st Foster Caretaker  starts here 
+   
+
+   BEGIN 
+
+    RAISE NOTICE 'Element #49 %', timeofday();
+   
+    OUT_FOSTERCARE1_BIRTH_YEAR = '';
+    OUT_FOSTERCARE1_RACE_AI_CD = '0'; 
+    OUT_FOSTERCARE1_RACE_ASIAN_CD = '0'; 
+    OUT_FOSTERCARE1_RACE_BLACK_CD = '0';
+    OUT_FOSTERCARE1_RACE_HAWAIIAN_CD = '0'; 
+    OUT_FOSTERCARE1_RACE_WHITE_CD = '0'; 
+    OUT_FOSTERCARE1_RACE_UN_CD = '0';
+    OUT_FOSTERCARE1_HISPANIC_CD = '0';
+    OUT_FOSTER_FAMILY_STRUCTURE_CD = '0';
+    VS_COUNT1 = 0;
+    VS_CPA_PRVDR_ID = NULL;
+    VS_TPC_EXIT_DATE = NULL;
+ 
+  
+    SELECT tpc.provider_id,tpc.exit_dt 
+     INTO VS_CPA_PRVDR_ID,VS_TPC_EXIT_DATE
+    FROM TB_PLACEMENT_CPA_HOMES tpc 
+     JOIN PLACEMENT pl ON pl.alternateid = tpc.placement_id 
+     JOIN person p on p.personid = pl.personid
+    WHERE p.cjamspid = OUT_CLIENT_ID
+     AND pl.alternateid is not null 
+     AND pl.contractprogramid is not null 
+     and (pl.isvoided is null or pl.isvoided != 1)
+     and tpc.delete_sw = 'N'
+     AND tpc.entry_dt <= vdt_to::DATE
+     and pl.activeflag = 1
+    ORDER BY tpc.entry_dt DESC LIMIT 1;
+    
+    RAISE NOTICE 'CPA Home provider Id %', VS_CPA_PRVDR_ID ;
+    RAISE NOTICE 'VS_TPC_EXIT_DATE %', VS_TPC_EXIT_DATE ;
+  
+    IF (VS_CPA_PRVDR_ID IS NOT NULL AND VS_TPC_EXIT_DATE IS NOT NULL) THEN
+     SELECT COUNT(*) INTO VS_COUNT1
+      FROM placement pl
+      JOIN person p on p.personid = pl.personid
+     WHERE p.cjamspid = OUT_CLIENT_ID
+      AND pl.providerid is not null AND pl.altproviderid is not null
+      AND pl.placementtypekey = 'PRPL' 
+      and pl.activeflag = 1
+      AND pl.startdatetime::date >= VS_TPC_EXIT_DATE::date; 
+      
+     RAISE NOTICE 'VS_COUNT1 %', VS_COUNT1;
+    END IF;
+ 
+    IF (VS_CPA_PRVDR_ID IS NOT NULL AND VS_COUNT1 = 0) THEN
+     RAISE NOTICE 'CPA Family';   
+    
+     SELECT FAMILY_STRUCTURE_CD, 
+      DATE_PART('year', dob_dt::date)::varchar as dob,
+      case when primary_race_cd != '' AND trunc(primary_race_cd) in ('1802','1803') then '1' else '0' end as indian,  
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '6310' then '1' else '0' end as asian, 
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '1801' then '1' else '0' end as black, 
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '6311' then '1' else '0' end as island, 
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '1806' then '1' else '0' end as white,
+      case when primary_race_cd != '' AND trunc(primary_race_cd) in ('6312','6314') then '1' else '0' end as undetermine,
+      case when hispanic_cd = 'Y' then '1' 
+       when hispanic_cd = 'N' then '2' 
+       when hispanic_cd = 'U' then '3'
+        else ' ' 
+       end as hisp 
+     INTO VS_FAMILY_STRUCTURE,
+      OUT_FOSTERCARE1_BIRTH_YEAR,
+      OUT_FOSTERCARE1_RACE_AI_CD,  
+      OUT_FOSTERCARE1_RACE_ASIAN_CD,  
+      OUT_FOSTERCARE1_RACE_BLACK_CD, 
+      OUT_FOSTERCARE1_RACE_HAWAIIAN_CD, 
+      OUT_FOSTERCARE1_RACE_WHITE_CD, 
+      OUT_FOSTERCARE1_RACE_UN_CD,
+      OUT_FOSTERCARE1_HISPANIC_CD
+     FROM TB_PROV_CPA_ADOP_PERSON 
+     WHERE PROVIDER_ID = VS_CPA_PRVDR_ID
+      AND DELETE_SW = 'N' 
+      AND TRUNC(PERSON_TYPE_CD) = '3610'
+     ORDER BY provider_cpa_adop_person_id DESC LIMIT 1;  
+    
+     RAISE NOTICE 'CPA Family_2'; 
+   
+     select case when VS_FAMILY_STRUCTURE in  ('290', '291', '292') then '1'
+      when VS_FAMILY_STRUCTURE in ('294', '296', '298', '299') then '2'
+      when VS_FAMILY_STRUCTURE in ('288',  '293') then '3'
+      when VS_FAMILY_STRUCTURE in ('289',  '295', '296') then '4'
+      when VS_FAMILY_STRUCTURE = '297' then '5'
+      else '0'
+     end 
+     into OUT_FOSTER_FAMILY_STRUCTURE_CD;
+     RAISE NOTICE 'CPA Family_3'; 
+    ELSE
+     RAISE NOTICE 'Non CPA Family';
+     VS_APPROVAL_PERSONID = NULL;
+     VS_ALT_PROVIDERID = NULL;
+    
+     SELECT pl.altproviderid INTO VS_ALT_PROVIDERID
+     from placement pl
+      JOIN person p ON p.personid = pl.personid 
+     WHERE cjamspid = OUT_CLIENT_ID
+      AND pl.startdatetime <= vdt_to::DATE 
+      and pl.activeflag = 1
+      AND pl.providerid is not null 
+      AND pl.altproviderid is not null
+     order by startdatetime desc
+     LIMIT 1;
+    
+     SELECT pap.approval_person_id, pap.family_structure_cd  
+       into  VS_APPROVAL_PERSONID, VS_FAMILY_STRUCTURE 
+      FROM tb_prov_approval_person  pap
+      JOIN tb_provider_approval pa ON pap.provider_approval_id = pa.provider_approval_id
+       and pa.delete_sw = 'N'
+     WHERE pa.provider_id = VS_ALT_PROVIDERID
+      AND approval_dt::date <= vdt_to::DATE  
+      AND pap.person_type_cd in ('3610')
+      and pap.delete_sw = 'N'
+     ORDER BY  pa.entry_dt desc limit 1;
+   
+   
+     RAISE NOTICE 'VS_APPROVAL_PERSONID 1 %', VS_APPROVAL_PERSONID ;
+ 
+     IF (VS_APPROVAL_PERSONID IS NOT NULL) THEN 
+   
+      Select case  when VS_FAMILY_STRUCTURE in  ('290', '291', '292') then '1'
+       when VS_FAMILY_STRUCTURE in ('294', '296', '298', '299') then '2'
+       when VS_FAMILY_STRUCTURE in ('288',  '293') then '3'
+       when VS_FAMILY_STRUCTURE in ('289',  '295', '296') then '4'
+       when VS_FAMILY_STRUCTURE = '297' then '5'
+       else '0'
+      end 
+      into  OUT_FOSTER_FAMILY_STRUCTURE_CD;--
+
+      RAISE NOTICE 'OUT_FOSTER_FAMILY_STRUCTURE_CD %', OUT_FOSTER_FAMILY_STRUCTURE_CD ;
+   
+      select  DATE_PART('year', dob_dt::date)::varchar as dob , 
+       case when primary_race_cd != '' AND primary_race_cd in ('1802','1803') then '1' else '0' end as indian,  
+       case when primary_race_cd != '' AND primary_race_cd = '6310' then '1' else '0' end as asian, 
+       case when primary_race_cd != '' AND primary_race_cd = '1801' then '1' else '0' end as black, 
+       case when primary_race_cd != '' AND primary_race_cd = '6311' then '1' else '0' end as island, 
+       case when primary_race_cd != '' AND primary_race_cd = '1806' then '1' else '0' end as white,
+       case when primary_race_cd != '' AND primary_race_cd in ('6312','6314') then '1' else '0' end as undetermine,
+       case when hispanic_cd = 'Y' then '1' 
+        when hispanic_cd = 'N' then '2' 
+        when hispanic_cd = 'U' then '3'
+        else ' ' 
+        end as hisp
+      INTO   OUT_FOSTERCARE1_BIRTH_YEAR,
+       OUT_FOSTERCARE1_RACE_AI_CD,  
+       OUT_FOSTERCARE1_RACE_ASIAN_CD,  
+       OUT_FOSTERCARE1_RACE_BLACK_CD, 
+       OUT_FOSTERCARE1_RACE_HAWAIIAN_CD, 
+       OUT_FOSTERCARE1_RACE_WHITE_CD, 
+       OUT_FOSTERCARE1_RACE_UN_CD,
+       OUT_FOSTERCARE1_HISPANIC_CD
+      FROM   tb_prov_approval_person
+      WHERE  approval_person_id = VS_APPROVAL_PERSONID
+       and delete_sw = 'N';--
+     END IF;
+    END IF;
+ 
+  
+    RAISE NOTICE 'OUT_PLACEMENT_SETTING_CD % ', OUT_PLACEMENT_SETTING_CD;
+  
+    If OUT_FOSTER_FAMILY_STRUCTURE_CD = '0' AND OUT_PLACEMENT_SETTING_CD NOT IN ('1','2','3') then 
+     RAISE NOTICE 'OUT_FOSTER_FAMILY_STRUCTURE_CD %', OUT_FOSTER_FAMILY_STRUCTURE_CD ;
+     OUT_FOSTERCARE1_RACE_AI_CD := '0';--
+     OUT_FOSTERCARE1_RACE_ASIAN_CD := '0';--
+     OUT_FOSTERCARE1_RACE_BLACK_CD := '0';--
+     OUT_FOSTERCARE1_RACE_WHITE_CD := '0' ;--
+     OUT_FOSTERCARE1_RACE_HAWAIIAN_CD := '0';--     
+     OUT_FOSTERCARE1_RACE_UN_CD  := '0';--
+     OUT_FOSTERCARE1_HISPANIC_CD := '0';--
+    
+    end if;--
+    
+  
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ;        
+   END;
+
+   -- 49 Foster family structure -- 50 year of birth  -- 52 .Race of 1st Foster Caretaker, -- 53 .Hispanic or Latino Ethnicity of 1st Foster Caretaker  ENDs here 
+
+
+   -- 51 year of birth  -- 54 .Race of 1st Foster Caretaker, -- 55 .Hispanic or Latino Ethnicity of 1st Foster Caretaker  starts here 
+   BEGIN 
+ 
+    RAISE NOTICE 'Element #51, #54, #55 %', timeofday();
+    OUT_FOSTERCARE2_BIRTH_YEAR = '';
+    OUT_FOSTERCARE2_RACE_AI_CD = '0';  
+    OUT_FOSTERCARE2_RACE_ASIAN_CD = '0';   
+    OUT_FOSTERCARE2_RACE_BLACK_CD = '0';  
+    OUT_FOSTERCARE2_RACE_HAWAIIAN_CD = '0'; 
+    OUT_FOSTERCARE2_RACE_WHITE_CD = '0'; 
+    OUT_FOSTERCARE2_RACE_UN_CD = '0'; 
+    OUT_FOSTERCARE2_HISPANIC_CD = '0'; 
+    VS_COUNT1 = 0;
+    VS_CPA_PRVDR_ID = NULL;
+    VS_TPC_EXIT_DATE = NULL;
+ 
+    SELECT tpc.provider_id,tpc.exit_dt 
+     INTO VS_CPA_PRVDR_ID,VS_TPC_EXIT_DATE
+    FROM TB_PLACEMENT_CPA_HOMES tpc 
+     JOIN PLACEMENT pl ON pl.alternateid = tpc.placement_id 
+     JOIN person p on p.personid = pl.personid
+    WHERE p.cjamspid = OUT_CLIENT_ID
+     AND pl.alternateid is not null 
+     AND pl.contractprogramid is not null 
+     and pl.activeflag = 1
+     and (pl.isvoided is null or pl.isvoided != 1)
+     and tpc.delete_sw = 'N'
+     AND tpc.entry_dt <= vdt_to::DATE
+    ORDER BY tpc.entry_dt DESC LIMIT 1;
+  
+    RAISE NOTICE 'CPA Home provider Id %', VS_CPA_PRVDR_ID ;
+    RAISE NOTICE 'VS_TPC_EXIT_DATE %', VS_TPC_EXIT_DATE ;
+  
+    IF (VS_CPA_PRVDR_ID IS NOT NULL AND VS_TPC_EXIT_DATE IS NOT NULL) THEN
+     SELECT COUNT(*) INTO VS_COUNT1
+      FROM placement pl
+      JOIN person p on p.personid = pl.personid
+     WHERE p.cjamspid = OUT_CLIENT_ID
+      AND pl.providerid is not null 
+      AND pl.altproviderid is not null
+      AND pl.placementtypekey = 'PRPL' 
+      and pl.activeflag = 1
+      AND pl.startdatetime::date >= VS_TPC_EXIT_DATE::date; 
+      
+     RAISE NOTICE 'VS_COUNT1 %', VS_COUNT1;
+    END IF;
+    
+    IF (VS_CPA_PRVDR_ID IS NOT NULL AND VS_COUNT1 = 0) THEN
+     SELECT  DATE_PART('year', dob_dt::date)::varchar as dob,
+      case when primary_race_cd != '' AND trunc(primary_race_cd) in ('1802','1803') then '1' else '0' end as indian,  
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '6310' then '1' else '0' end as asian, 
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '1801' then '1' else '0' end as black, 
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '6311' then '1' else '0' end as island, 
+      case when primary_race_cd != '' AND trunc(primary_race_cd) = '1806' then '1' else '0' end as white,
+      case when primary_race_cd != '' AND trunc(primary_race_cd) in ('6312','6314') then '1' else '0' end as undetermine,
+      case when hispanic_cd = 'Y' then '1' 
+       when hispanic_cd = 'N' then '2' 
+       when hispanic_cd = 'U' then '3'
+        else ' ' 
+       end as hisp 
+     INTO OUT_FOSTERCARE2_BIRTH_YEAR,
+      OUT_FOSTERCARE2_RACE_AI_CD,  
+      OUT_FOSTERCARE2_RACE_ASIAN_CD,  
+      OUT_FOSTERCARE2_RACE_BLACK_CD, 
+      OUT_FOSTERCARE2_RACE_HAWAIIAN_CD, 
+      OUT_FOSTERCARE2_RACE_WHITE_CD, 
+      OUT_FOSTERCARE2_RACE_UN_CD,
+      OUT_FOSTERCARE2_HISPANIC_CD
+     FROM TB_PROV_CPA_ADOP_PERSON 
+     WHERE PROVIDER_ID = VS_CPA_PRVDR_ID
+      AND DELETE_SW = 'N' 
+      AND TRUNC(PERSON_TYPE_CD) = '3611'
+     ORDER BY provider_cpa_adop_person_id DESC LIMIT 1;
+    
+    ELSE
+ 
+     VS_APPROVAL_PERSONID = NULL;
+     VS_ALT_PROVIDERID = NULL;
+ 
+     SELECT pl.altproviderid INTO VS_ALT_PROVIDERID
+     from placement pl
+      JOIN person p ON p.personid = pl.personid 
+     WHERE cjamspid = OUT_CLIENT_ID
+      AND pl.startdatetime <= vdt_to::DATE 
+      AND pl.providerid is not null 
+      AND pl.altproviderid is not null
+      and pl.activeflag = 1
+     order by startdatetime desc
+     LIMIT 1;
+ 
+     SELECT pap.approval_person_id, pap.family_structure_cd  
+       into  VS_APPROVAL_PERSONID, VS_FAMILY_STRUCTURE 
+     FROM tb_prov_approval_person  pap
+      JOIN tb_provider_approval pa ON pap.provider_approval_id = pa.provider_approval_id
+     WHERE pa.provider_id = VS_ALT_PROVIDERID
+      AND approval_dt::date <= vdt_to::DATE  
+      AND pap.person_type_cd in ('3611')
+      and pap.delete_sw = 'N'
+     ORDER BY  pa.entry_dt desc limit 1;
+ 
+ 
+     RAISE NOTICE 'VS_APPROVAL_PERSONID 2 %', VS_APPROVAL_PERSONID ;
+  
+     IF (VS_APPROVAL_PERSONID IS NOT NULL) THEN    
+      select  DATE_PART('year', dob_dt::date)::varchar as dob , 
+       -- case when primary_race_cd = '1803' then '1' else '0' end as indian,
+       case when primary_race_cd != '' AND primary_race_cd in ('1802','1803') then '1' else '0' end as indian, 
+       case when primary_race_cd != '' AND primary_race_cd = '6310' then '1' else '0' end as asian, 
+       case when primary_race_cd != '' AND primary_race_cd = '1801' then '1' else '0' end as black, 
+       case when primary_race_cd != '' AND primary_race_cd = '6311' then '1' else '0' end as island, 
+       case when primary_race_cd != '' AND primary_race_cd = '1806' then '1' else '0' end as white,
+       case when primary_race_cd != '' AND primary_race_cd in ('6312','6314') then '1' else '0' end as undetermine,
+       case when hispanic_cd = 'Y' then '1' 
+        when hispanic_cd = 'N' then '2' 
+        when hispanic_cd = 'U' then '3'
+        else ' ' 
+        end as hisp
+      INTO   OUT_FOSTERCARE2_BIRTH_YEAR,
+       OUT_FOSTERCARE2_RACE_AI_CD,  
+       OUT_FOSTERCARE2_RACE_ASIAN_CD,  
+       OUT_FOSTERCARE2_RACE_BLACK_CD, 
+       OUT_FOSTERCARE2_RACE_HAWAIIAN_CD, 
+       OUT_FOSTERCARE2_RACE_WHITE_CD, 
+       OUT_FOSTERCARE2_RACE_UN_CD,
+       OUT_FOSTERCARE2_HISPANIC_CD
+      FROM tb_prov_approval_person
+      WHERE approval_person_id = VS_APPROVAL_PERSONID
+       and delete_sw = 'N';--
+    
+     END IF;
+    END IF; 
+  
+   
+    If  OUT_PLACEMENT_SETTING_CD NOT IN ('1','2','3') then 
+ 
+     OUT_FOSTERCARE2_RACE_AI_CD := '0';--
+     OUT_FOSTERCARE2_RACE_ASIAN_CD := '0';--
+     OUT_FOSTERCARE2_RACE_BLACK_CD := '0';--
+     OUT_FOSTERCARE2_RACE_WHITE_CD := '0' ;--
+     OUT_FOSTERCARE2_RACE_HAWAIIAN_CD := '0';--     
+     OUT_FOSTERCARE2_RACE_UN_CD  := '0';--
+     OUT_FOSTERCARE2_HISPANIC_CD := '0';--
+    end if;--
+  
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ; 
+   END;
+
+   -- 51 year of birth  -- 54 .Race of 1st Foster Caretaker, -- 55 .Hispanic or Latino Ethnicity of 1st Foster Caretaker  ENDs here 
+
+
+   -- 56 Date of Discharge FROM Foster Care , 57 - Foster Care Discharge Transaction Date , 58 - Reason for discharge , 59 - TITLE IV-E (ELIGIBILITY) -- starts here 
+   BEGIN
+
+    RAISE NOTICE 'Element #56 %', timeofday();
+    OUT_IV_E_FOSTERCARE_SW = '0';
+   
+    -- a. If the child’s age is 18-21 years and is IV-E Eligible, then include the client in the AFCARS report with the actual foster care discharge date from the Removal Screen..
+    -- b. If the child’s age is 18-21 years and NOT IV-E Eligible, then include the client in the AFCARS report with a Discharge Date equal to the start date of when the client became NOT IV-E eligible. 
+    --  If the start date of the last NOT IV-E eligible period is prior to the start of the AFCARS reporting period, then the discharge date will be set to the start of the AFCARS reporting period. 
+
+    SELECT 
+     -- (DATE_PART('year', vdt_to::date) - DATE_PART('year', dob::date))::integer as age,
+     f_age(dob::date, vdt_to::date)::integer as age,
+     (dob + interval '18 year')::date
+    INTO VS_AGE, VS_BDAY_18
+     FROM PERSON 
+    WHERE cjamspid = OUT_CLIENT_ID 
+     AND activeflag = 1;
+   
+    RAISE NOTICE 'VS_AGE %', VS_AGE;
+   
+    SELECT
+     tep.status_cd,
+     tep.start_dt::date,
+     COALESCE(tce.create_ts::date,tep.start_dt::date),
+     tep.end_dt::date
+    INTO 
+     VS_IVE_STATUS,
+     VS_TEP_STRT_DT,
+     VS_TEP_TRANS_DT,
+     VS_TEP_END_DATE
+    FROM  tb_client_eligibility tce 
+     JOIN tb_eligibility_period tep ON tep.eligibility_id = tce.eligibility_id 
+      AND tep.delete_sw = 'N'
+    WHERE eligibility_type_cd = '2931' 
+     AND tce.client_id  = OUT_CLIENT_ID 
+     AND tce.case_id = VS_CASE_ID
+     AND tce.delete_sw = 'N'
+    ORDER BY tep.sqnm_sw desc, tep.create_ts desc 
+    LIMIT 1;
+ 
+    OUT_DISCHARGE_DT = NULL;
+    OUT_DISCHARGE_TRANSACTION_DT = NULL;
+    OUT_DISCHARGE_REASON_CD = '';
+ 
+    SELECT  icr.exitdate
+     INTO  OUT_DISCHARGE_DT 
+    FROM intakeservreqchildremoval icr 
+     join routing rur on rur.objectid = icr.intakeservreqchildremovalid::character varying
+      and rur.eventcode = 'CHRR'
+      and rur.activeflag = 1
+      and rur.routingstatustypeid = '16'
+    WHERE icr.personid = ( select personid from person where  cjamspid = OUT_CLIENT_ID )
+     -- and ((icr.exitdate <> icr.removaldate) or icr.exitdate is null )
+     and icr.activeflag = 1
+    order by icr.removaldate desc limit 1; 
+    
+    -- RAISE NOTICE 'OUT_DISCHARGE_DT 1 %', OUT_DISCHARGE_DT;
+    
+    If OUT_DISCHARGE_DT is not null then 
+      
+     SELECT   
+      CASE WHEN (icr.returntransts IS NOT NULL AND icr.returntransts::date != '1900-01-01'::date) THEN  (icr.returntransts::date)::character varying ELSE (icr.insertedon::date)::character varying END as  returntransts, 
+       case  
+        when icr.removalexitreason in ( 'ADP', 'ADPDIS','ADPFIN', 'ADPL', 'AF') then '3' 
+        when icr.removalexitreason in  ('CNR','OTHER-REL', 'OTR','CGR', 'CGUARDREL' ) then '2'  
+        when icr.removalexitreason in ('EMANMAR','EMANIND', 'EMI', 'EMANMIL', 'MILY', 'MRG')  then '4'
+        when icr.removalexitreason in ('CUSNONR','CGNR', 'CGUARDNR', 'GNR', 'GNONREL' ) then'5' 
+        when icr.removalexitreason in ('TON','TTONDA') then '6' 
+        when icr.removalexitreason in ('RNAWAY', 'RNWY' )then '7' 
+        when icr.removalexitreason in ( 'DOC' , 'DEATHOC') then '8'
+        when icr.removalexitreason in ( 'CORHA' , 'CORHADR', 'RUF', 'REUNIF', 'CHREUNIFWF') then '1'
+        when icr.removalexitreason in ( 'OTR' , 'RFS') then '8'
+        else '0'
+      end  
+     INTO OUT_DISCHARGE_TRANSACTION_DT,
+      OUT_DISCHARGE_REASON_CD
+     FROM intakeservreqchildremoval icr 
+      join routing rur on rur.objectid = icr.intakeservreqchildremovalid::character varying
+       and rur.eventcode = 'CHRR'
+       and rur.activeflag = 1
+       and rur.routingstatustypeid = '16'
+     WHERE  icr.personid = ( select personid from person where  cjamspid = OUT_CLIENT_ID )
+      and icr.activeflag = 1
+      -- and ((icr.exitdate <> icr.removaldate) or icr.exitdate is null )
+     order by icr.removaldate desc limit 1; 
+    else 
+    
+     OUT_DISCHARGE_TRANSACTION_DT:='';--
+     OUT_DISCHARGE_REASON_CD:='';--
+    
+    end if;--
+  
+    IF(VS_AGE >= 18 AND VS_AGE <= 21) THEN
+     IF (VS_IVE_STATUS != '2913') THEN
+      SELECT CASE WHEN (VS_TEP_STRT_DT IS NOT NULL AND VS_TEP_STRT_DT::DATE < vdt_from::DATE) THEN vdt_from::character varying ELSE (VS_TEP_STRT_DT::DATE)::character varying END,
+          CASE WHEN (VS_TEP_STRT_DT IS NOT NULL AND VS_TEP_STRT_DT::DATE < vdt_from::DATE) THEN vdt_from::character varying ELSE (VS_TEP_TRANS_DT::DATE)::character varying END
+      INTO OUT_DISCHARGE_DT, OUT_DISCHARGE_TRANSACTION_DT;
+       OUT_DISCHARGE_REASON_CD = '4';
+         
+      -- RAISE NOTICE 'OUT_DISCHARGE_DT 2 %', OUT_DISCHARGE_DT;   
+     ELSE
+      VS_FLAG := 0;
+      SELECT CASE WHEN (VS_TEP_END_DATE IS NOT NULL AND VS_TEP_END_DATE::DATE <= VS_BDAY_18::DATE) THEN 
+       1 ELSE 0 END
+      INTO VS_FLAG;
+      
+      IF VS_FLAG = 1 THEN 
+       OUT_DISCHARGE_DT := vdt_from;
+       OUT_DISCHARGE_REASON_CD = '4';
+       OUT_DISCHARGE_TRANSACTION_DT := vdt_from;
+      END IF; 
+      
+      -- RAISE NOTICE 'OUT_DISCHARGE_DT 3 %', OUT_DISCHARGE_DT;
+     END IF;
+    END IF;
+      
+    if OUT_DISCHARGE_REASON_CD is null then 
+     OUT_DISCHARGE_REASON_CD:='0';--
+    end if ;--
+ 
+    IF (VS_IVE_STATUS = '2913') THEN
+     OUT_IV_E_FOSTERCARE_SW = '1';
+    ELSE
+     OUT_IV_E_FOSTERCARE_SW = '0';
+    END IF;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ; 
+    
+   END;
+ 
+   ----- *************  ELEMENT #5  ***********---------------
+ 
+   BEGIN
+ 
+    RAISE NOTICE 'Element #05 %', timeofday();
+ 
+    OUT_PERIODIC_REVIEW_DT = NULL;
+ 
+    -- RAISE NOTICE 'OUT_DISCHARGE_DT %', OUT_DISCHARGE_DT;
+    
+    SELECT CASE WHEN OUT_DISCHARGE_DT IS NULL THEN VDT_TO::CHARACTER VARYING
+     WHEN OUT_DISCHARGE_DT::DATE < VDT_TO::DATE THEN OUT_DISCHARGE_DT::CHARACTER VARYING 
+     ELSE VDT_TO::CHARACTER VARYING 
+     END
+     -- ((VDT_TO::DATE - interval '7 month')::DATE)::CHARACTER VARYING
+    INTO VS_PERIOD_END_DT;  
+  
+    SELECT MAX(h.hearingdatetime) INTO OUT_PERIODIC_REVIEW_DT
+    FROM intakeservicerequestcourthearing h 
+     JOIN hearingclients hc ON hc.courthearingid = h.intakeservicerequestcourthearingid
+      and hc.activeflag = 1
+     JOIN person p ON p.personid = hc.personid
+     JOIN hearingtype lu ON h.hearingtype ? lu.hearingtypekey  
+      AND lu.teamtypekey = 'CW' 
+      AND lu.hearingtypekey IN ('DI', 'Disp','GR', 'PPR','PP', 'TGC', 'TGU','REH','CR', 'VPPH')
+      and lu.activeflag = 1
+    WHERE h.servicecaseid::VARCHAR = VS_SERVICECASEID
+     and h.activeflag = 1
+     AND (p.cjamspid =  OUT_CLIENT_ID OR p.fk_id = OUT_CLIENT_ID) 
+     AND h.hearingdatetime::DATE BETWEEN OUT_LATEST_REMOVAL_DT::DATE AND VS_PERIOD_END_DT::DATE;
+     -- AND CASE WHEN OUT_LATEST_REMOVAL_DT::DATE + interval '9 month' < VDT_TO::date THEN h.hearingdatetime::DATE BETWEEN VDT_TO::date - interval '9 month' AND VDT_TO::date ELSE TRUE END;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ; 
+    
+   END;
+   RAISE NOTICE 'OUT_PERIODIC_REVIEW_DT %', OUT_PERIODIC_REVIEW_DT;
+   ----- *************  ELEMENT #5  ***********---------------
+   
+
+   -- 56 Date of Discharge FROM Foster Care , 57 - Foster Care Discharge Transaction Date , 58 - Reason for discharge  59 - TITLE IV-E (ELIGIBILITY)  -- ENDs here 
+
+   --  ****** ELEMENT # 61, 62, 63 & 64  ******-------                           
+   -- TITLE IV-A, IV-D, TITLE XIX, FEDERAL FUNDS (SSI/SSA)
+
+   BEGIN
+    RAISE NOTICE 'Element #61, 62, 63, 64 %', timeofday();
+
+    VS_ELEM_65_CNT := 0;
+    OUT_XIX_SW := '0';
+    OUT_IV_A_SW := '0';
+    OUT_IV_D_SW := '0';
+    OUT_SSI_OR_SSA_SW := '0';
+ 
+    SELECT
+     tep.status_cd
+    INTO 
+     VS_IVE_STATUS
+    FROM  tb_client_eligibility tce 
+     JOIN tb_eligibility_period tep ON tep.eligibility_id = tce.eligibility_id 
+      AND tep.delete_sw = 'N'
+    WHERE eligibility_type_cd = '2934' 
+     AND tce.client_id  = OUT_CLIENT_ID 
+     AND tce.case_id = VS_CASE_ID
+     and tce.delete_sw = 'N'
+    ORDER BY tep.sqnm_sw desc, tep.create_ts desc LIMIT 1;
+ 
+    IF (VS_IVE_STATUS = '2913') THEN
+     OUT_IV_A_SW = '1';
+    END IF;
+
+    SELECT COUNT(*) 
+     INTO VS_COUNT1
+    FROM tb_client_income tci
+    WHERE tci.client_id  = OUT_CLIENT_ID 
+     AND tci.delete_sw = 'N' 
+     AND tci.income_source_id IN ('8','26') 
+     AND (tci.start_dt <= vdt_to::date) 
+     AND ((tci.end_dt >= vdt_from::date) OR (tci.end_dt IS NULL));
+  
+    IF VS_COUNT1 > 0 then 
+     OUT_SSI_OR_SSA_SW := '1';
+    end if;
+  
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_MESSAGE := 'SQLSTATE:' || VS_ERR_OUTPUT_STATE || '. SELECT  FAILED FOR AS_RECORD_NO #152 FOR -->'|| CAST(OUT_CLIENT_ID AS VARCHAR) ;
+     VS_ERR_EXCEP_FLAG := 1;
+     VS_ERR_EXCEP_MESSAGE := CAST(VS_ERR_OUTPUT_SQLCODE AS VARCHAR)|| VS_ERR_OUTPUT_STATE ; 
+    
+    
+   END;
+   
+   --  ****** ELEMENT # 65  ******-------                                    
+   -- NONE OF THE ABOVE FROM (59-64)
+   BEGIN
+ 
+    RAISE NOTICE 'Element #65 %', timeofday();
+    SELECT  COUNT(*) 
+     INTO VS_ELEM_65_CNT 
+    FROM tb_client_income tci
+    WHERE tci.income_source_id IN (3, 19, 6, 15, 16, 9, 10, 17, 21) 
+     AND tci.verification_cd IN ('10402','10406','1198','1200','1203')
+     AND tci.client_id = OUT_CLIENT_ID 
+     AND tci.delete_sw = 'N'
+     AND (tci.start_dt <= vdt_to::date) 
+     AND ((tci.end_dt >= vdt_from::date) OR (tci.end_dt IS NULL));--
+  
+    IF  (VS_ELEM_65_CNT > 0)
+     OR 
+     (COALESCE(OUT_IV_E_FOSTERCARE_SW,'0') = '0'  AND
+     COALESCE(OUT_IV_E_ADOPTION_SW,'0') = '0'  AND
+     (COALESCE(OUT_IV_A_SW,'0') = '0' OR RTRIM(LTRIM(OUT_IV_A_SW)) = '') AND 
+     (COALESCE(OUT_IV_D_SW,'0') = '0' OR RTRIM(LTRIM(OUT_IV_D_SW)) = '') AND
+     (COALESCE(OUT_XIX_SW,'0') = '0'  OR RTRIM(LTRIM(OUT_XIX_SW)) = '') AND
+     (COALESCE(OUT_SSI_OR_SSA_SW,'0') = '0' OR RTRIM(LTRIM(OUT_SSI_OR_SSA_SW)) = '' ) ) THEN    
+     VS_NO_FEDERAL_SUPPORT_SW := '1';--
+    
+    ELSE
+     VS_NO_FEDERAL_SUPPORT_SW := '0';--
+    END IF;--
+ 
+   end;
+   --  ****** ELEMENT # 66  ******-------                                    
+   -- AMT OF MONTHLY FOSTERCARE PAYMENT
+
+   BEGIN
+
+    RAISE NOTICE 'Element #66 %', timeofday();
+
+    OUT_FOSTERCARE_PAYMENT_AMT = '0';
+    VS_PAYMENT_MONTH = 0;
+    VS_PAYMENT_YEAR = 0;
+
+
+    SELECT 
+     EXTRACT(MONTH FROM final_service_start_dt)::INTEGER, EXTRACT(YEAR FROM final_service_start_dt)::INTEGER
+     INTO VS_PAYMENT_MONTH, VS_PAYMENT_YEAR
+    FROM tb_payment_header payhead 
+     INNER JOIN tb_payment_detail paydet ON paydet.payment_id=payhead.payment_id 
+      AND paydet.delete_sw='N'
+     INNER JOIN person client ON client.cjamspid=paydet.client_id
+      AND client.activeflag=1
+     LEFT JOIN tb_provider AS prov ON payhead.provider_id = prov.provider_id 
+      AND prov.delete_sw='N'
+     inner JOIN tb_payment_status paystat ON payhead.payment_id=paystat.payment_id 
+      and paystat.payment_status_cd in ('1636', '1634') 
+      and paystat.delete_sw = 'N' 
+     inner JOIN servicecase AS ISR ON ISR.servicecasenumber = paydet.case_id::character varying 
+      AND ISR.activeflag=1 
+    WHERE payhead.delete_sw='N' 
+     AND paydet.client_id=OUT_CLIENT_ID 
+     AND payhead.payment_type_cd = 6 AND paydet.final_service_start_dt >= vdt_from::date AND 
+      paydet.final_service_end_dt <= vdt_to::date
+     AND ((EXTRACT(MONTH FROM final_service_start_dt) IN (4,6,9,11) AND EXTRACT(DAY FROM final_service_end_dt) = 30)
+       OR
+       (EXTRACT(MONTH FROM final_service_start_dt) IN (1,3,5,7,8,10,12) AND EXTRACT(DAY FROM final_service_end_dt) = 31)
+       OR
+       (EXTRACT(MONTH FROM final_service_start_dt) = 2 AND
+        ((MOD(EXTRACT(YEAR FROM final_service_end_dt)::INTEGER ,4) = 0  AND EXTRACT(DAY FROM final_service_end_dt) > 28) OR
+         (MOD(EXTRACT(YEAR FROM final_service_end_dt)::INTEGER ,4) > 0  AND EXTRACT(DAY FROM final_service_end_dt) = 28)))) 
+    GROUP BY Paydet.client_id,payhead.payment_id,paydet.final_amount_no,payhead.payment_dt,
+     payhead.payment_type_cd,payhead.provider_id,paydet.payment_detail_id,paydet.final_service_start_dt, paydet.final_service_end_dt,
+     paydet.final_fiscal_category_cd
+    ORDER BY payhead.payment_dt DESC
+    LIMIT 1;
+
+    IF (VS_PAYMENT_MONTH > 0 AND VS_PAYMENT_YEAR > 0) THEN
+  
+     SELECT round(sum(finalamount))::varchar   
+      INTO OUT_FOSTERCARE_PAYMENT_AMT 
+     FROM (
+      SELECT round(paydet.final_amount_no) as finalamount
+       FROM tb_payment_header payhead 
+        INNER JOIN tb_payment_detail paydet ON paydet.payment_id=payhead.payment_id 
+         AND paydet.delete_sw='N'
+        INNER JOIN person client ON client.cjamspid=paydet.client_id 
+         AND client.activeflag=1
+        LEFT JOIN tb_provider AS prov ON payhead.provider_id = prov.provider_id 
+         AND prov.delete_sw='N'
+        inner JOIN tb_payment_status paystat ON payhead.payment_id=paystat.payment_id 
+         and paystat.payment_status_cd in ('1636', '1634') 
+         and paystat.delete_sw = 'N'
+        inner JOIN servicecase AS ISR ON ISR.servicecasenumber = paydet.case_id::character varying 
+         AND ISR.activeflag=1 
+       WHERE payhead.delete_sw='N' 
+        AND paydet.client_id = OUT_CLIENT_ID 
+        AND payhead.payment_type_cd = 6  
+        AND EXTRACT(MONTH FROM final_service_start_dt) = VS_PAYMENT_MONTH AND EXTRACT(YEAR FROM final_service_start_dt) = VS_PAYMENT_YEAR
+       GROUP BY Paydet.client_id,payhead.payment_id,paydet.final_amount_no,payhead.payment_dt,
+        payhead.payment_type_cd,payhead.provider_id,paydet.payment_detail_id,paydet.final_service_start_dt, paydet.final_service_end_dt,
+        paydet.final_fiscal_category_cd
+       ORDER BY payhead.payment_dt DESC);
+   
+    END IF;
+  
+    IF (OUT_FOSTERCARE_PAYMENT_AMT = NULL) THEN
+     OUT_FOSTERCARE_PAYMENT_AMT = '0';
+    END IF;
+   
+   END;
+
+   ----------------- Insert on target table starts here -----------------
+   BEGIN 
+
+    INSERT INTO afcarsfostercare_new
+     (afcarsfostercareid,
+     statetypekey,
+     reportpdENDdate,
+     localagencytypekey,
+     recordno,
+     periodicreviewdate,
+     childdob,
+     gendertypekey,
+     raceaitypekey,
+     raceasiantypekey,     --10
+     raceblacktypekey,
+     racehawaiiantypekey,
+     racewhitetypekey,
+     raceuntypekey,
+     hispanictypekey,
+     childdiagnosedtypekey,
+     mentalretardationtypekey,
+     visualhearingtypekey,
+     physicaldisabledtypekey,
+     emotionaldisturbedtypekey,   --20
+     otherdiagnosedconditiontypekey,
+     childadoptedtypekey,
+     ageadoptionlegalized,
+     firstremovaldate,
+     numremovals,
+     lastdischargedate,
+     latestremovaldate,
+     removaltransactiondate,
+     placementdate,
+     numplacement,      --30
+     removaltypetypekey,
+     physicalabuseflag,
+     sexualabuseflag,
+     neglectflag,
+     paralcoholabuseflag,
+     pardrugabuseflag,
+     childalcoholabuseflag,
+     childdrugabuseflag,
+     childdisabilityflag,
+     childbehaviorflag,     --40
+     parentdeathflag,
+     parentincarcerationflag,
+     caretakerillnessflag,
+     abANDonmentflag,
+     relinquishmentflag,
+     inadequatehousingflag,
+     placementsettingtypekey,
+     outofstateplacementflag,
+     CASEplangoaltypekey,
+     caretakerfamilystructuretypekey,  --50
+     caretaker1birthyear,
+     caretaker2birthyear,
+     mothertprdate,
+     fathertprdate,
+     fosterfamilystructuretypekey,   --55
+     fostercare1birthyear,
+     fostercare2birthyear,
+     fostercare1raceaitypekey,
+     fostercare1raceasiantypekey,
+     fostercare1raceblacktypekey,   --60
+     fostercare1racehawaiiantypekey,
+     fostercare1racewhitetypekey,
+     fostercare1raceuntypekey,
+     fostercare1hispanictypekey,
+     fostercare2raceaitypekey,
+     fostercare2raceasiantypekey,
+     fostercare2raceblacktypekey,
+     fostercare2racehawaiiantypekey,
+     fostercare2racewhitetypekey,
+     fostercare2raceuntypekey,    --70
+     fostercare2hispanictypekey,
+     dischargedate,
+     dischargetransactiondt,
+     dischargereasontypekey,
+     ivefostercareflag,
+     iveadoptionflag,
+     ivaflag,
+     ivdflag,
+     xixflag,
+     ssiorssaflag,       --80
+     nofederalsupportflag,
+     fostercarepaymentamt,
+     insertedon,
+     insertedby,
+     updatedon,
+     updatedby,
+     activeflag,
+     fk_id,
+     CASEid,
+     placementid        --90
+     ,removalid
+     )
+
+    VALUES                  
+     (      
+      nextval('sq_afcares_fostercareid'),
+     OUT_STATE_CD,
+     OUT_REPORT_PD_END_DT,
+     OUT_LOCAL_AGENCY_CD,
+     OUT_RECORD_NO,
+     OUT_PERIODIC_REVIEW_DT,
+     OUT_CHILD_DOB,
+     OUT_GENDER_CD,
+     OUT_RACE_AI_CD,
+     OUT_RACE_ASIAN_CD,      --10
+     OUT_RACE_BLACK_CD,
+     OUT_RACE_HAWAIIAN_CD,
+     OUT_RACE_WHITE_CD,
+     OUT_RACE_UN_CD,
+     OUT_HISPANIC_CD,
+     /*  case when (OUT_MENTAL_RETARDATION_CD='1' or OUT_VISUAL_HEARING_CD='1' or OUT_PHYSICAL_DISABLED_CD='1' or  OUT_EMOTIONAL_DISTURBED_CD='1' or OUT_OTHER_DIAGNOSED_CONDITION_CD='1') then '1'
+       when (OUT_MENTAL_RETARDATION_CD='0' and OUT_VISUAL_HEARING_CD='0' and OUT_PHYSICAL_DISABLED_CD='0' and  OUT_EMOTIONAL_DISTURBED_CD='0' and OUT_OTHER_DIAGNOSED_CONDITION_CD='0') then '2'
+     else coalesce(OUT_CHILD_DIAGNOSED_CD,'3')
+     end */
+     OUT_CHILD_DIAGNOSED_CD,
+     OUT_MENTAL_RETARDATION_CD,
+     OUT_VISUAL_HEARING_CD,
+     OUT_PHYSICAL_DISABLED_CD,
+     OUT_EMOTIONAL_DISTURBED_CD,     --20
+     OUT_OTHER_DIAGNOSED_CONDITION_CD,
+     OUT_CHILD_ADOPTED_CD,
+     OUT_AGE_ADOPTION_LEGALIZED,
+     OUT_FIRST_REMOVAL_DT,  
+     lpad(OUT_NUM_REMOVALS::varchar,2,'0'), --09-16   
+     OUT_LAST_DISCHARGE_DT,  
+     OUT_LATEST_REMOVAL_DT,   
+     OUT_REMOVAL_TRANSACTION_DT,  
+     OUT_PLACEMENT_DT,   
+     CASE WHEN lpad(OUT_NUM_PLACEMENTS::varchar, 2, '0') != '00' THEN lpad(OUT_NUM_PLACEMENTS::varchar, 2, '0') ELSE '' END,   --30 
+     OUT_REMOVAL_TYPE_CD,   
+     OUT_PHYSICAL_ABUSE,   
+     OUT_SEXUAL_ABUSE,   
+     OUT_NEGLECT,   
+     OUT_PAR_ALCOHOL_ABUSE,  
+     OUT_PAR_DRUG_ABUSE,   
+     OUT_CHILD_ALCOHOL_ABUSE,  
+     OUT_CHILD_DRUG_ABUSE,  
+     case  when OUT_CHILD_DIAGNOSED_CD = '3' then OUT_CHILD_DISABILITY 
+       when (OUT_MENTAL_RETARDATION_CD='0' and OUT_VISUAL_HEARING_CD='0' and OUT_PHYSICAL_DISABLED_CD='0' and  OUT_EMOTIONAL_DISTURBED_CD='0' and OUT_OTHER_DIAGNOSED_CONDITION_CD='0') then '0'
+       else OUT_CHILD_DISABILITY
+     end,  
+     OUT_CHILD_BEHAVIOR,       --40
+     OUT_PARENT_DEATH,   
+     OUT_PARENT_INCARCERATION,  
+     OUT_CARETAKER_ILLNESS,  
+     OUT_ABANDONMENT,   
+     OUT_RELINQUISHMENT,   
+     OUT_INADEQUATE_HOUSING, 
+     case 
+       when OUT_PLACEMENT_SETTING_CD in ('4','5','6','7') then OUT_PLACEMENT_SETTING_CD
+       when (OUT_PLACEMENT_SETTING_CD in ( '1', '2', '3') and OUT_FOSTER_FAMILY_STRUCTURE_CD <>'0') then OUT_PLACEMENT_SETTING_CD
+       else OUT_PLACEMENT_SETTING_CD end          
+     ,  
+     OUT_PLACEMENT_STATE,  
+     -- case when ((v_numberofdays>30) then OUT_CASE_PLAN_GOAL_CD -- or (OUT_PERIODIC_REVIEW_DT>=OUT_LATEST_REMOVAL_DT and OUT_PERIODIC_REVIEW_DT<=OUT_DISCHARGE_DT)) then OUT_CASE_PLAN_GOAL_CD
+     --else '7' end
+     OUT_CASE_PLAN_GOAL_CD,   
+     OUT_CARETAKER_FAMILY_STRUCTURE_CD,   --50
+     OUT_CARETAKER1_BIRTH_YEAR, 
+     OUT_CARETAKER2_BIRTH_YEAR,          
+     -- case when OUT_CARETAKER_FAMILY_STRUCTURE_CD in ('3','4') then null
+     -- when (OUT_CARETAKER_FAMILY_STRUCTURE_CD in ('1','2') and OUT_CARETAKER2_BIRTH_YEAR is null) then OUT_CARETAKER1_BIRTH_YEAR 
+     -- else OUT_CARETAKER2_BIRTH_YEAR 
+     -- end,  
+     OUT_MOTHER_TPR_DT,   
+     OUT_FATHER_TPR_DT,   
+     OUT_FOSTER_FAMILY_STRUCTURE_CD,     --55
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then '    '
+        else coalesce(OUT_FOSTERCARE1_BIRTH_YEAR, ' ') end,
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then '    '
+        else coalesce(OUT_FOSTERCARE2_BIRTH_YEAR, ' ') end,  
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else coalesce(OUT_FOSTERCARE1_RACE_AI_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else coalesce(OUT_FOSTERCARE1_RACE_ASIAN_CD,'0') end,  
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else coalesce(OUT_FOSTERCARE1_RACE_BLACK_CD,'0') end,   
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else coalesce(OUT_FOSTERCARE1_RACE_HAWAIIAN_CD,'0') end,  
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else coalesce(OUT_FOSTERCARE1_RACE_WHITE_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else coalesce(OUT_FOSTERCARE1_RACE_UN_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD='0' then ' '
+        else OUT_FOSTERCARE1_HISPANIC_CD end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else coalesce(OUT_FOSTERCARE2_RACE_AI_CD,'0') end,  
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else coalesce(OUT_FOSTERCARE2_RACE_ASIAN_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else coalesce(OUT_FOSTERCARE2_RACE_BLACK_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else  coalesce(OUT_FOSTERCARE2_RACE_HAWAIIAN_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else  coalesce(OUT_FOSTERCARE2_RACE_WHITE_CD,'0') end, 
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else  coalesce(OUT_FOSTERCARE2_RACE_UN_CD,'0') end,     
+      case when OUT_FOSTER_FAMILY_STRUCTURE_CD in ('0','3','4') then ' '
+        else  OUT_FOSTERCARE2_HISPANIC_CD end,
+     OUT_DISCHARGE_DT, 
+     OUT_DISCHARGE_TRANSACTION_DT,
+     OUT_DISCHARGE_REASON_CD,  
+     coalesce(nullif(OUT_IV_E_FOSTERCARE_SW,''),'0'), 
+     coalesce(nullif(OUT_IV_E_ADOPTION_SW,''),'0'),   
+     --  coalesce(nullif(OUT_IV_A_SW,''),'0'), 
+     OUT_IV_A_SW,          
+     --  coalesce(nullif(OUT_IV_D_SW,''),'0'),    
+     OUT_IV_D_SW,
+     -- coalesce(nullif(OUT_XIX_SW,''),'0'), 
+     OUT_XIX_SW,
+     coalesce(OUT_SSI_OR_SSA_SW,'0'),          --80 
+     --  OUT_SSI_OR_SSA_SW,
+     case when (coalesce(OUT_IV_E_FOSTERCARE_SW,'0')='0' and coalesce(OUT_XIX_SW,'0')='0' and coalesce(OUT_IV_E_ADOPTION_SW,'0')='0' and coalesce(OUT_IV_A_SW,'0')='0' and coalesce(OUT_IV_D_SW,'0')='0'  and  coalesce(OUT_SSI_OR_SSA_SW,'0')='0') then '1'
+     else '0'
+     end,  
+     coalesce(OUT_FOSTERCARE_PAYMENT_AMT,'0'),
+     CURRENT_TIMESTAMP,
+     OUT_USER_ID,
+     CURRENT_TIMESTAMP,
+     OUT_USER_ID,
+     '1',
+     OUT_CLIENT_ID,
+     COALESCE(VS_CASE_ID,'0'),
+     OUT_PLACEMENT_ID,         --90
+     OUT_LAST_REMOVAL_ID
+     );
+           
+    EXCEPTION WHEN OTHERS THEN
+     VS_ERR_OUTPUT_STATE := SQLSTATE;
+     VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+     VS_ERR_EXCEP_FLAG := 1;    
+  
+   END;
+  END IF;
+ END LOOP;
+ CLOSE REM_CUR;
+
+ BEGIN
+
+  SELECT * 
+   INTO VS_ERR_OUTPUT_STATE 
+  FROM SP_GENERATE_AFCARS_ELEMENT65();--
+  
+  EXCEPTION WHEN OTHERS THEN
+   VS_ERR_OUTPUT_STATE := SQLSTATE;
+   VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+   VS_ERR_EXCEP_FLAG := 1; 
+ 
+ END;--
+  
+ BEGIN 
+
+  insert into afcarsfostercaresummary 
+   (
+   afcarsfostercaresummaryid ,
+   totalnorecords ,
+   periodendingdate ,
+   chunderoneyear ,
+   choneyear ,
+   chtwoyear ,
+   chthreeyear ,
+   chfouryear ,
+   chfiveyear ,
+   chsixyear ,
+   chsevenyear ,
+   cheightyear ,
+   chnineyear ,
+   chtenyear ,
+   chelevenyear ,
+   chtwelveyear ,
+   chthirteenyear ,
+   chfourteenyear ,
+   chfifteenyear ,
+   chsixteenyear ,
+   chseventeenyear ,
+   cheighteenyear ,
+   chovereighteenyear ,
+   insertedon ,
+   insertedby ,
+   updatedon ,
+   updatedby ,
+   activeflag  
+   )
+  select 
+   nextval('sq_afcares_fostercare_summary'),
+   count(  afcarsfostercare_new.fk_id),
+   OUT_REPORT_PD_END_DT,
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=0),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=1),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=2),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=3),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=4),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=5),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=6),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=7),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=8),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=9),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=10),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=11),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=12),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=13),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=14),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=15),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=16),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=17),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage=18),
+   count( afcarsfostercare_new.fk_id) filter (where af_age.fage>18),
+   CURRENT_TIMESTAMP,
+   'interface',
+   CURRENT_TIMESTAMP,
+   'interface',
+   1
+  from 
+   afcarsfostercare_new ,
+   (select distinct fk_id,
+    lpad((case when substring(childdob,6,2)::integer > lpad(VS_MONTH::varchar,2,'0')::integer then (VS_YEAR::integer-substring(childdob,1,4)::integer)-1
+   else (VS_YEAR::integer-substring(childdob,1,4)::integer)
+   end)::varchar,2,'0')::integer fage
+   from 
+   afcarsfostercare_new
+   ) af_age
+  where af_age.fk_id=afcarsfostercare_new.fk_id
+   and afcarsfostercare_new.activeflag = '1' ;
+
+  EXCEPTION WHEN OTHERS THEN
+   VS_ERR_OUTPUT_STATE := SQLSTATE;
+   VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+   VS_ERR_EXCEP_FLAG := 1;
+
+
+ end;--
+
+ BEGIN
+
+  SELECT * 
+   INTO  VS_ERR_OUTPUT_STATE 
+  FROM SP_GENERATE_AFCARS_CARES_IN (vdt_from::date, vdt_to::date );
+ 
+  EXCEPTION WHEN OTHERS THEN
+   VS_ERR_OUTPUT_STATE := SQLSTATE;
+   VS_ERR_OUTPUT_SQLCODE :=SQLERRM;
+   VS_ERR_EXCEP_FLAG := 1;  
+ 
+ END;--
+  
+ VS_ERR_OUTPUT_SQLCODE := 0;
+ --VS_ERR_MESSAGE := 'AFCARS_GENERATE_FOSTERCARE SUCCESSFULLY';
+END; 
+$function$
+

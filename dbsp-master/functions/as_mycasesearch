@@ -1,0 +1,87 @@
+CREATE OR REPLACE FUNCTION as_mycasesearch(userid character varying, page integer, pagelimit integer, casesearchval character varying, sortorder character varying, sortcolumn character varying, v_worker character varying, actiontype character varying, v_foldertypekey character varying, v_status character varying)
+ RETURNS TABLE(totalcount bigint, intakeserviceid character varying, servicerequestnumber character varying, srtype character varying, datereceived timestamp without time zone, subcasetype character varying, workername character varying, updateon timestamp without time zone, restrictedstatus text, useraction text)
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                       
+ DECLARE  v_pageoffset  int;                                                                                                                                                     
+ v_pagenumber  int;
+ l_actiontype  character  varying;
+ BEGIN
+ v_pagenumber  :=  (page-1)*10;
+ l_actiontype:=actiontype;
+
+ RETURN  QUERY
+     select count(1) over(),x.*
+ from 
+    ((select 
+          isr.intakeserviceid::character varying,
+          isr.servicerequestnumber,
+          isrt.description as casetype,
+          CAST(isr.ReportedDate as date) as datereceived,
+          srst.description as subcasetype,
+       /*   (select string_agg(distinct up.fullname, '- ')::character varying from routing rsub
+               inner join userprofile up on up.securityusersid = rsub.tosecurityusersid 
+               and rsub.objectid = r.objectid and rsub.eventcode = r.eventcode) as fullname, */
+   (select string_agg(distinct up.fullname, '- ')::character varying from routing rsub
+      inner join userprofile up on up.securityusersid = rsub.tosecurityusersid 
+      and rsub.objectid=isr.intakeserviceid ::character varying and rsub.activeflag=1) as fullname,    
+          isr.updatedon,
+          (SELECT * FROM as_getRestrictedCaseStatus(isr.intakeserviceid::text,userid)) AS restrictStatus,
+       --  (case when (r.tosecurityusersid != userid) then 'view' else 'edit' end) as useraction
+   (case when (select count(1) from routing r where r.tosecurityusersid =   userid and r.objectid = isr.intakeserviceid :: character varying and r.activeflag=1) > 0 then 'edit' else 'view' end) as useraction
+     from intakeservicerequest isr
+     join intakeservicerequesttype isrt on isrt.intakeservreqtypeid = isr.intakeservreqtypeid 
+   and isrt.activeflag = 1
+     join servicerequestsubtype srst on srst.servicerequestsubtypeid = isr.intakeservicerequestclassid and srst.activeflag = 1
+  --   join routing r on r.objectid = isr.intakeserviceid::character varying and r.activeflag = 1
+     where isr.activeflag = 1
+     and (l_actiontype is null or l_actiontype = '' or LOWER(l_actiontype) =  Lower(isrt.description))
+     and (casesearchval is null or casesearchval = '' or LOWER(isr.servicerequestnumber) =  LOWER(casesearchval))
+     and ( v_worker is null or v_worker = '' or (isr.intakeserviceid::character varying in (select objectid from routing r where r.activeflag=1 and LOWER(r.tosecurityusersid) =   LOWER(v_worker))))
+  and isr.teamtypekey = 'AS'
+     group by isr.intakeserviceid, isr.servicerequestnumber, isrt.description, isr.ReportedDate, srst.description)
+     union all
+     (select 
+          ids.intakenumber,
+          ids.intakenumber,
+          'Referral' as casetype,
+          ids.daterecieved,
+          null,
+          up.fullname,
+          ids.updatedon,
+          (SELECT * FROM as_getRestrictedCaseStatus(ids.intakenumber::text,userid)) AS restrictStatus,
+          (case when (ids.intakeuser = userid and
+           (cast(ids.jsondata->'reviewstatus'->'status' as character varying)='""') ) 
+            then 'edit' else 'view' end) as  useraction 
+     from intakedastaging ids
+     join userprofile up on  up.securityusersid = ids.intakeuser
+     where  ids.activeflag=1 and ids.teamtypekey = 'AS'
+     --and cast(ids.jsondata->'agency' as character varying ) in ('"AS"')
+     and (l_actiontype is null or l_actiontype = '' or LOWER(l_actiontype) = 'referral')
+     and (casesearchval is null or casesearchval = '' or LOWER(ids.intakenumber) =   LOWER(casesearchval))
+     and (v_worker is null or v_worker = '' or LOWER(up.securityusersid) =   LOWER(v_worker))
+  )) x  WHERE x.restrictStatus in ('INCL','INCLRES')
+    ORDER  BY (case sortorder 
+         when 'asc' 
+         then  
+           case sortcolumn  
+            when 'srtype' then cast(x.casetype as character varying )
+            when 'servicerequestnumber' then cast(x.servicerequestnumber as character varying )
+            when 'subcasetype' then cast(x.subcasetype as character varying)
+            when 'datereceived' then cast (x.datereceived as character varying )
+            when 'workername' then cast(x.fullname as character varying )
+         END
+              END) ASC NULLS LAST,
+       (case sortorder 
+         when 'desc' 
+         then  
+           case sortcolumn  
+            when 'srtype' then cast(x.casetype as character varying )
+            when 'servicerequestnumber' then cast(x.servicerequestnumber as character varying )
+            when 'subcasetype' then cast(x.subcasetype as character varying)
+            when 'datereceived' then cast (x.datereceived as character varying )
+            when 'workername' then cast(x.fullname as character varying )
+         END
+              END) DESC NULLS LAST LIMIT  pagelimit OFFSET    v_pagenumber ;
+ END;                                                                                                                                                                                                                                                                                                        
+ $function$
+

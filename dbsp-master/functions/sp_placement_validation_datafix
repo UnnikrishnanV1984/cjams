@@ -1,0 +1,225 @@
+CREATE OR REPLACE FUNCTION sp_placement_validation_datafix(ad_start_date date, ad_end_date date, as_user_id character varying, OUT al_sqlcode integer, OUT as_mess character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author: Vineet Tirodkar\r
+-- Date Created: 09/04/2020\r
+-- SP to generate missing Placement Validations\r
+\r
+-- Revision(s)\r
+-- 11/11/2020 - Vineet Tirodkar - Modifications to delete out of placement range validations \r
+-- 01/14/2021 - Vineet Tirodkar - Modifications to consider placements with entry date as prior month last day\r
+-- 05/07/2021 - Vineet Tirodkar - Modifications to Trigger Under/Over when Exit date is 1st of the month (CDM-13055_56_57_58_59_60)\r
+------------------------------------------------------------------------\r
+declare sqlcode int default 0;\r
+declare vs_placement_validation_id varchar(50) default 'sq_placement_validation';\r
+\r
+declare vl_placment_val_count integer default 0;\r
+declare vl_count integer default 0;\r
+declare vl_placement_exit_day integer default 0;\r
+declare vl_placement_id bigint;\r
+declare vd_next_month_plvd_dt date;\r
+declare vd_placement_entry_dt date;\r
+declare vd_placement_exit_dt date;\r
+declare vd_current_month_dt date;\r
+declare vd_current_start_dt date;\r
+declare vd_current_end_dt date;\r
+declare vd_entry_month_first_day date;\r
+\r
+cur_placement record;\r
+cur_placement_refcur REFCURSOR;\r
+\r
+BEGIN\r
+ select (date_trunc('month', now())::date ) into vd_next_month_plvd_dt ;\r
+ RAISE NOTICE 'vd_next_month_plvd_dt >> %',vd_next_month_plvd_dt;\r
+ \r
+ if as_user_id is NULL then\r
+  as_user_id := 'financeDFX';\r
+ end if;\r
+\r
+ OPEN cur_placement_refcur FOR\r
+  select placement_id, \r
+   entry_dt::date as entry_dt,\r
+   exit_dt::date as exit_dt\r
+   from tb_placement\r
+  where delete_sw = 'N'\r
+   and coalesce(void_sw, 'N') <> 'Y'\r
+   and approval_status_cd  = '3047'\r
+   and placement_structure_id not in ( 8, 76 )\r
+   and entry_dt <> coalesce(exit_dt, entry_dt + 1)\r
+   and entry_dt::date <= (date_trunc('month', now())::date - 1)::date\r
+   and placement_id \r
+    in (  select alternateid \r
+      from placement \r
+      where updatedon::date >= ad_start_date::date \r
+       and updatedon::date <= ad_end_date::date\r
+       and activeflag = 1\r
+       and altproviderid is not null\r
+       \r
+     )  \r
+   -- for Unit Testing\r
+   -- and placement_id in (1557040, 1557026, 340954, 327905, 324488)   \r
+  order by entry_dt::date desc ; \r
+ loop\r
+  fetch cur_placement_refcur into cur_placement;\r
+   exit when not found;\r
+  \r
+   vl_placement_id := cur_placement.placement_id;\r
+   vd_placement_entry_dt := cur_placement.entry_dt;\r
+   vd_placement_exit_dt := cur_placement.exit_dt;\r
+   \r
+   \r
+   RAISE NOTICE 'vl_placement_id >> %',vl_placement_id;\r
+   RAISE NOTICE 'vd_placement_entry_dt >> %',vd_placement_entry_dt;\r
+   RAISE NOTICE 'vd_placement_exit_dt >> %',vd_placement_exit_dt;\r
+   \r
+   vd_current_month_dt := date_trunc('month', vd_placement_entry_dt)::date ;\r
+   \r
+   IF vd_current_month_dt < vd_next_month_plvd_dt THEN\r
+    vl_count := 1;\r
+    loop EXIT WHEN vl_count <= 0::integer ;\r
+     RAISE NOTICE 'vl_count >> %',vl_count;\r
+     RAISE NOTICE 'vd_current_month_dt >> %',vd_current_month_dt;\r
+     \r
+     select (date_trunc('month', vd_current_month_dt) )::date,\r
+       (date_trunc('month', vd_current_month_dt)::date + interval '1 month' - interval ' 1 day')::date\r
+      into vd_current_start_dt,\r
+       vd_current_end_dt ;\r
+     \r
+     RAISE NOTICE 'vd_current_start_dt for >> %',vd_current_start_dt;\r
+     RAISE NOTICE 'vd_current_end_dt for >> %',vd_current_end_dt;\r
+     \r
+     Select count(*)\r
+      into vl_placment_val_count\r
+     from tb_placement_validation\r
+     where placement_id = vl_placement_id \r
+      and validation_start_dt = vd_current_start_dt \r
+      and validation_end_dt = vd_current_end_dt \r
+      and delete_sw = 'N' ;\r
+    \r
+     RAISE NOTICE 'vl_placment_val_count >> %',vl_placment_val_count;\r
+     \r
+     IF vl_placment_val_count = 0 AND vd_current_start_dt >= '2009-01-01'::date THEN  \r
+      RAISE NOTICE 'Placement Validation is missing for >> %',vd_current_start_dt;\r
+      insert into\r
+       tb_placement_validation\r
+       (\r
+          placement_validation_id,               placement_id,\r
+          placement_entry_dt,                    placement_exit_dt,\r
+          validation_status_cd,                  comment_tx,\r
+          validation_start_dt,                   validation_end_dt,\r
+          create_ts,                             create_user_id,\r
+          update_ts,                             update_user_id,\r
+          delete_sw\r
+       )\r
+       values\r
+       (\r
+          nextval('sq_placement_validation'),   vl_placement_id,\r
+          vd_placement_entry_dt,                   vd_placement_exit_dt,\r
+          NULL,                                    NULL,\r
+          vd_current_start_dt,                vd_current_end_dt,\r
+          current_timestamp,                       as_user_id,\r
+          current_timestamp,                       as_user_id,\r
+          'N'\r
+       );\r
+     ELSE\r
+      if vd_current_start_dt >= '2009-01-01'::date  then\r
+       RAISE NOTICE 'Existing Placement Validation found for >> %',vd_current_start_dt;\r
+      else\r
+       RAISE NOTICE 'Validation month is prior to Finance Go-Live date >> %',vd_current_start_dt;\r
+      end if; \r
+     END IF;\r
+     \r
+     al_sqlcode := SQLCODE;\r
+     IF al_sqlcode < 0 THEN\r
+      as_mess := 'Error in creating missing placement validations';\r
+      al_sqlcode := -1;\r
+      vl_count := -1; -- Exit\r
+      ROLLBACK;\r
+     END IF ;\r
+     \r
+     vd_current_month_dt := (vd_current_month_dt + interval '1 month')::date;\r
+     RAISE NOTICE 'New vd_current_month_dt >> %',vd_current_month_dt;\r
+     \r
+     IF vd_current_month_dt >= vd_next_month_plvd_dt THEN \r
+      RAISE NOTICE 'Exit - Processed up to the current Month' ;\r
+      vl_count := -1; -- Exit\r
+     Elseif vd_placement_exit_dt is not null and  vd_current_month_dt >= vd_placement_exit_dt THEN\r
+      RAISE NOTICE 'Exit - Month is beyond the Exit Date' ;\r
+      vl_count := -1; -- Exit\r
+     ELSE\r
+      RAISE NOTICE 'Go to the Next month' ;\r
+      vl_count := vl_count + 1;\r
+     END IF;\r
+    END loop;\r
+   END IF; \r
+ \r
+   -- Delete out of placement range validations\r
+   select date_trunc('month', vd_placement_entry_dt)::date \r
+    into vd_entry_month_first_day ;\r
+   \r
+   update tb_placement_validation\r
+    set delete_sw = 'Y' ,\r
+     update_ts = current_timestamp,\r
+     update_user_id = 'financeVD'\r
+   where placement_id = vl_placement_id\r
+    and delete_sw = 'N'\r
+    and coalesce(validation_status_cd, '') <> '1750'\r
+    and validation_start_dt < vd_entry_month_first_day ;\r
+\r
+   if vd_placement_exit_dt is not null then\r
+    select date_part('day', vd_placement_exit_dt::date)::integer\r
+     into vl_placement_exit_day ;\r
+     \r
+    if vl_placement_exit_day = 1 then \r
+     -- Remove which are pending\r
+     update tb_placement_validation\r
+      set delete_sw = 'Y' ,\r
+       update_ts = current_timestamp,\r
+       update_user_id = 'financeVD'\r
+     where placement_id = vl_placement_id\r
+      and delete_sw = 'N'\r
+      and coalesce(validation_status_cd, '') <> '1750'\r
+      and validation_start_dt >= vd_placement_exit_dt; \r
+      \r
+     -- To Trigger Under/Over \r
+     update tb_placement_validation\r
+      set update_ts = current_timestamp,\r
+       update_user_id = 'financeAR'\r
+     where placement_id = vl_placement_id\r
+      and delete_sw = 'N'\r
+      and coalesce(validation_status_cd, '') = '1750'\r
+      and date_part('month', validation_start_dt) = date_part('month', vd_placement_exit_dt)\r
+      and date_part('year', validation_start_dt) = date_part('year', vd_placement_exit_dt); \r
+    else\r
+     update tb_placement_validation\r
+      set delete_sw = 'Y' ,\r
+       update_ts = current_timestamp,\r
+       update_user_id = 'financeVD'\r
+     where placement_id = vl_placement_id\r
+      and delete_sw = 'N'\r
+      and coalesce(validation_status_cd, '') <> '1750'\r
+      and validation_start_dt > vd_placement_exit_dt; \r
+    end if;  \r
+   end if;\r
+ END LOOP; \r
+ \r
+ -- Delete placement validation prior to 2009-01-01\r
+ update tb_placement_validation\r
+  set delete_sw = 'Y',\r
+   update_ts = now(),\r
+   update_user_id = 'financeDL'\r
+ where delete_sw = 'N'\r
+  and create_user_id = as_user_id\r
+  and validation_start_dt < '2009-01-01'::date ;  \r
+  \r
+ al_sqlcode := 0;\r
+ as_mess := 'Success';\r
+   \r
+END;\r
+\r
+$function$
+

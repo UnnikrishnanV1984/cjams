@@ -1,0 +1,1 @@
+ALTER TABLE cjams.investigationmaltreatment alter  column providerphonenumber type varchar (100);

@@ -1,0 +1,109 @@
+CREATE OR REPLACE FUNCTION as_addallegationmaltreatment(v_createdcasejsondata json, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE v_count bigint;
+
+l_newmaltreatementid uuid; 
+l_newinvestigationallegationid uuid; 
+v_caseid character varying; 
+v_investigationid uuid; 
+v_indicators json;
+indicators json; 
+allegations json; 
+v_allegations json; 
+v_maltreators json; 
+createcase json;
+
+
+BEGIN  
+ 
+
+FOR  createcase  IN  SELECT  *  FROM  json_array_elements(v_createdcasejsondata)
+ LOOP
+  v_caseid:=createcase->>'caseID';
+  
+  RAISE  NOTICE  '  caseID  %',v_caseid; 
+  
+  SELECT iv.investigationid 
+   INTO v_investigationid 
+  FROM intakeservicerequest isr
+  JOIN investigation iv on iv.intakeserviceid=isr.intakeserviceid AND iv.activeflag=1 
+  WHERE isr.servicerequestnumber=v_caseid
+   AND isr.activeflag=1;
+
+  
+  v_allegations:=createcase->>'choosenAllegation';
+  
+  FOR  allegations  IN  SELECT  *  FROM  json_array_elements(v_allegations)
+  LOOP
+
+     INSERT  INTO  investigationmaltreatment(
+             investigationid,
+             isjurisdiction, 
+             isreported,
+             activeflag,
+             insertedby,
+             effectivedate) 
+     VALUES  (
+       v_investigationid,
+       0,
+       true,
+       1,  
+       v_securityuserid, 
+       now()) RETURNING  "maltreatmentid"  INTO  l_newmaltreatementid;
+       
+  
+   
+     INSERT  INTO  investigationallegation(
+           investigationid,  
+           allegationid, 
+           maltreatmentid, 
+           name,  
+           reported,  
+           indicators,  
+           activeflag,
+           insertedby,  
+           effectivedate)
+
+     VALUES  (
+       v_investigationid, --l_newInvestigationId,  
+       (allegations->>'allegationID')::uuid, 
+       l_newmaltreatementid, 
+       (allegations->>'allegationValue'):: character varying,  
+       1::boolean,  
+        allegations->>'Indicators', 
+        1,  
+       v_securityuserid,  
+       now()) RETURNING  "investigationallegationid"  INTO  l_newinvestigationallegationid;
+  
+  RAISE  NOTICE  '  investigationallegationid  %',l_newinvestigationallegationid;
+  
+  RAISE  NOTICE  '  v_indicators  %',v_indicators;
+  
+  v_indicators :=allegations->>'indicators';
+  
+  
+   FOR  indicators  IN  SELECT  *  FROM  json_array_elements(v_indicators)
+   LOOP
+     INSERT  INTO  investigationallegationindicator(
+                investigationallegationid,  
+                indicatorid,  
+                activeflag,
+                insertedby)
+
+      VALUES  (l_newinvestigationallegationid,  
+        (indicators->>'indicatorid')::uuid,    
+         1, 
+         v_securityuserid);
+   END LOOP;
+    
+  END LOOP;
+ END LOOP;
+ 
+RETURN 'Successfull';
+end;
+
+$function$
+

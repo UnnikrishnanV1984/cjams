@@ -1,0 +1,86 @@
+CREATE OR REPLACE FUNCTION as_getplacementlist(v_intakeserviceid uuid, pagenumber bigint, pagesize bigint, v_intakenumber character varying DEFAULT NULL::character varying, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, exitreasontypekey character varying, iseligible boolean, childname character varying, cjamspid character varying, dob timestamp without time zone, gender character varying, placementtype character varying, providerunit character varying, placedatetime timestamp without time zone, remarks character varying, serviceid integer, placeenddatetime timestamp without time zone, providername character varying, addate date, adtime time without time zone, releasedate date, placementinformation character varying, status character varying, placementid uuid, role character varying, providerinfo json, placementstatus text, exitreasontypekeydesc character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset int;
+ v_pagenumber int;
+DECLARE 
+ totalcount integer;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+ 
+    IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+  pagenumber := 1; 
+ END IF;   
+
+  
+RETURN query
+
+SELECT 
+ COUNT(1)OVER(),
+    pl.exitreasontypekey,
+ (select 
+ CASE
+  WHEN EXTRACT(YEAR from AGE(NOW(),ps.dob))<18 THEN true
+  ELSE false
+  END ) 
+   AS iseligible,
+    ( ps.firstname || ' '||ps.lastname):: character varying childname, 
+ ps.cjamspid :: character varying,
+    ps.dob,gt.typedescription AS gender,
+    tbs.service_nm AS placementtype,NULL::character varying,
+    pl.startdatetime placedatetime,
+    pl.remarks :: character varying,
+    pl.service_id as serviceId,
+    pl.enddatetime placeenddatetime,--pl.jlocation,pl.jcounty, pl.certifiedad, pl.resourceworker,pl.parentorg,pl.detainer,-- ctx.countyname as county,
+ pr.provider_nm,--pl.lrstatus,
+ pl.addate,pl.adtime,pl.releasedate,
+    (select concat_ws(' ',pr.provider_nm,tpa.adr_street_tx,(case when tpa.adr_format_cd = 'P' then 'PO Box ' else '' end ),tpa.adr_box_no,tpa.adr_unit_no_tx,tpa.adr_street_nm,tpa.adr_street_suffix_cd,(select coalesce(tpv.value_tx,'') from tb_picklist_values tpv where trim(tpv.picklist_value_cd) in (trim(tpa.adr_pre_dir_cd)) and tpv.picklist_type_id='69'),tpa.adr_city_nm,(select cnty.countyname from county cnty where cnty.statecountycode = tpa.adr_county_cd and cnty.activeflag = 1),tpa.adr_state_cd,tpa.adr_zip5_no)
+        from  prov.tb_provider_addresses tpa where   tpa.parent_key_id = pr.provider_id::character varying and adr_default_sw = 'Y' ORDER BY tpa.update_ts DESC Limit 1):: character varying 
+     AS placementinformation,
+    pl.statustypekey status,
+ pl.placementid,
+ isra.intakeservicerequestpersontypekey AS role,
+ json_build_object(
+            'providername', pr.provider_nm,
+            'providerfullname', CONCAT(pr.provider_first_nm,' ',pr.provider_last_nm),
+            'addressline1', (select concat_ws(' ',tpa.adr_street_tx,(case when tpa.adr_format_cd = 'P' then 'PO Box ' else '' end ),tpa.adr_box_no,tpa.adr_unit_no_tx,tpa.adr_street_nm,tpa.adr_street_suffix_cd,(select coalesce(tpv.value_tx,'') from tb_picklist_values tpv where trim(tpv.picklist_value_cd) in (trim(tpa.adr_pre_dir_cd)) and tpv.picklist_type_id='69'),tpa.adr_city_nm,(select cnty.countyname from county cnty where cnty.statecountycode = tpa.adr_county_cd and cnty.activeflag = 1),tpa.adr_state_cd,tpa.adr_zip5_no)
+        from  prov.tb_provider_addresses tpa where   tpa.parent_key_id = pr.provider_id::character varying and adr_default_sw = 'Y' ORDER BY tpa.update_ts DESC Limit 1):: character varying,
+         'providerid', pr.provider_id,
+   'zipcode', ct.zipcode,
+         'county', ct.countyname,
+         'city', paddr.adr_city_nm,
+         'state', paddr.adr_state_cd
+    ) AS providerinfo,(case  when pl.enddatetime is null then 'Active' else 'Closed' end) as placementstatus,rfv.description as exitreasontypekeydesc--,pl.istempplacement
+FROM placement pl
+INNER JOIN  prov.tb_provider pr
+ ON pl.altproviderid = pr.provider_id AND pr.delete_sw = 'N'
+LEFT JOIN  prov.tb_provider_addresses paddr
+ ON pr.provider_id = paddr.parent_key_id AND paddr.delete_sw = 'N'
+LEFT JOIN intakeservicerequestactor isra 
+ ON isra.intakeservicerequestactorid = pl.intakeservicerequestactorid AND isra.activeflag=1
+LEFT JOIN person ps 
+ ON (ps.personid = isra.personid OR ps.personid = pl.personid) AND ps.activeflag=1
+LEFT JOIN gendertype gt 
+ ON gt.gendertypekey = ps.gendertypekey AND gt.activeflag=1
+LEFT JOIN county ct 
+ ON ct.statecountycode = paddr.adr_county_cd AND ct.activeflag=1
+left join referencetype rt on rt.tablename = 'plcmtrlsrsn' 
+left join referencevalues rfv on 
+     rfv.ref_key = pl.exitreasontypekey and rfv.activeflag = 1 and rt.referencetypeid = rfv.referencetypeid
+LEFT JOIN  prov.tb_services tbs
+ ON tbs.service_id = pl.service_id   
+WHERE (pl.intakeserviceid=v_intakeserviceid OR pl.intakenumber = v_intakenumber) AND pl.activeflag=1
+ORDER BY placeenddatetime desc NULLS first
+LIMIT  pagesize OFFSET v_pageoffset;       
+END;
+
+$function$
+

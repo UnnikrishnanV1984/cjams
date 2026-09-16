@@ -1,0 +1,600 @@
+CREATE OR REPLACE FUNCTION as_getdraftintake(intakeno character varying)
+ RETURNS TABLE(totalcount integer, intakenumber character varying, ispreintake boolean, cpsresponse character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, narrative text, raname character varying, entityname character varying, cruworkername character varying, isreview boolean, issupervisor boolean, datesubmitted timestamp without time zone, dateclosed timestamp without time zone, remarks text, reviewstatus character varying, disposition character varying, intakestatus character varying, timeleft character varying, agencycode character varying, clwstatus character varying, jsondata jsonb)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    
+     RETURN QUERY 
+        --   ||'"intakeDATypeDetails": [],"Allegations": [],"entities": [],"recordings": [],"CrossReferences": [],"Assessments": [], ' 
+
+            SELECT  1, IDAS.IntakeNumber, false as ispreintake, 
+                cast(case IDAS.iscps when true then 'CPS' when false then 'Non CPS' else '' end  as character varying),
+            IDAS.reporteddate,  
+                (to_char(
+          IDAS.reportedtime::timestamp without  time zone,
+             'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone,
+                IDAS.Narrative narr,
+                cast( TRIM(PN.lastname)|| ',' ||TRIM(PN.firstname) as  character varying) RAName,cast('' as character varying) EntityName,  
+                cast(up.lastname ||', '|| up.firstname as character varying)   ,
+                 false ,
+                 false  ,
+              (select max(insertedon ) from routing where objectid= IDAS.IntakeNumber 
+             and isreviewrequest =true and eventcode ='INTR'),
+            IDAS.insertedon ::timestamp ,
+            cast ('' as text) ,
+                cast (DAS.typedescription as character varying)  ,
+                cast('' as character varying) dispositiondescription,
+                cast( 'Complete' as character varying) statusdescription,
+               cast( case DAS.submitteddate when null then '' else
+                case 
+                    when  age(  now() at time zone 'utc' )  - age(DAS.submitteddate  + time '02:00' )  > '0:00' then
+                cast( age( now() at time zone 'utc' )  - age(  DAS.submitteddate  + time '02:00' ) as character varying(5))
+                     else 'Overdue' end    
+                end as character varying) ,
+               IDAS.teamtypekey ,
+      ''::character varying,
+            json_build_object('narrative',  (select 
+                 json_agg (t) from (
+                  Select 'Rep' as "Role",
+                  '' as "ZipCode",
+                     coalesce(IDAS.reporterlastname,'') "Lastname",
+                    coalesce(IDAS.reporterfirstname,'') "Firstname"
+                 )as t )  ::jsonb,
+               'General',  (select 
+                 row_to_json (  t)
+                from (
+                    Select IDAS.narrative as "Narrative",
+                    reporteddate as "RecivedDate",
+                    reportedtime as "Time",
+                     cast(up.lastname ||', '|| up.firstname as character varying)   "Author",
+                     coalesce(reporterlastname,'') "Lastname",
+                    coalesce(reporterfirstname,'') "Firstname",
+                    false "isDisposition",
+                    intakeservreqinputtypeid as "Source",
+                    intakeservreqinputtypeid as "InputSource",
+                     IDAS.intakeservreqtypeid as "Purpose",
+                    isanonymousreporter as "IsAnonymousReporter",
+                    '[]'::json as "intakeservice",
+                    IDAS.intakenumber as "IntakeNumber",
+                    IDAS.teamtypekey as "AgencyCode",
+                    isunknownreporter as "IsUnknownReporter",
+                    coalesce(iszipcoderefuse,false) as "RefuseToShareZip",
+                    IDAS.iscps as "Iscps",
+                    IDAS.reporteddate as "CreatedDate",
+                    IDAS.teamtypekey ||'~true' as "Agency"     
+            ) as t)::jsonb,
+                    'reviewstatus'  , (select 
+                 row_to_json (  t)
+                from ( select  ''   status,
+                      '' commenttext, eventcode appevent) as t),
+                     'DAType',json_build_object('DATypeDetail',(
+                     select   json_Agg(e)  from (
+                       select  '' "reason",
+                         '' "Summary",
+                         --eventstatus "DAStatus",
+                         (case when IDAS.teamtypekey = 'DJS' then IRST.intakeserreqstatustypekey else eventstatus end) "DAStatus",
+                         '' "comments",
+                       IDAS.intakeservreqtypeid "DaTypeKey", 
+                          '' "supStatus",
+                        null  "GroupNumber" ,
+      '' "supComments" ,
+                          IDAS.intakeservicerequestclassid "DasubtypeKey", 
+                         null "GroupComment",
+                         '' "intakeAction",
+                        true "issubtypekey",
+                         --'Scrnin' "DADisposition",
+                         (case when IDAS.teamtypekey = 'DJS' then srt.dispositioncode else 'Scrnin' end) "DADisposition",
+                         '' "ReasonforDelay",
+                         --'Scrnin' "supDisposition",
+                         (case when IDAS.teamtypekey = 'DJS' then srt.dispositioncode else 'Scrnin' end) "supDisposition",
+                         null "GroupReasonType",
+                          --'Scrnin' "dispositioncode",
+                          (case when IDAS.teamtypekey = 'DJS' then srt.dispositioncode else 'Scrnin' end) "dispositioncode",
+                          (select description from dispositioncode where dispositioncode = srt.dispositioncode and activeflag = 1 limit 1) dispositioncodedesc,
+                          (select description from servicerequestsubtype where servicerequestsubtypeid = IDAS.intakeservicerequestclassid and activeflag = 1 limit 1) "subSeriviceTypeValue",
+                      idas.servicerequestnumber "ServiceRequestNumber",
+                         --IRST.intakeserreqstatustypekey "intakeserreqstatustypekey",
+                          IRST.intakeserreqstatustypekey  "intakeserreqstatustypekey",
+                         '[]'::json "supMultipleDispositionDropdown",
+                           '[]'::json "intakeMultipleDispositionDropdown"
+                     ) e
+                     )),       
+                     'disposition',(
+                     select   json_Agg(e)  from (
+                       select  '' "reason",
+                         '' "Summary",
+                         (case when IDAS.teamtypekey = 'DJS' then IRST.intakeserreqstatustypekey else 'Approved' end) "DAStatus",
+                         '' "comments",
+                       IDAS.intakeservreqtypeid "DaTypeKey", 
+                          '' "supStatus",
+                        null  "GroupNumber" ,
+      '' "supComments" ,
+                          IDAS.intakeservicerequestclassid "DasubtypeKey", 
+                         null "GroupComment",
+                         '' "intakeAction",
+                        true "issubtypekey",
+                         (case when IDAS.teamtypekey = 'DJS' then srt.dispositioncode else 'Scrnin' end)  "DADisposition",
+                         '' "ReasonforDelay",
+                         (case when IDAS.teamtypekey = 'DJS' then srt.dispositioncode else 'Scrnin' end)  "supDisposition",
+                         null "GroupReasonType",
+                          (case when IDAS.teamtypekey = 'DJS' then srt.dispositioncode else 'Scrnin' end)  "dispositioncode",
+                      idas.servicerequestnumber "ServiceRequestNumber",
+                          --IRST.intakeserreqstatustypekey "intakeserreqstatustypekey",
+                         IRST.intakeserreqstatustypekey  "intakeserreqstatustypekey",
+                         '[]'::json "supMultipleDispositionDropdown",
+                           '[]'::json "intakeMultipleDispositionDropdown"
+                     ) e
+                     )    ,  
+                    'persondetails',json_build_object('Person',(select   json_Agg(e)  from (
+                     SElect   P.personid "Pid",
+                    P.firstname "Firstname",
+                    P.lastname "Lastname",
+                    P.middlename "middlename",
+                    P.firstname || ' ' || P.lastname "fullName",
+                    (SELECT Coalesce(pa.address, '')|| ' ' || Coalesce(pa.address2, '') || ' ' || Coalesce(pa.city, '')|| ' '|| Coalesce(pa.state, '')|| ' ' || Coalesce(pa.country, '') || ' ' || Coalesce(pa.zipcode, '') 
+     FROM   personaddress pa WHERE  pa.personid = p.personid AND pa.activeflag = 1   LIMIT  1 ) "fullAddress",
+                    P.dob "Dob",
+                    to_char(P.dob , 'DD/MM/YYYY')     "DobFormatted" ,
+                    P.religiontypekey "religionkey",
+                    P.maritalstatustypekey "maritalstatus",
+                    P.gendertypekey "Gender",
+                    P.racetypekey "race",
+                    P.ethnicgrouptypekey "Ethnicity",
+                    P.userphoto "userPhoto",
+                    P.suffix "suffix",
+                    P.occupation "occupation",
+                    Ac.actortype "Role" ,
+                    case AC.isdangertoworker when 0 then 'no' when 1 then 'yes' else null end   "Dangerousworker",
+                    AC.dangertoworkerreason "DangerousWorkerReason",
+                    case AC.ismentalimpair when 0 then 'no' when 1 then 'yes' else null end   "mentallyimpaired",
+                    AC.mentalimpairdetail "mentallyimpairedReason",
+                   case AC.ismentalillness when 0 then 'no' when 1 then 'yes' else null end   "mentalillsign",
+                    AC.mentalillnessdetail "mentalillsignReason",
+                   case AC.ishouseholdmember when 1 then true   else false end   "ishousehold",
+                   case AC.iscollateralcontact when 1 then true   else false end   "iscollateralcontact",
+       A.firstname "aliasname",
+
+                        
+                    (
+                        select json_agg(e) from (select pa.personaddressid "addressid",
+                        pa.personid "personid",
+                        pa.activeflag "activeflag",
+                        pa.personaddresstypekey "addresstype",
+                        pa.address "address",
+                        pa.zipcode "zipcode",
+                        pa.city "city",
+                        pa.state "state",
+                        pa.country "country",
+                        pa.county "county",
+                        pa.effectivedate "effectivedate",
+                        pa.expirationdate "expirationdate",
+                        pa.old_id "oldId",
+                        pa.address2 "Address2",
+                        pa.danger "danger",
+                        pa.dangerreason "dangerreason",
+                        pa.personaddressid "personaddressid",
+                        pa.personaddresstypekey "personaddresstypekey",
+                        pa.address2 "address2",
+                        pa.address "address1",
+                        pat.typedescription "addresstypeLabel",
+                        actype.typedescription "rolekeyDesc",
+      (select PRI.personidentifiervalue  from personidentifier PRI 
+                        where PRI.personidentifiertypekey ='SSN'  and PRI.activeflag =1  
+                        and   PRI.personid =p.personid  limit 1) "ssn",
+                        json_build_object('typedescription',pat.typedescription,
+                                         'personaddresstypekey',pat.personaddresstypekey) "Personaddresstype"
+                        from personaddress pa inner join personaddresstype pat  
+                          on pat.personaddresstypekey =pa.personaddresstypekey 
+                         and pat.activeflag =1 
+                        where pa.personid =p.personid  and pa.activeflag =1) e
+                    ) "address",
+                     coalesce( (
+                        select json_agg(e) from (select pa.personaddressid "addressid",
+                        pa.personid "personid",
+                        pa.activeflag "activeflag",
+                        pa.personaddresstypekey "addresstype",
+                        pa.address "address",
+                        pa.zipcode "zipcode",
+                        pa.city "city",
+                        pa.state "state",
+                        pa.country "country",
+                        pa.county "county",
+                        pa.effectivedate "effectivedate",
+                        pa.expirationdate "expirationdate",
+                        pa.old_id "oldId",
+                        pa.address2 "Address2",
+                        pa.danger "danger",
+                        pa.dangerreason "dangerreason",
+                        pa.personaddressid "personaddressid",
+                        pa.personaddresstypekey "personaddresstypekey",
+                        pa.address2 "address2",
+                        pa.address "address1",
+                        pat.typedescription "addresstypeLabel",
+                        json_build_object('typedescription',pat.typedescription,
+                                         'personaddresstypekey',pat.personaddresstypekey) "Personaddresstype"
+                          from personaddress pa inner join personaddresstype pat on 
+                        pat.personaddresstypekey =pa.personaddresstypekey 
+                        and pat.activeflag =1 
+                        where pa.personid =p.personid  and pa.activeflag =1) e
+                      ),'[]')::json "personAddressInput",
+                      (select json_agg(row_to_json(e)) from (select pn.phonenumber "contactnumber",
+                            pn.personphoneNumberid  "contacttypeid",
+                            pn.activeflag "isactive",
+                         pn.personphonetypekey  "contacttype" from
+                            personphoneNumber pn  
+                            where pn.personid =p.personid and pn.activeflag =1) e) "phoneNumber",
+                      (select json_agg(row_to_json(e)) from (select pn.email "mailid",
+                            pn.personemailid  "mailtypeid",
+                            pn.activeflag "isactive",
+                         pn.personemailtypekey  "mailtype" from
+                            personemail pn 
+                            where pn.personid =p.personid  and pn.activeflag =1 ) e  )  "emailID",
+                   (select json_agg(row_to_json(e)) from (
+                        select coalesce(isprimary,false) "hidden",
+                         coalesce(isprimary,false):: character varying "isprimary",
+                         coalesce(relationshiptypekey,'') "relationshiptorakey",
+                         intakeservicerequestpersontypekey "rolekey",
+                         typedescription "description"
+                          from intakeservicerequestactor isr inner join 
+                        actortype actt on actt.actortype =isr.intakeservicerequestpersontypekey
+                        and actt.activeflag =1
+                        inner join actor a on a.actorid = isr.actorid and a.activeflag =1
+                        and a.personid = p.personid 
+                        left join actorrelationship israr 
+                        on israr.intakeservicerequestactorid = isr.intakeservicerequestactorid 
+                        and israr.activeflag =1 
+                        where isr.intakeserviceid =IDAS.intakeserviceid and isr.activeflag =1
+      ) e) "personRole",
+                         (select  array_agg(row_to_json(physicianinfo)) 
+                        from (
+                          select 
+        ppi.isprimaryphycisian,
+        ppi.name,
+        ppi.facility,
+        ppi.phone,
+        ppi.email,
+        ppi.address1,
+        ppi.address2,
+        ppi.city,
+        ppi.state,
+        ppi.countyid,
+        ppi.zip,
+        ppi.startdate,
+        ppi.enddate,
+        ppi.physicianspecialtytypekey
+                            from personphycisianinfo ppi
+       where ppi.personid = p.personid and ppi.activeflag = 1
+                              ) physicianinfo  ) "physicianinfo",
+       (select  array_agg(row_to_json(healthinsurance)) 
+                        from (
+                          select 
+        phi.ismedicaidmedicare,
+        phi.policyholdername,
+        phi.address1,
+        phi.address2,
+        phi.city,
+        phi.state,
+        phi.countyid,
+        phi.zip,
+        phi.providerphone,
+        phi.patientpolicyholderrelation,
+        phi.policyname,
+        phi.groupnumber,
+        phi.providertypeother,
+        phi.insurancetype,
+        phi.providertype,
+        phi.medicalinsuranceprovider,
+        phi.expirationdate,
+        phi.effectivedate
+                            from personhealthinsurance phi
+       where phi.personid = p.personid and phi.activeflag = 1
+                              ) healthinsurance  ) "healthinsurance",
+                         (select  array_agg(row_to_json(personmedicationphyscotropic)) 
+                        from (
+                          select 
+        pmp.dosage,
+        pmp.frequency,
+        pmp.informationsourcetypekey,
+        pmp.lastdosetakendate,
+        pmp.medicationcomments,
+        pmp.medicationeffectivedate,
+        pmp.medicationexpirationdate,
+        pmp.medicationname,
+        pmp.monitoring,
+        pmp.prescribingdoctor,
+        pmp.prescriptionreasontypekey
+                            from personmedicpshychotropic pmp
+       where pmp.personid = p.personid and pmp.activeflag = 1
+                              ) personmedicationphyscotropic  ) "personmedicationphyscotropic",
+                         (select  array_agg(row_to_json(personhealthexam)) 
+                        from (
+                          select 
+        phe.assessmentdate,
+        phe.healthassessmenttypekey,
+        phe.healthdomaintypekey,
+        phe.healthexamname,
+        phe.healthprofessiontypekey,
+        phe.notes,
+        phe.outcomeresults,
+        phe.practitionername
+                            from personhealthexamination phe
+       where phe.personid = p.personid and phe.activeflag = 1
+                              ) personhealthexam  ) "personhealthexam",         
+                         (select  array_agg(row_to_json(MedicalCondition)) 
+                        from (
+                          select 
+        pmc.begindate,
+        pmc.enddate,
+                                pmc.medicalconditiontypekey,
+        pmc.recordedby
+                            from personmedicalcondition pmc 
+       where pmc.personid = p.personid and pmc.activeflag = 1
+                              ) MedicalCondition  ) "personmedicalcondition",          
+                         (select  array_agg(row_to_json(personbehavioralhealth)) 
+                        from (
+                          select 
+        pbh.address1,
+        pbh.address2,
+        pbh.city,
+        pbh.clinicianname,
+        pbh.countyid,
+        pbh.currentdiagnoses,
+        pbh.phone,
+        pbh.reportname,
+        pbh.reportpath,
+        pbh.state,
+        pbh.zip
+                            from personbehavioralhealth pbh
+       where pbh.personid = p.personid and pbh.activeflag = 1
+                              ) personbehavioralhealth  ) "personbehavioralhealth",         
+                         (select  array_agg(row_to_json(personabusehistory)) 
+                        from (
+                          select 
+                                pah.isneglect,
+        pah.neglectnotes,
+        pah.isemotionalabuse,
+        pah.emotionalnotes,
+        pah.isphysicalabuse,
+        pah.physicalnotes,
+        pah.issexualabuse,
+        pah.sexualnotes
+                            from personabusehistory pah
+       where pah.personid = p.personid and pah.activeflag = 1
+                              ) personabusehistory  ) "personabusehistory", 
+
+                              
+                         ((select row_to_json (  t) from (
+                          select 
+        pas.alcoholageatfirstuse,
+        pas.alcoholfrequencydetails,
+        pas.drugageatfirstuse,
+        pas.drugfrequencydetails,
+        pas.drugoralcoholproblems,
+        pas.isusealcohol,
+        pas.isusedrug,
+        pas.isusedrugoralcohol,
+        pas.isusetobacco,
+        pas.tobaccoageatfirstuse,
+        pas.tobaccofrequencydetails
+                            from personabusesubstance pas
+       where pas.personid = p.personid and pas.activeflag = 1 limit 1
+                             ) as t)::jsonb) "personabusesubstance", 
+                        ( select (array_agg(row_to_json(personeducation)))
+                            from (
+
+                              select 
+                                    pe.specialeducationtypekey,
+                                    pe.startdate,
+                                    pe.lastgradetypekey,
+                                    case coalesce(pe.isverified,false) when true then 'verified'
+                                    else
+                                        case coalesce(pe.isreceived,false) when true then 'received'
+                                        else 
+                                            case coalesce(pe.isexcuesed,false) when true then 'excuesed' else '' end 
+                                        end 
+                                    end 
+                                as "reciveVeriExc",
+                                    pe.enddate,
+                                    pe.personid,
+                                    pe.absentdate,
+                                    pe.educationname,
+                                    pe.isreceived,
+                                    pe.countyid,
+                                    pe.educationtypekey,
+                                    pe.personeducationid,
+                                    pe.isexcuesed,
+                                    pe.isspecialeducation,
+                                    et.isspecialeducation:: character varying as specialeducation,
+                                    pe.statecode,
+                                    et.typedescription as "schoolTypeDescription",
+                                    pe.currentgradetypekey,
+                                    pe.isverified
+                                from personeducation pe
+                                inner join educationtype et on pe.educationtypekey=et.educationtypekey
+                                and et.activeflag =1
+                                where pe.personid =p.personid
+                                and pe.activeflag =1 
+                            ) personeducation  ) "school",
+                       (select array_agg(row_to_json(vocation)) 
+                        from (
+                          select 
+                                pv.certificatename,
+                                pv.vocationaptitude,
+                                pv.certificatepath as "uploadFile",
+                                pv.personid,
+                                pv.certificatepath,
+                                case coalesce(pv.isvocationaltest,false) when true then  'Yes' else 'No' end "isvocationaltest", 
+                                pv.vocationinterest,
+                                pv.personeducationvocationid 
+                            from personeducationvocation pv 
+                            where pv.activeflag =1 and pv.personid =p.personid         
+                        ) vocation 
+                       ) "vocation",
+                        (
+                         select  array_agg(row_to_json(testing)) 
+                        from (
+                          select 
+                                pet.readinglevel,
+                                tt.typedescription as testdescription,
+                                pet.testingtypekey,
+                                pet.mathtestdate,
+                                pet.personid,
+                                pet.mathlevel as mathlevel ,
+                                pet.readingtestdate,
+                                pet.testingprovider,
+                                pet.personeducationtestingid 
+                            from personeducationtesting pet
+                             inner join testingtype tt on pet.testingtypekey=tt.testingtypekey
+                           and tt.activeflag =1 
+                            where pet.activeflag =1 and pet.personid =p.personid 
+                        ) testing  ) "testing",
+                         (select  array_agg(row_to_json(accomplishment)) 
+                            from (
+                              select 
+                                    pa.personaccomplishmentid,
+                                    pa.receiveddate,
+                                    pa.accomplishmentdate,
+                                    pa.personid,
+                                    gt.typedescription as gradedescription,
+                                    pa.highestgradetypekey,
+                                    case coalesce(pa.isrecordreceived,false)
+                                 when true then  'Yes' else 'No' end "isrecordreceived" 
+                               from personaccomplishment pa
+                                 inner join gradetype gt on pa.highestgradetypekey=gt.gradetypekey
+                                where pa.activeflag =1 and pa.personid =p.personid)accomplishment
+                            )  "accomplishment",
+       (select array_agg(row_to_json(employer))
+       from (
+        select 
+         w.currentemployer,
+         w.duties,
+         w.employername,
+         w.enddate,
+         w.noofhours,
+         w.reasonforleaving,
+         w.startdate
+        from personemployerdetail w
+        where w.personid = p.personid
+       )employer ) "employer",
+                     '[]' ::json "contacts",
+                     '[]' ::json "contactsmail" 
+                  
+                     from actor ac inner join person p on p.personid = ac.personid 
+                     inner join (select distinct actorid from 
+                                 intakeservicerequestactor isa where isa.intakeserviceid =IDAS.intakeserviceid 
+                                  and isa.activeflag =1 ) isa
+                                 on isa.actorid = ac.actorid  
+                      inner join actortype actype on actype.actortype =  ac.actortype
+                        and actype.activeflag =1
+      left join Alias A on A.personid = p.personid
+                     where ac.activeflag =1   )e  )),
+                    'intakeDATypeDetails' ,'[]':: json ,
+                     'recordings' ,'[]':: json ,
+                      'CrossReferences' ,'[]':: json ,        
+                      'Allegations' ,'[]':: json ,  
+       'Assessments' ,'[]':: json ,  
+                      'entities' ,'[]':: json , 
+                       'accomplishment' ,'[]':: json ,
+                        'sdm', '{}':: json ,
+                       'evaluationFields', null,
+                       'sdm', (case when IDAS.teamtypekey = 'DJS' then '{}':: json else (select s1 from as_getdraftintakesdm(IDAS.intakeserviceid ))::json end) ,
+                       'appointments',(select s1 from as_getdraftapmt(IDAS.intakeserviceid ))::json,
+                       
+                         'createdCases',(
+          select   json_Agg(e)  from (
+          select isr.servicerequestnumber as "caseID",
+  coalesce(
+         (select json_agg(g) from (select iat.allegationid as "allegationID",a.name as "allegationValue",
+         (select coalesce(json_agg(iai.indicatorid), '[]'::json) from investigationallegationindicator iai where iai.investigationallegationid = iat.investigationallegationid) as indicators
+         from investigationallegation iat 
+      left join allegation a on iat.allegationid = a.allegationid
+         where iat.investigationid = i.investigationid
+         )as g) , '[]'::json) as "choosenAllegation",
+         false as "isYouthinCustodyShow",/* mapping needed */
+         false as "isyouthincustody",/* mapping needed */
+         isr.intakeservreqtypeid as "serviceTypeID",
+         isrt.description as "serviceTypeValue",
+         false as "showICJFields",/* mapping needed */
+         true as "showLawFileds",/* mapping needed */
+         srs.description as "subSeriviceTypeValue",
+         isr.intakeservicerequestclassid as "subServiceTypeID"
+         from intakeservicerequest isr
+         left join investigation i on i.intakeserviceid = isr.intakeserviceid 
+         left join intakeservicerequesttype isrt on isrt.intakeservreqtypeid = isr.intakeservreqtypeid 
+         left join servicerequestsubtype srs on srs.servicerequestsubtypeid = isr.intakeservicerequestclassid
+         where isr.intakeserviceid = idas.intakeserviceid
+                              ) e
+                              ) ::json,
+-- Notes tab
+                              'communicationFields',(select json_agg(prgnote) from (select 
+isr.intakenumber,
+pn.attemptindicator,
+pn.contactdate,
+pn.contactemail,
+pn.contactname,
+pn.contactphone,
+pn.contactroletypekey,
+pn.contactstatus,
+pn.updatedon as "date", /* will change the date format */
+pn.description,
+pn.drugscreen,
+pn.endtime,
+pn.entitytype,
+pn.entitytypeid,
+pn.instantresults,
+pn.locationname as "location",
+pn.description as "notes", /* mapping needed */
+pn.progressnoteid,
+pn.progressnotepurposetypekey,
+(select json_agg(pnr.contactroletypekey) from progressnoteroletype pnr where pnr.progressnoteid = pn.progressnoteid) as "progressnoterole",
+(select json_agg(p) from (select pnr.contactroletypekey from progressnoteroletype pnr where pnr.progressnoteid = pn.progressnoteid)p) as "progressnoteroletype",
+pn.progressnotesubtypeid,
+pn.progressnotetypeid,
+pn.savemode,
+(select up.firstname || ' ' || up.lastname from userprofile up where up.securityusersid = pn.insertedby) as "staff",/* mapping needed */
+pn.stafftypekey,
+pn.starttime
+from  intakeservicerequest isr 
+join progressnote pn on pn.entitytypeid = cast(isr.intakeserviceid as character varying)
+where isr.intakeserviceid = idas.intakeserviceid)as prgnote),
+'saoResponseDetail',(select row_to_json(sr) from 
+(
+select s.saoresponseconditiontypekey,s.saoresponsedate,s.saoresponsestatustypekey 
+from saoresponse s
+where s.intakenumber = idas.intakenumber
+) as sr) ::jsonb,
+'petitionDetails',(
+select json_agg(pd) from 
+(
+select 
+null "associatedcomplaint",
+null "associatedpetition",
+isrp.petitiondate "createddate",
+isrp.intakeservicerequestpetitionid,
+isrp.petitionid,
+isrp.petitionstatustypekey "petitionstatus",
+isrp.petitiontypekey
+from intakeservreqevalpetitionconfig isrpc
+join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = isrpc.intakeservicerequestpetitionid
+where isrpc.intakenumber = idas.intakenumber
+) as pd ) ::jsonb
+                       
+                            )::jsonb
+
+        FROM (SELECT CASE  COALESCE(DAS1.status,0) WHEN 0 THEN 'DRAFT' ELSE 'INTR' END eventcode , 
+              CASE COALESCE(DAS1.status,0) WHEN 0 THEN 'Draft'ELSE 'Review' END eventstatus, 
+              DAS1.status as status1,  rts.typedescription , DAS1.* FROM IntakeDAStatus DAS1 LEFT JOIN routingstatustype RTs ON RTs.sequencenumber = DAS1.status AND rts.activeflag =1) DAS 
+        INNER JOIN intakeservicerequest IDAS  ON IDAS.IntakeNumber =DAS.IntakeNumber  
+                INNER JOIN userprofile up on up.securityusersid = DAS.intakeuser 
+                LEFT JOIN IntakeSerReqStatusType IRST ON IRST.IntakeSerReqStatusTypeID = IDAS.IntakeSerReqStatusTypeID AND IRST.ACTIVEFLAG =1 
+    LEFT JOIN intakeservicerequestdispositioncode isrd on isrd.intakeserviceid = idas.intakeserviceid and isrd.activeflag = 1 
+    LEFT JOIN servicerequesttypeconfigdispositioncode srt on srt.servicerequesttypeconfigiddispostionid = isrd.servicerequesttypeconfigiddispostionid and srt.activeflag = 1 
+                LEFT JOIN (select distinct actorid,intakeserviceid from intakeservicerequestactor as ISRA WHERE  ISRA.activeflag =1) ISRA ON ISRA.intakeserviceid=IDAS.intakeserviceid  
+                LEFT JOIN actor as AR ON AR.actorid=ISRA.actorid 
+                LEFT JOIN person as PN ON PN.personid=AR.personid 
+        WHERE IDAS.IntakeNumber = intakeno AND  IDAS.Activeflag = 1 AND DAS.teamtypekey = 'AS' limit 1;
+       
+                          
+END;
+$function$
+

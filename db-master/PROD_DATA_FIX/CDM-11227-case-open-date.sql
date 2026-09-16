@@ -1,0 +1,2 @@
+update servicecase set startdate = '2021-02-23 15:23:58', insertedon = '2021-02-23 15:23:58', effectivedate = '2021-02-23 15:23:58', updatedby = 'CDM-11227', updatedon = now() where servicecaseid = '40ec840d-eda4-4ccd-842d-2c9f57ae248a';
+update servicecasedisposition set statusdate = '2021-02-23 15:23:58', effectivedate = '2021-02-23 15:23:58', updatedby = 'CDM-11227', updatedon = now() where servicecasedispositionid = 'b8eccbed-a8fc-4d27-90e8-9f363500a8a4';

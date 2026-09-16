@@ -1,0 +1,213 @@
+CREATE OR REPLACE FUNCTION addupdaterestitution(restitution json, securityuserid character varying, intakenumber character varying DEFAULT NULL::character varying, youthpersonid uuid DEFAULT NULL::uuid, youthpersonname character varying DEFAULT NULL::character varying, countyid uuid DEFAULT NULL::uuid)
+ RETURNS uuid
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+ v_restitutionid uuid;
+ v_restitutionno int;
+ v_intakenumber character varying;
+ v_youthpersonid uuid;
+ v_youthpersonname character varying;
+ v_countyid uuid;
+ v_securityuserid character varying;
+
+ v_intakeserviceid uuid;
+ v_servicerequestnumber character varying;
+ v_victimpersonid uuid;
+ v_restitutiontype character varying;
+ v_ismultipleinvolvedpersons bool;
+ v_payment decimal(15,2);
+ v_liablepersonid uuid;
+ v_liablepersonrelationtypekey character varying;
+ v_restiduedate date;
+ v_courtdeferredduedate date;
+ v_frequency character varying;
+ v_installmentamount decimal(15,2);
+ v_savepersonalert character varying;
+ v_alertduedate date;
+ v_dispositionsubtype character varying;
+ v_alertnotes character varying;
+ v_status character varying;
+ v_liableperson json;
+ 
+ v_alertstatus character varying;
+ v_intakeserreqrestitutionid uuid;
+ v_paymentstartdate date;
+ v_inactivereasontype character varying;
+ v_isresidentialplacement bool;
+ v_numofrecords int;
+ v_sendnotification character varying;
+ v_userid character varying;
+
+BEGIN
+
+ v_restitutionid := restitution->>'restitutionid';
+ v_intakenumber := intakenumber;
+ v_youthpersonid := youthpersonid;
+ v_youthpersonname := youthpersonname;
+ v_countyid := countyid;
+ v_securityuserid := securityuserid;
+
+ v_intakeserviceid := restitution->>'caseid';
+  --v_intakeserviceid := null;
+  v_servicerequestnumber := restitution->>'casenumber';
+  
+  IF v_intakeserviceid IS NULL AND v_intakenumber IS NULL THEN
+   SELECT ISR.intakeserviceid, ISR.intakenumber into v_intakeserviceid, v_intakenumber FROM intakeservicerequest ISR WHERE ISR.servicerequestnumber = v_servicerequestnumber AND ISR.activeflag = 1 LIMIT 1;
+  END IF;
+  
+  IF v_intakeserviceid IS NULL THEN
+   SELECT ISR.intakeserviceid into v_intakeserviceid FROM intakeservicerequest ISR WHERE ISR.servicerequestnumber = v_servicerequestnumber AND ISR.activeflag = 1 LIMIT 1;
+  END IF;
+  
+  IF v_intakenumber IS NULL THEN
+   SELECT ISR.intakenumber into v_intakenumber FROM intakeservicerequest ISR WHERE ISR.intakeserviceid = v_intakeserviceid AND ISR.activeflag = 1 LIMIT 1;
+  END IF;
+  
+  
+  
+  --Fetching Victim Person Id
+  v_victimpersonid := ((restitution->>'victim')::json)->>'pid';
+  
+  IF ((restitution->>'victim')::json)->>'pid' like 'temp%' THEN
+   SELECT P.personid into v_victimpersonid FROM intakeservicerequestactor ISRA JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag = 1
+   JOIN person P ON P.personid = A.personid AND P.activeflag = 1
+   WHERE ISRA.intakeservicerequestpersontypekey = 'Victim' AND 
+   P.firstname = restitution ->>'firstname' AND P.lastname = restitution ->>'lastname' 
+   AND ISRA.intakeserviceid = v_intakeserviceid AND ISRA.activeflag = 1;
+  END IF;
+  
+  -- Fetching Youth Person Id
+  IF v_youthpersonid IS NULL THEN
+   SELECT P.personid, P.firstname || ' ' || P.lastname into v_youthpersonid, v_youthpersonname FROM intakeservicerequestactor ISRA JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag = 1
+   JOIN person P ON P.personid = A.personid AND P.activeflag = 1
+   WHERE ISRA.intakeservicerequestpersontypekey = 'Youth' AND ISRA.intakeserviceid = v_intakeserviceid AND ISRA.activeflag = 1;
+  END IF;
+  
+  -- Fetching Liable Person Id
+  v_liableperson := (restitution->>'liableperson')::json;
+  v_liablepersonid := v_liableperson->>'pid';
+  v_liablepersonrelationtypekey := v_liableperson->>'relationship';
+  
+  IF v_liablepersonid IS NULL THEN
+   SELECT P.personid into v_liablepersonid FROM intakeservicerequestactor ISRA JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag = 1
+   JOIN person P ON P.personid = A.personid AND P.activeflag = 1
+   WHERE --ISRA.intakeservicerequestpersontypekey = v_liablepersonrelationtypekey AND 
+   P.firstname = v_liableperson ->>'firstname' AND P.lastname = v_liableperson ->>'lastname' 
+   AND ISRA.intakeserviceid = v_intakeserviceid AND ISRA.activeflag = 1;
+  END IF;
+  
+  -- Fetching County Id from Team
+  IF v_countyid IS NULL THEN
+   select t.countyid into v_countyid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+   join team t on t.teamid = tm.teamid and t.activeflag = 1
+   where tma.activeflag = 1 and tma.securityusersid = v_securityuserid limit 1;
+  END IF;
+
+  
+  v_restitutiontype := restitution->>'sources';
+  v_ismultipleinvolvedpersons := NULL;
+  
+  IF v_restitutiontype = 'Court' THEN
+   --SELECT CASE WHEN THEN END FROM intakeservicerequestcourtaction ca WHERE ca.activeflag = 1 AND ca.intakeserviceid = v_intakeserviceid ;
+   v_ismultipleinvolvedpersons := false;
+  END IF;
+  
+  v_payment := restitution->>'amount';
+  
+  v_restiduedate:= restitution->>'duedate';
+  v_courtdeferredduedate:= restitution->>'courtdeferredduedate';
+  v_alertduedate := v_restiduedate;
+  v_frequency := restitution->>'frequency';
+  v_installmentamount := restitution->>'installmentamount';
+  v_paymentstartdate := restitution->>'initialpaymentdate';
+  
+  
+  -- IF v_courtdeferredduedate IS NULL THEN
+   -- v_status := 'Active';
+  -- ELSE
+   -- v_status := 'Inactive';
+  -- END IF;
+  
+  IF v_courtdeferredduedate IS NOT NULL THEN
+   v_inactivereasontype = 'Court';
+  END IF;
+  
+  SELECT getresidentialstatus.residentialexists INTO v_isresidentialplacement FROM getresidentialstatus(v_youthpersonid);
+  IF v_isresidentialplacement = true THEN
+   v_inactivereasontype := 'Residplacement';
+  END IF;
+  
+  IF v_inactivereasontype IS NOT NULL THEN
+   v_status := 'Inactive';
+  ELSE
+   v_status := 'Active';
+  END IF;
+  
+  IF (v_restitutionid IS NULL) THEN
+  
+   -- Generating Restitution No
+ 
+   SELECT MAX(restitutionno)+1 INTO v_restitutionno FROM intakeserreqrestitution WHERE activeflag = 1;
+   
+   IF v_restitutionno IS NULL THEN
+    v_restitutionno := 1000000;
+   END IF;
+    
+     v_alertnotes = 'Restitution Account# ' || v_restitutionno || ' with Restitution Amount $' || v_payment || ' is created for ' || v_youthpersonname || ' for Case# '||  v_servicerequestnumber;
+   SELECT savepersonalert INTO v_savepersonalert FROM savepersonalert('REST'::character varying, 'Active'::character varying, now()::timestamp without time zone, v_alertnotes,v_youthpersonid, v_securityuserid, v_intakeserviceid, v_alertduedate,v_intakeserreqrestitutionid);
+      
+  IF v_intakenumber IS NOT NULL THEN
+    IF v_restitutiontype = 'Court' Then
+    SELECT count(*) into v_numofrecords FROM intakeserreqrestitution issr WHERE issr.intakenumber = v_intakenumber AND issr.activeflag = 1;
+        IF v_numofrecords > 1 then
+      select mu.securityusersid into v_userid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+               join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int
+                  where t.countyid=v_countyid and r.roletypekey='JSRTC';
+      
+      select send_notification into v_sendnotification from send_notification(v_securityuserid,v_securityuserid,v_userid,'System','High',v_alertnotes,v_alertnotes,v_intakeserviceid,false);
+       end if;
+   end if;
+  END IF;
+   
+   v_intakeserreqrestitutionid := gen_random_uuid();
+   
+   INSERT INTO intakeserreqrestitution (intakeserreqrestitutionid, restitutionno, intakeserviceid, intakenumber, youthpersonid, victimpersonid, countyid, restitutiontype, ismultipleinvolvedpersons, payment, liablepersonid, liablepersonrelationtypekey, duedate, frequency, 
+   installmentamount, courtdeferredduedate, status, paymentstartdate, inactivereasontype, 
+    activeflag,  insertedby, updatedby, insertedon, updatedon,personalertid)
+   VALUES( v_intakeserreqrestitutionid,v_restitutionno, v_intakeserviceid, v_intakenumber, v_youthpersonid, v_victimpersonid , v_countyid, v_restitutiontype, 
+   v_ismultipleinvolvedpersons, v_payment, v_liablepersonid, v_liablepersonrelationtypekey, v_restiduedate, v_frequency, 
+   v_installmentamount, v_courtdeferredduedate, v_status, v_paymentstartdate, v_inactivereasontype, 
+   1, v_securityuserid, v_securityuserid, now(), now(),v_savepersonalert::uuid);
+   
+   --v_alertnotes = 'Restitution ' || v_restitutionno || ' created for ' || v_youthpersonname || ' for Service Request Number '||  v_servicerequestnumber;
+   
+  ELSE
+   v_restitutionno := restitution->>'restiutionnumber';
+   
+   UPDATE intakeserreqrestitution SET  victimpersonid = v_victimpersonid, payment = v_payment, liablepersonid = v_liablepersonid, 
+   liablepersonrelationtypekey = v_liablepersonrelationtypekey, duedate = v_restiduedate, frequency = v_frequency, 
+   installmentamount = v_installmentamount, status = v_status, inactivereasontype = v_inactivereasontype, courtdeferredduedate = v_courtdeferredduedate, paymentstartdate = v_paymentstartdate
+   WHERE intakeserreqrestitutionid = v_restitutionid;
+  
+  select personalertid into v_savepersonalert from intakeserreqrestitution where intakeserreqrestitutionid=v_restitutionid;
+   
+   IF v_status = 'Active' THEN
+    v_alertstatus := 'Active';
+   ELSE
+    v_alertstatus := 'Inactive';
+   END IF;
+   
+   UPDATE personalert SET duedate = v_alertduedate, status = v_alertstatus WHERE personalertid = v_savepersonalert::uuid AND activeflag = 1;
+   
+   v_intakeserreqrestitutionid := v_restitutionid;
+  END IF;
+
+RETURN
+   v_intakeserreqrestitutionid;
+END;
+
+$function$
+

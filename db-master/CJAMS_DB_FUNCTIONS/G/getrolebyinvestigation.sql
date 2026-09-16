@@ -1,0 +1,52 @@
+ CREATE OR REPLACE FUNCTION public.getrolebyinvestigation(roles character varying)                                 
+  RETURNS character varying                                                                                        
+  LANGUAGE plpgsql                                                                                                 
+ AS $function$                                                                                                     
+                                                                                                                   
+ DECLARE                                                                                                           
+ actorloop  record;                                                                                                
+                                                                                                                   
+ BEGIN                                                                                                             
+                                                                                                                   
+ CREATE TEMP TABLE actor_temp1                                                                                     
+         (                                                                                                         
+                 actortype character varying(50)                                                                   
+                 );                                                                                                
+ CREATE TEMP TABLE actor_temp2                                                                                     
+         (                                                                                                         
+                 actortype character varying(50),                                                                  
+                 actorid uuid,                                                                                     
+                 personid uuid                                                                                     
+                 );                                                                                                
+                                                                                                                   
+                                                                                                                   
+                 IF roles != null THEN                                                                             
+                                                                                                                   
+                 INSERT INTO actor_temp1(                                                                          
+                 actortype)                                                                                        
+                 SELECT unnest(string_to_array(roles,',' ));                                                       
+                                                                                                                   
+         END IF;                                                                                                   
+                                                                                                                   
+                                                                                                                   
+                 FOR actorloop IN SELECT actortype  FROM actor_temp1                                               
+                 LOOP                                                                                              
+                                 INSERT INTO actor_temp2(                                                          
+                                 actortype,                                                                        
+                                 actorid,                                                                          
+                                 personid                                                                          
+                 )                                                                                                 
+                                 SELECT  ISR.actorid, ISR.intakeservicerequestpersontypekey,ISR.personid           
+                                 FROM intakeservicerequestactor ISR                                                
+                                 WHERE ISR.actortype = actorloop.actortype                                         
+                                 AND ISR.personid NOT IN (SELECT personid FROM actor_temp2) and ISR.activeflag = 1;
+                 END LOOP;                                                                                         
+                                                                                                                   
+                                                                                                                   
+                 RETURN actorloop;                                                                                 
+          DROP TABLE actor_temp1;                                                                                  
+         DROP TABLE actor_temp2;                                                                                   
+                                                                                                                   
+                 END;                                                                                              
+        $function$                                                                                                 
+

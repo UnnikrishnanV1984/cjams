@@ -1,0 +1,3 @@
+update servicecase set dispositioncode = 'open', statustypekey = 'pending', enddate = null, updatedby = 'CDM-7429', updatedon = now() where servicecaseid = 'e82d391e-5d1f-4e43-bad4-b9bd2423abfb';
+update servicecasedisposition set activeflag = 0, updatedby = 'CDM-7429', updatedon = now() where servicecasedispositionid = '8d65a299-e84e-4e70-ada7-2aa0fbe6194b';
+update personprogramarea set enddate = null, updatedby = 'CDM-7429', updatedon = now() where personprogramid = 'bde804b5-e608-478a-8313-0afffa677d64';

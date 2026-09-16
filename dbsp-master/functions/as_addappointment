@@ -1,0 +1,98 @@
+CREATE OR REPLACE FUNCTION as_addappointment(v_intakenumber character varying, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+v_date timestamp without time zone;
+v_intakeservicerequestactor record;
+v_intakeservice record;
+v_actor record;
+
+BEGIN
+v_date:= now() at time zone 'utc' ;
+
+
+  FOR  v_intakeservice IN SELECT * FROM intakeservicerequest 
+     WHERE intakenumber = v_intakenumber and activeflag =1
+  LOOP   
+
+   INSERT INTO servicerequestappointment (
+             intakeserviceid, 
+             title, 
+             appointmentstatus, 
+             notes, 
+             activeflag, 
+             insertedby, 
+             appointmentdate, 
+             appointmentworkerid,
+             scheduleoutcometypekey,
+             appointmentid)
+          SELECT      v_intakeservice.intakeserviceid, 
+             title, 
+             appointmentstatus, 
+             notes, 
+             activeflag, 
+             v_securityuserid, 
+             appointmentdate, 
+             appointmentworkerid,
+             scheduleoutcometypekey,
+             appointmentid
+          FROM     servicerequestappointment 
+          WHERE    intakenumber = v_intakenumber;
+
+
+
+  END LOOP;
+ 
+for  v_actor in
+  select sar.isoptional, 
+    sar.activeflag, 
+    sar.workerrole,
+    sar.workerid 
+  FROM  servicerequestappointment sa
+  inner join servicerequestappointmentactor sar on sa.servreqaptmtid = sar.servreqaptmtid 
+  WHERE    sa.intakenumber = v_intakenumber
+loop
+ FOR  v_intakeservicerequestactor IN
+ SELECT * from intakeservicerequestactor
+ WHERE intakeserviceid =  v_intakeservice.intakeserviceid and activeflag =1
+ LOOP
+ 
+   INSERT INTO servicerequestappointmentactor(
+            
+             servreqaptmtid, 
+             intakeservicerequestactorid, 
+             isoptional, 
+             activeflag, 
+             insertedby,
+             personrole,
+             workerrole,
+             workerid)
+      SELECT  sa.servreqaptmtid,    
+        v_intakeservicerequestactor.intakeservicerequestactorid,
+        v_actor.isoptional, 
+        v_actor.activeflag, 
+        v_securityuserid,
+        v_intakeservicerequestactor.intakeservicerequestpersontypekey,
+        v_actor.workerrole,
+        v_actor.workerid
+        FROM  servicerequestappointment sa 
+        WHERE    sa.intakeserviceid = v_intakeservice.intakeserviceid;
+ END LOOP;          
+end loop;
+ UPDATE  servicerequestappointmentactor SET activeflag =0
+ WHERE servreqaptmtid IN (SELECT servreqaptmtid FROM servicerequestappointment
+        WHERE  intakenumber = v_intakenumber and activeflag =1);
+        
+ UPDATE  servicerequestappointment  SET activeflag =0 
+ WHERE  intakenumber = v_intakenumber and activeflag =1; 
+
+ Return 'Success';
+ 
+END;
+
+$function$
+

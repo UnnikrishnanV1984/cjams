@@ -1,0 +1,88 @@
+CREATE OR REPLACE FUNCTION documenttemplaterolewiselist(v_roletypekey character varying, v_intakenumber character varying, v_intakeserviceid uuid, v_restitutionno character varying)
+ RETURNS TABLE(title character varying, inputfields text, headertemplatehtml character varying, isheaderrequired boolean, documenttemplatekey character varying, "generatedBy" character varying, "generatedDateTime" timestamp without time zone, documentpath character varying, beforesubmit boolean)
+ LANGUAGE plpgsql
+ ROWS 10000
+AS $function$
+DECLARE
+   v_beforesubmit   BOOLEAN;
+
+   v_res_type       CHARACTER VARYING;
+   v_res_status     CHARACTER VARYING;
+   v_res_cls        CHARACTER VARYING;
+BEGIN
+   SELECT isr.restitutiontype, isr.status
+     INTO v_res_type, v_res_status
+     FROM intakeserreqrestitution isr
+    WHERE isr.restitutionno = v_restitutionno AND isr.activeflag = 1;
+
+   IF v_res_status = 'Closed'
+   THEN
+      v_res_cls := 'Closed';
+   ELSE
+      v_res_cls := NULL;
+   END IF;
+
+   SELECT (count (intakenumber) = 0)
+     INTO v_beforesubmit
+     FROM intakeservicerequest
+    WHERE intakenumber = v_intakenumber;
+
+   RETURN QUERY
+      (SELECT DT.documentname,
+              (SELECT string_agg (inputfield, ',')
+                   FROM documenttemplateinputfieldsconfig DTIFC
+                  WHERE     DTIFC.roletypekey = v_roletypekey
+                        AND DTIFC.documenttemplatekey =
+                            DTRTC.documenttemplatekey
+               GROUP BY DTIFC.documenttemplatekey) AS inputfields,
+              DT.headertemplatehtml,
+              DT.isheaderrequired,
+              DTRTC.documenttemplatekey,
+              (SELECT UP.fullname
+                   FROM evaluationdocument AS ED
+                        JOIN userprofile UP
+                           ON     UP.securityusersid = ED.insertedby
+                              AND UP.activeflag = 1
+                  WHERE     ED.documenttemplatekey = DT.documenttemplatekey
+                        AND ED.activeflag = 1
+                        AND (   ED.intakenumber = v_intakenumber
+                             OR ED.intakeserviceid = v_intakeserviceid)
+               ORDER BY versionno DESC
+                  LIMIT 1) AS generatename,
+              (SELECT EDOC.insertedon
+                   FROM evaluationdocument AS EDOC
+                  WHERE     EDOC.documenttemplatekey = DT.documenttemplatekey
+                        AND EDOC.activeflag = 1
+                        AND (   EDOC.intakenumber = v_intakenumber
+                             OR EDOC.intakeserviceid = v_intakeserviceid)
+               ORDER BY versionno DESC
+                  LIMIT 1) AS generatedate,
+              (SELECT EDOCP.documentpath
+                   FROM evaluationdocument AS EDOCP
+                  WHERE     EDOCP.documenttemplatekey = DT.documenttemplatekey
+                        AND EDOCP.activeflag = 1
+                        AND (   EDOCP.intakenumber = v_intakenumber
+                             OR EDOCP.intakeserviceid = v_intakeserviceid)
+               ORDER BY versionno DESC
+                  LIMIT 1) AS documentpath,
+              v_beforesubmit AS beforesubmit
+         FROM documenttemplate AS DT
+              JOIN documenttemplateroletypeconfig AS DTRTC
+                 ON     DTRTC.documenttemplatekey = DT.documenttemplatekey
+                    AND DTRTC.activeflag = 1
+              JOIN intakedocclassification DTC
+                 ON DTC.documenttemplatekey = DT.documenttemplatekey
+        WHERE     DTC.roletype_key = v_roletypekey
+              AND (   DTC.restitution_status = v_res_status
+                   OR DTC.restitution_status IS NULL)
+              AND (   DTC.restitution_type IN ('Both', v_res_type, v_res_cls)
+                   OR DTC.restitution_type IS NULL)
+              AND DTRTC.roletypekey = v_roletypekey
+              AND DT.activeflag = 1
+              AND DTC.activeflag = 1
+              AND (   v_intakeserviceid IS NOT NULL
+                   OR v_beforesubmit = FALSE
+                   OR DTRTC.beforesubmit = TRUE));
+END;
+$function$
+

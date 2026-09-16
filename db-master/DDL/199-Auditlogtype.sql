@@ -1,0 +1,1 @@
+alter table auditlogtype alter column modulename type  varchar(100);

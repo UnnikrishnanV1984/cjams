@@ -1,0 +1,104 @@
+CREATE OR REPLACE FUNCTION prov_listportalalerts(v_provider_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_jsondata json;
+v_provider_name character varying;
+begin 
+
+select provider_nm into v_provider_name from tb_provider p where p.provider_id = v_provider_id;
+
+select json_agg(x) into v_jsondata from (
+
+    select * from (
+
+select distinct mcf.provider_id,mcf.exit_conf_number as object_id,mcf.ec_status as status , 'CAP' as object_type,'capsenttoprovider' as date_type,
+(select decisiondate :: date 
+    from tb_provider_decision 
+    where eventcode ='Exit Conf' 
+    and objectid =mcf.exit_conf_number 
+    and status ='Sent to Provider' 
+    order by decisiondate desc limit 1) as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf1 
+    join providerassignment pa on pa.objectid  = mcf1.site_id
+    where mcf1.exit_conf_number = mcf.exit_conf_number )a) as workerdetail,v_provider_name as provider_name
+from prov_monitoring_exit_conf mcf 
+where mcf.provider_id =v_provider_id and mcf.delete_sw = 'N' and mcf.ec_status = 'Sent to Provider'
+
+UNION 
+
+select distinct mcf.provider_id,mcf.exit_conf_number as object_id,mcf.ec_status as status , 'CAP' as object_type,'capreturnedtoprovider' as date_type,
+(select decisiondate :: date 
+    from tb_provider_decision 
+    where eventcode ='Exit Conf' 
+    and objectid =mcf.exit_conf_number 
+    and status ='Returned to Provider' 
+    order by decisiondate desc limit 1) as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf1 
+    join providerassignment pa on pa.objectid  = mcf1.site_id
+    where mcf1.exit_conf_number = mcf.exit_conf_number )a) as workerdetail,v_provider_name as provider_name
+from prov_monitoring_exit_conf mcf 
+where mcf.provider_id =v_provider_id and mcf.delete_sw = 'N' and mcf.ec_status = 'Returned to Provider'
+
+
+--FOR Staff Alerts
+union
+select distinct mcf.object_id::number as provider_id, mcf.provider_staff_number as object_id, 'Expiring Soon' as status , 'STAFF' as object_type,'CPSClearanceExpiration' as date_type,
+date(mcf.cps_clearance_result_date) as object_date,
+to_jsonb(concat(first_nm, ' ', last_nm))  as workerdetail,v_provider_name as provider_name
+from providerstaff mcf 
+where mcf.object_id = v_provider_id
+and mcf.delete_sw = 'N' 
+union
+select distinct mcf.object_id::number as provider_id, mcf.provider_staff_number as object_id, 'Expiring Soon' as status , 'STAFF' as object_type,'FederalClearanceExpiration' as date_type,
+date(mcf.federal_clearance_result_date) as object_date,
+to_jsonb(concat(first_nm, ' ', last_nm))  as workerdetail,v_provider_name as provider_name
+from providerstaff mcf 
+where mcf.object_id = v_provider_id
+and mcf.delete_sw = 'N' 
+union
+select distinct mcf.object_id::number as provider_id, mcf.provider_staff_number as object_id, 'Expiring Soon' as status , 'STAFF' as object_type,'StateClearanceExpiration' as date_type,
+date(mcf.state_clearance_result_date) as object_date,
+to_jsonb(concat(first_nm, ' ', last_nm))  as workerdetail,v_provider_name as provider_name
+from providerstaff mcf 
+where mcf.object_id = v_provider_id
+and mcf.delete_sw = 'N' 
+
+ UNION
+
+
+select distinct papp.provider_id,papp.application_id as object_id,'Draft' as status, 'Re-Licensure' as object_type,'relicensure' as date_type,
+ papp.document_send_by_date:: date as object_date, null::jsonb as workerdetail,v_provider_name as provider_name
+from prov_application_details papp
+left join tb_provider tbp on tbp.provider_id = papp.provider_id and tbp.delete_sw = 'N'
+ where papp.delete_sw = 'N' and papp.provider_id =v_provider_id and (papp.documents_received is null or papp.documents_received = false) and papp.application_type = 'RELICENSURE'
+
+UNION
+select distinct papp.provider_id,papp.application_id as object_id,'Draft' as status, 'Mid-Licensure' as object_type,'midlicensure' as date_type,
+ papp.document_send_by_date:: date as object_date, null::jsonb as workerdetail,v_provider_name as provider_name
+from prov_application_details papp
+left join tb_provider tbp on tbp.provider_id = papp.provider_id and tbp.delete_sw = 'N'
+ where papp.delete_sw = 'N' and papp.provider_id =v_provider_id and (papp.documents_received is null or papp.documents_received = false) and papp.application_type = 'MIDLICENSURE'
+
+UNION 
+
+select distinct pu.provider_id,pu.uir_no as object_id,'Pending' as status, 'UIR' as object_type,'uir_submit' as date_type,
+ pu.inserted_on :: date as object_date, null::jsonb as workerdetail,tbp.provider_nm as provider_name
+from provider_uir pu 
+left join tb_provider tbp on tbp.provider_id = pu.provider_id and tbp.delete_sw = 'N'
+ where pu.active_flag = 1 and pu.provider_id =v_provider_id 
+ and ((PU.uir_status is null) or (PU.uir_status in ('49')))  and pu.is_classthreeincident = 1
+
+
+    ) t where t.object_date is not null
+    order by t.object_id desc
+
+) x
+
+;  
+
+return v_jsondata;       
+END;
+$function$
+

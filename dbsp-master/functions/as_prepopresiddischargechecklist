@@ -1,0 +1,26 @@
+CREATE OR REPLACE FUNCTION as_prepopresiddischargechecklist(v_intakeserviceid uuid)
+ RETURNS TABLE(plandate date, firstname character varying, lastname character varying, middlename character varying, suffix character varying, cjamspid bigint, assistpid character varying, county character varying, regionname character varying, restitutionno integer, balance numeric, worker json)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+RETURN QUERY
+
+ select now()::date as plandate,p.firstname,p.lastname,p.middlename,p.suffix,p.cjamspid,p.old_id,pa.county,re.regionname,ITR.restitutionno,(coalesce(ITR.payment,0) - coalesce(ITR.paidamount,0)) as balance, 
+ (select json_agg(place) from (select pro.providername,max(pla1.enddatetime) as enddate,pla1.releasedate from placement pla1
+ inner join provider pro on pro.providerid = pla1.providerid and pro.activeflag = 1
+ where pla1.intakeservicerequestactorid = ISA.intakeservicerequestactorid and pla1.placementadmissionclassificationkey = 'RES' and pla1.activeflag = 1
+ group by pro.providername,pla1.releasedate)as place) as worker
+ from intakeservicerequestactor ISA 
+ inner join person p on p.personid = ISA.personid and ISA.intakeserviceid = v_intakeserviceid and ISA.activeflag = 1
+ left join personaddress pa on pa.personid = p.personid and p.activeflag = 1 and pa.activeflag = 1
+ left join county c on c.countyname = pa.county and c.activeflag = 1
+ left join region re on re.regionid = c.regionid and re.activeflag = 1
+ left join intakeserreqrestitution ITR on ITR.intakeserviceid = ISA.intakeserviceid and ITR.approvestatus = 'RSTAPR' and ITR.activeflag = 1;
+
+
+end;
+
+$function$
+

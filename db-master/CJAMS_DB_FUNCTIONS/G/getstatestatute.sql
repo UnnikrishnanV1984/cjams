@@ -1,0 +1,47 @@
+ CREATE OR REPLACE FUNCTION public.getstatestatute(name character varying, v_pagenumber integer, v_limit integer)                      
+  RETURNS TABLE(statestatutesid uuid, statestatuteskey character varying, description character varying)                               
+  LANGUAGE plpgsql                                                                                                                     
+ AS $function$                                                                                                                         
+                                                                                                                                       
+  DECLARE                                                                                                                              
+       v_liPageNumber  INT;                                                                                                            
+       v_liPageSize   INT;                                                                                                             
+       v_pageoffset  INT;                                                                                                              
+                                                                                                                                       
+ BEGIN                                                                                                                                 
+                                                                                                                                       
+   v_liPageNumber := v_pagenumber;                                                                                                     
+   v_liPageSize := v_limit ;                                                                                                           
+                                                                                                                                       
+   v_liPageNumber := v_liPageNumber-1;                                                                                                 
+   v_pageoffset = v_liPageNumber * v_liPageSize;                                                                                       
+     RETURN QUERY                                                                                                                      
+                                                                                                                                       
+                                                                                                                                       
+ SELECT                                                                                                                                
+ A.StateStatutesId AS StateStatutesId,                                                                                                 
+ A.StateStatutesKey AS StateStatutesKey,                                                                                               
+ --A.ActiveFlag AS ActiveFlag,                                                                                                         
+ A.Description AS Description                                                                                                          
+ --A.insertedby AS insertedby,                                                                                                         
+ --A.insertedon AS insertedon,                                                                                                         
+ --A.updatedby AS updatedby,                                                                                                           
+ --A.updatedon AS updatedon,                                                                                                           
+ --A.EffectiveDate AS EffectiveDate,                                                                                                   
+ --A.ExpirationDate AS ExpirationDate,                                                                                                 
+ --A.timestamp AS timestamp,                                                                                                           
+ --A.PossibleSanction AS PossibleSanction,                                                                                             
+ --A.PossibleReferral AS PossibleReferral,                                                                                             
+ --A.PossibleSanctionFlag AS PossibleSanctionFlag,                                                                                     
+ --A.PossibleReferralFlag AS PossibleReferralFlag,                                                                                     
+ --A.StateStatuteText AS StateStatuteText                                                                                              
+ --A.Reasontobelieve AS Reasontobelieve,                                                                                               
+ --A.Suspected AS Suspected,                                                                                                           
+ --A.Unsubstantiated AS Unsubstantiated,                                                                                               
+ --A.InputRegulationStateStatue AS InputRegulationStateStatue                                                                          
+ FROM StateStatutes AS A                                                                                                               
+ WHERE ((position(name in A.StateStatutesKey)) > 0) OR ((position(name in A.Description) ) > 0) LIMIT v_liPageSize OFFSET v_pageoffset;
+                                                                                                                                       
+ END;                                                                                                                                  
+ $function$                                                                                                                            
+

@@ -1,0 +1,130 @@
+CREATE OR REPLACE FUNCTION serviceplanprovidersearch(searchobj json)
+ RETURNS TABLE(totalcount bigint, providerid uuid, providercategorytypekey character varying, providername character varying, prefix character varying, firstname character varying, middlename character varying, lastname character varying, phonenumber character varying, email character varying, levelofcare character varying, providerorganizationtype character varying, placementadmissiontypekey character varying, placementadmissiontypedesc character varying, placementadmissionclassificationkey character varying, placementadmissionclassificationdesc character varying, providerunit character varying, provideraddresstypekey character varying, buildingno character varying, addressline1 character varying, addressline2 character varying, city character varying, county character varying, state character varying, provideraddressid uuid, zipcode integer, latitude character varying, longitude character varying, providercontracttypekey character varying, providercontracttypename character varying, rate numeric, displayname character varying, age integer, gender character varying, race character varying, bedsapproved integer, bedsvacant integer, providerservice character varying, providercategory character varying, providersubcategory json, providercode character varying, description json, isprovidertyperesidential boolean, isoperatedbydjs boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+    v_lvService VARCHAR(50);
+    v_lvServiceType VARCHAR(50);                              
+    v_lvServiceSubType VARCHAR(50);                         
+    v_lvPaymentType VARCHAR(50);     
+    v_lvChildCharacter json;                                                     
+    v_liZipCode INT;       
+    v_liCounty uuid;
+ v_lvProvider VARCHAR(50);
+    v_liPageNumber INT;                              
+    v_liPageSize INT;
+ v_liCount INT;                              
+    v_lvSortCol VARCHAR(50);                              
+    v_lvSortDir VARCHAR(10); 
+    v_pagenumber int;
+ v_pageoffset int;
+ v_fodertype text[];
+ v_isoperatedbydjs bool;
+ 
+BEGIN 
+v_lvServiceType := searchobj ->> 'servicetype';
+v_lvService := searchobj ->> 'service'; 
+v_lvServiceSubType := searchobj ->> 'servicesubtype';   
+v_lvPaymentType := searchobj ->> 'paymenttype'; 
+v_liZipCode := searchobj ->> 'zipcode';
+v_liCounty := searchobj ->> 'county';
+v_lvProvider := searchobj ->> 'provider';
+v_lvChildCharacter := searchobj ->> 'childcharacteristic';
+v_liPageNumber := searchobj ->> 'pagenumber';
+v_liPageSize := searchobj ->> 'pagesize'; 
+v_fodertype := searchobj ->> 'foldertype'; 
+v_isoperatedbydjs := (searchobj ->> 'isoperatedbydjs')::bool; 
+raise notice 'test %',v_fodertype; 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+ 
+SELECT 
+COUNT(1) OVER() totalcount, p.providerid, p.providercategorytypekey, p.providername, 
+p.prefix, p.firstname, p.middlename, p.lastname,pcinfo.phonenumber,pcinfo.email,p.levelofcare,
+p.parentorg as providerorganizationtype,padt.placementadmissiontypekey as placementadmissiontypekey, padt.description as placementadmissiontypedesc,
+pac.placementadmissionclassificationkey as placementadmissionclassificationkey, pac.description as placementadmissionclassificationdesc,
+p.providerunit,
+paddr.provideraddresstypekey, paddr.buildingno, paddr.addressline1, COALESCE(paddr.addressline2, '') AS addressline2,
+paddr.city, coun.countyname AS county, paddr.state, paddr.provideraddressid, coun.zipcode, 
+paddr.latitude, paddr.longitude,
+pconttype.providercontracttypekey, pconttype.providercontracttypename,
+pcontrate.rate,( p.firstname || ' '||p.lastname):: character varying  AS displayname,
+p.age, gen.typedescription AS gender, race.typedescription AS race,
+COALESCE(pcont.contractedbeds, 0) AS bedsapproved, COALESCE(pcont.contractedvacancy, 0) AS bedsvacant,
+s.servicename, stype.servicetypedescription, 
+json_agg(DISTINCT ssubtype.servicesubtypedescription)::json,
+p.providercode,
+json_agg(DISTINCT pu.description)::json
+/*
+, (SELECT FT.isprovidertyperesidential FROM  foldertype FT
+JOIN foldertypeproviderconfig FPC ON FT.foldertypekey=FPC.foldertypekey  
+JOIN  provider PO ON FPC.providerid = p.providerid WHERE FT.activeflag=1 AND FPC.activeflag=1) AS isprovidertyperesidential
+*/
+, FT.isprovidertyperesidential
+, p.isoperatedbydjs
+FROM provider p 
+LEFT JOIN provideraddress paddr ON p.providerid = paddr.providerid
+LEFT JOIN providercontactinfo pcinfo ON p.providerid = pcinfo.providerid AND pcinfo.activeflag = 1
+LEFT JOIN providercontactinfotype pcinfotype ON pcinfo.providercontactinfotypekey = pcinfotype.providercontactinfotypekey AND pcinfotype.activeflag = 1
+LEFT JOIN providercontract pcont ON p.providerid = pcont.providerid AND pcont.activeflag = 1
+LEFT JOIN providercontracttype pconttype ON pcont.contracttypekey = pconttype.providercontracttypekey AND pconttype.activeflag = 1
+LEFT JOIN providercontractrate pcontrate ON pcontrate.providercontractid = pcont.providercontractid AND pcontrate.activeflag = 1
+LEFT JOIN providerservice pserv ON p.providerid = pserv.providerid AND pserv.activeflag = 1
+LEFT JOIN service s ON s.serviceid = pserv.serviceid AND s.activeflag = 1
+LEFT JOIN servicesubtype ssubtype ON s.serviceid = ssubtype.serviceid AND ssubtype.activeflag = 1
+LEFT JOIN servicetype stype ON s.servicetypekey = stype.servicetypekey AND stype.activeflag = 1
+LEFT JOIN county coun ON paddr.countyid = coun.countyid AND coun.activeflag = 1
+LEFT JOIN providerchildcharacteristic pcc ON p.providerid = pcc.providerid AND pcc.activeflag = 1
+LEFT JOIN placementadmissiontype pat ON p.providerid = pcc.providerid AND pcc.activeflag = 1
+LEFT JOIN racetype race ON p.racetypekey = race.racetypekey AND race.activeflag = 1
+LEFT JOIN gendertype gen ON p.gendertypekey = gen.gendertypekey AND gen.activeflag = 1
+LEFT JOIN providerutility pu ON pu.providerid = p.providerid AND pu.activeflag = 1
+INNER join foldertypeproviderconfig FTC on FTC.providerid=p.providerid and FTC.activeflag=1
+INNER JOIN foldertype FT ON FT.foldertypekey = FTC.foldertypekey and FT.activeflag = 1
+left join placementadmissiontype padt 
+    on padt.placementadmissiontypekey = p.placementadmissiontypekey
+left join placementadmissionclassificationtype pac
+    on pac.placementadmissionclassificationkey = p.placementadmissionclassificationkey
+WHERE p.activeflag = 1 
+AND (v_lvServiceType IS NULL OR stype.servicetypekey ILIKE v_lvServiceType || '%')
+AND (v_lvService IS NULL OR s.serviceid = v_lvService::uuid)
+AND (v_lvServiceSubType IS NULL OR ssubtype.servicesubtypekey ILIKE v_lvServiceSubType || '%')
+AND (v_lvPaymentType IS NULL OR pconttype.providercontracttypekey ILIKE v_lvPaymentType || '%')
+AND (v_liZipCode IS NULL OR coun.zipcode = v_liZipCode)
+AND (v_liCounty IS NULL OR coun.countyid = v_liCounty)
+AND (v_fodertype IS NULL OR FTC.foldertypekey = ANY(v_fodertype))
+AND (COALESCE(lower(p.providername) ,'') LIKE COALESCE(lower(v_lvProvider) ,'')||'%')
+AND (v_lvChildCharacter IS NULL OR pcc.childcharacteristictypekey IN (select * from json_array_elements_text(v_lvChildCharacter)))
+AND (v_isoperatedbydjs IS NULL OR p.isoperatedbydjs = v_isoperatedbydjs)
+GROUP BY p.providerid, p.providercategorytypekey, p.providername, 
+p.prefix, p.firstname, p.middlename, p.lastname,pcinfo.phonenumber,pcinfo.email,p.levelofcare,
+paddr.provideraddresstypekey, paddr.buildingno, paddr.addressline1, paddr.addressline2,
+paddr.city, coun.countyname, paddr.state, paddr.provideraddressid, coun.zipcode, 
+paddr.latitude, paddr.longitude,
+pconttype.providercontracttypekey, pconttype.providercontracttypename,
+pcontrate.rate, p.firstname,p.lastname,
+p.age, gen.typedescription, race.typedescription,
+pcont.contractedbeds, pcont.contractedvacancy,
+s.servicename,s.serviceid, stype.servicetypedescription,
+p.providercode,padt.placementadmissiontypekey,padt.description,pac.placementadmissionclassificationkey,pac.description
+, FT.isprovidertyperesidential
+, p.isoperatedbydjs
+ORDER BY p.providername ASC
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

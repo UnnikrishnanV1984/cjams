@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION getmonitorquesans(v_monitoring_id character varying, v_record_type character varying, v_module_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ v_startdate date;
+v_enddate date;
+v_prgram character varying;
+v_provider_id character varying;
+ BEGIN
+  select provider_id,to_char(date_trunc('quarter', end_dt)  - interval '1 months' ),to_char( end_dt),prgram into v_provider_id,v_startdate,v_enddate,v_prgram from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+
+
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  select 
+  prs.child_id,prs.site_id,prs.monitoring_record_site_id,pr.prgram,tpa.program_type,prs.status,concat(p.firstname,' ',p.lastname) as person_name,p.dob,p.gendertypekey,
+  prs.update_ts ,up.fullname as worker_name,tpl.license_no,
+  (select  case when count(1) > 0 then true else false end as any_pending from prov_monitoring_record_data prd where prd.monitoring_record_site_id = prs.monitoring_record_site_id and coalesce(prd.monitoring_record_value) = 'Pending'),
+  (select  case when count(1) > 0 then true else false end as any_nc from prov_monitoring_record_data prd where prd.monitoring_record_site_id = prs.monitoring_record_site_id and coalesce(prd.monitoring_record_value) = 'Non-Compliance')
+        ,case (v_record_type) 
+      when 'Child' then (select concat(p.firstname,' ',p.lastname)  from  person p where  p.personid ::character varying = prs.objectid) 
+   when 'Staff' then (select concat(ps.first_nm,' ',ps.last_nm)  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)
+   when 'Board member' then (select concat(ps.first_nm,' ',ps.last_nm)  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)
+      end as objectname
+     ,case (v_record_type) 
+      when 'Child' then (select p.personid  from  person p where  p.personid ::character varying = prs.objectid) 
+   when 'Staff' then (select ps.provider_staff_id  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)
+   when 'Board member' then (select ps.provider_staff_id  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid)
+      end as objectid,
+        (select json_agg(x) from (select 
+  prq.question,prq.question_hint,
+  prdt.monitoring_record_dt,prdt.monitoring_record_value,prdt.frequency_deficiency,prdt.impact_deficiency,prdt.scope_deficiency,prdt.findings
+  from prov_monitoring_record_data prdt 
+  join prov_record_question prq on prq.record_question_id = prdt.record_question_id
+  where prdt.monitoring_record_site_id = prs.monitoring_record_site_id::uuid and prdt.delete_sw = 'N')x) answers  
+  from prov_monitoring_record_site prs 
+  left join person p on p.personid ::character varying = prs.objectid
+  join prov_record pr on pr.record_id = prs.record_id
+  left join userprofile up on up.securityusersid = prs.update_user_id
+  join tb_provider_licensing tpl on tpl.site_id = prs.site_id
+  join tb_provider_applicant tpa on tpa.site_id = prs.site_id
+  where prs.monitoring_id in (select pm.monitoring_id from  prov_monitoring pm where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+((periodic='Monthly') or  (pm.monitoring_id =v_monitoring_id)))  and pr.records_type = v_record_type and pr.module_name=v_module_name
+  and prs.delete_sw = 'N'
+ order by prs.create_ts desc
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

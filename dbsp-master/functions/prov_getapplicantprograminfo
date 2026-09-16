@@ -1,0 +1,56 @@
+CREATE OR REPLACE FUNCTION prov_getapplicantprograminfo(appid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+declare
+v_providerid character varying; 
+v_applicantprofileid uuid;
+v_address json;
+begin
+
+select provider_id, applicant_profile_id into v_providerid , v_applicantprofileid from tb_provider_applicant pa where pa.applicant_id = appid;
+
+select row_to_json(t)
+from (
+select pm.monitoring_id,pa.applicant_id,pa.program_name,pa.contact_email,pa.program_description,pa.contact_first_nm,pa.contact_last_nm, pa.contact_phonenumber, pa.mailing_address,
+ pa.contact_first_nm, pa.contact_last_nm,pa.contact_prefix_cd,pa.program_type,
+  pa.contact_suffix_cd,pa.contact_middle_nm,pa.program_tax_id_no,pa.prgram,pa.license_agency,
+  (SELECT json_agg(x) FROM 
+  (
+         select 
+          pacc.requested_license_effective_date, pacc.requested_license_end_date,
+          pacc.prov_applicant_accomodation_id, pt.program_type, pt.program_type_id, pacc.gender_cd,tpa.license_agency,
+          (select typedescription from gendertype gt where gt.gendertypekey = pacc.gender_cd) AS gender_name,
+          pacc.minimum_age_no, pacc.maximum_age_no,pacc.male_capacity,pacc.female_capacity,pacc.is_max_capacity,pacc.max_male_capacity,pacc.max_female_capacity,pacc.iq_range_from,pacc.iq_range_to,pacc.children_no, pacc.license_no
+          from tb_prov_ref_program_type pt
+          join tb_provider_applicant tpa on tpa.applicant_id = pt.applicant_id
+          left join tb_prov_applicant_accomodation pacc 
+            on pacc.provider_applicant_id = pt.applicant_id 
+            --and pt.program_type_id = pacc.program_type_id
+         where tpa.applicant_id = appid 
+  ) 
+  x)::json as accomodations,
+  pa.contact_fax,
+  pa.application_status, pa.application_type, pa.provider_id,pa.site_id,pa.uploadsignature,
+  pa.execsignature,tp.provider_nm ,tp.provider_first_nm,tp.provider_middle_nm,tp.tax_id_no,
+    (
+      select array_to_json(array_agg(row_to_json(d)))
+      from (
+        select *,concat_ws( ',' , coalesce(paa.adr_street_nm,''),coalesce(paa.adr_city_nm,'') 
+      ,(select coalesce(value_text) from referencevalues where  ref_key=paa.adr_county_cd  and referencetypeid=306 limit 1), (select coalesce(value_text) from referencevalues where  ref_key= paa.adr_state_cd  and referencetypeid = 211),
+      coalesce(paa.adr_zip5_no:: character varying,'') ) formatted_address from  tb_provider_applicant_addresses paa where paa.parent_key_id = appid 
+      ) d
+    ) as addresses,pa.accreditation,pa.profit,
+    tpl.license_no,tpl.license_issue_dt,tpl.license_expiry_dt
+  from tb_provider_applicant pa 
+  join tb_provider tp on tp.provider_id :: character varying = pa.provider_id
+  left join prov_monitoring_site pm on pa.site_id = pm.site_id and pm.monitoring_site_id in (select monitoring_site_id from prov_monitoring_site where applicant_id = appid and activeflag = '1' order by create_ts desc limit 1 )
+  left join tb_provider_licensing tpl on tpl.site_id = pa.site_id and tpl.delete_sw ='N' and tpl.active_sw ='Y'
+  where pa.applicant_id= appid
+) t into v_address;
+
+return v_address;
+ 
+end;
+$function$
+

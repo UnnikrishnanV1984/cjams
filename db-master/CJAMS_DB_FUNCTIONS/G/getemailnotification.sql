@@ -1,0 +1,43 @@
+ CREATE OR REPLACE FUNCTION public.getemailnotification(v_objectid character varying)                                                                                                              
+  RETURNS TABLE(usernotificationid uuid, email character varying, securityusersid character varying, body text, bassessment integer, objecttypekey character varying, subject text, filedata bytea)
+  LANGUAGE plpgsql                                                                                                                                                                                 
+ AS $function$                                                                                                                                                                                     
+                                                                                                                                                                                                   
+                                                                                                                                                                                                   
+ BEGIN                                                                                                                                                                                             
+                                                                                                                                                                                                   
+                                                                                                                                                                                                   
+   RETURN  QUERY                                                                                                                                                                                   
+                                                                                                                                                                                                   
+                                                                                                                                                                                                   
+       (SELECT    un.usernotificationid,up.email,  un.securityusersid,  un.subject::text,0,                                                                                                        
+        'usernotification'::character  varying,                                                                                                                                                    
+        'CJAMS Notification'::text,''::bytea                                                                                                                                                       
+       FROM  usernotification  un                                                                                                                                                                  
+       JOIN  userprofile  up  on  un.securityusersid  =  up.securityusersid                                                                                                                        
+       AND  un.activeflag  =  1  AND  up.activeflag  =  1 and un.teamtypekey = 'CW'                                                                                                                                         
+       WHERE  un.objectid  =  case  COALESCE(v_objectid  ,'')                                                                                                                                      
+                 when  ''  then  un.objectid  else  COALESCE(v_objectid  ,'')                                                                                                                      
+                     end                                                                                                                                                                           
+       and  coalesce(un.ismailsent,false)=false                                                                                                                                                    
+       and  coalesce(up.email,'')  <>''    limit  25  )                                                                                                                                            
+       UNION  ALL                                                                                                                                                                                  
+       (SELECT  notificationlogid,emailid,'system',  message::text,  isassessment  as  asst,  'assessment'                                                                                         
+       , 'CJAMS Notification'::text,''::bytea                                                                                                                                                      
+       FROM  notificationlog  WHERE  COALESCE(ismailsent,0)  =0                                                                                                                                    
+       AND    objectid  =  CASE  COALESCE(v_objectid  ,'')  WHEN  ''  THEN    objectid  ELSE  COALESCE(v_objectid  ,'')  END                                                                       
+        limit  25)                                                                                                                                                                                 
+        UNION  ALL                                                                                                                                                                                 
+       SELECT  sl.supportlogid,sl.tomailid,sl.insertedby,  sl.emailbody::text,  0 ,  'support',                                                                                                    
+       sl.emailsubject || sl.supportno,slf.filedata                                                                                                                                                
+       FROM  supportlog sl                                                                                                                                                                         
+       left join supportlogfiles slf on slf.supportlogid = sl.supportlogid  WHERE  COALESCE(ismailsent,0)  =0                                                                                      
+         limit  25  ;                                                                                                                                                                              
+                                                                                                                                                                                                   
+                                                                                                                                                                                                   
+                                                                                                                                                                                                   
+ END;                                                                                                                                                                                              
+                                                                                                                                                                                                   
+                                                                                                                                                                                                   
+ $function$                                                                                                                                                                                        
+

@@ -1,0 +1,3 @@
+UPDATE servicecase SET statustypekey ='Open', dispositioncode = 'Open', enddate = null, updatedby = 'CDM-11267',updatedon = now() WHERE servicecaseid = '17a4f155-c952-4de5-abd3-127f3f0f99f8';
+update servicecasedisposition set activeflag = 0, updatedby = 'CDM-11267',updatedon = now() where servicecasedispositionid = '7f5bb25f-8fc3-4d86-92f1-e949051c606d';
+update caseassignment set enddate = null, updatedby = 'CDM-11267',updatedon = now() where caseassignmentid =  'd1863cc6-6365-414c-9864-6399a1d74a35';

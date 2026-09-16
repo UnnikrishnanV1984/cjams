@@ -1,0 +1,42 @@
+CREATE OR REPLACE FUNCTION as_getcommunitymonitoringviolations(intakeservid uuid, p_pagesize integer, p_pageoffset integer, nolimit boolean)
+ RETURNS TABLE(personname character varying, cjamspid bigint, dob timestamp without time zone, personaddress json, firstinfraction json, personid uuid, alerts json, cmprogramstartdate timestamp without time zone, cmlevelstartdate timestamp without time zone, cmlevelenddate timestamp without time zone, cmprogramenddate timestamp without time zone, workername character varying, workerid character varying, cmlevel character varying)
+ LANGUAGE plpgsql
+AS $function$     
+DECLARE
+BEGIN
+RETURN QUERY
+select  cast(TRIM(coalesce(INITCAP(PN.lastname),''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END 
+ || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(INITCAP(PN.firstname),'')) as  character varying)
+ as personname, 
+ PN.cjamspid,
+ PN.dob,
+(select json_agg(d)as personaddres from (select PA.*, CY.countyname, CY.countyid, RN.regionid, RN.regionname from personaddress PA  
+left join county CY on CY.countyname = PA.county
+left join region RN on RN.regionid = CY.regionid where PA.personid = PN.personid and CY.activeflag = 1 and RN.activeflag = 1 
+and PA.activeflag = 1 )as d):: json,
+  (SELECT  json_agg(f)    as  firstinfraction  from (select ISRCAT.firstinfraction from intakeservicerequestcourtaction ISRCAT where ISRCAT.intakenumber = ISR.intakenumber  and  ISRCAT.activeflag = 1)  as  f)  ::json,
+ PN.personid,
+ (SELECT  json_agg(e)    as  alerts  from (select *, PAT.typedescription from personalert PAL join personalerttype PAT on PAT.personalerttypekey = PAL.alerttype where PAL.personid = PN.personid and  PAL.activeflag = 1)  as  e)  ::json, 
+    (select PMT.insertedon from placement PMT where PMT.personid = PN.personid  and  PMT.activeflag = 1 order by insertedon asc limit 1) as CMProgramStartDate,
+ (select PMT.startdatetime from placement PMT where PMT.personid = PN.personid  and PMT.intakeserviceid = intakeservid and PMT.activeflag = 1 and PMT.placementadmissionclassificationkey = 'NRES' limit 1) as startdatetime,
+ (select PMT.enddatetime from placement PMT where PMT.personid = PN.personid and PMT.intakeserviceid = intakeservid and PMT.activeflag = 1 and PMT.placementadmissionclassificationkey = 'NRES' limit 1) as enddatetime,
+    (select  (CASE WHEN (select enddatetime from placement where intakeserviceid = intakeservid  and enddatetime is null limit 1) is null THEN null 
+     ELSE (select PMT.insertedon from placement PMT where 
+     PMT.activeflag = 1 order by insertedon desc limit 1 )END)) as CMProgramEndDate ,
+    (select UP.fullname from placement PMT join userprofile UP on PMT.insertedby = UP.securityusersid where  PMT.intakeserviceid = intakeservid and PMT.activeflag = 1 limit 1 ) as workername,
+    (select UP.securityusersid from placement PMT join userprofile UP on PMT.insertedby = UP.securityusersid where PMT.intakeserviceid = intakeservid and PMT.activeflag = 1 limit 1 ) as workerid,
+    (select PPATK.description from placement PMT  join placementprimaryapprovedalttype PPATK ON PMT.placementprimaryapprovedalttypekey = PPATK.placementprimaryapprovedalttypekey where PMT.personid = PN.personid  and PMT.intakeserviceid = intakeservid and PMT.activeflag = 1
+     and PMT.placementadmissionclassificationkey = 'NRES' limit 1)  as cmlevel
+ from intakeservicerequestactor isra join actor ac on  ac.actorid  = isra.actorid 
+join intakeservicerequest ISR on ISR.intakeserviceid = intakeservid
+join person PN on PN.personid = ac.personid
+join placement PT on PT.intakeserviceid = intakeservid
+where lower(intakeservicerequestpersontypekey) = 'youth' 
+and isra.intakeserviceid = intakeservid 
+and isra.activeflag = 1
+and PN.activeflag = 1 and ISR.activeflag =1 
+order by PN.insertedon desc
+limit (case when nolimit is false then p_pagesize else null end ) offset (case when nolimit is false then p_pageoffset else null end);
+END;
+$function$
+

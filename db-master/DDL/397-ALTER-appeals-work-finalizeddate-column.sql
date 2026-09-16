@@ -1,0 +1,1 @@
+ALTER TABLE cjams.investigationallegationmaltreators ADD COLUMN IF NOT EXISTS finalizeddate timestamp NULL;

@@ -1,0 +1,72 @@
+CREATE OR REPLACE FUNCTION as_getuserprofileteam(v_securityusersid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+jsondata  json;
+
+begin
+
+select row_to_json(a) INTO jsondata from (
+
+select up.securityusersid, up.firstname, up.lastname, up.displayname, up.fullname, up.activeflag, up.onprobation, up.email,
+up.old_id as oldId, up.title, up.unavailableflag as isavailable, up.userworkstatustypekey, up.usertypekey, up.autonotification,
+up.userphoto, up.gendertypekey, up.middlename, up.dob, rm.teamtypekey, up.cjamspid, up.usersignatureurl, up.assupervisorid as supervisorid,
+(select upsup.fullname from userprofile upsup where securityusersid = up.assupervisorid) as supervisorname,
+(select
+jsonb_build_object('teammemberid', tma.teammemberid,
+  'securityusersid', tma.securityusersid,
+  'teammember', jsonb_build_object(
+  'teammemberid', tm.teammemberid,
+  'teamid', tm.teamid,
+  'loadnumber', tm.loadnumber,
+  'roletypekey', tmrt.roletypekey,
+ -- 'providerid', tm.providerid,
+--'isoperatedbydjs',pr.isoperatedbydjs,
+'team', jsonb_build_object(
+'id', t.teamid,
+'name', t.teamname,
+'teamtypekey', rm.teamtypekey,
+'parentteamid', t.parentteamid,
+'countyid',t.countyid,
+'teamtype', (select jsonb_build_object('description', description,
+'teamtypekey', ref_key)
+from referencevalues where activeflag = 1
+and ref_key =rm.teamtypekey and referencetypeid in
+(select referencetypeid from referencetype
+where tablename='teamtype'))),
+'teammemberroletype', jsonb_build_object('roletypekey', tmrt.roletypekey,
+'description', tmrt.description,
+    'issupervisor', tmrt.isupervisor)
+)
+) as teammemberassignment),
+COALESCE((select jsonb_agg(upn) from (
+select uppn.userprofilephonenumberid, uppn.securityusersid, uppn.activeflag, uppn.userprofiletypekey, uppn.phonenumber,
+uppn.phoneextension, uppn.effectivedate, uppn.old_id as oldId, uppn.insertedby, uppn.insertedon, uppn.updatedon,
+uppn.updatedby from userprofilephonenumber uppn
+where uppn.securityusersid = up.securityusersid
+)upn), '[]') as userprofilephonenumber,
+COALESCE((select jsonb_agg(pa) from (
+select upa.userprofileaddressid, upa.securityusersid, upa.activeflag, upa.userprofileaddresstypekey, upa.address, upa.zipcode,
+upa.effectivedate, upa.old_id as oldId, upa.pobox, upa.city, upa.state, upa.country, upa.countyid, upa.county
+from userprofileaddress upa
+where upa.securityusersid = up.securityusersid
+)pa), '[]') as userprofileaddress
+FROM userprofile up
+INNER  JOIN as_teammemberassignment tma on tma.securityusersid = up.securityusersid and tma.activeflag = 1
+INNER  JOIN teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+INNER  JOIN team t on t.teamid = tm.teamid and t.activeflag = 1
+INNER  JOIN muser m on up.securityusersid = m.securityusersid and m.activeflag = 1
+INNER  JOIN rolemapping rm on m.id::character varying = rm.principalid and rm.activeflag = 1 and rm.teamtypekey = 'AS'
+INNER  JOIN role r ON r.id = rm.roleid AND r.activeflag =1
+INNER  JOIN teammemberroletype tmrt on tmrt.roletypekey = r.roletypekey and tmrt.activeflag = 1
+where up.securityusersid = v_securityusersid:: character varying and up.activeflag = 1
+)a ;
+
+RETURN  jsondata;
+END;
+
+$function$
+

@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION as_legalactionhistory(i_personid uuid, pagenumber bigint, pagesize bigint, i_searchtext character varying, v_nolimit boolean)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, servicerequestnumber character varying, status text, offensedate text, allegationname character varying[], petition character varying[], complaintid character varying, intakeservicerequestevaluationid uuid, countyname character varying, intakeserviceid uuid, assigneduserid character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare querytxt text;
+declare youthstatussearch character varying;
+
+begin
+ return query 
+ select  count(1) over() as totalcount,INE.intakenumber,inrs.servicerequestnumber,
+case
+when INE.complaintstatustypekey='PSR' then 'Disposition'
+ when INE.complaintstatustypekey not in ('PSR') then 
+( select case when count(1)>0 then 'Adjudication' else 'intake' end  from intakeservicerequestpetition INP 
+      join  Intakeservreqevalpetitionconfig INPC on INPC.intakeservicerequestpetitionid=INP.intakeservicerequestpetitionid and INPC.activeflag=1
+      join Intakeservreqpetitionhearingconfig INHC on INHC.intakeservicerequestpetitionid =INPC.intakeservicerequestpetitionid and INHC.activeflag=1
+      join intakeservicerequestcourthearing INCH on INCH.intakeservicerequestcourthearingid=INHC.intakeservicerequestcourthearingid and INCH.activeflag=1
+      and INCH.hearingtypekey='Adjudi'
+      where  INPC.intakeservicerequestevaluationid =INE.intakeservicerequestevaluationid and INP.activeflag=1 )  
+else 'Intake' end as status,
+
+case when INE.unknownrange=0 then to_char(INE.offensedate,'MM/DD/YYYY') 
+ when INE.unknownrange=1 then '' :: character varying 
+  when INE.unknownrange=2 then to_char(INE.begindate,'MM/DD/YYYY')|| '- ' || to_char(INE.enddate,'MM/DD/YYYY')
+end as offensedate,
+(select array_agg(AG.name)  from  allegation AG
+      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+      where  ITSEC.intakeservicerequestevaluationid=INE.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as allegationname,
+      ( select array_agg(INP.petitionid)  from intakeservicerequestpetition INP 
+      join  Intakeservreqevalpetitionconfig INPC on INPC.intakeservicerequestpetitionid=INP.intakeservicerequestpetitionid and INPC.activeflag=1
+      where  INPC.intakeservicerequestevaluationid =INE.intakeservicerequestevaluationid and INP.activeflag=1) as petition
+      ,INE.complaintid,INE.intakeservicerequestevaluationid,CU.countyname, inrs.intakeserviceid
+   , (SELECT ro.tosecurityusersid::VARCHAR AS assigneduserid FROM ROUTING ro WHERE ro.objectid = inrs.intakeserviceid::VARCHAR AND 
+  ro.routingstatustypeid = 4 AND ro.activeflag = 1 AND ro.toroleid LIKE '%CW' ORDER BY ro.insertedon DESC LIMIT 1)
+from intakeservicerequestevaluation INE
+--join intakeservicerequestevaluationconfig INEC on INEC.intakeservicerequestevaluationid=INE.intakeservicerequestevaluationid and INEC.activeflag=1
+left join county CU on CU.countyid=INE.countyid and CU.activeflag=1
+left join intakeservicerequest inrs on inrs.intakenumber=INE.intakenumber and inrs.activeflag=1
+where INE.intakenumber in (
+select distinct fp.intakenumber from focuspersoncasestatus fp where fp.status='Open' and  fp.personid=i_personid
+and case when (i_searchtext != '' and i_searchtext != null) then fp.focuspersonstatustypekey = i_searchtext else 1=1 end)
+--select distinct INTSR.intakenumber from intakeservicerequest INTSR 
+--   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+--   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+--   join person p on Acc.personid=p.personid and p.activeflag=1
+--   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+--   where ACC.personid ='da75e9ea-7c24-4156-b966-443caec127ba') 
+LIMIT case when v_nolimit = false  then pagesize end offset case when v_nolimit = false  then pagenumber end;
+
+  end;
+
+$function$
+

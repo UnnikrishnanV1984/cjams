@@ -1,0 +1,122 @@
+CREATE OR REPLACE FUNCTION as_sp_fc_worksheet_summary_info(al_client_id bigint)
+ RETURNS TABLE(childname character varying, cjams_pid integer, casenumber character varying, childagency character varying, childjurisdiction character varying, removaldate timestamp without time zone, dateofbirth timestamp without time zone, removalage integer, servicecaseid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  vs_Procedure_nm      VARCHAR(100) DEFAULT 'sp_fc_worksheet_summary_info';
+  vs_child_nm       VARCHAR(100);
+  v_cjams_pid       INTEGER;
+  vs_srv_req_no      VARCHAR(50);
+  vs_chd_agcy       VARCHAR(50);
+  vs_jrsdctn       VARCHAR(50);
+  vd_child_rmvl_dt     TIMESTAMP;
+  vd_brth_dt       TIMESTAMP;
+  vn_child_age_rmvl     INTEGER;
+  vn_srv_req_id      UUID;
+
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_summary_info ( 
+--  client_id          BIGINT,
+  childname         VARCHAR(100),
+  cjams_pid         INTEGER,
+  casenumber         VARCHAR(50),
+  childagency         VARCHAR(50),
+  childjurisdiction       VARCHAR(50),
+  removaldate         TIMESTAMP,
+  dateofbirth         TIMESTAMP,
+  removalage         INTEGER,
+  servicecaseid        UUID
+ ); 
+                  
+-- Child Name  
+SELECT ( CAST(INITCAP(TRIM(per.firstname)||' '||TRIM(per.lastname) || CASE WHEN per.middlename IS NOT NULL AND 
+TRIM(per.middlename) != '' THEN ', ' || TRIM(per.middlename)ELSE '' END) AS CHARACTER VARYING )) 
+  INTO vs_child_nm
+   FROM person as per   
+WHERE per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Child CJAMS ID  
+SELECT per.cjamspid
+  INTO v_cjams_pid
+   FROM person as per   
+WHERE per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Case Number  
+SELECT sc.servicecasenumber
+  INTO vs_srv_req_no
+   FROM servicecase sc, placement pl, intakeservicerequestactor isra, person per 
+WHERE sc.servicecaseid = pl.servicecaseid AND sc.activeflag = 1 
+ AND pl.activeflag = 1 AND pl.placementtypekey = 'PRPL'
+ AND isra.servicecaseid = pl.servicecaseid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey = 'CHILD' AND isra.intakeservicerequestactorid = pl.intakeservicerequestactorid 
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Child Agency
+SELECT isr.teamtypekey  
+ INTO vs_chd_agcy
+ FROM intakeservicerequest isr, placement pl, intakeservicerequestactor isra, person per 
+WHERE pl.servicecaseid = isr.servicecaseid AND pl.activeflag = 1
+ AND isra.intakeservicerequestactorid = pl.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Child Jurisdiction  
+SELECT peradr.county
+  INTO vs_jrsdctn
+   FROM person per, personaddress peradr
+WHERE per.personid = peradr.personid AND peradr.activeflag = 1
+ AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Child Removal Date
+SELECT isrcr.removaldate
+ INTO vd_child_rmvl_dt
+   FROM intakeservreqchildremoval isrcr, placement pl, intakeservicerequestactor isra, person per 
+WHERE pl.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid AND pl.activeflag = 1 AND pl.placementtypekey = 'PRPL'
+ AND isra.servicecaseid = pl.servicecaseid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey = 'CHILD' AND isra.intakeservicerequestactorid = pl.intakeservicerequestactorid 
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Child Birth Date  
+SELECT per.dob
+  INTO vd_brth_dt
+   FROM person as per   
+WHERE per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Child Age At Removal
+SELECT extract('years' FROM isrcr.removaldate)::int -  extract('years' FROM per.dob)::int
+ INTO vn_child_age_rmvl
+   FROM intakeservreqchildremoval isrcr, intakeservicerequestactor isra, person per 
+WHERE isrcr.servicecaseid = isra.servicecaseid AND isrcr.activeflag = 1 
+ AND per.personid = isra.personid AND isra.activeflag = 1 
+ AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1  limit 1;
+
+-- Service Case ID  
+SELECT sc.servicecaseid
+  INTO vn_srv_req_id
+   FROM servicecase sc, placement pl, intakeservicerequestactor isra, person per 
+WHERE sc.servicecaseid = pl.servicecaseid AND sc.activeflag = 1 
+ AND pl.activeflag = 1 AND pl.placementtypekey = 'PRPL'
+ AND isra.servicecaseid = pl.servicecaseid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey = 'CHILD' AND isra.intakeservicerequestactorid = pl.intakeservicerequestactorid 
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+INSERT INTO Temp_worksheet_summary_info
+SELECT 
+--  al_client_id,
+  vs_child_nm,
+  v_cjams_pid,
+  vs_srv_req_no,
+  vs_chd_agcy,
+  vs_jrsdctn,
+  vd_child_rmvl_dt,
+  vd_brth_dt,
+  vn_child_age_rmvl,
+  vn_srv_req_id;
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_summary_info;
+              
+DROP TABLE Temp_worksheet_summary_info;
+
+   END
+    $function$
+

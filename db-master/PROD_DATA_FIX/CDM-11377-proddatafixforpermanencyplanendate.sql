@@ -1,0 +1,1 @@
+update cjams.permanencyplan p set enddate =  '2020-09-11 04:00:00', updatedby = 'CDM-11377',updatedon = now() where permanencyplanid = '4d263eb7-10dd-4382-86ca-43111e50d82e';

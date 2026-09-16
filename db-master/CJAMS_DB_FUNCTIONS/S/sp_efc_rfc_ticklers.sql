@@ -1,0 +1,367 @@
+-- FUNCTION: cjams.sp_efc_rfc_ticklers(bigint, character, date, date)
+
+ DROP FUNCTION if exists cjams.sp_efc_rfc_ticklers(bigint, character, date, date);
+
+CREATE OR REPLACE FUNCTION cjams.sp_efc_rfc_ticklers(
+	al_system_ticlker_id bigint,
+	as_activity character,
+	ad_previous_month_start_dt date,
+	ad_previous_month_end_dt date)
+    RETURNS void
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author      :  Vineet Tirodkar
+-- Date        :  09/22/2008
+-- Description :  To Create Payment Rate Change Ticklers (EFC to RFC) - CIS-17815
+-- Argument    : 1) System Tickler ID
+--             : 2) as_activity
+--             :    Case 'F'
+--	              For Final payments for chessie_mask providers.
+--		      Payment Type '6' (Maintenance)
+--
+--	            Case 'U'
+--	              For Under Over payments for chessie_mask providers.
+--                    Payment Type '3294' (Adjustments)
+--
+--             : 3) & 4) Previous month's Start / End Dates, when Case as_activity is 'F'
+-- 08/14/2009 Vineet Tirodkar - Changes to incorporate new rate type '5670' Room & Board/Clothing -- CIS-19002 	
+-- 02/01/2010 Vineet Tirodkar - Changes to incorporate new rate type '5671' Room & Board/Clothing/Differential -- CIS-18884 	
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+------------------------------------------------------------------------
+DECLARE
+
+ vs_cursor_sql VARCHAR(12000) ;--
+ vs_entity_type VARCHAR(5) DEFAULT '2952' ;--
+ vs_tickler_tx VARCHAR(500);--
+ vl_days_no INTEGER;--
+ vl_reminder_days INTEGER;--
+ vs_nature VARCHAR(5);--
+ vl_expiry INTEGER;--
+ vd_due_dt DATE;--
+ vd_reminder_dt DATE;--
+ vd_expiry_dt DATE;--
+ vs_case_nm VARCHAR(200);--
+ vs_client_nm VARCHAR(200);--
+ vs_screen_cd VARCHAR(8) DEFAULT NULL;--
+
+ vs_county_cd VARCHAR(5);--
+ vs_to_county_cd VARCHAR(5);--
+ vs_assign_to_county_cd VARCHAR(5);--
+	
+ vl_unit_id BIGINT DEFAULT NULL;--
+ vl_to_unit_id BIGINT DEFAULT NULL;--
+ vl_assign_to_unit_id BIGINT DEFAULT NULL;--
+
+ vl_payment_detail_id BIGINT DEFAULT 0;--
+ vl_client_id BIGINT DEFAULT 0;--
+ vl_case_id BIGINT DEFAULT 0;--
+ vl_staff_id BIGINT DEFAULT 0;--
+ ll_tickler_cnt BIGINT DEFAULT 0;--
+ vl_row_cnt BIGINT DEFAULT 0;--
+
+ vs_tickler_col character varying DEFAULT 'sq_ticklers';--
+ vl_tickler_id BIGINT DEFAULT 0;--
+ vd_under_over_run_dt DATE;--
+--Log Error
+ SQLCODE INT DEFAULT 0;--
+ al_sqlcode INT DEFAULT 0;--
+ as_error VARCHAR(3000);--
+ SQLSTATE CHAR(5) DEFAULT '00000';--
+-- p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+ vs_message_text VARCHAR(3000) DEFAULT '';--
+ vl_ret_status INTEGER DEFAULT 0;--
+ vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_EFC_RFC_TICKLERS';--
+ vs_identity_column VARCHAR(100);--
+ vs_identity_val VARCHAR(100);--
+--Log Error
+
+ CUR_EFC_RFC REFCURSOR;--
+
+BEGIN
+BEGIN
+    EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+   	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+--    SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    select cjams.SP_BATCH_ERROR_LOG ( 'SP_EFC_RFC_TICKLERS' ,
+                           		      NULL::bigint,
+				        NULL::bigint,
+                		NULL::character varying,
+				        NULL::INTEGER,
+						NULL::character varying,
+				        SQLSTATE::character varying,
+                		as_error::character varying,
+				        'finance'::character varying) INTO
+                		vl_ret_status;
+
+     as_error := '';--
+END;--
+SELECT DAYS_NO,
+       REMINDER_DAYS_NO,
+       SYSTEM_TICKLER_TX,
+       TICKLER_NATURE_CD,
+       EXPIRE_AFTER_DAYS
+INTO   vl_days_no,
+       vl_reminder_days,
+       vs_tickler_tx,
+       vs_nature,
+       vl_expiry
+FROM tb_SYSTEM_TICKLERS
+  WHERE SYSTEM_TICKLER_ID = al_system_ticlker_id AND
+    	DELETE_SW = 'N' AND
+        ACTIVE_SW = 'Y';--
+	
+ al_sqlcode = SQLCODE;--
+IF al_sqlcode <> 0 THEN
+    as_error = 'System tickler info NOT found.' ;--
+    vs_identity_column = 'SYSTEM_TICKLER_ID';--
+    vs_identity_val = (al_system_ticlker_id)::character varying;--
+   --SIGNAL p_sp_error  ;--
+END IF ;--
+
+SELECT ( CURRENT_DATE + vl_days_no  ) AS DUE_DT,
+       ( CURRENT_DATE + vl_days_no  ) - vl_reminder_days  AS REMD_DT,
+       ( CURRENT_DATE + vl_days_no  ) + vl_expiry  AS EXP_DT
+   INTO vd_due_dt,
+    	vd_reminder_dt,
+        vd_expiry_dt
+;	--
+
+ 		
+ vs_cursor_sql = ''; -- INITIAL VALUE
+IF as_activity = 'F' THEN
+	 vs_cursor_sql =
+	' SELECT PD.PAYMENT_DETAIL_ID,   '||
+	'        PL.CLIENT_ID, '||
+	--'        F_CNAME(PL.CLIENT_ID) AS CLIENT_NM, '||
+	'        PL.CLIENT_ID AS CLIENT_NM, '||
+	'        PL.CASE_ID, '||
+	--'        F_ENAME(''2952'', PL.CASE_ID) AS CASE_NM, '||
+	'        PL.CASE_ID AS CASE_NM, '||
+	'        F_PRIM_COUNTY(PL.CASE_ID) '||
+	'    FROM tb_PAYMENT_DETAIL PD, '||
+	'         tb_PAYMENT_HEADER PH, '||
+	'   	  tb_PLACEMENT PL '||
+	'   WHERE PD.PAYMENT_ID = PH.PAYMENT_ID  '||
+	'	  AND PL.PLACEMENT_ID = PD.PLACEMENT_ID  '||
+	'	  AND PH.PAYMENT_TYPE_CD = ''6'' '||
+	'	  AND PD.FINAL_SERVICE_START_DT >= '''|| TO_CHAR(ad_previous_month_start_dt,'YYYYMMDD') ||''' '||
+	'	  AND PD.FINAL_SERVICE_END_DT <= '''|| TO_CHAR(ad_previous_month_end_dt,'YYYYMMDD') ||''' '||
+	'	  AND PD.DELETE_SW = ''N''  '||
+	'	  AND PH.DELETE_SW = ''N''  '||
+	'	  AND PD.FINAL_AMOUNT_NO > 0  '||
+	'	  AND ( PD.FINAL_RATE_TYPE_CD = ''1232'' OR PD.FINAL_RATE_TYPE_CD = ''5670'' OR PD.FINAL_RATE_TYPE_CD = ''5671'' )  '||
+	'	  AND PD.FINAL_SERVICE_ID <> PL.RATE_STRUCTURE_ID   '||
+	'	  AND PL.DELETE_SW = ''N'' '||
+	'	  AND PL.PROVIDER_ORGANIZATION_ID IS NULL  ' ;--
+ELSE
+	 vd_under_over_run_dt = ad_previous_month_start_dt;--
+	
+	 vs_cursor_sql =
+	' SELECT PD.PAYMENT_DETAIL_ID, '||
+	'        PL.CLIENT_ID, '||
+	--'        F_CNAME(PL.CLIENT_ID) AS CLIENT_NM, '||
+	'        PL.CLIENT_ID AS CLIENT_NM, '||
+	'        PL.CASE_ID, '||
+	--'        F_ENAME(''2952'', PL.CASE_ID) AS CASE_NM, '||
+	'        PL.CASE_ID AS CASE_NM, '||
+	'        F_PRIM_COUNTY(PL.CASE_ID) '||
+	'    FROM tb_PAYMENT_DETAIL PD, '||
+	'         tb_PAYMENT_HEADER PH, '||
+	'   	  tb_PLACEMENT PL '||
+	'   WHERE PD.PAYMENT_ID = PH.PAYMENT_ID  '||
+	'	  AND PL.PLACEMENT_ID = PD.PLACEMENT_ID  '||
+	'	  AND PH.PAYMENT_TYPE_CD = ''3294'' '||
+	'	  AND DATE(PD.CREATE_TS) = '''|| TO_CHAR(vd_under_over_run_dt,'YYYYMMDD') ||''' '||
+	'	  AND PD.DELETE_SW = ''N''  '||
+	'	  AND PH.DELETE_SW = ''N''  '||
+	'	  AND PD.FINAL_AMOUNT_NO > 0  '||
+	'	  AND ( PD.FINAL_RATE_TYPE_CD = ''1232'' OR PD.FINAL_RATE_TYPE_CD = ''5670'' OR PD.FINAL_RATE_TYPE_CD = ''5671'' ) '||
+	'	  AND PD.FINAL_SERVICE_ID <> PL.RATE_STRUCTURE_ID   '||
+	'	  AND PL.DELETE_SW = ''N'' '||
+    '	  AND PL.PROVIDER_ORGANIZATION_ID IS NULL  ' ;--
+END IF;--
+
+ vl_row_cnt = 0; -- INITIAL VALUE
+IF as_activity = 'F' THEN
+   	SELECT COUNT(PD.PAYMENT_DETAIL_ID)
+		INTO vl_row_cnt
+	    FROM tb_PAYMENT_DETAIL PD,
+    		 tb_PAYMENT_HEADER PH,
+             tb_PLACEMENT PL
+	   WHERE PD.PAYMENT_ID = PH.PAYMENT_ID
+		 AND PL.PLACEMENT_ID = PD.PLACEMENT_ID
+		 AND PH.PAYMENT_TYPE_CD = '6'
+		 AND PD.FINAL_SERVICE_START_DT >= ad_previous_month_start_dt
+		 AND PD.FINAL_SERVICE_END_DT <= ad_previous_month_end_dt
+		 AND PD.DELETE_SW = 'N'
+		 AND PH.DELETE_SW = 'N'
+		 AND PD.FINAL_AMOUNT_NO > 0
+		 AND ( PD.FINAL_RATE_TYPE_CD = '1232' OR PD.FINAL_RATE_TYPE_CD = '5670' OR PD.FINAL_RATE_TYPE_CD = '5671' )
+		 AND PD.FINAL_SERVICE_ID <> PL.RATE_STRUCTURE_ID
+		 AND PL.DELETE_SW = 'N'
+	         AND PL.PROVIDER_ORGANIZATION_ID IS NULL ;--
+ELSE
+	SELECT COUNT(PD.PAYMENT_DETAIL_ID)
+		INTO vl_row_cnt
+	    FROM tb_PAYMENT_DETAIL PD,
+	    	 tb_PAYMENT_HEADER PH,
+		     tb_PLACEMENT PL
+	   WHERE PD.PAYMENT_ID = PH.PAYMENT_ID
+		 AND PL.PLACEMENT_ID = PD.PLACEMENT_ID
+		 AND PH.PAYMENT_TYPE_CD = '3294'
+		 AND DATE(PD.CREATE_TS) = vd_under_over_run_dt
+		 AND PD.DELETE_SW = 'N'
+		 AND PH.DELETE_SW = 'N'
+		 AND PD.FINAL_AMOUNT_NO > 0
+		 AND ( PD.FINAL_RATE_TYPE_CD = '1232' OR PD.FINAL_RATE_TYPE_CD = '5670' OR PD.FINAL_RATE_TYPE_CD = '5671' )
+		 AND PD.FINAL_SERVICE_ID <> PL.RATE_STRUCTURE_ID
+		 AND PL.DELETE_SW = 'N'
+		 AND PL.PROVIDER_ORGANIZATION_ID IS NULL ;--
+END IF;--
+
+--EXECUTE vs_cursor_sql;--
+OPEN CUR_EFC_RFC FOR EXECUTE vs_cursor_sql;--
+<<EFC_RFC>>
+loop EXIT WHEN vl_row_cnt = 0::bigint ;
+     vl_payment_detail_id = 0; -- INITIAL VALUE
+     vl_client_id = 0; -- INITIAL VALUE
+     vs_client_nm = ''; -- INITIAL VALUE
+     vl_case_id = 0; -- INITIAL VALUE
+     vs_case_nm = ''; -- INITIAL VALUE
+     vs_county_cd = ''; -- INITIAL VALUE
+
+	
+    FETCH CUR_EFC_RFC INTO vl_payment_detail_id, vl_client_id, vs_client_nm, vl_case_id, vs_case_nm, vs_county_cd ;--
+
+   -- IF vl_row_cnt = 0 THEN
+   --      break <<EFC_RFC>>
+  --  END IF;--
+
+	 vs_tickler_tx = vs_client_nm || '(' || RTRIM(LTRIM((vl_client_id)::character varying)) || ') is in ''Emergency Foster Home Care'' for more than 60 days, payments generates as per ''Regular Foster Care'' rate.' ;--
+	
+	 ll_tickler_cnt = 0; -- INITIAL VALUE
+	
+	SELECT COUNT(*)
+	     INTO ll_tickler_cnt		
+	FROM tb_TICKLERS
+	WHERE tb_TICKLERS.ENTITY_TYPE_CD = '2952'
+	      AND tb_TICKLERS.ENTITY_KEY_ID = vl_case_id
+	      AND tb_TICKLERS.CLIENT_ID = vl_client_id
+	      AND tb_TICKLERS.DELETE_SW = 'N'
+	      AND tb_TICKLERS.SYSTEM_TICKLER_ID = al_system_ticlker_id
+	      AND tb_TICKLERS.ENTITY_ID1 = vl_payment_detail_id ;--
+	
+	IF ll_tickler_cnt = 0 THEN
+	
+		 vl_staff_id = NULL; -- INITIAL VALUE
+
+		SELECT ASG.ASSIGN_TO_STAFF_ID,
+		       STA.PRIMARY_COUNTY_CD,
+		       STA.PRIMARY_COUNTY_UNIT_ID
+		    INTO vl_staff_id,
+    			 vs_to_county_cd,
+	    		 vl_to_unit_id
+		   FROM tb_ASSIGNMENT ASG,
+		    	tb_STAFF STA	
+			WHERE ASG.ASSIGN_TO_STAFF_ID = STA.STAFF_ID AND
+			      ASG.ENTITY_KEY_ID = vl_case_id  AND
+			      ASG.RESPONSIBILITY_CD = 'P' AND
+			      ASG.ENTITY_TYPE_CD = '2952' AND
+			      ASG.DELETE_SW = 'N' AND
+			      ASG.END_DT IS NULL
+			ORDER BY ASG.ASSIGNMENT_ID DESC
+		     FETCH FIRST ROW ONLY ;--
+
+		IF vs_to_county_cd is NULL THEN
+		    vs_to_county_cd = vs_county_cd;--
+		END IF;--
+
+		 vs_assign_to_county_cd = NULL;--
+		 vl_assign_to_unit_id = NULL;--
+
+		 vl_tickler_id = 0; -- INITIAL VALUE
+		SELECT SP_nextid(vs_tickler_col::character varying) into vl_tickler_id;--
+
+		  INSERT INTO tb_TICKLERS
+			 ( TICKLER_ID,
+			   TICKLER_TX,
+			   TICKLER_TYPE_SW,
+			   DUE_DT,
+			   REMINDER_START_DT,
+			   ENTITY_TYPE_CD,
+			   ENTITY_KEY_ID,
+			   ENTITY_NM,
+			   ASSIGNED_TO_STAFF_ID,
+			   CLIENT_ID,
+			   CREATE_TS,
+			   CREATE_USER_ID,
+			   UPDATE_TS,
+			   UPDATE_USER_ID,
+			   DELETE_SW,
+			   COUNTY_CD,
+			   COUNTY_UNIT_ID,
+			   SYSTEM_TICKLER_ID,
+			   TICKLER_NATURE_CD,
+			   ASSIGN_TO_COUNTY_CD,
+			   ASSIGN_TO_UNIT_ID,
+			   EXPIRY_DT,
+			   ENTITY_ID1,
+			   ENTITY_ID2,
+			   SCREEN_CD )
+		  VALUES ( vl_tickler_id,
+			   vs_tickler_tx,
+			   'S',
+			   vd_due_dt,
+			   vd_reminder_dt,
+			   vs_entity_type,
+			   vl_case_id,
+			   vs_case_nm,
+			   vl_staff_id,
+			   vl_client_id,
+			   CURRENT_TIMESTAMP,
+			   'finance',
+			   CURRENT_TIMESTAMP,
+			   'finance',
+			   'N',
+			   vs_to_county_cd,
+			   vl_to_unit_id,
+			   al_system_ticlker_id,
+			   vs_nature,
+			   vs_assign_to_county_cd,
+			   vl_assign_to_unit_id,
+			   vd_expiry_dt,
+			   vl_payment_detail_id,
+			   NULL,
+			   vs_screen_cd )  ;--
+
+		 al_sqlcode = SQLCODE;--
+		IF al_sqlcode <> 0 THEN
+		    as_error = 'Error in generating EFC-RFC Tickler.';--
+		    vs_identity_column = 'SysTickler ID/PayDetl ID';--
+		    vs_identity_val = (al_system_ticlker_id)::character varying || '/ ' || (vl_payment_detail_id)::character varying;--
+		 --  SIGNAL p_sp_error  ;--
+		END IF ;--
+
+	END IF;	--
+ vl_row_cnt = vl_row_cnt  - 1;	--
+END loop ;--
+														--	 END <<EFC_RFC>>
+CLOSE CUR_EFC_RFC ;--
+
+END 
+															 
+
+$BODY$;
+
+

@@ -1,0 +1,64 @@
+drop function if exists f_caseworker(v_objectid character varying, v_objecttype character varying);
+CREATE OR REPLACE FUNCTION f_caseworker(v_objectid character varying, v_objecttype character varying)
+RETURNS TABLE (firstname character varying, lastname character varying, fullname character varying, phonenumber character varying,userid character varying)
+
+LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_caseworkerid character varying;
+
+BEGIN
+
+SELECT COALESCE(toworkeridno, fromworkeridno) INTO v_caseworkerid
+FROM caseassignment ca  
+WHERE ca.objectid::character varying = v_objectid
+AND (fromworkeridno IS NOT NULL OR toworkeridno IS NOT NULL )
+AND lower(ca.responsibilitytypekey) IN ('family', 'child') 
+AND (enddate is null or enddate >= CURRENT_DATE )
+AND ca.activeflag = 1
+ORDER BY ca.insertedon DESC lIMIT 1;
+
+IF v_caseworkerid IS NULL THEN
+	SELECT tosecurityusersid INTO v_caseworkerid 
+	FROM routing WHERE toroleid = 'CWCW' 
+	AND objectid=v_objectid 
+	AND activeflag=1 ORDER BY insertedon desc LIMIT 1;
+END IF;
+
+IF v_caseworkerid IS NULL THEN
+	SELECT insertedby INTO v_caseworkerid
+	FROM intakeservicerequest 
+	WHERE intakeserviceid::character varying = v_objectid AND activeflag = 1;
+END IF;
+
+IF v_caseworkerid IS NULL THEN
+	SELECT insertedby INTO v_caseworkerid
+	FROM servicecase 
+	WHERE servicecaseid::character varying = v_objectid AND activeflag = 1;
+END IF;
+
+
+IF v_caseworkerid IS NULL THEN
+	SELECT insertedby INTO v_caseworkerid
+	FROM adoptioncase 
+	WHERE adoptioncaseid::character varying = v_objectid AND activeflag = 1;
+END IF;
+
+
+RETURN QUERY
+
+SELECT up.firstname, up.lastname, up.fullname, 
+(
+	SELECT upp.phonenumber 
+	FROM userprofilephonenumber upp  
+	WHERE upp.activeflag = 1 
+	AND upp.securityusersid = v_caseworkerid LIMIT 1
+),v_caseworkerid::character varying
+FROM userprofile up 
+WHERE up.activeflag = 1 AND up.securityusersid  = v_caseworkerid ;
+
+END;
+
+$function$;

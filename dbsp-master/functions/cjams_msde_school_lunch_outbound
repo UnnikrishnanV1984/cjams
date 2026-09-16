@@ -1,0 +1,342 @@
+CREATE OR REPLACE FUNCTION cjams_msde_school_lunch_outbound()
+ RETURNS TABLE(cl_id character, status character, category character, dob_dt character, ldss character, first_nm character, last_nm character, middle_initial character, address_line1 character, address_line2 character, filler character, city_nm character, state_cd character, pa_adr_zip5_no character, ssn_no character, sasid character, race character, gender character)
+ LANGUAGE plpgsql
+AS $function$\r
+---------------------------------------------------------------------------------------\r
+-- This extract derives all the children in CJAMS, who have been in foster care for \r
+-- atleast 1 day, in the current state fiscal year(starting 7/1 and ending 6/30)\r
+-- Note: This excludes the same day returns and those clients whose removal has been in review.\r
+-- Revision Log:\r
+-- DATE     AUTHOR     COMMENTS\r
+-- 05/28/2020   Sarma Bandi    Initial Draft\r
+-- 07/22/2020   Sarma Bandi    Commenting out the Load date field in the final output\r
+--              ,for the CJAMS statewide cutover\r
+---------------------------------------------------------------------------------------\r
+BEGIN\r
+\r
+DROP TABLE IF EXISTS tmp_ldss;\r
+DROP TABLE IF EXISTS tmp_fy;\r
+DROP TABLE IF EXISTS tmp_msde_extract;\r
+-- ## HOLD ESTIMATED RECORDS\r
+CREATE TEMP TABLE tmp_ldss\r
+     ( ID   VARCHAR(2),\r
+       local_dept VARCHAR(5)\r
+     );\r
+\r
+CREATE TEMP TABLE tmp_fy\r
+    (FY_START_DT  DATE,\r
+    FY_END_DT  DATE\r
+    );\r
+CREATE TEMP TABLE tmp_msde_extract\r
+    (CL_ID    char(9),\r
+     STATUS   char(1),\r
+     CATEGORY   char(3),\r
+     DOB_DT   char(8),\r
+     LDSS    char(2),\r
+     FIRST_NM   char(30),\r
+     LAST_NM   char(30),\r
+     MIDDLE_INITIAL char(30),\r
+     ADDRESS_LINE1  char(40),\r
+     ADDRESS_LINE2  char(5),\r
+     FILLER   char(25),\r
+     CITY_NM   char(30),\r
+     STATE_CD   char(2),\r
+     PA_ADR_ZIP5_NO char(5),\r
+     SSN_NO   char(9),\r
+     SASID    char(10),\r
+     RACE    char(1),\r
+     GENDER   char(1),\r
+     LOAD_DT   date\r
+     );\r
+-- Loading the LDSS ids for the reference\r
+INSERT INTO tmp_ldss \r
+VALUES \r
+('00',    '00'),\r
+('01', '1427'),\r
+('02', '1428'),\r
+('03', '1430'),\r
+('04', '1431'),\r
+('05', '1432'),\r
+('06', '1433'),\r
+('07', '1434'),\r
+('08', '1435'),\r
+('09', '1436'),\r
+('10', '1437'),\r
+('11', '1438'),\r
+('12', '1439'),\r
+('13', '1440'),\r
+('14', '1441'),\r
+('15', '1442'),\r
+('16', '1443'),\r
+('17', '1444'),\r
+('18', '1446'),\r
+('19', '1445'),\r
+('20', '1447'),\r
+('21', '1448'),\r
+('22', '1449'),\r
+('23', '1450'),\r
+('30', '1429')\r
+;\r
+-- Loading the fiscal year start and end dates\r
+INSERT INTO tmp_fy\r
+SELECT CASE WHEN extract(MONTH from CURRENT_DATE) BETWEEN 7 AND 12 THEN DATE('07/01/'||extract(YEAR from CURRENT_DATE))\r
+   ELSE DATE('07/01/'||(extract(YEAR from CURRENT_DATE)-1))\r
+   END AS FY_START_DT\r
+    , CASE WHEN extract(MONTH from CURRENT_DATE) BETWEEN 7 AND 12 THEN DATE('06/30/'||(extract(YEAR from CURRENT_DATE)+1))\r
+   ELSE DATE('06/30/'||(extract(YEAR from CURRENT_DATE)))\r
+   END AS FY_END_DT\r
+;\r
+-- Loading the result set of all the CJAMS clients\r
+INSERT INTO tmp_msde_extract(CL_ID,STATUS,CATEGORY,DOB_DT,LDSS,FIRST_NM,LAST_NM,MIDDLE_INITIAL, \r
+        ADDRESS_LINE1,ADDRESS_LINE2,FILLER,CITY_NM,STATE_CD,PA_ADR_ZIP5_NO, \r
+        SSN_NO,SASID,RACE,GENDER,LOAD_DT\r
+        )\r
+SELECT\r
+CAST(MAIN.CL_ID AS CHAR(9)) AS CL_ID\r
+-- CAST(CIS_CLIENT_ID AS CHAR(9)) AS CIS_CLIENT_ID\r
+,MAIN.STATUS\r
+,'FTR' AS CATEGORY\r
+,CAST(MAIN.DOB_DT AS CHAR(8)) AS DOB_DT\r
+,CAST(MAIN.LDSS AS CHAR(2)) AS LDSS\r
+,CAST(MAIN.FIRST_NM AS CHAR(30)) AS FIRST_NM\r
+,CAST(MAIN.LAST_NM AS CHAR(30)) AS LAST_NM\r
+,CAST(MAIN.MIDDLE_INITIAL AS CHAR(30)) AS MIDDLE_INITIAL\r
+,CAST(MAIN.Address_Line1 AS CHAR(40)) AS ADDRESS_LINE1\r
+,CAST(MAIN.Address_Line2 AS CHAR(5)) AS ADDRESS_LINE2\r
+,CAST('' AS CHAR(25)) as FILLER\r
+,CAST(MAIN.CITY_NM AS CHAR(30)) AS CITY_NM\r
+,CAST(MAIN.STATE_CD AS CHAR(2)) AS STATE_CD\r
+,CAST(MAIN.PA_ADR_ZIP5_NO AS CHAR(5)) AS PA_ADR_ZIP5_NO\r
+,CAST(MAIN.SSN_NO AS CHAR(9)) AS SSN_NO\r
+,CAST('' AS CHAR(10)) AS SASID\r
+,CAST(MAIN.RACE AS CHAR(1)) AS RACE\r
+,CAST(MAIN.GENDER_CD AS CHAR(1)) AS GENDER\r
+,CURRENT_DATE AS LOAD_DT\r
+FROM\r
+(\r
+SELECT lpad(FC.CLIENT_ID,9,'0') as Cl_ID\r
+   ,'A' as Status\r
+   ,right(lpad(pl.placement_structure_id,9,'0'),3) as Placement_Category\r
+   ,cast(replace(to_char(FC.DOB_dT,'mm/dd/yyyy'), '/', '') as char(8)) DOB_dT\r
+ --  , '0' || LD.ID as LDSS\r
+   ,LD.ID as LDSS\r
+   ,COALESCE(FC.First_Nm,'') as First_Nm\r
+    ,COALESCE(FC.LAST_NM,'') as Last_Nm\r
+   ,COALESCE(FC.MIDDLE_NM,'') AS MIDDLE_INITIAL\r
+   ,coalesce(lv.LV_Address_Line1,pa.PA_Address_Line1,'')  AS Address_Line1\r
+   ,coalesce(lv.LV_Address_Line2,pa.PA_Address_Line2,'') AS Address_Line2\r
+   ,coalesce(lv.adr_city_nm,pa.adr_city_nm,'') AS CITY_NM\r
+   ,coalesce(lv.adr_state_cd,pa.adr_state_cd,'') AS STATE_CD\r
+   ,coalesce(lv.adr_zip5_no,pa.adr_zip5_no,'') AS PA_ADR_ZIP5_NO\r
+ --,SUBSTR(COALESCE(LPAD(FC.SSN_NO,9,'0'),''), 1, 9) SSN_NO\r
+   ,SUBSTR(LPAD(COALESCE(FC.SSN_NO,''),9,'0'), 1, 9) SSN_NO\r
+   ,CASE WHEN trim(ethnicgrouptypekey) = 'H' THEN 'H'\r
+     ELSE\r
+      CASE\r
+  WHEN TRIM(racetypekey)  LIKE '%AS%' THEN 'A'  -- Asian\r
+  WHEN TRIM(racetypekey)  LIKE '%BA%' THEN 'B'  -- Black\r
+  WHEN TRIM(racetypekey)  LIKE '%WH%' THEN 'C'  -- Caucasian\r
+  WHEN (TRIM(racetypekey)  LIKE '%AI%'\r
+   OR TRIM(racetypekey)  LIKE '%AN%'\r
+   OR TRIM(racetypekey)  LIKE '%PI%'\r
+   ) THEN 'P' -- American Indian,Alaskan Native OR Native Hawaiian/Pacific Islander\r
+  WHEN TRIM(racetypekey)  LIKE '%UN%' THEN 'U' -- Unknown\r
+  ELSE 'O' -- Other\r
+  END\r
+END AS RACE\r
+,GENDER_CD\r
+FROM\r
+(SELECT T.CLIENT_ID\r
+      ,T.CASE_ID\r
+  --    ,F_PRIM_COUNTY(T.CASE_ID) AS LOCAL_DEPT\r
+      ,(SELECT TRIM(CO.statecountycode)\r
+          FROM caseassignment CA\r
+          JOIN county CO\r
+          ON CA.toldssid = CO.countyid AND CO.activeflag =1\r
+        WHERE CA.objectid = T.servicecaseid\r
+          AND CA.activeflag = 1\r
+          AND Ca.responsibilitytypekey = 'family'\r
+        ORDER BY (CASE WHEN CA.enddate IS NULL THEN '9999-12-31'\r
+                       ELSE CA.startdate\r
+                   END\r
+                 ) DESC\r
+        LIMIT 1\r
+      ) AS LOCAL_DEPT\r
+      ,T.DOB_DT\r
+      ,T.FIRST_NM  \r
+      ,T.LAST_NM   \r
+      ,T.MIDDLE_NM\r
+      ,T.SSN_NO\r
+      ,T.GENDER_CD\r
+   ,T.ethnicgrouptypekey\r
+   ,T.racetypekey\r
+FROM\r
+(\r
+SELECT R4.cjamspid          AS CLIENT_ID\r
+     , R5.servicecasenumber AS CASE_ID\r
+  , R5.servicecaseid\r
+     , R4.dob               AS DOB_DT\r
+     , R4.firstname         AS FIRST_NM  \r
+     , R4.lastname          AS LAST_NM     \r
+     , R4.middlename        AS MIDDLE_NM\r
+     , R4.ssnno             AS SSN_NO\r
+     , R4.gendertypekey     AS GENDER_CD\r
+  , R4.racetypekey\r
+  , R4.ethnicgrouptypekey\r
+     ,ROW_NUMBER() OVER(PARTITION BY R4.cjamspid ORDER BY COALESCE(R1.exitdate,'9999-12-31'::date) DESC,R1.removaldate DESC) RN\r
+  FROM intakeservreqchildremoval R1\r
+      ,tmp_fy R2\r
+      ,person R4\r
+      ,servicecase R5\r
+ WHERE R1.personid = R4.personid\r
+   AND R1.servicecaseid = R5.servicecaseid\r
+   AND R1.activeflag = 1\r
+   AND R4.activeflag = 1\r
+   AND R5.activeflag = 1\r
+   AND R1.removaldate <= R2.FY_END_DT \r
+   AND (R1.exitdate IS NULL OR R1.exitdate >= R2.FY_START_DT)\r
+   AND COALESCE(R1.exitdate,'9999-12-31') <> R1.removaldate\r
+   AND EXISTS (SELECT 1 FROM routing RT \r
+    INNER JOIN routingstatustype RS ON rs.sequencenumber = RT.routingstatustypeid and RS.activeflag =1\r
+                AND RS.routingstatustypekey ='ACCPT' \r
+    WHERE R1.intakeservreqchildremovalid::text = RT.objectid  \r
+      AND RT.activeflag=1\r
+     )\r
+ ) T\r
+ WHERE RN = 1\r
+) FC\r
+LEFT JOIN\r
+   tmp_ldss LD \r
+   ON COALESCE(FC.LOCAL_DEPT,'00') = LD.LOCAL_DEPT\r
+LEFT JOIN\r
+(\r
+SELECT distinct PR.cjamspid AS client_id,\r
+    p.service_id,\r
+    p.alternateid AS placement_id,\r
+    s.service_nm,\r
+    p.startdatetime AS entry_dt,\r
+    p.enddatetime AS exit_dt,\r
+       p.altproviderid AS provider_id,\r
+    p.providerorganizationid,\r
+    p.placementstructureid AS placement_structure_id,\r
+    ( select altproviderid\r
+     from placementcpahomes pcpa1\r
+       where placementcpahomeid = (select placementcpahomeid\r
+             from placementcpahomes pcpa2\r
+               where pcpa1.placementid = pcpa2.placementid\r
+              and pcpa2.entrydt <= CURRENT_DATE\r
+              and (pcpa2.exitdt IS NULL or pcpa2.exitdt > CURRENT_DATE)\r
+                ORDER BY 1 desc\r
+               limit 1\r
+             )\r
+     and pcpa1.placementid = p.placementid\r
+     ) AS CPA_HOME_PROVIDER_ID\r
+          FROM placement p\r
+          JOIN TB_services s \r
+          ON s.service_id=p.service_id AND s.delete_sw='N' AND p.activeflag = 1\r
+    JOIN person PR\r
+    ON p.personid = PR.personid AND PR.activeflag = 1\r
+      JOIN TB_provider provider\r
+      ON provider.provider_id=p.altproviderid AND provider.delete_sw='N'  \r
+              WHERE p.placementid =(select p2.placementid\r
+           from placement p2\r
+           where p.personid = p2.personid\r
+           and (p2.startdatetime <= CURRENT_DATE)\r
+           and (p2.enddatetime IS NULL OR p2.enddatetime >CURRENT_DATE)\r
+           and  p2.activeflag = 1 \r
+           and  p2.startdatetime IS NOT NULL\r
+           and  COALESCE(p2.isvoided, 0) = 0\r
+           ORDER BY 1 DESC\r
+            LIMIT 1\r
+              )\r
+) pl\r
+ON pl.client_id=FC.client_id\r
+LEFT JOIN\r
+(SELECT CASE WHEN upper(adr_format_cd)='S' THEN 'Street'\r
+    WHEN upper(adr_format_cd)='R' THEN 'Rural'\r
+    WHEN upper(adr_format_cd)='P' THEN 'P.O.Box'\r
+    WHEN upper(adr_format_cd)='F' THEN 'Foreign' END as adr_format\r
+    ,adr_street_no,adr_street_tx,adr_box_no,adr_pre_dir_cd,adr_street_nm,adr_street_suffix_cd,adr_post_dir_cd,adr_unit_type_cd,adr_unit_no_tx,adr_city_nm,adr_county_cd\r
+    ,adr_state_cd\r
+    ,CAST(adr_zip5_no AS VARCHAR(5)) AS adr_zip5_no\r
+    ,adr_zip4_no,adr_foreign_tx \r
+                ,parent_key_id \r
+    ,case  when adr_format_cd = 'P' then 'PO Box '||ltrim(RTRIM(ADR_BOX_NO::varchar))\r
+      when  adr_format_cd = 'R' then 'Rural Rte '||ltrim(RTRIM(ADR_BOX_NO::varchar))\r
+      when  adr_format_cd = 'S' then adr_street_tx \r
+    ||' '||COALESCE(F_PDESC(ADR_PRE_DIR_CD,69) ,'') \r
+    ||''|| COALESCE(ltrim(rtrim(ADR_STREET_NM)),'')\r
+    ||' '||COALESCE(ltrim(rtrim(ADR_STREET_SUFFIX_CD)),'')\r
+    ||' '|| COALESCE(F_PDESC(ADR_POST_DIR_CD,69) ,'') \r
+      when  adr_format_cd = 'F' then  COALESCE(ltrim(RTRIM(ADR_FOREIGN_TX)),'')  \r
+     end AS PA_Address_Line1 \r
+   ,right((CAST('' AS CHAR(5))||TRIM(ADR_UNIT_NO_TX)),5) AS PA_Address_Line2\r
+   from tb_provider_addresses\r
+     where  address_id IN (SELECT max(address_id) from tb_provider_addresses\r
+     WHERE tb_PROVIDER_ADDRESSES.ADR_TYPE_CD = '3357'\r
+     AND tb_PROVIDER_ADDRESSES.ADR_DEFAULT_SW  = 'Y'\r
+     AND tb_PROVIDER_ADDRESSES.Delete_sw  = 'N'\r
+     GROUP BY parent_key_id)\r
+) pa\r
+ON (pl.CPA_HOME_PROVIDER_ID=pa.parent_key_id \r
+  and pl.placement_structure_id in (1,76))\r
+  OR (pl.provider_id = pa.parent_key_id and pl.placement_structure_id not in (1,76)) \r
+LEFT JOIN\r
+(SELECT         B.cjamspid                   AS CLIENT_ID\r
+              ,A.livingarrangementtypekey   AS living_arrangement_cd\r
+              ,A.cityname                   AS adr_city_nm\r
+              ,A.statetypekey               AS ADR_STATE_CD\r
+              ,CAST(A.zip5no AS VARCHAR(5)) AS adr_zip5_no\r
+              ,A.streetnumber               AS adr_street_no\r
+              ,A.streettext                 AS adr_street_tx\r
+              ,A.streetname                 AS adr_street_nm\r
+     ,case when A.addressformattypekey = 'P' then 'PO Box '||ltrim(RTRIM(boxno))\r
+     when A.addressformattypekey = 'R' then 'Rural Rte '||ltrim(RTRIM(boxno))\r
+     when A.addressformattypekey = 'S' then A.streettext \r
+    ||' '||COALESCE(F_PDESC(addresspredirtypekey,69) ,'') \r
+    ||''|| COALESCE(ltrim(rtrim(A.streetname)),'')\r
+    ||' '||COALESCE(ltrim(rtrim(streetsuffixtypekey)),'')\r
+    ||' '|| COALESCE(F_PDESC(A.addresspostdirtypekey,69) ,'') \r
+      when  addressformattypekey = 'F' then  COALESCE(ltrim(RTRIM(foreigntext)),'')  \r
+     end AS LV_Address_Line1\r
+   ,right((CAST('' AS CHAR(5))||TRIM(addressunittypekey)),5) AS LV_Address_Line2\r
+        FROM livingarrangement A,person B\r
+             WHERE A.personid = B.personid\r
+             AND A.activeflag = 1\r
+             AND B.activeflag = 1\r
+             AND A.livingid = ( SELECT C.livingid\r
+                           FROM livingarrangement C\r
+                                WHERE A.personid = C.personid\r
+                                  AND C.activeflag = 1\r
+                            AND C.livingstartdate <=  CURRENT_DATE\r
+                                        AND (C.livingenddate IS NULL OR  C.livingenddate >= CURRENT_DATE)\r
+                                      ORDER BY COALESCE(C.livingenddate,'9999-12-31'::date) DESC,C.livingstartdate DESC\r
+                                      LIMIT 1\r
+                                   )\r
+ ) LV\r
+ ON LV.CLIENT_ID=FC.CLIENT_ID\r
+ ) MAIN\r
+;\r
+-- Insert records into history table\r
+INSERT INTO cjams_msde_Load_hist\r
+(LOAD_ID,CL_ID,STATUS,CATEGORY,DOB_DT,LDSS,FIRST_NM,LAST_NM,MIDDLE_INITIAL, \r
+ADDRESS_LINE1,ADDRESS_LINE2,FILLER,CITY_NM,STATE_CD,PA_ADR_ZIP5_NO, \r
+SSN_NO,SASID,RACE,GENDER,LOAD_DT\r
+)\r
+SELECT COALESCE((SELECT MAX(LOAD_ID)+1 FROM cjams_msde_Load_hist),1) AS LOAD_ID \r
+    ,t1.CL_ID,t1.STATUS,t1.CATEGORY,t1.DOB_DT,t1.LDSS,t1.FIRST_NM,t1.LAST_NM,t1.MIDDLE_INITIAL, \r
+  t1.ADDRESS_LINE1,t1.ADDRESS_LINE2,t1.FILLER,t1.CITY_NM,t1.STATE_CD,t1.PA_ADR_ZIP5_NO, \r
+  t1.SSN_NO,t1.SASID,t1.RACE,t1.GENDER,t1.LOAD_DT\r
+  FROM tmp_msde_extract t1\r
+;\r
+RETURN QUERY \r
+SELECT tme.CL_ID,tme.STATUS,tme.CATEGORY,tme.DOB_DT,tme.LDSS,tme.FIRST_NM,tme.LAST_NM,tme.MIDDLE_INITIAL, \r
+    tme.ADDRESS_LINE1,tme.ADDRESS_LINE2,tme.FILLER,tme.CITY_NM,tme.STATE_CD,tme.PA_ADR_ZIP5_NO, \r
+    tme.SSN_NO,tme.SASID,tme.RACE,tme.GENDER\r
+FROM tmp_msde_extract tme\r
+;\r
+\r
+END\r
+\r
+$function$
+

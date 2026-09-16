@@ -1,0 +1,326 @@
+CREATE OR REPLACE FUNCTION getadoptionorgapreportbyuser(userid character varying, pageno integer, pagesize integer, filterdatetype character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------------------------------\r
+-- Revisions:\r
+-- 07/19/2021 - Vineet Tirodkar - Modifications for performance Issue fix (B-107196)\r
+------------------------------------------------------------------------------------------------\r
+DECLARE v_pageoffset int;\r
+  v_pagenumber int;\r
+  v_DateFrom TIMESTAMP;                        \r
+  v_DateTo TIMESTAMP; \r
+  l_adoptionorgapreport json;\r
+  \r
+BEGIN\r
+ v_pagenumber := pageno-1;\r
+ v_pageoffset = v_pagenumber * pagesize;\r
+    \r
+    IF filterdatetype = 'Nex30' THEN \r
+         SELECT now() INTO v_DateFrom ; \r
+         SELECT now() + interval '30' DAY INTO v_DateTo;\r
+    END IF;\r
+    IF filterdatetype = 'Nex60' THEN \r
+         SELECT now() INTO v_DateFrom ; \r
+         SELECT now() + interval '60' DAY INTO v_DateTo;\r
+    END IF;\r
+    IF filterdatetype = 'Nex90' THEN \r
+         SELECT now() INTO v_DateFrom ; \r
+         SELECT now() + interval '90' DAY INTO v_DateTo;\r
+    END IF;\r
+    \r
+     IF filterdatetype = 'Prev30' THEN \r
+         SELECT now() INTO v_DateTo ; \r
+         SELECT now() - interval '30' DAY INTO v_DateFrom;\r
+    END IF;\r
+    IF filterdatetype = 'Prev60' THEN \r
+         SELECT now() INTO  v_DateTo; \r
+         SELECT now() - interval '60' DAY INTO  v_DateFrom;\r
+    END IF;\r
+    IF filterdatetype = 'Prev90' THEN \r
+         SELECT now() INTO v_DateTo ; \r
+         SELECT now() - interval '90' DAY INTO v_DateFrom;\r
+    END IF;\r
+\r
+select json_agg(adoptiondata) INTO l_adoptionorgapreport from \r
+( select 'Adoption'::character varying as case_type, \r
+  (Select countyname from county where statecountycode = f_prim_county(ta.case_id,'null')) as Case_County,\r
+  ta.adoption_id, \r
+  ( SELECT staff_nm \r
+   FROM (\r
+    SELECT row_number() over() AS num, staff_id, assignment_id, staff_nm \r
+     FROM (  SELECT  userprofile.securityusersid AS staff_id, \r
+           caseassignment.caseassignmentid AS assignment_id,\r
+          (userprofile.lastname || ' ' || userprofile.firstname || \r
+         COALESCE(case when userprofile.middlename is not null then\r
+          ',' || userprofile.middlename \r
+         end ,'')\r
+         ) AS staff_nm\r
+       FROM  caseassignment\r
+          , userprofile  \r
+       WHERE ( caseassignment.objectid = ta.adoption_case_id ) \r
+         AND ( caseassignment.objecttypekey = 'adoptioncase') \r
+         AND ( caseassignment.responsibilitytypekey = 'family') \r
+         AND ( caseassignment.enddate is null ) \r
+         AND ( userprofile.securityusersid = caseassignment.toworkeridno) \r
+         AND ( caseassignment.activeflag = 1) \r
+         AND ( userprofile.activeflag = 1)\r
+       )AS te \r
+    ) AS rty WHERE num = 1\r
+  ) as primary_case_worker,\r
+  ta.subsidy_end_dt::date as Adoption_Subsidy_End_Date,\r
+  ta.case_id, \r
+  ta.client_id,\r
+  concat(pr.firstname ,' ', pr.lastname)::character varying as client_name,\r
+  tas.agreement_end_dt as Agreement_End_Date,\r
+  (case when tas.agreement_end_dt < current_date then\r
+   'The adoptive client''s subsidy review is overdue and payment has been suspended. Please update the adoption subsidy review rate accordingly.'\r
+   when tas.agreement_end_dt - interval '90 DAYS' < current_date \r
+    and tas.agreement_end_dt - interval '60 DAYS' >= current_date then\r
+   'The adoptive client''s subsidy review is due in 90 days. Please update the adoption subsidy review rate accordingly. Failure to update will result in payment not being made to the adoptive parent.' \r
+   when tas.agreement_end_dt - interval '60 DAYS' < current_date \r
+    and tas.agreement_end_dt - interval '30 DAYS' >= current_date then\r
+   'The adoptive client''s subsidy review is due in 60 days. Please update the adoption subsidy review rate accordingly. Failure to update will result in payment not being made to the adoptive parent.' \r
+   when tas.agreement_end_dt - interval '30 DAYS' < current_date then\r
+   'The adoptive client''s subsidy review is due in 30 days. Please update the adoption subsidy review rate accordingly. Failure to update will result in payment not being made to the adoptive parent.'\r
+   else\r
+   ''\r
+   end) || \r
+   ( case when ((date_part('year',age(CAST((now()) AS DATE),CAST(pr.dob AS DATE))) < 18) AND (date_part('year',age(CAST((now()+interval '30' DAY) AS DATE),CAST(pr.dob AS DATE))) = 18)) THEN ' child turning 18 in 30 days.'\r
+   when ((date_part('year',age(CAST((now()) AS DATE),CAST(pr.dob AS DATE))) < 18) AND (date_part('year',age(CAST((now()+interval '60' DAY) AS DATE),CAST(pr.dob AS DATE))) = 18)) THEN ' child turning 18 in 60 days.'\r
+   when ((date_part('year',age(CAST((now()) AS DATE),CAST(pr.dob AS DATE))) < 18) AND (date_part('year',age(CAST((now()+interval '90' DAY) AS DATE),CAST(pr.dob AS DATE))) = 18)) THEN ' Child turning 18 in 90 days.'\r
+   end) as tickler_text\r
+ from tb_adoption ta,\r
+   tb_adoption_subsidy_agreement tas,\r
+   person pr\r
+ where ta.adoption_id = tas.adoption_id\r
+  and pr.cjamspid = ta.client_id\r
+  and ta.delete_sw = 'N'\r
+  and tas.delete_sw = 'N'\r
+  and ta.subsidy_end_dt >= current_date\r
+  -- 12/03/2020\r
+  and tas.agreement_end_dt between current_date - interval '90 DAYS' and current_date + interval '90 DAYS'\r
+  and tas.provider_id is not null\r
+  and coalesce(ta.ma_only_payment_cd, 'N' ) = 'N'\r
+  and tas.approval_status_cd = '3047'\r
+  and (tas.adoptionagreementrateid = (select adoptionagreementrateid\r
+            from adoptioncaseagreementrate agr\r
+           where agr.adoptionagreementid  = tas.adoptionagreementid\r
+            and agr.status = 'Approved' \r
+            and agr.activeflag = 1\r
+           order by startdate desc\r
+           limit 1\r
+           )\r
+   )\r
+  -- and f_prim_county(ta.case_id,'null') in ( select statecountycode from county where golivedate <= current_date ) \r
+ AND ( v_DateFrom IS NULL \r
+   OR (CAST( tas.agreement_end_dt AS DATE) between CAST(v_DateFrom AS DATE) AND CAST(v_DateTo AS DATE))\r
+   OR (CASE WHEN v_DateTo IS NOT NULL THEN ((date_part('year',age(CAST((now()) AS DATE),CAST(pr.dob AS DATE))) < 18)\r
+    AND (date_part('year',age(CAST((v_DateTo) AS DATE),CAST(pr.dob AS DATE))) = 18)) ELSE 1=1 END)\r
+  ) \r
+ AND ta.adoption_case_id in (select distinct objectid from caseassignment where (fromworkeridno = userid or toworkeridno = userid) and (enddate is null or enddate > now()))\r
+ -- or adoption_case_id::varchar in (select distinct objectid::varchar from routing where (tosecurityusersid = userid or fromsecurityusersid = userid)))\r
+ --order by tas.agreement_end_dt  \r
+ \r
+UNION ALL\r
+\r
+ select tab.case_type,\r
+  tab.Case_County,\r
+  tab.adoption_id,\r
+  tab.primary_case_worker,\r
+  tab.Adoption_Subsidy_End_Date,\r
+  tab.case_id,\r
+  tab.client_id,\r
+  tab.client_name,\r
+  tab.Agreement_End_Date,\r
+  tab.tickler_text\r
+ from (\r
+  select 'Adoption'::character varying as case_type,\r
+  (select countyname \r
+   from county \r
+   where statecountycode = f_prim_county(ad.case_id,'null')\r
+  ) as Case_County,\r
+  ad.adoption_id, \r
+  (SELECT staff_nm \r
+   FROM (\r
+    SELECT row_number() over() AS num, staff_id, assignment_id, staff_nm \r
+     FROM (  SELECT  userprofile.securityusersid AS staff_id, \r
+           caseassignment.caseassignmentid AS assignment_id,\r
+          (userprofile.lastname || ' ' || userprofile.firstname || \r
+         COALESCE(case when userprofile.middlename is not null then\r
+          ',' || userprofile.middlename \r
+         end ,'')\r
+         ) AS staff_nm\r
+       FROM  caseassignment\r
+          , userprofile  \r
+       WHERE ( caseassignment.objectid = ad.adoption_case_id ) \r
+         AND ( caseassignment.objecttypekey = 'adoptioncase') \r
+         AND ( caseassignment.responsibilitytypekey = 'family') \r
+         AND ( caseassignment.enddate is null ) \r
+         AND ( userprofile.securityusersid = caseassignment.toworkeridno) \r
+         AND ( caseassignment.activeflag = 1) \r
+         AND ( userprofile.activeflag = 1)\r
+       )AS te \r
+    ) AS rty WHERE num = 1\r
+  ) as primary_case_worker,\r
+  ad.subsidy_end_dt::date as Adoption_Subsidy_End_Date,\r
+  ad.case_id, \r
+  ad.client_id,\r
+  concat(pr.firstname ,' ', pr.lastname)::character varying as client_name,\r
+  asa.agreement_end_dt as Agreement_End_Date, \r
+  (case when pr.dob + interval '18 YEARS' \r
+   between current_date - interval '30 DAYS' and current_date + interval '30 DAYS' then\r
+   'Child is turning 18, complete subsidy review on child''s 18th birthday.'\r
+   else \r
+   'Child is turning 21, close subsidy case.'\r
+   end ) as tickler_text,\r
+   (case when pr.dob + interval '18 YEARS' \r
+   between current_date - interval '30 DAYS' and current_date + interval '30 DAYS' then\r
+   pr.dob + interval '18 YEARS'\r
+   else \r
+   pr.dob + interval '21 YEARS'\r
+   end )::date as bdate\r
+ from person pr,\r
+  tb_adoption ad,\r
+  tb_adoption_subsidy_agreement asa\r
+ where ad.delete_sw = 'N'\r
+ and asa.delete_sw = 'N'\r
+ and pr.activeflag = 1\r
+ and pr.cjamspid = ad.client_id\r
+ and ad.adoption_id = asa.adoption_id\r
+ and asa.adoptionagreementrateid in (select adoptionagreementrateid\r
+           from adoptioncaseagreementrate agr\r
+          where agr.adoptionagreementid  = asa.adoptionagreementid\r
+           and agr.status = 'Approved' \r
+           and agr.activeflag = 1\r
+          order by startdate desc\r
+          limit 1\r
+          )\r
+ and ad.adoption_case_id \r
+  in (select distinct objectid \r
+    from caseassignment \r
+   where (fromworkeridno = userid or toworkeridno = userid) \r
+    and (enddate is null or enddate > now())\r
+   )\r
+ and  (\r
+   (pr.dob + interval '18 YEARS'\r
+    between current_date - interval '30 DAYS' and current_date + interval '30 DAYS'\r
+    and asa.agreement_end_dt = (pr.dob + interval '18 YEARS')::date)\r
+   OR \r
+   (pr.dob + interval '21 YEARS' \r
+    between current_date - interval '30 DAYS' and current_date + interval '30 DAYS')\r
+   )\r
+ ) tab\r
+ where (case when v_DateFrom is not null and v_DateTo is not null then \r
+    tab.bdate between v_DateFrom and v_DateTo\r
+   else\r
+    1 = 1\r
+   end) \r
+   \r
+UNION ALL\r
+ -- CDM-4193 - 12/03/2020 New query\r
+ select tab.case_type,\r
+  tab.Case_County,\r
+  tab.adoption_id,\r
+  tab.primary_case_worker,\r
+  tab.GAP_END_DATE,\r
+  tab.CASE_ID,\r
+  tab.CLIENT_ID,\r
+  tab.client_name,\r
+  tab.max_rate_end_date AS RATE_END_DATE,\r
+  (case \r
+   when (tab.max_rate_end_date - current_date)::integer >= 0 and (tab.max_rate_end_date - current_date)::integer <= 30::integer then\r
+    'The GAP Annual review is due, the rate will expire in 30 days. Complete review or close case.'   \r
+   when (tab.max_rate_end_date - current_date)::integer >= 0 and (tab.max_rate_end_date - current_date)::integer <= 60::integer then\r
+    'The GAP Annual review is due, the rate will expire in 60 days. Complete review or close case.'  \r
+   when (tab.max_rate_end_date - current_date)::integer >= 0 and (tab.max_rate_end_date - current_date)::integer <= 90::integer then\r
+    'The GAP Annual review is due, the rate will expire in 90 days. Complete review or close case.' \r
+   when (tab.max_rate_end_date - current_date)::integer < 0 and (tab.max_rate_end_date - current_date)::integer <= -90::integer then \r
+    'The GAP Annual review is past due for 90 days. No payment was issued. Complete review or close case.'\r
+   when (tab.max_rate_end_date - current_date)::integer < 0 and (tab.max_rate_end_date - current_date)::integer <= -60::integer then \r
+    'The GAP Annual review is past due for 60 days. No payment was issued. Complete review or close case.'\r
+   when (tab.max_rate_end_date - current_date)::integer < 0  then \r
+    'The GAP Annual review is past due for 30 days. No payment was issued. Complete review or close case.' \r
+    end\r
+    || \r
+    ( case when ((date_part('year',age(CAST((now()) AS DATE),CAST(tab.dob AS DATE))) < 18) AND (date_part('year',age(CAST((now()+interval '30' DAY) AS DATE),CAST(tab.dob AS DATE))) = 18)) THEN ' child turning 18 in 30 days.'\r
+     when ((date_part('year',age(CAST((now()) AS DATE),CAST(tab.dob AS DATE))) < 18) AND (date_part('year',age(CAST((now()+interval '60' DAY) AS DATE),CAST(tab.dob AS DATE))) = 18)) THEN ' child turning 18 in 60 days.'\r
+     when ((date_part('year',age(CAST((now()) AS DATE),CAST(tab.dob AS DATE))) < 18) AND (date_part('year',age(CAST((now()+interval '90' DAY) AS DATE),CAST(tab.dob AS DATE))) = 18)) THEN ' Child turning 18 in 90 days.'\r
+    end\r
+    )\r
+   ) AS tickler_text\r
+ from (\r
+ select 'Gap'::character varying as case_type, \r
+  (Select countyname \r
+   from county \r
+  where statecountycode = f_prim_county(sc.servicecasenumber::bigint,'null')\r
+  ) as Case_County, \r
+  0::bigint as adoption_id,\r
+  ( SELECT staff_nm \r
+   FROM (\r
+    SELECT row_number() over() AS num, staff_id, assignment_id, staff_nm \r
+     FROM (  SELECT  userprofile.securityusersid AS staff_id, \r
+           caseassignment.caseassignmentid AS assignment_id,\r
+          (userprofile.lastname || ' ' || userprofile.firstname || \r
+         COALESCE(case when userprofile.middlename is not null then\r
+          ',' || userprofile.middlename \r
+         end ,'')\r
+         ) AS staff_nm\r
+       FROM  caseassignment\r
+          , userprofile  \r
+          ,servicecase\r
+       WHERE caseassignment.objectid = servicecase.servicecaseid \r
+        and servicecase.servicecasenumber = sc.servicecasenumber\r
+        and servicecase.activeflag = 1 \r
+         AND ( caseassignment.objecttypekey = 'servicecase') \r
+         AND ( caseassignment.responsibilitytypekey = 'family') \r
+         AND ( caseassignment.enddate is null ) \r
+         AND ( userprofile.securityusersid = caseassignment.toworkeridno) \r
+         AND ( caseassignment.activeflag = 1) \r
+         AND ( userprofile.activeflag = 1)\r
+       )AS te \r
+    ) AS rty WHERE num = 1\r
+  ) as primary_case_worker,\r
+  ga.enddate::date AS GAP_END_DATE,\r
+  sc.servicecasenumber::bigint as CASE_ID,\r
+  PR.cjamspid as CLIENT_ID,\r
+  concat(PR.firstname, ' ', PR.lastname)::character varying as client_name,\r
+  pr.dob,\r
+    ( select max(gr1.enddate)\r
+   from gapagreementrate gr1\r
+   where gr1.gapagreementid = ga.gapagreementid \r
+   and gr1.activeflag = 1 \r
+   and gr1.status = 'Approved'\r
+  )::date as max_rate_end_date\r
+ FROM guardianship g\r
+   JOIN gapagreement ga ON ga.gapid = g.gapid AND ga.activeflag = 1\r
+   JOIN permanencyplan pp ON pp.permanencyplanid = g.permanencyplanid AND pp.activeflag = 1\r
+   JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = pp.intakeservicerequestactorid AND isra.activeflag = 1\r
+   JOIN person PR ON PR.personid = isra.personid AND PR.activeflag = 1\r
+   JOIN servicecase sc ON sc.servicecaseid = g.servicecaseid AND sc.activeflag = 1\r
+ where ga.enddate::date > current_date\r
+  and (select COUNT(*) \r
+    from gapsuspension  \r
+    where gapid = g.gapid\r
+    and activeflag = 1 \r
+    and approvalstatustypekey = '3047' \r
+    and startdate IS NOT NULL \r
+    and enddate IS null ) = 0\r
+  and SC.servicecaseid  in (select distinct objectid from caseassignment where (fromworkeridno = userid or toworkeridno = userid) and (enddate is null or enddate > now()))   \r
+ ) tab\r
+ where tab.gap_end_date <> tab.max_rate_end_date \r
+ and tab.max_rate_end_date between current_date - interval '90 DAYS' and current_date + interval '90 DAYS'\r
+ and (case when v_DateFrom is not null and v_DateTo is not null then \r
+   tab.max_rate_end_date between v_DateFrom::date and v_DateTo::date\r
+   else\r
+   1 = 1\r
+   end\r
+  )\r
+\r
+) as adoptiondata; \r
+\r
+RETURN l_adoptionorgapreport;   \r
+\r
+END;\r
+$function$
+

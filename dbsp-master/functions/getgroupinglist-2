@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION getgroupinglist(_usrnotificationgroupid character varying, page integer, size integer, _first_name character varying, _last_name character varying, _position_code character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE result json;
+DECLARE totalcount integer;
+DECLARE usrnotificationgroupid uuid;
+DECLARE first_name character varying;
+DECLARE last_name character varying;
+DECLARE position_code character varying;
+BEGIN
+
+
+      IF _usrnotificationgroupid = 'undefined' THEN 
+           usrnotificationgroupid = null; 
+      ELSE
+           usrnotificationgroupid = CAST(_usrnotificationgroupid AS UUID); 
+      END IF;
+      IF _first_name = 'undefined' THEN 
+           first_name = null; 
+      ELSE 
+           first_name = _first_name; 
+      END IF;
+      IF _last_name = 'undefined' THEN 
+          last_name = null; 
+      ELSE 
+          last_name = _last_name; 
+      END IF;
+      IF _position_code = 'undefined' THEN 
+         position_code = null; 
+      ELSE 
+         position_code = _position_code; 
+      END IF;
+
+      totalcount := 0;
+
+      IF page = 1 THEN
+
+        SELECT count(*) into totalcount FROM teammember A, teammemberassignment B, userprofile C 
+        WHERE A.teammemberid = B.teammemberid AND B.SecurityUsersId = C.SecurityUsersId
+        AND CASE WHEN first_name is null THEN TRUE ELSE C.firstname LIKE first_name || '%' END
+        AND CASE WHEN last_name is  null THEN  TRUE ELSE C.lastname  LIKE last_name || '%'  END
+        AND CASE WHEN position_code is null THEN TRUE ELSE A.positioncode LIKE position_code || '%' END
+ AND A.activeflag=1 AND B.activeflag=1 AND C.activeflag=1
+        ;
+
+      END IF;
+      RAISE NOTICE '%', 'HELLO';
+
+     select array_to_json(array_agg(e)) from
+      (SELECT array_to_json(array_agg(row_to_json(d))) as "data",totalcount as "count" from (
+      SELECT A.teammemberid,A.positioncode,A.roletypekey,A.displayname,COALESCE(D.activeflag,0) as activeflag FROM 
+      (SELECT A.teammemberid,A.positioncode,A.roletypekey,C.displayname FROM teammember A, teammemberassignment B, userprofile C 
+        WHERE A.teammemberid = B.teammemberid
+          AND B.SecurityUsersId = C.SecurityUsersId 
+                  AND CASE WHEN first_name is null THEN TRUE ELSE C.firstname LIKE first_name || '%' END
+        AND CASE WHEN last_name is null THEN  TRUE ELSE C.lastname  LIKE last_name || '%'  END
+        AND CASE WHEN position_code is null THEN TRUE ELSE A.positioncode LIKE position_code || '%' END
+        AND A.activeflag=1 AND B.activeflag=1 AND C.activeflag=1) A
+          LEFT OUTER JOIN usernotificationgroupdetail D ON A.teammemberid = D.teammemberid 
+          and D.usernotificationgroupid = usrnotificationgroupid
+          AND D.activeflag=1 
+          group by A.teammemberid,A.positioncode,A.roletypekey,A.displayname,D.activeflag
+          --AND CASE WHEN usernotificationgroupid is null THEN usernotificationgroupid = usrnotificationgroupid ELSE TRUE END 
+          ORDER BY activeflag DESC LIMIT size OFFSET  (page - 1) * size)d)e INTO result;
+
+      
+RETURN COALESCE(result,'[]');
+
+END; $function$
+

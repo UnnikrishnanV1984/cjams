@@ -1,0 +1,3 @@
+update AssessmentTemplate
+set titleheadertext = 'MFIRA'
+where assessmenttemplateid = 'ba9b5838-e8ab-434b-9871-3611e86c314d';

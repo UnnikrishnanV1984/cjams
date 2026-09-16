@@ -1,0 +1,411 @@
+CREATE OR REPLACE FUNCTION prov_modifyprogram(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+returnStatus text;
+
+v_seq numeric;
+
+v_contract_id numeric;
+v_new_contract_id numeric;
+v_new_program_id character varying;
+v_site_list json;
+v_program_id numeric;
+v_program_expired_id numeric;
+currentRow numeric;
+v_program_site_id numeric;
+v_todo character varying;
+v_is_csa boolean;
+v_is_djs boolean;
+
+BEGIN
+
+v_contract_id = insertedtlsobj->>'contract_id';
+v_new_contract_id = insertedtlsobj->>'new_contract_id';
+v_program_id = insertedtlsobj->>'program_id';
+v_todo= insertedtlsobj->>'todo';
+
+select count(1) over() into v_seq from tb_contract_program_snapshot where program_id like v_program_id||'x%' and delete_sw='N';
+
+if v_seq is null then 
+    v_seq := 1 ;
+else 
+    v_seq = v_seq+1;
+end if;
+
+v_new_program_id = v_program_id||'-'||v_contract_id;
+
+INSERT INTO tb_contract_program_snapshot
+(
+ program_id,
+ contract_id,
+ program_nm,
+ start_dt,
+ end_dt,
+ capacity_percentage_no,
+ contract_beds_no,
+ vacancy_no,
+ preferred_cd,
+ program_status_cd,
+ admission_comments_tx,
+ create_ts,
+ create_user_id,
+ update_ts,
+ update_user_id,
+ delete_sw,
+ program_purpose_cd,
+ child_specific_agreement_cd,
+ child_specific_update_staff_id,
+ child_specific_change_ts,
+ license_no,
+ etl_userid,
+ etl_load_date,
+ fiscal_date,
+ contract_license_type_status,
+ termination_type,
+ termination_reason,
+ termination_effective_date,
+ effective_date,
+ license_bed,
+ irc_bed_capacity,
+ effective_start_date,
+ effective_end_date,
+ other_contract_license_type_status,
+ override_contract_beds,
+ override_contract_status,
+ signatures,
+ showactive,
+ is_csa,
+ is_djs)
+(select 
+    v_new_program_id,
+cp.contract_id,
+cp.program_nm,
+cp.start_dt,
+cp.end_dt,
+cp.capacity_percentage_no,
+cp.contract_beds_no,
+cp.vacancy_no,
+cp.preferred_cd,
+cp.program_status_cd,
+cp.admission_comments_tx,
+cp.create_ts,
+cp.create_user_id,
+    now(),
+    insertedtlsobj->>'update_user_id',
+cp.delete_sw,
+cp.program_purpose_cd,
+cp.child_specific_agreement_cd,
+cp.child_specific_update_staff_id,
+cp.child_specific_change_ts,
+cp.license_no,
+cp.etl_userid,
+cp.etl_load_date,
+cp.fiscal_date,
+'Archived',
+cp.termination_type,
+cp.termination_reason,
+cp.termination_effective_date,
+cp.effective_date,
+cp.license_bed,
+cp.irc_bed_capacity,
+cp.effective_start_date,
+cp.effective_end_date,
+cp.other_contract_license_type_status,
+cp.override_contract_beds,
+cp.override_contract_status,
+cp.signatures,
+cp.showactive,
+cp.is_csa,
+cp.is_djs
+from tb_contract_program cp 
+where cp.program_id = v_program_id
+ )
+ RETURNING program_expired_id INTO v_program_expired_id;
+
+
+insert into tb_provider_services_snapshot(
+    provider_service_id,
+    provider_id,
+    program_id,
+    service_id,
+    start_dt,
+    end_dt,
+    paid_cd,
+    primary_sw,
+    location_sw,
+    create_ts,
+    create_user_id,
+    update_ts,
+    update_user_id,
+    delete_sw,
+    service_status,
+    service_category,
+    service_classification,
+    service_cost,
+    service_description,
+    service_paid_by,
+    service_unit
+)
+(select 
+    ps.provider_service_id,
+    ps.provider_id,
+        v_new_program_id,
+    ps.service_id,
+    ps.start_dt,
+    ps.end_dt,
+    ps.paid_cd,
+    ps.primary_sw,
+    ps.location_sw,
+    ps.create_ts,
+    ps.create_user_id,
+        now(),
+        insertedtlsobj->>'update_user_id',
+    ps.delete_sw,
+    ps.service_status,
+    ps.service_category,
+    ps.service_classification,
+    ps.service_cost,
+    ps.service_description,
+    ps.service_paid_by,
+    ps.service_unit
+from tb_provider_services ps where ps.program_id = v_program_id
+);
+
+insert into tb_prov_program_sites_snapshot(
+ program_site_id,
+ program_id,
+ site_id,
+ main_office_sw,
+ create_ts,
+ create_user_id,
+ update_ts,
+ update_user_id,
+ delete_sw
+)
+(select 
+ pss.program_site_id,
+     v_new_program_id,
+ pss.site_id,
+ pss.main_office_sw,
+ pss.create_ts,
+ pss.create_user_id,
+        now(),
+        insertedtlsobj->>'update_user_id',
+ pss.delete_sw
+from tb_prov_program_sites pss where pss.program_id = v_program_id
+);
+
+
+
+insert into tb_placement_snapshot(
+    placement_id,
+    provider_id,
+    provider_organization_id,
+    contract_program_id,
+    entry_dt,
+    placement_structure_id,
+    approval_status_cd,
+    void_sw,
+    exit_dt,
+    delete_sw,
+    conversion_sw,
+    payment_header_id,
+    client_id,
+    rate_structure_id,
+    placement_change_dt,
+    case_id,
+    intakeservicerequestactorid,
+    servicecaseid,
+    removal_id,
+    tfc_ifc_conversion_sw,
+    over_under_sw,
+    void_approval_dt,
+    entry_tm,
+    exit_tm,
+    intakeserviceid,
+    void_reason_cd,
+    court_ordered_sw,
+    orig_placement_id,
+    void_approval_status_cd,
+    exit_reason_cd,
+    create_user_id,
+    create_ts,
+    update_user_id,
+    update_ts,
+    caseid,
+    client_merge_id,
+    data_valid_sw,
+    exit_explanation_tx,
+    exit_type_cd,
+    facility_id,
+    fiscal_category_cd,
+    icpc_approved_sw,
+    medicaid_paid_sw,
+    other_services_tx,
+    personid,
+    placementid,
+    providerid,
+    short_list_id
+)
+(select 
+    pl.placement_id,
+    pl.provider_id,
+    pl.provider_organization_id,
+        v_new_program_id,
+    pl.entry_dt,
+    pl.placement_structure_id,
+    pl.approval_status_cd,
+    pl.void_sw,
+    pl.exit_dt,
+    pl.delete_sw,
+    pl.conversion_sw,
+    pl.payment_header_id,
+    pl.client_id,
+    pl.rate_structure_id,
+    pl.placement_change_dt,
+    pl.case_id,
+    pl.intakeservicerequestactorid,
+    pl.servicecaseid,
+    pl.removal_id,
+    pl.tfc_ifc_conversion_sw,
+    pl.over_under_sw,
+    pl.void_approval_dt,
+    pl.entry_tm,
+    pl.exit_tm,
+    pl.intakeserviceid,
+    pl.void_reason_cd,
+    pl.court_ordered_sw,
+    pl.orig_placement_id,
+    pl.void_approval_status_cd,
+    pl.exit_reason_cd,
+    pl.create_user_id,
+    pl.create_ts,
+        insertedtlsobj->>'update_user_id',
+        now(),
+    pl.caseid,
+    pl.client_merge_id,
+    pl.data_valid_sw,
+    pl.exit_explanation_tx,
+    pl.exit_type_cd,
+    pl.facility_id,
+    pl.fiscal_category_cd,
+    pl.icpc_approved_sw,
+    pl.medicaid_paid_sw,
+    pl.other_services_tx,
+    pl.personid,
+    pl.placementid,
+    pl.providerid,
+    pl.short_list_id
+from tb_placement pl where pl.contract_program_id = v_program_id
+);
+
+insert into tb_provider_picklist_snapshot(
+    provider_picklist_id,
+    provider_id,
+    program_id,
+    picklist_type_id,
+    picklist_value_cd,
+    create_user_id,
+    update_ts,
+    update_user_id,
+    delete_sw,
+    value_desc,
+    create_ts
+)
+(select 
+    provider_picklist_id,
+    provider_id,
+        v_new_program_id,
+    picklist_type_id,
+    picklist_value_cd,
+    create_user_id,
+        now(),
+        insertedtlsobj->>'update_user_id',
+    delete_sw,
+    value_desc,
+    create_ts
+from tb_provider_picklist tpp where tpp.program_id = v_program_id
+);
+
+insert into tb_prov_program_rates_snapshot(
+ program_rate_id,
+ program_id,
+ annual_rate_no,
+ monthly_rate_no,
+ per_diem_rate_no,
+ start_dt,
+ end_dt,
+ create_ts,
+ create_user_id,
+ update_ts,
+ update_user_id,
+ delete_sw,
+ prov_program_actual_max_cd,
+ rate_status
+)
+(select 
+    program_rate_id,
+        v_new_program_id,
+    annual_rate_no,
+    monthly_rate_no,
+    per_diem_rate_no,
+    start_dt,
+    end_dt,
+    create_ts,
+    create_user_id,
+        now(),
+        insertedtlsobj->>'update_user_id',
+    delete_sw,
+    prov_program_actual_max_cd,
+    rate_status
+from tb_prov_program_rates tpp where tpp.program_id = v_program_id
+);
+
+
+insert into tb_prov_program_facility_snapshot(
+    facility_id,
+    provider_id,
+    program_id,
+    start_dt,
+    end_dt,
+    create_ts,
+    create_user_id,
+    update_ts,
+    update_user_id,
+    delete_sw,
+    related_site_id
+)
+(select 
+    facility_id,
+    provider_id,
+        v_new_program_id,
+    start_dt,
+    end_dt,
+    create_ts,
+    create_user_id,
+        now(),
+        insertedtlsobj->>'update_user_id',
+    delete_sw,
+    related_site_id
+from tb_prov_program_facility tpp where tpp.program_id = v_program_id
+);
+
+UPDATE tb_contract_program 
+SET 
+    update_ts = now(),
+    contract_id = v_new_contract_id,
+    update_user_id = insertedtlsobj->>'update_user_id'
+WHERE program_id = v_program_id;
+
+
+returnStatus:= 'Success';
+
+RETURN returnStatus;
+                                                      
+END;
+
+$function$
+

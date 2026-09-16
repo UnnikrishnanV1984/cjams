@@ -1,0 +1,17 @@
+ CREATE OR REPLACE FUNCTION public.updatekinship(v_kinshipcareid uuid)
+  RETURNS text                                                        
+  LANGUAGE plpgsql                                                    
+ AS $function$                                                        
+                                                                      
+ Begin                                                                
+                                                                      
+                 UPDATE  kinshipcarechecklist  set  activeflag  =  0  
+                 where  kinshipcareid  =  v_kinshipcareid;            
+                 UPDATE  kinshipcaredocuments  set  activeflag  =  0  
+                 where  kinshipcareid  =  v_kinshipcareid;            
+                 Return  'Success';                                   
+                                                                      
+ End                                                                  
+                                                                      
+ $function$                                                           
+

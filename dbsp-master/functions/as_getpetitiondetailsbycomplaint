@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION as_getpetitiondetailsbycomplaint(evaluationid uuid)
+ RETURNS TABLE(complaintid character varying, yearsofage text, allegationname character varying[], offensedate text, victim json)
+ LANGUAGE plpgsql
+AS $function$
+  
+BEGIN
+  RETURN QUERY 
+
+select INEV.complaintid,
+(
+select 
+case when INEV.unknownrange=0 then
+case when date_part('month',age(INEV.offensedate::date, p.dob::date)) = 0 then 
+        date_part('year',age(INEV.offensedate::date, p.dob::date))||' Years '  else
+        date_part('year',age(INEV.offensedate::date, p.dob::date))||' Years '||
+        date_part('month',age(INEV.offensedate::date, p.dob::date))||' Months'  end
+
+--ge(INEV.offensedate::date,p.dob::date)
+ --when INEV.unknownrange=1 then  age(INEV.offensedate::date,now()::date)
+ when INEV.unknownrange=2 then  
+ case when date_part('month',age(INEV.begindate::date, p.dob::date)) = 0 then 
+        date_part('year',age(INEV.begindate::date, p.dob::date))||' Years '  else
+        date_part('year',age(INEV.begindate::date, p.dob::date))||' Years '||
+        date_part('month',age(INEV.begindate::date, p.dob::date))||' Months'  end
+-- age(INEV.begindate::date,p.dob::date) 
+end as yearsofage from intakeservicerequestevaluation INEV
+join intakeservicerequest ISR on ISR.intakenumber=INEV.intakenumber and ISR.activeflag=1
+join intakeservicerequestactor INRAC on INRAC.intakeserviceid =ISR.intakeserviceid and INRAC.intakeservicerequestpersontypekey='Youth'
+join actor AC on INRAC.actorid=AC.actorid and AC.activeflag=1 
+join person P on p.personid=AC.personid and p.activeflag=1 
+where INEV.intakeservicerequestevaluationid= evaluationid) as yearsofage,
+
+
+
+(select array_agg(AG.name)  from  allegation AG
+      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+      where  ITSEC.intakeservicerequestevaluationid=INEV.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as allegationname,
+
+      case when INEV.unknownrange=0 then to_char(INEV.offensedate,'MM/DD/YYYY') 
+ when INEV.unknownrange=1 then '' :: character varying 
+  when INEV.unknownrange=2 then to_char(INEV.begindate,'MM/DD/YYYY')|| ' - ' || to_char(INEV.enddate,'MM/DD/YYYY')
+
+end as offensedate ,
+(select  json_agg(json_build_object
+('personid',p.personid,
+'address',PA.address,
+'address2',PA.address2 ,'zipcode',PA.zipcode,'city',PA.city,'state',PA.state,'country',PA.country,'lastname',p.lastname,'firstname',p.firstname,'middlename',p.middlename,
+'victim_agency',ESA.description  
+)) as victim
+from intakeservicerequestevaluation INEV
+join evaluationsourceagency ESA on ESA.evaluationsourceagencyid = INEV.evaluationsourceagencyid
+join intakeservreqevalactorconfig INAC on INEV.intakeservicerequestevaluationid=INAC.intakeservicerequestevaluationid and INAC.activeflag=1
+join intakeservicerequestactor INRAC on INRAC.intakeservicerequestactorid =INAC.intakeservicerequestactorid
+join actor AC on INRAC.actorid=AC.actorid and AC.activeflag=1 
+join person P on p.personid=AC.personid and p.activeflag=1 
+left join personaddress PA on PA.personid=p.personid and PA.activeflag=1  and PA.personaddresstypekey='C'
+left join personphonenumber PPN on PPN.personid=P.personid and PPN.activeflag=1
+where  INEV.intakeservicerequestevaluationid=evaluationid and INEV.activeflag=1 and lower(AC.actortype)='victim') as victim from intakeservicerequestevaluation INEV where 
+ INEV.intakeservicerequestevaluationid=evaluationid and INEV.activeflag=1;
+ 
+ end
+
+
+$function$
+

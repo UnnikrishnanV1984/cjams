@@ -1,0 +1,80 @@
+CREATE OR REPLACE FUNCTION prov_submitfirbudgetdecision(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_prgstatus character varying;
+v_objectid character varying;
+v_subject character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_tousersid  character VARYING;
+v_eventcode character varying;
+v_phase character varying;
+v_sign json;
+v_appstatus character varying;
+response json;
+v_type character varying;
+v_username CHARACTER VARYING;
+v_appstatustext CHARACTER VARYING;
+v_objectname CHARACTER VARYING;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_appstatus := objectls->>'status';
+v_username := objectls->>'username';
+v_objectname := objectls->>'objectname';
+v_objectid := objectls->>'objectid';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_phase := objectls->>'phase';
+v_sign := objectls->>'signature';
+ 
+if v_appstatus = 'Incomplete'
+then
+   v_appstatustext = 'Returned to Provider';
+else 
+   if v_appstatus = 'Submitted'
+   then
+      v_appstatustext = 'Submitted for Verification';
+   else 
+      v_appstatustext = v_appstatus;
+   end if;
+end if;
+
+v_subject :=  'Annual Budget Submission - '||v_objectid|| ' ' ||v_appstatustext||' by ' ||v_username ||' for provider "'||v_objectname||'".' ;
+
+
+INSERT INTO tb_provider_decision
+      (decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+      toroleid,tosecurityusersid, signature)
+      VALUES(gen_random_uuid(),objectls->>'eventcode', v_fromsecurityuserid, objectls->>'fromroleid', v_objectid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+      now(), false, objectls->>'remarks', v_appstatus,  now(),null,null,  v_sign);
+
+
+if v_appstatus = 'Incomplete' or  v_appstatus = 'Packet Verified'  or  v_appstatus = 'Packet Not Verified' then
+      select pb.provider_id::character varying into v_tousersid 
+      from  prov_anual_budget_packet pb
+      where pb.object_id = v_objectid limit 1; 
+else 
+     select distinct toworkeridno into v_tousersid 
+      from tb_provider p
+      left join tb_provider_picklist pv on pv.provider_id = p.provider_id and pv.picklist_type_id=155
+      left join providerassignment pva on pva.objectid = p.provider_id 
+      inner join tb_provider_licensing tpl on tpl.site_id = p.provider_id and tpl.active_sw='Y'AND tpl.delete_sw = 'N' 
+      join prov_anual_budget_packet pb on pb.provider_id = p.affiliate_provider_id 
+      where pb.object_id = v_objectid limit 1; 
+end if;
+
+
+      SELECT prov_send_notification into v_success
+      FROM  prov_send_notification( v_tousersid, v_fromsecurityuserid, v_tousersid, 'System', 'High', v_subject, v_subject, v_objectid,  false, false, 'budgetpacket');
+
+
+return (json_build_object('Decision updated','Success',
+       'Notification',v_success));
+end;
+$function$
+

@@ -1,0 +1,1 @@
+ALTER TABLE interfacesruntimeslog ALTER COLUMN runid SET DEFAULT nextval('interfacesruntimeslog_runid_seq');

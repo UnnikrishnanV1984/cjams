@@ -1,0 +1,1 @@
+ALTER TABLE cjams.personexamination ADD COLUMN IF NOT EXISTS timeframe character varying (20);

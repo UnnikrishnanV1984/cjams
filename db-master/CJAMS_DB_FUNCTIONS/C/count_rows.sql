@@ -1,0 +1,14 @@
+ CREATE OR REPLACE FUNCTION public.count_rows(schema text, tablename text)
+  RETURNS integer                                                         
+  LANGUAGE plpgsql                                                        
+ AS $function$                                                            
+ declare                                                                  
+   result integer;                                                        
+   query varchar;                                                         
+ begin                                                                    
+   query := 'SELECT count(1) FROM ' || schema || '.' || tablename;        
+   execute query into result;                                             
+   return result;                                                         
+ end;                                                                     
+ $function$                                                               
+

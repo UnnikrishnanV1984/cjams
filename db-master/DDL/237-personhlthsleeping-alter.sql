@@ -1,0 +1,1 @@
+ALTER TABLE cjams.personhlthsleeping ADD COLUMN IF NOT EXISTS otherSpecify varchar(50) NULL;

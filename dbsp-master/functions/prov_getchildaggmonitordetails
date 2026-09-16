@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION prov_getchildaggmonitordetails(v_monitoring_id character varying, v_record_type character varying, v_module_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+v_prgram character varying;
+v_provider_id character varying;
+v_periodic character varying;
+
+ v_reporting_start_date timestamp without time zone;
+ v_reporting_end_date timestamp without time zone;
+
+ begin
+
+select provider_id, prgram, 
+  monitoring_period_start_date, monitoring_period_end_date 
+  into v_provider_id,v_prgram, v_reporting_start_date,v_reporting_end_date 
+  from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+
+ 
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  select count(1) over() as totalcnt,prs.record_id,
+     (select json_agg(x) from (
+      select 
+    prq2.question,split_part( prq2.question_hint, 'pg', 1) as question_hint,
+    count(case monitoring_record_value when 'Compliance' then monitoring_record_value end) as compliancecnt,
+    count(case monitoring_record_value when 'Non-Compliance' then monitoring_record_value end) as noncompliancecnt,
+    count(case monitoring_record_value when 'Pending' then monitoring_record_value end) as pendingcnt
+   from prov_monitoring_record_data prdt 
+   join prov_record_question prq2 on prq2.record_question_id  = prdt.record_question_id  and prq2.question_options is not null
+   join prov_monitoring_record_site pms on pms.monitoring_record_site_id=prdt.monitoring_record_site_id
+    and pms.record_id = prs.record_id and pms.delete_sw = 'N' and pms.monitoring_id = prs.monitoring_id
+   join prov_record pr on pr.record_id = pms.record_id and pr.prgram=v_prgram 
+   and pr.records_type = v_record_type 
+   and pr.module_name=v_module_name 
+   where  prdt.delete_sw = 'N'  
+   group by prq2.question,prq2.question_hint,prq2.record_question_id
+   order by prq2.displayorder
+    )x) answers  
+  from prov_monitoring_record_site prs 
+  inner join prov_monitoring m on m.monitoring_id = prs.monitoring_id and m.delete_sw = 'N'
+  left join prov_record pr on pr.record_id = prs.record_id
+  where 
+  (case when v_reporting_start_date is null or prs.recordreviewdate is null  then m.monitoring_id =v_monitoring_id 
+                        else prs.recordreviewdate::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end)
+  and m.provider_id = v_provider_id
+  and pr.prgram=v_prgram 
+  and pr.records_type = v_record_type 
+  and pr.module_name=v_module_name 
+  and prs.delete_sw = 'N' 
+ order by prs.create_ts desc  limit 1)pla;
+
+ RETURN jsondata;
+ END;
+$function$
+

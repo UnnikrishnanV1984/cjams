@@ -1,0 +1,1 @@
+update cjams.intakeservicerequest set activeflag = 0 where  servicerequestnumber = '20200126018297';

@@ -1,0 +1,5 @@
+update caseassignment set statustypekey ='Open', updatedby ='CDM-12637', updatedon=now() where caseassignmentid ='dc1ed6a3-3510-4112-ab45-21359908a74b';
+
+INSERT INTO cjams.routing
+( eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES( 'ADPC', 'd935b057-d7dc-4125-90bf-16f6a51e7ab5', 'fd819bbf-2b14-4057-9e41-5c62aa7f5d5c', 'cb7d5453-fd10-4439-8581-81e2be53c34c'::uuid, 'CWSP', 'CWCW', 'b963580d-1e74-4b0b-9ccc-c4366ce10836', 4, 1, 'e155e2c1-d335-49f4-9450-22382b37e120', '2020-07-20 13:20:53.000', 'e155e2c1-d335-49f4-9450-22382b37e120', '2020-07-20 13:20:53.000', false, NULL, NULL, 'Case Assigned', 3255019, 'adoptioncase', NULL, NULL, NULL, NULL, 'Data Migration', '2020-07-25', NULL, NULL);

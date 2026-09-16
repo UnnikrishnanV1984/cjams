@@ -1,0 +1,137 @@
+CREATE OR REPLACE FUNCTION as_createdailynotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+
+
+BEGIN
+    
+    
+  CREATE    TEMP    TABLE    _Temp_usernotification
+  (
+     usernotificationid    uuid    NOT    NULL    DEFAULT    gen_random_uuid(),
+     securityusersid    character    varying(50),
+     fromsercurityusersid    character    varying(50),
+     tosecurityusersid                character    varying(50),
+     usernotificationtypekey    character    varying(15)    NOT    NULL,
+     objectid    character    varying(50),
+     subject    character    varying(500),
+     priorityleveltypekey    character    varying(15),
+     body    text    NOT    NULL,
+     updatedby    character    varying(50),
+     updatedon    timestamp    without    time    zone,
+     insertedby    character    varying(50),
+     insertedon    timestamp    without    time    zone    DEFAULT    now()    ,
+     isda    int    default    0,
+     supmsg        character    varying(500),
+  objecttype    character    varying(50), 
+  objectcasenumber    character    varying(50)      
+  );
+    
+
+        /*Case close alert*/       
+               
+       INSERT INTO _temp_usernotification 
+            ( 
+                        securityusersid, 
+                        fromsercurityusersid, 
+                        tosecurityusersid, 
+                        usernotificationtypekey, 
+                        objectid, 
+                        subject, 
+                        priorityleveltypekey, 
+                        body, 
+                        updatedby, 
+                        insertedby, 
+                        insertedon, 
+                        updatedon,
+      objecttype,
+      objectcasenumber 
+            ) 
+  
+         SELECT DISTINCT isr.routedusersid, 
+                  'System', 
+                  isr.routedusersid, 
+                  'System', 
+                  isr.intakeserviceid, 
+                  'This CPS case is over ' || srtc.duedateoffset|| ' days . Please close the case', 
+                  'Normal', 
+                  'This CPS case is over ' || srtc.duedateoffset || ' days . Please close the case', 
+                  'System', 
+                  'System', 
+                  Now() at time zone 'utc', 
+                  now() at time zone 'utc',
+      'aps', isr.servicerequestnumber  
+  FROM            intakeservicerequest isr 
+  INNER JOIN      servicerequesttypeconfig srtc ON   srtc.intakeservreqtypeid = isr.intakeservreqtypeid AND  srtc.activeflag =1 
+  WHERE           isr.activeflag =1  and isr.isrouted = true and isr.exitdate is null
+  AND             extract(day FROM (isr.reporteddate::date +srtc.duedateoffset -now() )) <= 0 
+  AND             isr.intakeserviceid :: character VARYING NOT IN 
+                  (      SELECT objectid 
+                         FROM   usernotification 
+                         WHERE  subject LIKE '%Please close the case%'
+                        and insertedon::date = now()::date);
+  
+                  
+  INSERT INTO usernotification 
+              (usernotificationid, 
+               securityusersid, 
+               usernotificationtypekey, 
+               objectid, 
+               subject, 
+               priorityleveltypekey, 
+               body, 
+               updatedby, 
+               insertedby, 
+               insertedon, 
+               updatedon, 
+               ismailsent,
+      teamtypekey,
+      objecttype, 
+      objectcasenumber
+      ) 
+  SELECT usernotificationid, 
+         securityusersid, 
+         usernotificationtypekey, 
+         objectid, 
+         subject, 
+         priorityleveltypekey, 
+         body, 
+         updatedby, 
+         insertedby, 
+         insertedon, 
+         updatedon, 
+         false,
+      'AS',
+       objecttype,
+    objectcasenumber 
+  FROM   _temp_usernotification; 
+   
+
+  INSERT INTO usernotificationmap 
+             (usernotificationid, 
+              fromsecurityusersid, 
+              tosecurityusersid, 
+              updatedby, 
+              insertedby, 
+              insertedon, 
+              updatedon) 
+  SELECT usernotificationid, 
+         'System', 
+         tosecurityusersid, 
+         updatedby, 
+         insertedby, 
+         insertedon, 
+         updatedon 
+  FROM   _temp_usernotification; 
+
+    
+    drop    TABLE    _Temp_usernotification;
+    RETURN    'SUCCESS';    
+END;    
+
+$function$
+

@@ -1,0 +1,76 @@
+CREATE OR REPLACE FUNCTION prov_getallascontracts(wherejson json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_provider_id character varying;
+v_provider_name CHARACTER VARYING;
+v_contract_id character varying;
+v_base_contract_id character varying;
+v_search_contract boolean;
+v_skip numeric;
+jsondata  json;
+
+BEGIN
+
+v_provider_id := wherejson ->> 'provider_id';
+v_provider_name := wherejson ->> 'provider_name';
+v_contract_id := wherejson ->> 'contract_id';
+v_base_contract_id := wherejson ->> 'base_contract_id';
+RAISE NOTICE 'base contract id %', v_base_contract_id;
+v_search_contract := wherejson ->> 'search_contract';
+v_skip := wherejson ->> 'skip';
+
+SELECT  Json_agg(a)  INTO      jsondata  FROM      (  
+SELECT count(1) over() as totalcount, tpc.*,tp.provider_nm,tp.provider_first_nm,tp.provider_last_nm,tp.provider_id,(case when tcc.county_id = '00000000-0000-0000-0000-000000000000' then 'State-Wide' else c.countyname end) as countyname,
+    --   (select json_agg(x) from (
+        -- SELECT cp.program_id, cp.is_csa, cp.program_nm as program_name
+        -- FROM tb_contract_program cp
+        -- where cp.contract_id = tpc.contract_id
+        -- and case 
+        --     when v_is_csa = true then cp.is_csa = v_is_csa 
+        --     when v_is_csa = false then cp.is_csa = false or cp.is_csa is null 
+        --     else true end
+        -- and cp.delete_sw = 'N'
+        -- order by program_id desc
+        -- ) x ) as programs
+      (select json_agg(x) from (
+        SELECT budget_code
+        FROM tb_contract_budget_codes bc 
+        where bc.contract_id = tpc.contract_id
+        and bc.active_flag = 1
+        ) x ) as contract_budget_codes,
+      (SELECT json_agg(x) from(SELECT tfy.* from tb_contract_fiscal_year tfy where tfy.contract_id = tpc.contract_id and tfy.active_flag = 1)  x) AS
+      fiscalyeararray,      
+      (SELECT json_agg(x) from(
+        select DATE_PART('day', end_dt::timestamp -  now()::timestamp) ::integer as expire_days,
+              case
+              when (DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer <=90 and DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer >60) then 'yellow'
+              when (DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer <=60 and DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer >30) then 'orange'
+              when (DATE_PART('day', end_dt::timestamp -  now()::timestamp ):: integer <=30) then 'red'
+              end as color_code
+            from tb_provider_contracts cont_exp where cont_exp.contract_id = tpc.contract_id
+            )  x) AS contractexpire      
+      FROM tb_provider_contracts tpc  
+      INNER JOIN tb_provider tp on tp.provider_id = tpc.provider_id and tp.delete_sw='N'
+      INNER JOIN tb_provider_picklist tpp on tp.provider_id = tpp.provider_id and tpp.delete_sw='N' and tpp.picklist_value_cd=1787
+      LEFT JOIN as_tb_contract_county tcc on tcc.contract_id = tpc.contract_id and tcc.active_flag=1
+      LEFT JOIN county c on tcc.county_id = c.countyid
+      WHERE 
+      (v_provider_id is null or tpc.provider_id like '%'|| v_provider_id || '%')
+     AND (v_provider_name = '' or v_provider_name is null or trim(lower(tp.provider_nm::character varying)) like '%'||v_provider_name||'%') 
+      AND (case when v_search_contract = true then  (v_contract_id is null or tpc.contract_id::character VARYING like '%'|| v_contract_id||'%') 
+        else 
+        tpc.contract_id::character VARYING = v_contract_id
+          end )
+      and tpc.DELETE_sw ='N'
+      order by tpc.contract_id desc
+      LIMIT 10  OFFSET v_skip
+ )  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

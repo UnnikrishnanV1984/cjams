@@ -1,0 +1,1 @@
+update cjams.routing set routingstatustypeid = 43, updatedby = 'CDM-1227' where routingid = 'd8ab1e5f-6a85-4026-8ec4-d49e1978e056';

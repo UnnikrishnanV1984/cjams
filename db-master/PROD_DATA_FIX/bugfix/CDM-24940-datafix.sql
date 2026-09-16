@@ -1,0 +1,154 @@
+/*
+   Issue Description: CDM-24940
+   Category/ Module  : Approval Inbox
+   
+   Root cause: pending cases in Approval Inbox though the cases are approved
+*/
+--For User : Melissa Powell
+update 	routing 
+set 	activeflag = 0,
+		updatedby = 'CDM-24940', 
+		updatedon=now()
+where 	tosecurityusersid = 'afc92e34-98a3-412d-9ed0-9a83bd096df4' and 
+		routingid in ('63b83455-08b9-4efe-a5c0-149f52fdb9ce',
+		'd8cd1d1f-30cc-4859-bb4e-48526fadd918',
+		'8e88a588-a662-4828-a001-553f8210a1b6',
+		'c0657031-c622-4b50-856d-3db296d92b52',
+		'cd41f0e0-6dd0-4260-8ddf-f606391c6a12',
+		'70f32247-6d20-4873-8057-f5cb2bf1945d',
+		'9cfdc8f2-b927-4c44-a387-e545ca6cb766',
+		'd7e64db3-385b-4eda-9020-3564cba880df',
+		'9d25aa30-606a-4203-8059-61edf8b7f02b',
+		'2a3f5208-4e3a-4319-bad9-52e4b9b30c6e',
+		'ee250f46-bc98-4d9c-b22c-ae737ffab05d');
+		
+--For User: Shawan Adams
+--Permanancy Plan Review
+update 	routing 
+set 	activeflag = 0, updatedby = 'CDM-24940', updatedon = now()
+where 	tosecurityusersid = 'eb07a6d1-629a-4d1e-959e-5058cff11c93' and  routingid in  (
+--3252886
+'e46833fa-c235-4585-816a-63534abddb00',
+--3191052
+'7189eefc-950d-45cc-b6b0-16c0fd2a377b',
+'3ea9f100-b45a-4fc9-952c-7d361f12aadf'
+);
+
+--Service Case Plan2
+update 	routing 
+set 	activeflag = 0, updatedby = 'CDM-24940', updatedon = now()
+where 	tosecurityusersid = 'eb07a6d1-629a-4d1e-959e-5058cff11c93' and routingid in  (
+--3271000
+'da816ece-75b6-4f50-8a25-c4219b27525b',
+--3307237
+'06c4d1ca-c488-4b6a-97fb-b71ec18cd1ec',
+--3307117
+'76798032-fd87-4ff7-ae02-80883c644543',
+--3305351
+'23840a22-9e5a-4132-a8d0-edfe9234c359',
+--3301400
+'65ab0586-f980-407d-9a8e-7d7e693e2f65',
+--3300289
+'893ad9e9-086c-4af2-bd0e-51a82dfc76b1',
+--3292245
+'1f5933e0-5b72-41c3-ab5c-865086b2d892',
+--3287140
+'11caa949-501f-49e8-a3b1-e3705975a29d',
+--3286736
+'29550a7f-3b44-4320-a31e-46a218927657',
+--3284297
+'27cb008d-aaab-4d22-b5c1-cf74618a8817',
+--3283482
+'73aeccd7-e741-451b-8504-312b2f091ab2',
+--3282658
+'4a8d3cea-c66a-4cc7-9e80-d9afc5db7378',
+--3274384
+'571e51fc-7353-4f42-8620-81f6592b4442',
+--3274312
+'c166e32f-d040-47bf-af62-21febb4647fd',
+--3270256
+'0faf68e6-df97-4c17-8dae-2bc66b3354e2',
+--3252886
+'1cec9119-94d2-4c79-8561-526e26b3526d',
+--3235861
+'87a25464-2629-4838-b6b0-1ede0cbf5e8e',
+--3232272
+'b08a13b2-e293-44aa-b478-2fd4a430d2ae',
+
+--3220151
+'79ded626-eae6-4519-acc7-6b14f3408f7a',
+--3126066
+'b151d4d3-0fe7-4443-87ae-c5cfe8812f71',
+--3099644
+'afcffae5-c78e-4ede-bc49-6b3b02754447',
+
+--3098103
+'5e35dc33-b59a-45ba-adcb-c8cecbd8b77a',
+'619e83e2-d907-49c5-a393-be0e8a452574',
+--3080328
+'cf285fe2-efc5-45bf-875f-6cede989a64e',
+
+--3190312
+'f1902255-384d-41f5-901b-5ca9d4af787f', '28bbbc94-ca9e-41ee-b1d2-8e3eb8ee4b06','e4c6ac4e-ca9b-4247-b520-779c87cf200d',
+'0efd1c29-aaec-442a-8a3a-4fb00914184a',
+'b06d0420-37aa-4165-843e-ab59782d8b21',
+'762fb31e-51b9-45cc-ba9f-7804c3ec8f33',
+'dd7d91b4-eba0-4252-8757-3950f3a023fc',
+'f827e87c-2143-46f8-befc-82355980895d',
+'e315faae-532c-47cc-987b-d980f4446ebe',
+'8f7e62da-2d0e-4733-a3db-42ff39cb6818',
+--3191052
+'fa9b11f2-1ddd-45cc-ab65-e387145fec7e',
+'7f558d2f-04ad-4890-8624-49b54c457e76',
+--3205754
+'f1b3f09b-9c71-40dd-b663-5a126e1e8a27',
+'895c6c9f-19c3-493a-952d-a27f8dc53c64',
+--3230006
+'506fb16e-b3c3-4ca9-908b-0a8849a5c3d9',
+'dc9c6aab-c27f-4d26-b952-12e697c324c1',
+'fbaa2763-562d-44cd-97c9-d1256f494b70',
+--3242067
+'04de2975-5b18-4daa-9568-e77de334a303',
+'fb803795-8176-4a85-a20f-3ecccf2afd2d',
+--3257129
+'5958f520-569b-4fef-8260-09eaf16b834c',
+'956bbc18-3e97-42ae-a411-78752f508950',
+--3259592
+'50db6f72-4340-451d-b703-cfa17dbf140f',
+'cccc8baa-d820-4ad9-8f09-3560ae616538',
+--3265843
+'cf989c35-0be8-438f-b8c5-8b08fc684443',
+'890a2fc4-7570-4826-8c53-0e4b0c3a61ba',
+--3272544
+'8280cf8c-35ef-4b5e-a00d-279bd9ab853d',
+'be78f519-934b-4ae7-a517-a1e908e9c4a5',
+'d897ba26-3023-4009-9128-4ea483e5b940',
+--3277272
+'bf990cd1-0d7e-450f-a2f4-e182d2ab7272',
+'3ef7b63a-5987-4e92-a537-ff766052b0b1',
+'9ed80ce4-023b-4395-a1d7-679fe14906b9',
+'9c00925b-78b7-4d74-a08f-17310bd61d23',
+'f4277950-f541-43b3-b636-8692f4b1f980',
+--3283457
+'0257c64d-ad97-4639-b799-0af703a4b01e',
+'2c835cd4-734c-4590-bc41-b8a26deffe87',
+--3293123
+'0cbd6241-723b-4a9e-bc79-dc968bcc8ab6',
+'72ed6547-9a69-4870-8bb5-bec438469e63',
+--3299509
+'832cd16e-7f5a-4865-b2d3-cbfd434373bf',
+'cf11ed72-da6d-4f34-89e1-5c3d2fef9040',
+--3305801
+'f85e1108-d8b8-4d40-86a0-9c021c6294cc',
+'0b94da05-3326-4b83-ae7b-32b0910bc914',
+--3306203
+'246c85e5-a15e-4a11-ae41-40ab0bbcb78d',
+'a1b92bab-c469-47f4-b581-7d549de831ad',
+--2020024102695
+'5b32f19e-63ac-49a8-8b77-c41cf46e0336',
+--2020030904002
+'52d46182-cbe4-492d-827b-3931013b0e41',
+--202102005488
+'a33d40fe-38f3-4998-a171-c9509f8c4f83'
+
+)

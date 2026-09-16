@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION sp_fostercare_calculation(as_pub_priv_flag character, as_rate_flag character, al_placement_structure_id bigint, ad_placement_start_dt date, ad_placement_end_dt date, ad_payment_start_dt date, ad_payment_end_dt date, OUT ad_service_start_dt date, OUT ad_service_end_dt date, OUT al_unit_no integer, OUT as_unit_type character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+ DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vl_no_of_nights INTEGER;--
+BEGIN
+
+--  get the last month start date and end date
+
+--SELECT  ( DATE(SUBSTR(CHAR(CURRENT DATE  -  DAY(CURRENT DATE) DAYS,ISO),1,8)||'01')),
+--        ( CURRENT DATE  -  DAY(CURRENT DATE) DAYS )
+--INTO    vd_previous_month_start_dt,
+--        vd_previous_month_end_dt
+--FROM sysibm.sysdummy1;--
+
+ vd_previous_month_start_dt := ad_payment_start_dt;--
+ vd_previous_month_end_dt := ad_payment_end_dt;--
+
+CASE as_rate_flag
+    WHEN 'R' THEN  -- Room and Board
+     -- New condition to calculate  # of days - CIS-19002
+      -- New condition check for placement structure id - PRJ-04753
+        IF ad_payment_end_dt <= DATE('2009-08-31') AND  
+           (ad_placement_start_dt <= vd_previous_month_start_dt) AND
+             ((ad_placement_end_dt >= vd_previous_month_end_dt) OR (ad_placement_end_dt IS NULL)) AND 
+             al_placement_structure_id NOT IN (11405, 11406, 11407, 11408, 11409) THEN
+                 al_unit_no := 1;--
+                 as_unit_type := '5611'; -- need to check unit type month 5610 nightly
+                 ad_service_start_dt := vd_previous_month_start_dt;--
+                 ad_service_end_dt := vd_previous_month_end_dt;--
+        ELSE    -- calculate numbers of night
+            IF ad_placement_end_dt IS NULL OR ad_placement_end_dt >= vd_previous_month_end_dt THEN
+                 ad_service_end_dt :=  vd_previous_month_end_dt;--
+            ELSE
+                 ad_service_end_dt := ad_placement_end_dt;--
+            END IF;--
+
+             IF ad_placement_start_dt <= vd_previous_month_start_dt THEN  --child is staying in this placment before the previous month
+                 ad_service_start_dt :=  vd_previous_month_start_dt;--
+            ELSE
+                 ad_service_start_dt := ad_placement_start_dt;--
+            END IF;--
+
+            -- calculating the numbers of night
+            -- New condition to calculate  # of days - CIS-19002  
+            -- New condition check for placement structure id - PRJ-04753
+            IF ad_payment_end_dt <= DATE('2009-08-31') AND
+                ad_service_start_dt = vd_previous_month_start_dt AND
+                ad_service_end_dt = vd_previous_month_end_dt AND -- CLIENT REMAINS IN THE PLACEMENT FOR WHOLE MONTH
+                al_placement_structure_id NOT IN (11405, 11406, 11407, 11408, 11409) THEN
+                 al_unit_no := 1;--
+                 as_unit_type := '5611'; --MONTHLY
+            ELSE
+                 --vl_no_of_nights := EXTRACT(DAY FROM(ad_service_end_dt)) - EXTRACT(DAY FROM(ad_service_start_dt));--
+     RAISE NOTICE '<<<<<<Inside the SP:: sp_fostercare_calculation<<<<<<ad_service_end_dt %',ad_service_end_dt;
+     RAISE NOTICE '<<<<<<Inside the SP:: sp_fostercare_calculation<<<<<<ad_service_start_dt %',ad_service_start_dt;
+     vl_no_of_nights := ad_service_end_dt::date - ad_service_start_dt::date;--
+                 al_unit_no := vl_no_of_nights;--
+                IF ad_service_start_dt = vd_previous_month_end_dt AND (ad_placement_end_dt IS NULL
+                  OR ad_placement_end_dt > vd_previous_month_end_dt) THEN
+                   al_unit_no := 1;--
+                  -- 09/30/2008 # 18609        
+                ELSEIF ad_service_end_dt = vd_previous_month_end_dt and (ad_service_end_dt <> ad_placement_end_dt or ad_placement_end_dt is null) THEN
+                al_unit_no := al_unit_no + 1; --
+                -- 09/30/2008 # 18609           
+                END IF;--
+
+                 as_unit_type := '5610'; --nightly
+            END IF;--
+        END IF;--
+
+    WHEN 'C' THEN  -- Initial Clothing or Monthly Clothing or Stipend or Bed Retainer fee, these are monthly
+         al_unit_no := 1;--
+         as_unit_type := '5611'; -- need to check unit type month 5610 nightly
+         ad_service_start_dt := vd_previous_month_start_dt;--
+         ad_service_end_dt := vd_previous_month_end_dt;--
+END CASE;--
+END;
+
+$function$
+

@@ -1,0 +1,1 @@
+DELETE from routing WHERE routingid in ('1cf928ba-a97b-48b5-951a-eb46fc91f152', '9b0b5edc-bd31-4923-b9d4-211ad4980d0a');

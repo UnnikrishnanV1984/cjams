@@ -1,0 +1,357 @@
+CREATE OR REPLACE FUNCTION as_getpersonsrolebyinvestigation(v_intakeserviceid uuid, _page integer, _limit integer, v_roles character varying DEFAULT ''::character varying)
+ RETURNS TABLE(totalcount bigint, intakeservicerequestactorid uuid, firstname character varying, lastname character varying, dob timestamp without time zone, personid uuid, cjamspid bigint, roles json, relationship character varying, ishousehold integer, iscollateralcontact integer, gender character varying, race character varying, address json, citizenalenageflag integer, phonedetails json, email character varying)
+ LANGUAGE plpgsql
+AS $function$ declare _offset integer;
+
+actorloop record;
+begin
+_offset := (_page - 1) * _limit;
+
+create temp table
+ actor_temp1(actortype character varying(50),
+ activeflag int);
+
+create temp table
+ actor_temp2(actortype character varying(50),
+ actorid uuid,
+ personid uuid);
+
+if coalesce(v_roles, '') <> '' then insert
+ into
+  actor_temp1(actortype,
+  activeflag) select
+   unnest(string_to_array(v_roles, ',' )),
+   0;
+
+insert
+ into
+  actor_temp1(actortype,
+  activeflag) select
+   intakeservicerequestpersontypekey,
+   1
+  from
+   intakeservicerequestactor
+  where
+   intakeservicerequestpersontypekey not in (
+    select actortype
+   from
+    actor_temp1)
+   and intakeserviceid = v_intakeserviceid;
+
+for actorloop in select
+ actortype
+from
+ actor_temp1
+where
+ activeflag = 1 loop insert
+  into
+   actor_temp2(actortype,
+   actorid,
+   personid) select
+    ISR.intakeservicerequestpersontypekey,
+    ISR.intakeservicerequestactorid,
+    ISR.personid
+   from
+    intakeservicerequestactor ISR
+   where
+    ISR.intakeservicerequestpersontypekey = actorloop.actortype
+    and ISR.intakeserviceid = v_intakeserviceid
+    and ISR.personid not in (
+     select temp2.personid
+    from
+     actor_temp2 temp2)
+    and ISR.activeflag = 1;
+end loop;
+
+return QUERY select
+ "Person".totalcount,
+ "Person".intsrvreqactorid,
+ "Person".firstname,
+ "Person".lastname,
+ "Person".dob,
+ "Person".personid,
+ "Person".cjamspid,
+ "Person".roles ::json,
+ "Person".relationship :: character varying,
+ "Person".ishouseholdmember,
+ "Person".iscollateralcontact,
+ "Person".schoolname :: json,
+ "Person".gender :: character varying,
+ "Person".race :: character varying,
+ "Person".address :: json,
+ "Person".citizenalenageflag,
+ "Person".phonedetails :: json,
+ "Person".email
+from
+ (
+ select
+  count(1) over() as totalcount,
+  ACT2.ACTORID intsrvreqactorid,
+  p.firstname,
+  p.lastname,
+  p.dob,
+  p.personid,
+  p.cjamspid,
+  (
+  select
+   json_agg(e) as roles
+  from
+   (
+   select
+    isrpn.intakeservicerequestpersontypekey,
+    --at.typedescription
+ at.value_text as typedescription
+   from
+    intakeservicerequestactor ISRPN
+    --inner join actortype at on
+    --at.actortype = isrpn.intakeservicerequestpersontypekey
+   inner join referencevalues at on
+    at.ref_key = isrpn.intakeservicerequestpersontypekey
+   where
+    isrpn.actorid = ac.actorid
+    and (isrpn.intakeserviceid = v_intakeserviceid )
+    and isrpn.activeflag = 1
+    and at.referencetypeid in (175,
+    176)
+    -- newly added by venky
+
+    group by isrpn.intakeservicerequestpersontypekey,
+    --at.typedescription 
+ at.value_text ) as e ) ::json,
+  '' as relationship,
+  AC.ishouseholdmember,
+  AC.iscollateralcontact,
+  (
+  select
+   json_agg(f) as schoolname
+  from
+   (
+   select
+    pe.educationname
+   from
+    personeducation pe
+   where
+    pe.personid = P.personid
+    and activeflag = 1 ) as f ) ::json,
+  gt.typedescription as gender,
+  rt.typedescription as race,
+  (
+  select
+   json_agg(padd) as address
+  from
+   (
+   select
+    pa.address,
+    pa.address2,
+    pa.city,
+    pa.zipcode,
+    pa.state
+   from
+    personaddress pa
+   where
+    pa.personid = p.personid
+    and pa.personaddresstypekey = 'C'
+    and pa.activeflag = 1
+   limit 1 ) as padd ),
+  p.citizenalenageflag,
+  (
+  select
+   json_agg(pphone) as phonedetails
+  from
+   (
+   select
+    pn.personphonetypekey,
+    pn.phonenumber,
+    pn.phoneextension,
+    pn.reversephonenumber,
+    pn.ismobile
+   from
+    personphonenumber pn
+   where
+    pn.personid = p.personid
+    and pn.activeflag = 1
+   limit 1 ) as pphone ),
+  PE.email
+ from
+  actor_temp2 ACT2
+ inner join Intakeservicerequestactor as IAR on
+  IAR.IntakeservicerequestactorID = ACT2.ACTORID
+  and IAR.ACTIVEFLAG = 1
+ inner join actor as AC on
+  IAR.actorid = AC.actorid
+  and AC.activeflag = 1
+  and IAR.activeflag = 1
+ inner join person as P on
+  P.personid = AC.personid
+  and P.activeflag = 1
+ left join gendertype gt on
+  gt.gendertypekey = P.gendertypekey
+  and gt.activeflag = 1
+ left join racetype rt on
+  rt.racetypekey = P.racetypekey
+  and rt.activeflag = 1
+ left join personemail as PE on
+  PE.personid = P.personid
+  and PE.activeflag = 1
+ where
+  IAR.IntakeServiceId = v_intakeserviceid
+  and coalesce(iar.isprimary, false) = true
+ group by
+  IAR.intakeservicerequestpersontypekey,
+  P.personid,
+  AC.actorid,
+  gt.typedescription,
+  rt.typedescription,
+  act2.actorid,
+  PE.email ) as "Person"
+limit _limit offset _offset;
+else return QUERY select
+ "Person".totalcount,
+ null ::uuid,
+ "Person".firstname,
+ "Person".lastname,
+ "Person".dob,
+ "Person".personid,
+ "Person".cjamspid,
+ "Person".roles ::json,
+ "Person".relationship :: character varying,
+ "Person".ishouseholdmember,
+ "Person".iscollateralcontact,
+ --"Person".schoolname ::json,
+ "Person".gender :: character varying,
+ "Person".race :: character varying,
+ "Person".address :: json,
+ "Person".citizenalenageflag,
+ "Person".phonedetails :: json,
+ "Person".email
+from
+ (
+ select
+  count(1) over() as totalcount,
+  p.firstname,
+  p.lastname,
+  p.dob,
+  p.personid,
+  p.cjamspid,
+  (
+  select
+   json_agg(e) as roles
+  from
+   (
+   select
+    isrpn.intakeservicerequestpersontypekey,
+    ISRPN.Intakeservicerequestactorid,
+    --at.typedescription
+ at.value_text as typedescription
+   from
+    intakeservicerequestactor ISRPN
+    --inner join actortype at on
+    --at.actortype = isrpn.intakeservicerequestpersontypekey
+   inner join referencevalues at on
+    at.ref_key = isrpn.intakeservicerequestpersontypekey
+   where
+    isrpn.actorid = ac.actorid
+    and (isrpn.intakeserviceid = v_intakeserviceid)
+    and isrpn.activeflag = 1
+    and at.referencetypeid in (175,
+    176)
+    -- newly added by venky
+
+    group by isrpn.intakeservicerequestpersontypekey,
+    isrpn.intakeservicerequestactorid,
+    --at.typedescription 
+ at.value_text ) as e ) ::json,
+  '' as relationship,
+  AC.ishouseholdmember,
+  AC.iscollateralcontact,
+  --(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+  --              SELECT                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+  --                    json_agg(f) AS schoolname                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+  --          FROM                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+  --(                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+  --              SELECT                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+  --                    pe.educationname,gt.typedescription                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+  --          FROM personeducation pe                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+  --INNER JOIN gradetype gt ON gt.gradetypekey = pe.currentgradetypekey                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+  --WHERE pe.personid=P.personid AND pe.activeflag=1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+  --  ) As f                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+  --) ::json,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+ gt.typedescription gender,
+  rt.typedescription race,
+  (
+  select
+   json_agg(padd)
+  from
+   (
+   select
+    padd.address,
+    padd.address2,
+    padd.city,
+    padd.zipcode,
+    padd.state
+   from
+    personaddress padd
+   where
+    padd.personid = p.personid
+    and padd.personaddresstypekey = 'C'
+    and padd.activeflag = 1
+   limit 1 ) as padd ) :: json address,
+  p.citizenalenageflag,
+  (
+  select
+   json_agg(pphone)
+  from
+   (
+   select
+    pn.personphonetypekey,
+    pn.phonenumber,
+    pn.phoneextension,
+    pn.reversephonenumber,
+    pn.ismobile
+   from
+    personphonenumber pn
+   where
+    pn.personid = p.personid
+    and pn.activeflag = 1
+   limit 1 ) as pphone ):: json phonedetails ,
+  PE.email
+ from
+  Intakeservicerequestactor as IAR
+ inner join actor as AC on
+  IAR.actorid = AC.actorid
+  and AC.activeflag = 1
+  and IAR.activeflag = 1
+ inner join person as P on
+  P.personid = AC.personid
+  and P.activeflag = 1
+ left join gendertype gt on
+  gt.gendertypekey = P.gendertypekey
+  and gt.activeflag = 1
+ left join racetype rt on
+  rt.racetypekey = P.racetypekey
+  and rt.activeflag = 1
+ left join personemail as PE on
+  PE.personid = P.personid
+  and PE.activeflag = 1
+ where
+  IAR.IntakeServiceId = v_intakeserviceid
+  and coalesce(iar.isprimary, false) = true
+ group by
+  IAR.intakeservicerequestpersontypekey,
+  P.personid,
+  AC.actorid,
+  gt.typedescription,
+  rt.typedescription,
+  PE.email ) as "Person"
+limit _limit offset _offset;
+end if;
+
+drop table
+ actor_temp1;
+
+drop table
+ actor_temp2;
+end;
+
+$function$
+

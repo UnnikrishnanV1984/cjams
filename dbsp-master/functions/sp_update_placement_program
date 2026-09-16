@@ -1,0 +1,685 @@
+CREATE OR REPLACE FUNCTION sp_update_placement_program(al_placement_id bigint, al_old_program_id bigint, al_new_program_id bigint, ad_placement_entry_date date, as_request_user_id character varying, as_approver_user_id character varying, OUT al_sqlcode integer, OUT as_mess character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author: Vineet Tirodkar\r
+-- Date Created: 02/08/2021\r
+-- SP to update the Placement Contract Program \r
+-- Exit the current placement & create new placement for single Placement or all Placements under that program\r
+\r
+-- Revision(s)\r
+-- 03/15/2021 Vineet Tirodkar - To add condition for current placement entry <= ad_placement_entry_date\r
+-- 03/19/2021 Vineet Tirodkar - Modifications to from/to security user id logic for the routing (approval) table \r
+-- 05/10/2021 Vineet Tirodkar - Modifications for Provider schema changes (B-102023)\r
+------------------------------------------------------------------------\r
+DECLARE sqlcode int default 0;\r
+\r
+DECLARE vl_active_plc integer;\r
+DECLARE vl_vacancy integer;\r
+DECLARE vl_active_placements integer;\r
+DECLARE vl_row_cnt integer;\r
+DECLARE vl_placement_exit_day integer;\r
+DECLARE vl_service_id integer;\r
+DECLARE vl_site_cnt integer;\r
+\r
+DECLARE vl_case_id bigint;\r
+DECLARE vl_placement_id bigint;\r
+DECLARE vl_new_placement_id bigint;\r
+DECLARE vl_contract_program_id bigint;\r
+DECLARE vl_provider_id bigint;\r
+\r
+DECLARE vs_proceed_sw char(1);\r
+DECLARE vs_placement_update_sw char(1) default 'N';\r
+DECLARE vs_cursor_sql varchar(12000);\r
+\r
+DECLARE vd_entry_month_first_day date; \r
+\r
+DECLARE vu_placementid uuid; \r
+DECLARE vu_new_placement_id uuid;\r
+DECLARE vu_personid uuid; \r
+DECLARE vu_servicecaseid uuid; \r
+DECLARE vu_teamid uuid; \r
+DECLARE vu_request_user_id uuid;\r
+DECLARE vu_approver_user_id uuid;\r
+    \r
+DECLARE vd_entry_dt Date;\r
+\r
+cur_placement_refcur REFCURSOR;\r
+cur_placement record;\r
+\r
+\r
+BEGIN\r
+ IF as_request_user_id is null THEN\r
+  as_request_user_id  := 'CaseWorker';\r
+  vu_teamid = '452febf8-428b-4836-b8e2-9125ace6307b'::uuid ; -- MDTHINK CJAMS\r
+ ELSE\r
+  select teamid \r
+   into vu_teamid\r
+  from v_userprofile \r
+  where securityusersid = as_request_user_id ;\r
+  \r
+ END IF; \r
+ IF as_approver_user_id is null THEN\r
+  as_approver_user_id  := 'CaseSupervisor';\r
+ END IF; \r
+  \r
+ -- INITIAL VALUES\r
+ vs_proceed_sw := 'Y'; \r
+ al_sqlcode := 0 ;\r
+ as_mess := 'Success';\r
+ \r
+ IF ad_placement_entry_date is null THEN\r
+  vs_proceed_sw := 'N' ;\r
+  al_sqlcode := -1;\r
+  as_mess := 'Placement Change Date is missing.';\r
+ END IF;\r
+ \r
+ -- Check if the call is for single Placement change or all Placements \r
+ IF vs_proceed_sw = 'Y' THEN\r
+  IF al_placement_id is not null THEN\r
+  \r
+   select count(*)\r
+    into vl_active_plc\r
+   from tb_placement \r
+   where delete_sw = 'N' \r
+    and entry_dt is not null \r
+    and entry_dt <= ad_placement_entry_date\r
+    and exit_dt is null \r
+    and approval_status_cd = '3047'\r
+    and coalesce(void_sw, 'N') <> 'Y'\r
+    and placement_id = al_placement_id ;\r
+   \r
+   IF vl_active_plc = 0 THEN\r
+    vs_proceed_sw := 'N' ;\r
+    al_sqlcode := -1;\r
+    as_mess := 'This Placement is no more active in ';\r
+   ELSE\r
+    -- Check if the new program is having vacancy \r
+    vl_vacancy := 0 ;\r
+    \r
+    select coalesce(vacancy_no, 0)  \r
+     into vl_vacancy\r
+    from tb_contract_program\r
+    where program_id = al_new_program_id\r
+     and delete_sw = 'N' \r
+     and program_status_cd = '3625' ;\r
+    \r
+    IF vl_vacancy = 0 THEN\r
+     vs_proceed_sw := 'N';\r
+     al_sqlcode := -1;\r
+     as_mess := 'The new program is not having any vacancy.';\r
+    ELSE\r
+     vs_proceed_sw := 'Y' ;\r
+     vs_cursor_sql :=   \r
+      ' select placementid, personid, servicecaseid, '||\r
+      '        entry_dt, case_id, placement_id, contract_program_id, provider_id '|| \r
+      ' from tb_placement '|| \r
+      ' where delete_sw = ''N'' '|| \r
+      ' and entry_dt is not null '|| \r
+      '   and entry_dt <= '''|| to_char(ad_placement_entry_date, 'YYYY-MM-DD') ||''' '\r
+      ' and exit_dt is null '|| \r
+      ' and approval_status_cd = ''3047'' '|| \r
+      ' and coalesce(void_sw, ''N'') <> ''Y'' '|| \r
+      '   and contract_program_id is not null '||\r
+      ' and placement_id = '|| TO_CHAR(al_placement_id) ;\r
+\r
+      vl_row_cnt := 1;                                                                  \r
+    END IF; \r
+   END IF; \r
+  ELSE\r
+   IF al_old_program_id is not null and al_new_program_id is not null THEN\r
+    -- Get the count of active placements under old program\r
+    vl_active_placements := 0 ;\r
+    \r
+    select count(*) \r
+      into vl_active_placements\r
+     from tb_placement\r
+    where delete_sw = 'N'\r
+     and entry_dt is not null\r
+     and entry_dt <= ad_placement_entry_date\r
+     and exit_dt is null\r
+     and approval_status_cd = '3047'\r
+     and coalesce(void_sw, 'N') <> 'Y'\r
+     and contract_program_id = al_old_program_id ;\r
+\r
+    -- Check if the new program is having vacancy \r
+    vl_vacancy := 0 ;\r
+    \r
+    select coalesce(vacancy_no, 0)  \r
+     into vl_vacancy\r
+    from tb_contract_program\r
+    where program_id = al_new_program_id\r
+     and delete_sw = 'N' \r
+     and program_status_cd = '3625' ;\r
+   \r
+   \r
+    -- Check if the new program is having vacancies > Active Placements  \r
+    IF vl_vacancy < vl_active_placements THEN\r
+     vs_proceed_sw := 'N';\r
+     al_sqlcode := -1;\r
+     as_mess := 'The new program is not having enough vacancies to accommodate all active placements from old program.';\r
+    ELSE\r
+     vs_proceed_sw := 'Y' ;\r
+     \r
+     vs_cursor_sql :=   \r
+     ' select placementid, personid, servicecaseid, '||\r
+     '        entry_dt, case_id, placement_id, contract_program_id, provider_id '|| \r
+     ' from tb_placement '|| \r
+     'where delete_sw = ''N'' '|| \r
+     ' and entry_dt is not null '|| \r
+     '   and entry_dt <= '''|| to_char(ad_placement_entry_date, 'YYYY-MM-DD') ||''' '\r
+     ' and exit_dt is null '|| \r
+     ' and approval_status_cd = ''3047'' '|| \r
+     ' and coalesce(void_sw, ''N'') <> ''Y'' '|| \r
+     ' and contract_program_id = '|| TO_CHAR(al_old_program_id) ||' '||\r
+     '   order by placement_id ';\r
+\r
+     select count(*)\r
+      into vl_row_cnt                                                                   \r
+     from tb_placement\r
+     where delete_sw = 'N'\r
+      and entry_dt is not null\r
+      and entry_dt <= ad_placement_entry_date\r
+      and exit_dt is null\r
+      and approval_status_cd = '3047'\r
+      and coalesce(void_sw, 'N') <> 'Y'\r
+      and contract_program_id = al_old_program_id ;\r
+    END IF;\r
+    \r
+   ELSE\r
+    vs_proceed_sw := 'N' ;\r
+    al_sqlcode := -1;\r
+    as_mess := 'Old Program ID and/or New Program ID is missing.';\r
+   END IF;\r
+  END IF;\r
+ END IF;\r
+ \r
+ IF vs_proceed_sw = 'Y' THEN\r
+  OPEN cur_placement_refcur FOR EXECUTE vs_cursor_sql;\r
+             \r
+  loop EXIT WHEN vl_row_cnt = 0::bigint ;     \r
+   vu_placementid := null; \r
+   vu_personid := null; \r
+   vu_servicecaseid  := null;\r
+   vd_entry_dt := null;\r
+   vl_case_id := null;\r
+   vl_placement_id := null;\r
+   vl_contract_program_id := null;\r
+   vl_provider_id := null;\r
+ \r
+   FETCH cur_placement_refcur \r
+   INTO vu_placementid, \r
+    vu_personid, \r
+    vu_servicecaseid, \r
+    vd_entry_dt,\r
+    vl_case_id,\r
+    vl_placement_id,\r
+    vl_contract_program_id,\r
+    vl_provider_id ;\r
+     \r
+   RAISE NOTICE 'vu_placementid >>%', vu_placementid;\r
+   RAISE NOTICE 'vu_personid >>%', vu_personid;\r
+   RAISE NOTICE 'vu_servicecaseid >>%', vu_servicecaseid;\r
+   RAISE NOTICE 'vd_entry_dt >>%', vd_entry_dt;\r
+   RAISE NOTICE 'vl_case_id >>%', vl_case_id;\r
+   RAISE NOTICE 'vl_placement_id >>%', vl_placement_id;\r
+   RAISE NOTICE 'vl_contract_program_id >>%', vl_contract_program_id;\r
+   RAISE NOTICE 'vl_provider_id >>%', vl_provider_id;\r
+   \r
+   -- Verfiy if the new Program is havign the same Provider Site\r
+   select count(*)\r
+    into vl_site_cnt\r
+   from tb_prov_program_sites \r
+   where program_id = al_new_program_id\r
+    and site_id = vl_provider_id\r
+    and delete_sw = 'N' ; \r
+   \r
+   IF vl_site_cnt = 0 THEN\r
+    vs_proceed_sw := 'N' ;\r
+    al_sqlcode := -1;\r
+    as_mess := 'The New Program is not having Site Provider ID: ' || to_char(vl_provider_id);\r
+   END IF; \r
+   \r
+   IF vs_proceed_sw = 'Y' THEN\r
+    -- Get Approval requestor & approver\r
+    select ca.toworkeridno,\r
+        up.supervisorid,\r
+        vu.teamid \r
+    into vu_request_user_id, \r
+     vu_approver_user_id,\r
+     vu_teamid    \r
+    from caseassignment ca,\r
+     userprofile up,\r
+     v_userprofile vu \r
+    where ca.toworkeridno = up.securityusersid \r
+     and ca.toworkeridno = vu.securityusersid \r
+     and ca.objectid = (select servicecaseid \r
+          from servicecase \r
+          where servicecasenumber = vl_case_id )\r
+     and lower(ca.responsibilitytypekey) = 'family'\r
+     and ca.activeflag = 1\r
+     and up.activeflag = 1\r
+    order by ca.insertedon desc\r
+    limit 1 ;\r
+    \r
+    /*\r
+    select ru.fromsecurityusersid, \r
+     ru.tosecurityusersid,\r
+     ru.teamid \r
+    into vu_approver_user_id,\r
+     vu_request_user_id, \r
+     vu_teamid\r
+    from routing ru \r
+    where ru.objectid = vu_placementid::character varying \r
+     and ru.activeflag  = 1\r
+     and ru.routingstatustypeid = '16' \r
+     and ru.toroleid not in ('IVESP', 'IVESV') ;\r
+    */\r
+    IF vu_request_user_id is not null THEN\r
+     as_request_user_id := vu_request_user_id;\r
+    ELSE\r
+     as_request_user_id  := 'CaseWorker';\r
+    END IF;\r
+    \r
+    IF vu_approver_user_id is not null THEN\r
+     as_approver_user_id := vu_approver_user_id;\r
+    ELSE\r
+     as_approver_user_id  := 'CaseSupervisor';\r
+    END IF;\r
+      \r
+    IF vu_teamid is null THEN\r
+     vu_teamid := '452febf8-428b-4836-b8e2-9125ace6307b'::uuid ; -- MDTHINK CJAMS\r
+    END IF;\r
+    \r
+    RAISE NOTICE 'as_request_user_id >>%', as_request_user_id;\r
+    RAISE NOTICE 'as_approver_user_id >>%', as_approver_user_id;\r
+    RAISE NOTICE 'vu_teamid >>%', vu_teamid;\r
+    \r
+    -- Current Placement Updates - START\r
+    ---------------------------------\r
+    -- Insert into placementrevision \r
+    INSERT INTO placementrevision\r
+     ( placementrevisionid, placementid, transactiondate, entrydate, entrytime, \r
+      exitdate, exittime, exittypetypkey, exitreasontypkey, exitexplanation, \r
+      approvalstatustypkey, approvaldate, isoriginal, insertedon, insertedby, \r
+      updatedon, updatedby, activeflag, alternateid, voidreasontypekey, \r
+      voidremarks, enddate, endtime, exittypekey, remarks, \r
+      isvoided, voiddate, requestedby, requesteddate, approvedby, \r
+      approveddate, etl_userid, etl_load_date, ischangepreadoptive\r
+     )\r
+    select gen_random_uuid(), placementid, now(), startdatetime, starttime, \r
+     ad_placement_entry_date, '00:00'::time, null , 'CIPO', '',\r
+     '3045', null, null, now(), as_request_user_id,\r
+     now(), as_approver_user_id, 0, alternateid, null,\r
+     NULL, NULL, NULL, 'CIP', '',\r
+     '0', null, as_request_user_id, now(), as_approver_user_id,\r
+     now(), null, null, null\r
+    from placement\r
+    where placementid = vu_placementid::uuid ;\r
+\r
+    INSERT INTO placementrevision\r
+     ( placementrevisionid, placementid, transactiondate, entrydate, entrytime, \r
+      exitdate, exittime, exittypetypkey, exitreasontypkey, exitexplanation, \r
+      approvalstatustypkey, approvaldate, isoriginal, insertedon, insertedby, \r
+      updatedon, updatedby, activeflag, alternateid, voidreasontypekey, \r
+      voidremarks, enddate, endtime, exittypekey, remarks, \r
+      isvoided, voiddate, requestedby, requesteddate, approvedby, \r
+      approveddate, etl_userid, etl_load_date, ischangepreadoptive\r
+     )\r
+    select gen_random_uuid(), placementid, now(), startdatetime, starttime, \r
+     ad_placement_entry_date, '00:00'::time, null , 'CIPO', '',\r
+     '3047', now(), null, now(), as_request_user_id,\r
+     now(), as_approver_user_id, 1, alternateid, null,\r
+     NULL, NULL, NULL, 'CIP', '',\r
+     '0', null,as_request_user_id, now(), as_approver_user_id,\r
+     now(), null, null, null\r
+    from placement\r
+    where placementid = vu_placementid::uuid ;\r
+\r
+    \r
+    -- Insert into routing\r
+    INSERT INTO routing\r
+     ( routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, \r
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag, \r
+      insertedby, insertedon, updatedby, updatedon, isreviewrequest, \r
+      remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, \r
+      old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, \r
+      etl_load_date, entityid, reassignnotes\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), 'PLTR', as_approver_user_id, NULL, NULL, \r
+      'CWSP', 'IVESV', vu_placementid, 16, 1, \r
+      as_approver_user_id, now(), as_approver_user_id, now(), false, \r
+      NULL, NULL, NULL, vl_case_id, NULL, \r
+      NULL, NULL, NULL, NULL, NULL, \r
+      NULL, NULL, NULL\r
+     );\r
+      \r
+    INSERT INTO routing\r
+     ( routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, \r
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag, \r
+      insertedby, insertedon, updatedby, updatedon, isreviewrequest, \r
+      remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, \r
+      old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, \r
+      etl_load_date, entityid, reassignnotes\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), 'PLTR', as_request_user_id, as_approver_user_id, vu_teamid, \r
+      'CWSP', 'CWCW', vu_placementid, 16, 1, \r
+      as_request_user_id, now(), as_approver_user_id, now(), true, \r
+      '', NULL, 'Child Placement Approved', vl_case_id, NULL, \r
+      NULL, NULL, NULL, NULL, NULL, \r
+      NULL, NULL, NULL\r
+     );\r
+     \r
+    INSERT INTO routing\r
+     ( routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, \r
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag, \r
+      insertedby, insertedon, updatedby, updatedon, isreviewrequest, \r
+      remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, \r
+      old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, \r
+      etl_load_date, entityid, reassignnotes\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), 'PLTR', as_request_user_id, as_approver_user_id, vu_teamid, \r
+      'CWSP', 'CWCW', vu_placementid, 15, 0, \r
+      as_request_user_id, now(), as_approver_user_id, now(), true, \r
+      '', NULL, 'Placement Exit Submitted for review', vl_case_id, 'Servicecase', \r
+      NULL, NULL, NULL, NULL, NULL, \r
+      NULL, NULL, NULL\r
+     ); \r
+\r
+    \r
+    -- Update placement \r
+    update placement \r
+     set enddatetime = ad_placement_entry_date, \r
+      endtime = '00:00'::time, \r
+      exitreasontypekey = 'CIPO', \r
+      exittypekey = 'CIP', \r
+      voidapprovaldate = now(), \r
+      updatedby = as_approver_user_id, \r
+      updatedon = now()\r
+    where placementid = vu_placementid ;\r
+\r
+    /*\r
+    -- Update provider vacancy (+ve)\r
+    update tb_contract_program\r
+     set vacancy_no = vacancy_no + 1,\r
+      update_user_id = as_approver_user_id, \r
+      update_ts = now()\r
+    where program_id = vl_contract_program_id\r
+     and delete_sw = 'N' ;\r
+    */\r
+  \r
+    -- Placement Validations \r
+    select date_trunc('month', vd_entry_dt)::date \r
+     into vd_entry_month_first_day ;\r
+\r
+    update tb_placement_validation\r
+     set delete_sw = 'Y',\r
+      update_ts = now(),\r
+      update_user_id = as_request_user_id\r
+    where placement_id = vl_placement_id\r
+     and delete_sw = 'N'\r
+     and coalesce(validation_status_cd, '') <> '1750'\r
+     and validation_start_dt < vd_entry_month_first_day ;\r
+\r
+    select date_part('day', ad_placement_entry_date::date)::integer\r
+     into vl_placement_exit_day ;\r
+     \r
+    if vl_placement_exit_day = 1 then \r
+     update tb_placement_validation\r
+      set delete_sw = 'Y',\r
+       update_ts = now(),\r
+       update_user_id = as_request_user_id\r
+     where placement_id = vl_placement_id\r
+      and delete_sw = 'N'\r
+      and coalesce(validation_status_cd, '') <> '1750'\r
+      and validation_start_dt >= ad_placement_entry_date; \r
+    else\r
+     update tb_placement_validation\r
+      set delete_sw = 'Y',\r
+       update_ts = now(),\r
+       update_user_id = as_request_user_id\r
+     where placement_id = vl_placement_id\r
+      and delete_sw = 'N'\r
+      and coalesce(validation_status_cd, '') <> '1750'\r
+      and validation_start_dt > ad_placement_entry_date; \r
+    end if;  \r
+    -- Current Placement Updates - END   \r
+    \r
+    \r
+    -- New placement - START\r
+    ---------------------------------\r
+    select ps.service_id\r
+     into vl_service_id\r
+    from tb_provider_services ps,\r
+     tb_services sv\r
+    where ps.service_id = sv.service_id\r
+     and ps.delete_sw = 'N'\r
+     and sv.delete_sw = 'N'\r
+     and sv.structure_service_cd = 'P'\r
+     and ps.program_id = al_new_program_id\r
+    order by ps.create_ts desc\r
+    limit 1 ;\r
+     \r
+    \r
+    select gen_random_uuid() into vu_new_placement_id; \r
+    \r
+    -- Insert into placement \r
+    INSERT INTO placement\r
+     ( placementid, providerid, intakeserviceid, intakeservicerequestactorid, startdatetime, \r
+      enddatetime, remarks, statustypekey, activeflag, effectivedate, \r
+      insertedby, insertedon, updatedby, updatedon, old_id, \r
+      exitreasontypekey, placementadmissionclassificationkey, placementadmissiontypekey, parentorg, addate, \r
+      adtime, releasedate, detainer, placementadmissionauthorizationtypekey, placementprimaryadmissionreasontypekey, \r
+      placementprimaryapprovedalttypekey, jlocation, jcounty, fieldworker, certifiedad, \r
+      resourceworker, county, isprovidertyperesidential, isoperatedbydjs, lrstatus, \r
+      cop, istempplacement, actvwrkrfldrtypecode, actvwrkrfldridno, admissionauthcode, \r
+      admissioncriteriacode, detentionalternativecode, detentionalternativeindc, homecountycode, orgidno, \r
+      placecaseidno, placementsummarykey, placestatuscode, plcmntsmrykeyold, portedtohttmstamp, \r
+      releasecategorycode, releasetonametext, removalreasoncode, removaltime, servicemastercode, \r
+      servicetypecode, unitkey, whereaboutscode, admissiontime, emankletidno, \r
+      emfmdidno, eventdttmkey, eventidno, placementdate, projectedreleasedate, \r
+      servicemsatercode, exittypekey, isvoided, voidreasontypekey, voidremarks, \r
+      voiddate, intakeservreqchildremovalid, servicecaseid, placementtypekey, service_id, \r
+      comarrate_id, starttime, endtime, providersentdate, providerdesc, \r
+      responseacceptedkey, rejectreasonkey, isssaapproval, ifcapprovaldate, -- alternateid, \r
+      altproviderid, intakenumber, personid, providerorganizationid, contractprogramid, \r
+      facilityid, medicaidpaidflag, entrytime, otherservices, exittime, \r
+      overunderflag, approvalstatustypekey, placementstructureid, voidflag, exittypetypekey, \r
+      courtorderedflag, icpcapprovedflag, shortlistid, paymentheaderid, placementchangedate, \r
+      fiscalcategorytypekey, ratestructureid, conversionflag, origplacementid, datavalidflag, \r
+      voidapprovalstatustypekey, voidapprovaldate, tfcifcconversionflag, caseid, fk_id, \r
+      releasenotetext, clientmergeid, ischildplacedoutside, etl_userid, \r
+      etl_load_date, islapsesinplacement, typeoflapses, ischangepreadoptive\r
+     )\r
+    SELECT vu_new_placement_id, providerid, intakeserviceid, intakeservicerequestactorid, ad_placement_entry_date, \r
+     null, null, statustypekey, 1, now(), \r
+     as_request_user_id, now(), as_request_user_id, now(), null, \r
+     null, placementadmissionclassificationkey, placementadmissiontypekey, parentorg, addate, \r
+     adtime, null, detainer, placementadmissionauthorizationtypekey, placementprimaryadmissionreasontypekey, \r
+     placementprimaryapprovedalttypekey, jlocation, jcounty, fieldworker, certifiedad, \r
+     resourceworker, county, isprovidertyperesidential, isoperatedbydjs, lrstatus, \r
+     cop, istempplacement, actvwrkrfldrtypecode, actvwrkrfldridno, admissionauthcode, \r
+     admissioncriteriacode, detentionalternativecode, detentionalternativeindc, homecountycode, orgidno, \r
+     placecaseidno, placementsummarykey, placestatuscode, plcmntsmrykeyold, portedtohttmstamp, \r
+     releasecategorycode, releasetonametext, removalreasoncode, removaltime, servicemastercode, \r
+     servicetypecode, unitkey, whereaboutscode, admissiontime, emankletidno, \r
+     emfmdidno, eventdttmkey, eventidno, placementdate, projectedreleasedate, \r
+     servicemsatercode, null, 0, voidreasontypekey, voidremarks, \r
+     voiddate, intakeservreqchildremovalid, servicecaseid, placementtypekey, vl_service_id, \r
+     comarrate_id, now()::time, null, providersentdate, providerdesc, \r
+     responseacceptedkey, rejectreasonkey, isssaapproval, ifcapprovaldate, -- alternateid, \r
+     altproviderid, intakenumber, personid, providerorganizationid, al_new_program_id, \r
+     facilityid, medicaidpaidflag, entrytime, otherservices, exittime, \r
+     overunderflag, approvalstatustypekey, placementstructureid, voidflag, exittypetypekey, \r
+     courtorderedflag, icpcapprovedflag, shortlistid, null, null, \r
+     fiscalcategorytypekey, ratestructureid, conversionflag, origplacementid, datavalidflag, \r
+     voidapprovalstatustypekey, now(), tfcifcconversionflag, caseid, fk_id, \r
+     releasenotetext, clientmergeid, ischildplacedoutside, null, null, \r
+     islapsesinplacement, typeoflapses, ischangepreadoptive\r
+    FROM placement\r
+    WHERE placementid = vu_placementid \r
+    RETURNING "alternateid"  INTO vl_new_placement_id;\r
+    \r
+    -- Insert into placementrevision \r
+    INSERT INTO placementrevision\r
+     ( placementrevisionid, placementid, transactiondate, entrydate, entrytime, \r
+      exitdate, exittime, exittypetypkey, exitreasontypkey, exitexplanation, \r
+      approvalstatustypkey, approvaldate, isoriginal, insertedon, insertedby, \r
+      updatedon, updatedby, activeflag, alternateid, voidreasontypekey, \r
+      voidremarks, enddate, endtime, exittypekey, remarks, \r
+      isvoided, voiddate, requestedby, requesteddate, approvedby, \r
+      approveddate, etl_userid, etl_load_date, ischangepreadoptive\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), vu_new_placement_id, now(), ad_placement_entry_date, '00:00'::time, \r
+      NULL, NULL, NULL, NULL, '', \r
+      '3045', NULL, '1', now(), as_request_user_id, \r
+      now(), as_approver_user_id, 0, vl_new_placement_id, NULL, \r
+      NULL, NULL, NULL, NULL, ' ', \r
+      0, NULL, as_request_user_id, now(), as_approver_user_id, \r
+      now(), NULL, NULL, NULL\r
+     );\r
+    \r
+    \r
+    \r
+    INSERT INTO placementrevision\r
+     ( placementrevisionid, placementid, transactiondate, entrydate, entrytime, \r
+      exitdate, exittime, exittypetypkey, exitreasontypkey, exitexplanation, \r
+      approvalstatustypkey, approvaldate, isoriginal, insertedon, insertedby, \r
+      updatedon, updatedby, activeflag, alternateid, voidreasontypekey, \r
+      voidremarks, enddate, endtime, exittypekey, remarks, \r
+      isvoided, voiddate, requestedby, requesteddate, approvedby, \r
+      approveddate, etl_userid, etl_load_date, ischangepreadoptive\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), vu_new_placement_id, now(), ad_placement_entry_date, '00:00'::time, \r
+      NULL, NULL, NULL, NULL, '', \r
+      '3047', now(), '1', now(), as_request_user_id, \r
+      now(), as_approver_user_id, 1, vl_new_placement_id, NULL, \r
+      NULL, NULL, NULL, NULL, ' ', \r
+      0, NULL, as_request_user_id, NOW(), as_approver_user_id, \r
+      now(), NULL, NULL, NULL\r
+     );\r
+\r
+    -- Insert into routing\r
+    INSERT INTO routing\r
+     ( routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, \r
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag, \r
+      insertedby, insertedon, updatedby, updatedon, isreviewrequest, \r
+      remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, \r
+      old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, \r
+      etl_load_date, entityid, reassignnotes\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), 'PLTR', as_approver_user_id, NULL, NULL, \r
+      'CWSP', 'IVESV', vu_new_placement_id, 16, 1, \r
+      as_approver_user_id, now(), as_approver_user_id, now(), false, \r
+      NULL, NULL, NULL, vl_case_id, NULL, \r
+      NULL, NULL, NULL, NULL, NULL, \r
+      NULL, NULL, NULL\r
+     );\r
+      \r
+    INSERT INTO routing\r
+     ( routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, \r
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag, \r
+      insertedby, insertedon, updatedby, updatedon, isreviewrequest, \r
+      remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, \r
+      old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, \r
+      etl_load_date, entityid, reassignnotes\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), 'PLTR', as_request_user_id, as_approver_user_id, vu_teamid, \r
+      'CWSP', 'CWCW', vu_new_placement_id, 16, 1, \r
+      as_request_user_id, now(), as_approver_user_id, now(), true, \r
+      '', NULL, 'Child Placement Approved', vl_case_id, NULL, \r
+      NULL, NULL, NULL, NULL, NULL, \r
+      NULL, NULL, NULL\r
+     );\r
+     \r
+    INSERT INTO routing\r
+     ( routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, \r
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag, \r
+      insertedby, insertedon, updatedby, updatedon, isreviewrequest, \r
+      remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, \r
+      old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, \r
+      etl_load_date, entityid, reassignnotes\r
+     )\r
+    VALUES\r
+     ( gen_random_uuid(), 'PLTR', as_request_user_id, as_approver_user_id, vu_teamid, \r
+      'CWSP', 'CWCW', vu_new_placement_id, 15, 0, \r
+      as_request_user_id, now(), as_approver_user_id, now(), true, \r
+      '', NULL, 'Provider placement submitted for review', vl_case_id, 'Servicecase', \r
+      NULL, NULL, NULL, NULL, NULL, \r
+      NULL, NULL, NULL\r
+     ); \r
+    \r
+    /*\r
+    -- Update provider vacancy (-ve)\r
+    update tb_contract_program\r
+     set vacancy_no = vacancy_no - 1,\r
+      update_user_id = as_approver_user_id, \r
+      update_ts = now()\r
+    where program_id = al_new_program_id\r
+     and delete_sw = 'N' ;\r
+    */\r
+    -- New placement - END\r
+    \r
+    IF vs_placement_update_sw = 'N' THEN\r
+     vs_placement_update_sw := 'Y';\r
+    END IF;\r
+   END IF;\r
+      \r
+   vl_row_cnt := vl_row_cnt  - 1;      \r
+  END loop;                               \r
+  CLOSE cur_placement_refcur ;   \r
+ END IF;\r
+ \r
+ IF vs_placement_update_sw = 'Y' THEN\r
+  -- Update Old Program Vacancy \r
+  update tb_contract_program\r
+   set update_ts = now(),\r
+    update_user_id = as_approver_user_id,\r
+    vacancy_no = contract_beds_no\r
+     - ( select count(*)\r
+      from tb_placement tp  \r
+       where delete_sw = 'N'\r
+      and entry_dt is not null\r
+      and exit_dt is null\r
+      and coalesce(void_sw, 'N') <> 'Y' \r
+      and approval_status_cd = '3047'\r
+      and contract_program_id = al_old_program_id\r
+     ) \r
+  where program_id = al_old_program_id\r
+    and delete_sw = 'N' ;\r
+    \r
+  -- Update New Program Vacancy \r
+  update tb_contract_program\r
+   set update_ts = now(),\r
+    update_user_id = as_approver_user_id,\r
+    vacancy_no = contract_beds_no\r
+     - ( select count(*)\r
+      from tb_placement tp  \r
+       where delete_sw = 'N'\r
+      and entry_dt is not null\r
+      and exit_dt is null\r
+      and coalesce(void_sw, 'N') <> 'Y' \r
+      and approval_status_cd = '3047'\r
+      and contract_program_id = al_new_program_id\r
+     ) \r
+  where program_id = al_new_program_id\r
+    and delete_sw = 'N' ;  \r
+    \r
+ END IF;\r
+ \r
+ -- al_sqlcode := 0;\r
+ -- as_mess := 'Success';\r
+   \r
+END;\r
+\r
+$function$
+

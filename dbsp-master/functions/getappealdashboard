@@ -1,0 +1,78 @@
+CREATE OR REPLACE FUNCTION getappealdashboard(v_securityusersid uuid, v_page integer, v_limit integer, v_servicerequestnumber character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_appeal json;
+                   
+v_offset    integer;
+ 
+
+BEGIN
+v_offset  :=  (v_page  -  1)  *  v_limit;   
+ 
+
+ IF ( v_securityusersid is not null ) THEN  
+  RAISE  NOTICE  'v_securityusersid>>>>>>>>>>>%',v_securityusersid;   
+SELECT json_agg(appeal) INTO l_appeal FROM (
+ 
+  
+select   count(1) OVER() totalcount ,ISR.intakeserviceid, 
+/*cast(s
+        ISR.servicerequestnumber || case coalesce(isr.actiontype, '') when '' then '' else '  (' || coalesce(isr.actiontype, '') || ')' end as character varying
+      ) as servicerequestnumber, */
+      ISR.servicerequestnumber as servicerequestnumber,
+(SELECT  srst.classkey  FROM  servicerequestsubtype as srst 
+        WHERE  srst.servicerequestsubtypeid = ISR.intakeservicerequestclassid  AND srst.activeflag = 1 
+        limit  1
+      ),      
+(SELECT json_agg(a) FROM(   
+ select COALESCE(p.firstname,'')||' ' ||COALESCE(p.middlename,'') ||' ' ||COALESCE(p.lastname,'') ||' ' ||COALESCE(p.suffix,'')as name
+ from intakeservicerequestactor isra 
+inner join person p on p.personid =  isra.personid 
+and isra.intakeserviceid= isr.intakeserviceid   
+and isra.activeflag=1 and p.activeflag=1  and( isra.intakeservicerequestpersontypekey ='LG' or isra.isheadofhousehold=true)
+) a  ) legalguardian,
+(SELECT json_agg(a) FROM(   
+ select COALESCE(p.firstname,'')||' ' ||COALESCE(p.middlename,'') ||' ' ||COALESCE(p.lastname,'') ||' ' ||COALESCE(p.suffix,'')as name
+ from intakeservicerequestactor isra 
+inner join person p on p.personid =  isra.personid 
+and isra.intakeserviceid= isr.intakeserviceid   
+and isra.activeflag=1 and p.activeflag=1  and isra.intakeservicerequestpersontypekey ='AM'
+) a  ) maltreators,
+ ISR.reporteddate as reporteddate,
+ R.Assignedon as assigneddate ,
+ '' as finding, 
+ (select rst.typedescription  from routingstatustype rst where rst.sequencenumber = R.routingstatustypeid) as status 
+ FROM 
+      intakeservicerequest as isr 
+  INNER JOIN (
+        SELECT 
+          DISTINCT objectid, 
+          cast(r.insertedon as timestamp) assignedon, 
+          tosecurityusersid, routingstatustypeid,
+          activeflag 
+        FROM 
+          ROUTING R 
+        WHERE 
+          R.tosecurityusersid =  v_securityusersid :: character varying 
+          AND routingstatustypeid = 15
+          AND R.activeflag = 1 --and eventcode='APPL'
+      ) R ON r.objectid = cast( 
+        ISR.intakeserviceid as character varying
+      ) 
+      and r.activeflag = 1    
+      AND (CASE WHEN v_servicerequestnumber IS NOT NULL THEN ISR.servicerequestnumber = v_servicerequestnumber ELSE TRUE END)
+      group by ISR.intakeserviceid, ISR.reporteddate,R.Assignedon,r.routingstatustypeid
+LIMIT  v_limit  OFFSET  v_offset
+) AS appeal;
+
+RETURN l_appeal;     
+
+end if;
+
+
+end;
+
+$function$
+

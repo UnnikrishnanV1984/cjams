@@ -1,0 +1,170 @@
+CREATE OR REPLACE FUNCTION cjams.getpersonprogramareaformdm(v_personprogramid character varying, v_personid uuid, addupdate character varying)
+ RETURNS TABLE(programs json, "mdmId" character varying, "requestId" bigint, "sourceSystem" character varying, "sourceKey" character varying, irn character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_programs json;
+		l_mdmid character varying;
+		l_requestid bigint;
+		l_sourcesystem character varying;
+		l_sourcekey character varying;
+		l_irn character varying;
+	
+	    v_objectid character varying;	
+		v_casenumber character varying;
+		v_entityid character varying;
+		v_county character varying;
+	    v_cisrefid character varying;
+        v_insby character varying;
+		v_casestatus character varying;
+		v_worker_fname character varying;
+		v_worker_lname character varying;
+		v_worker_phone character varying;
+		v_uuidornot character varying(50);
+	    v_personprogramid_uuid uuid;
+	
+BEGIN
+SELECT * into v_uuidornot from uuid_or_null(v_personprogramid);
+CASE WHEN v_uuidornot IS NULL THEN v_personprogramid_uuid := null; ELSE v_personprogramid_uuid := v_personprogramid::uuid; END CASE ;
+-- get case number and status
+SELECT 
+	prg.objectid, 
+	CASE WHEN entityid IS NOT NULL THEN entityid
+	ELSE
+		CASE prg.objecttypekey
+		WHEN 'adoptioncase' THEN (SELECT adoptioncasenumber from adoptioncase 
+			WHERE prg.objectid is not null and adoptioncaseid = prg.objectid::uuid and activeflag = 1 LIMIT 1 ) 
+		WHEN 'servicecase' THEN (SELECT servicecasenumber from servicecase 
+			WHERE prg.objectid is not null and servicecaseid = prg.objectid::uuid and activeflag = 1 LIMIT 1 )
+		ELSE (SELECT servicerequestnumber from intakeservicerequest 
+			WHERE prg.objectid is not null and intakeserviceid = prg.objectid::uuid and activeflag = 1 LIMIT 1 ) 
+		END
+	END as casenumber,
+	(
+		select c.statecountycode from caseassignment ca  
+		join county c on c.countyid = ca.toldssid
+		where prg.objectid is not null
+		and ca.objectid = prg.objectid::uuid
+		and lower(ca.responsibilitytypekey) = 'family' and ca.activeflag = 1
+		order by ca.insertedon desc limit 1
+	), 
+	(
+	CASE prg.objecttypekey
+		WHEN 'adoptioncase' THEN (
+			SELECT 
+				CASE WHEN statustypekey = 'Closed' THEN 'C' 
+				ELSE 'A' 
+				END 
+			FROM adoptioncase 
+			WHERE prg.objectid is not null and adoptioncaseid = prg.objectid::uuid and activeflag = 1 LIMIT 1 
+		) WHEN 'servicecase' THEN (
+			SELECT 
+				CASE WHEN dispositioncode = 'Closed' THEN 'C' 
+				ELSE 'A' 
+				END 
+			FROM servicecase 
+			WHERE prg.objectid is not null and servicecaseid = prg.objectid::uuid and activeflag = 1 LIMIT 1 
+		) ELSE (
+			SELECT 
+				CASE intakeserreqstatustypeid
+				WHEN '642f18b0-ef6e-4d4b-9871-acc0734f3f5a' THEN 'C' 
+				WHEN '7995cecb-062d-406c-8ea9-b1da4b1877d8' THEN 'C' 
+				ELSE 'A' 
+				END 
+			FROM intakeservicerequest 
+			WHERE prg.objectid is not null and intakeserviceid = prg.objectid::uuid and activeflag = 1 LIMIT 1
+		) END 
+	) as casestatus,	
+	prg.alternateid
+	into v_objectid, v_casenumber, v_county, v_casestatus, l_sourcekey
+FROM personprogramarea prg WHERE personprogramid= v_personprogramid_uuid ;
+	
+-- get person details
+SELECT 
+	p.cisclientid as irn,
+	'CJAMS' as "sourceSystem",
+	nextval('sendprogramarearequestid') as "requestId",
+	(SELECT personidentifiervalue FROM personidentifier 
+		WHERE personidentifiertypekey = 'MDM_ID' AND personid = P.personid) as "mdmId"
+	into 
+	l_irn,
+	l_sourcesystem,
+	l_requestid,
+	l_mdmid
+FROM person p
+WHERE  P.personid = v_personid AND p.activeflag = 1;
+
+-- get programs Suid 
+SELECT createmappingrecord into v_cisrefid FROM createmappingrecord(v_objectid, v_casenumber);
+
+SELECT firstname, lastname, phonenumber into v_worker_fname, v_worker_lname, v_worker_phone from f_caseworker(v_objectid, null);
+
+RAISE NOTICE 'v_casenumber (%)', v_casenumber;
+RAISE NOTICE 'v_cisrefid (%)', v_cisrefid;
+RAISE NOTICE 'v_county (%)', v_county;
+RAISE NOTICE 'v_worker_fname (%)', v_worker_fname;
+RAISE NOTICE 'v_worker_lname (%)', v_worker_lname;
+RAISE NOTICE 'v_worker_phone (%)', v_worker_phone;
+
+SELECT json_agg(ppg) INTO l_programs FROM 
+(
+	SELECT 
+		CASE 
+			WHEN datatransferflag = 'A' or datatransferflag = 'U' or datatransferflag = 'D' THEN datatransferflag
+		ELSE
+			COALESCE(addupdate, CASE WHEN ppa.enddate IS NULL THEN 'A' ELSE 'U' END )
+		END as "programRecordCode",		
+		l_irn as "programCisClientId",
+		v_cisrefid as "programSuid",
+		(select * from f_cis_county(v_county)) as "programOffice",
+		CASE
+			WHEN ppa.programkey = 'ADP' THEN 'ADPT'
+			WHEN ppa.programkey = 'AXYS' THEN 'AUX'
+			WHEN ppa.programkey = 'GAP' THEN 'SUBG'
+			WHEN ppa.programkey = 'IHSFP' THEN 'INHM'
+			WHEN ppa.programkey = 'IL' THEN 'INLV'
+			WHEN ppa.programkey = 'IS' THEN 'INVS'
+			WHEN ppa.programkey = 'OOH' THEN 'OHPS'
+			WHEN ppa.programkey = 'CPS' AND ppa.subprogramkey = 'AR' THEN 'AR'
+			WHEN ppa.programkey = 'CPS' AND ppa.subprogramkey = 'IR' THEN 'INV'
+			ELSE ppa.programkey
+		END as "programType",
+		--COALESCE(v_casestatus, 'A')as "programCaseStatus",
+		CASE 
+			WHEN  ppa.enddate IS NOT NULL THEN 'C'
+			ELSE  'A' 
+		END as "programCaseStatus",
+		(SELECT TO_CHAR(((ppa.startdate) :: date),'MM-DD-YYYY')) AS "programEffectiveBeginDate", 
+		CASE 
+			WHEN ppa.enddate is null then '01-01-0001' 
+			ELSE (SELECT TO_CHAR(((ppa.enddate) :: date),'MM-DD-YYYY')) 
+		END AS "programEffectiveEndDate",
+		v_worker_fname as "programWorkerFirstName",
+		'CJAMS' as "programWorkerLastName",
+		(select UPPER(f_supervisor_name) from f_supervisor_name( ppa.objectid::character varying,'Y')) as "programSupervisorFirstName",
+		(select UPPER(f_supervisor_name) from f_supervisor_name( ppa.objectid::character varying,'N')) as "programSupervisorLastName",
+		v_worker_phone as "programWorkerPhone"
+	FROM personprogramarea ppa 
+	WHERE ppa.personprogramid= v_personprogramid_uuid 
+	AND ppa.objectid IS NOT NULL AND ppa.programkey IS NOT NULL and ppa.sourcetype = 'CW'
+	AND (ppa.activeflag = 1 or (ppa.activeflag = 0 and datatransferflag='D') )
+) AS ppg;
+
+---Update data transfer flag to complete
+
+UPDATE personprogramarea SET datatransferflag='C', updatedon = CURRENT_TIMESTAMP,
+datasentdate = CURRENT_TIMESTAMP
+WHERE personprogramid = v_personprogramid_uuid;
+
+RETURN query 
+	select  
+	   l_programs as programs,
+       l_mdmid as "mdmId",
+	   l_requestid as "requestId",
+	   l_sourcesystem as "sourceSystem",
+	   l_sourcekey as "sourceKey",
+	   l_irn as irn;     
+end;
+$function$
+;
+

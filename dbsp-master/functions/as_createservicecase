@@ -1,0 +1,246 @@
+CREATE OR REPLACE FUNCTION as_createservicecase(v_intakeserviceid uuid, v_servicecaseid character varying, isnewcase integer, v_userid character varying, v_subtypekey character varying DEFAULT ''::character varying, v_source character varying DEFAULT ''::character varying)
+ RETURNS TABLE(servicecaseno character varying, caseid uuid, message character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+ DECLARE l_personid uuid;
+        l_personname character varying(100);
+        l_servicecaseid uuid;
+        l_servicecasenumber character varying(20) ;
+        l_response text;
+        l_supervisor character varying(100);
+        l_servreqtypeid uuid;
+        l_servreqsubtypeid uuid;
+        l_status character varying;
+        l_programkey character varying;
+        l_subprogramkey character varying;
+        l_ihsprogramkey character varying;
+        l_ihssubprogramkey character varying;
+        l_crpersonid uuid;
+        v_collateralmsg CHARACTER VARYING;
+  v_intakenumber character varying;
+
+BEGIN
+     --SELECT  servicerequestsubtypeid INTO l_ihsservreqsubtypeid FROM servicerequestsubtype  WHERE LOWER(classkey) =LOWER('ihm') AND activeflag =1 AND intakeservreqtypeid = l_servreqtypeid LIMIT 1;
+  
+     IF (COALESCE(v_subtypekey,'') ='') THEN 
+            v_subtypekey:='default';
+     END IF;
+     IF (COALESCE(lower(v_source),'') in ('intake','cps')) THEN 
+            l_status:='OPEN';
+     END IF;
+ 
+  /*DA Type and Sub type taken for Servicecase */
+     SELECT  intakeservreqtypeid INTO l_servreqtypeid  FROM intakeservicerequesttype WHERE LOWER(intakeservreqtypekey) ='servicecase' AND activeflag =1 LIMIT 1;
+     SELECT  servicerequestsubtypeid INTO l_servreqsubtypeid FROM servicerequestsubtype  WHERE LOWER(classkey) =LOWER(v_subtypekey) AND activeflag =1 AND intakeservreqtypeid = l_servreqtypeid LIMIT 1;
+  
+     /*Get Program area and Sub program Area*/
+  SELECT programkey, subprogramkey INTO l_programkey, l_subprogramkey FROM programareaconfig WHERE LOWER(servicerequestsubtypekey) = LOWER(v_subtypekey) AND isdefault =1 ;
+ 
+     /*Get InHome service Program area and Sub program Area*/
+     IF (v_subtypekey='ohm') THEN
+        SELECT ISRA.personid INTO l_crpersonid 
+        FROM Intakeservreqchildremoval cr INNER JOIN intakeservicerequestactor ISRA ON ISRA.intakeservicerequestactorID = CR.intakeservicerequestactorid         AND ISRA.activeflag =1 
+        WHERE cr.activeflag =1 AND CR.intakeserviceid =   v_intakeserviceid LIMIT 1;
+
+        SELECT programkey, subprogramkey INTO l_ihsprogramkey, l_ihssubprogramkey FROM programareaconfig WHERE LOWER(servicerequestsubtypekey) =   'ihm'  AND isdefault =1 ;
+ ELSE 
+  SELECT l_programkey, l_subprogramkey INTO l_ihsprogramkey, l_ihssubprogramkey;
+    END IF;
+
+
+
+    IF (isnewcase=1) THEN  
+  /*Legal Guardian Person name */    
+  /* Legal guardian taken from actor table so belowblock commented */
+      /*  SELECT COALESCE(p.firstname, '')   || ' ' || COALESCE(p.lastname, ''), 
+           p.personid, 
+           ISR.insertedby 
+        INTO   l_personname, l_personid, l_supervisor 
+        FROM   intakeservicerequest ISR 
+          INNER JOIN intakeservicerequestactor ISRA ON ISRA.intakeserviceid = ISR.intakeserviceid 
+                AND ISRA.activeflag = 1 
+                AND ISRA.intakeservicerequestpersontypekey = 'LG' 
+          INNER JOIN person p ON p.personid = ISRA.personid AND p.activeflag = 1 
+        WHERE  ISR.activeflag = 1 
+        AND ISR.intakeserviceid = v_intakeserviceid; */
+
+ SELECT 
+           ISR.insertedby 
+        INTO    l_supervisor 
+        FROM   intakeservicerequest ISR  
+        WHERE  ISR.activeflag = 1 
+        AND ISR.intakeserviceid = v_intakeserviceid;   
+  
+        INSERT INTO servicecase 
+                    (caseheadname, 
+                     caseheadid, 
+                     startdate, 
+                     statustypekey, 
+                     insertedby, 
+                     updatedby, 
+                     intakeservreqtypeid) 
+        VALUES     (l_personname, 
+                    l_personid, 
+                    Now() :: DATE, 
+                    l_status, 
+                    v_userid, 
+                    v_userid, 
+                    l_servreqtypeid) 
+        returning "servicecaseid"  INTO l_servicecaseid; 
+        SELECT servicecasenumber INTO l_servicecasenumber FROM servicecase WHERE servicecaseid =l_servicecaseid;
+
+/*Request info added */
+        INSERT INTO servicecaserequest 
+                    (servicecaseid, 
+                     intakeservreqtypeid, 
+                     servicerequestsubtypeid, 
+                     programkey, 
+                     subprogramkey, 
+                     insertedby, 
+                     updatedby) 
+        VALUES      (l_servicecaseid, 
+                     l_servreqtypeid, 
+                     l_servreqsubtypeid, 
+                     l_programkey, 
+                     l_subprogramkey, 
+                     v_userid, 
+                     v_userid);            
+      
+        /*Map person into  Service case*/
+        UPDATE actor SET servicecaseid = l_servicecaseid WHERE intakeserviceid = v_intakeserviceid AND activeflag =1 ; --AND ishouseholdmember =1 ;
+        
+  UPDATE intakeservicerequestactor SET servicecaseid = l_servicecaseid, updatedby = v_userid, updatedon = now() 
+        WHERE intakeserviceid = v_intakeserviceid AND actorid IN (SELECT actorid FROM actor  WHERE intakeserviceid = v_intakeserviceid ); 
+  
+   UPDATE personrole SET servicecaseid = l_servicecaseid  WHERE intakeserviceid = v_intakeserviceid AND activeflag =1 ;
+   SELECT as_routingintake INTO l_response 
+        FROM as_routingintake(
+            l_servicecaseid:: character varying ,v_userid,'SRVC',2,'Servicecase Created',l_supervisor,
+            true,false,false, 'Servicecase Created','Servicecase Created', 
+            l_servicecaseid:: character varying,'' , 1);
+ 
+     SELECT as_createfcchecklist INTO   l_response 
+        FROM   as_Createfcchecklist(l_servicecaseid, l_servreqtypeid, l_servreqsubtypeid, v_userid , 'AS'); 
+  SELECT intakenumber into v_intakenumber from intakeservicerequest where intakeserviceid = v_intakeserviceid :: uuid order by insertedon desc limit 1;
+  ELSE 
+    l_servicecaseid =v_servicecaseid::uuid;
+         
+         SELECT servicecasenumber INTO l_servicecasenumber FROM servicecase WHERE servicecaseid =l_servicecaseid;
+         
+         /*Map person into Existing Service case*/
+          UPDATE intakeservicerequestactor
+           SET updatedby = v_userid,
+          updatedon = now()
+          WHERE intakeserviceid = v_intakeserviceid 
+          AND actorid IN (SELECT actorid FROM actor  WHERE intakeserviceid = v_intakeserviceid );-- AND ishouseholdmember =1
+          
+          UPDATE actor set servicecaseid = l_servicecaseid,updatedby = v_userid,updatedon = now()  
+          FROM intakeservicerequestactor ISR 
+          WHERE ISR.actorid = actor.actorid AND ISR.servicecaseid =l_servicecaseid AND actor.servicecaseid IS  NULL; 
+
+  
+          /*Request info added */
+         IF NOT EXISTS (SELECT 1 FROM servicecaserequest WHERE servicecaseid = l_servicecaseid 
+                                 AND intakeservreqtypeid= l_servreqtypeid
+                                 AND servicerequestsubtypeid= l_servreqsubtypeid
+                                 ) THEN
+                INSERT INTO servicecaserequest 
+                            (servicecaseid, 
+                             intakeservreqtypeid, 
+                             servicerequestsubtypeid, 
+                             programkey, 
+                             subprogramkey, 
+                             insertedby, 
+                             updatedby) 
+                VALUES      (l_servicecaseid, 
+                             l_servreqtypeid, 
+                             l_servreqsubtypeid, 
+                             l_programkey, 
+                             l_subprogramkey, 
+                             v_userid, 
+                             v_userid); 
+
+            /*Update end date for Personprogram area*/
+             UPDATE personprogramarea SET enddate = now()::date,updatedon = now(), updatedby =v_userid 
+             WHERE personid IN
+             (SELECT personid FROM actor   WHERE intakeserviceid = v_intakeserviceid  AND activeflag =1);
+
+             SELECT as_createfcchecklist INTO l_response FROM as_createfcchecklist(l_servicecaseid,l_servreqtypeid,l_servreqsubtypeid,v_userid, 'CW');
+ 
+     END IF; 
+ END IF; 
+
+       /*Insert program Area and Sub programarea*/
+        INSERT INTO personprogramarea 
+                    (personid, 
+                     programkey, 
+                     subprogramkey, 
+                     objecttypekey, 
+                     objectid, 
+                     startdate, 
+                     insertedby, 
+                     updatedby) 
+        SELECT personid, 
+               l_programkey, 
+               l_subprogramkey, 
+               'servicecase', 
+               l_servicecaseid, 
+               Now() :: DATE, 
+               v_userid, 
+               v_userid 
+        FROM   actor 
+        WHERE  intakeserviceid = v_intakeserviceid 
+               AND activeflag = 1 AND personid :: CHARACTER VARYING   IN (COALESCE(l_crpersonid :: CHARACTER VARYING,'')); 
+ 
+ /*Other than Removed person program is InHome*/
+     INSERT INTO personprogramarea 
+                    (personid, 
+                     programkey, 
+                     subprogramkey, 
+                     objecttypekey, 
+                     objectid, 
+                     startdate, 
+                     insertedby, 
+                     updatedby) 
+        SELECT personid, 
+               l_ihsprogramkey, 
+               l_ihssubprogramkey, 
+               'servicecase', 
+               l_servicecaseid, 
+               Now() :: DATE, 
+               v_userid, 
+               v_userid 
+        FROM   actor 
+        WHERE  intakeserviceid = v_intakeserviceid 
+               AND activeflag = 1 AND personid :: CHARACTER VARYING NOT IN (COALESCE(l_crpersonid :: CHARACTER VARYING,'')); 
+
+
+  /*Map Existing Transaction to  Servicecase*/      
+       UPDATE intakeservicerequest SET servicecaseid = l_servicecaseid,
+            updatedby = v_userid,
+         updatedon = now() 
+        WHERE intakeserviceid = v_intakeserviceid;
+        UPDATE intakeservreqchildremoval SET servicecaseid = l_servicecaseid,
+            updatedby = v_userid,
+         updatedon = now()  
+        WHERE intakeserviceid = v_intakeserviceid;
+     UPDATE assessment SET servicecaseid = l_servicecaseid,
+            updatedby = v_userid,
+         updatedon = now() 
+        WHERE objectid = v_intakeserviceid  ;
+       
+    UPDATE personprogramarea SET enddate = now()::date,updatedon = now(), updatedby =v_userid WHERE objectid in (Select intakeserviceid:: character varying from intakeservicerequest WHERE servicecaseid =l_servicecaseid and activeflag =1 )
+    AND enddate IS NULL;
+ -- Add collaterals to case on approval
+ select * from as_addcollateralsfromintaketocase(v_intakeserviceid::CHARACTER VARYING, l_servicecaseid::CHARACTER VARYING, v_userid) INTO v_collateralmsg;
+  
+    
+ RETURN QUERY  
+  SELECT l_servicecasenumber, l_servicecaseid,'Success':: character varying;
+ 
+ END;
+  
+
+$function$
+

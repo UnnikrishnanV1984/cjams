@@ -1,0 +1,164 @@
+CREATE OR REPLACE FUNCTION as_f_fm815r(start_date date, end_date date)
+ RETURNS TABLE(ldss character varying, county_cd character varying, provider_id integer, payment_id integer, "ORIGINAL PAYMENT ID" integer, "OFFSET AMT" integer, provider_nm text, child_id bigint, last_nm character varying, middle_nm character varying, first_nm character varying, suffix_cd character varying, final_fiscal_category_cd character, payment_type_cd character varying, subtotal numeric, child_wrk_nm text, child_sup_nm text, family_wrk_nm text, family_sup_nm text, payment_start_dt date, payment_end_dt date)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+(       
+ SELECT distinct  as_f_plvalue(d.county_cd, 104) AS ldss,
+    d.county_cd,
+    h.provider_id,
+    h.payment_id,
+    0 AS "ORIGINAL PAYMENT ID",
+    0 AS "OFFSET AMT",
+    rtrim(h.payee_nm::text) AS provider_nm,
+    d.client_id AS child_id,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.lastname
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS last_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.middlename
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS middle_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.firstname
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS first_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT as_f_plvalue(l.suffix, 214) AS f_plvalue
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             LIMIT 1)
+            ELSE ''::character varying
+        END AS suffix_cd,
+    d.final_fiscal_category_cd,
+        CASE
+            WHEN d.final_service_id = 501 AND h.payment_type_cd::text = '3294'::text THEN ((rtrim(as_f_plvalue(h.payment_type_cd, 2)::text) || ' '::text) || '(ADOPTION)'::text)::character varying
+            WHEN d.final_service_id = 503 AND h.payment_type_cd::text = '3294'::text THEN ((rtrim(as_f_plvalue(h.payment_type_cd, 2)::text) || ' '::text) || '(GAP)'::text)::character varying
+            ELSE as_f_plvalue(h.payment_type_cd, 2)
+        END AS payment_type_cd,
+    d.final_amount_no AS subtotal, (SELECT 
+                                         coalesce(firstname || ' ','') ||
+                                         coalesce(middlename || ' ','') ||
+                                         coalesce(lastname || ' ','') AS F_SNAME
+                      FROM USERPROFILE
+                     WHERE     (USERPROFILE.CJAMSPID ::varchar IN
+                                   (SELECT caseassignment .toworkeridno
+                                        FROM caseassignment 
+                                       WHERE     caseassignment .objectid ::varchar =
+                                                 D.CASE_ID ::varchar
+                                             AND caseassignment .RESPONSIBILITYtypekey::TEXT =
+                                                 'S'::TEXT
+                                             AND (caseassignment .objecttypekey::TEXT =
+                                                  ANY (ARRAY ['5590'::CHARACTER VARYING::TEXT,
+                                                              '2952'::CHARACTER VARYING::TEXT]))
+                                             AND (   caseassignment .enddate
+                                                        IS NULL
+                                                  OR caseassignment .enddate >=
+                                                     H.PAYMENT_START_DT)
+                                    ORDER BY caseassignment .enddate DESC
+                                       fetch first 1 row only))
+                           AND USERPROFILE.ACTIVEFLAG = 1)  AS CHILD_WRK_NM,
+                   (SELECT 
+                                         coalesce(firstname || ' ','') ||
+                                         coalesce(middlename || ' ','') ||
+                                         coalesce(lastname || ' ','') AS F_SNAME
+                      FROM USERPROFILE
+                     WHERE     (USERPROFILE.CJAMSPID IN
+                                   (SELECT F_SUPERVISOR (
+                                              USERPROFILE_1.CJAMSPID::CHARACTER VARYING) AS F_SUPERVISOR
+                                      FROM USERPROFILE USERPROFILE_1
+                                     WHERE     (USERPROFILE_1.CJAMSPID ::varchar IN
+                                                   (SELECT caseassignment .toworkeridno
+                                                        FROM caseassignment 
+                                                       WHERE     caseassignment .objectid ::varchar =
+                                                                 D.CASE_ID ::varchar
+                                                             AND caseassignment .RESPONSIBILITYtypekey::TEXT =
+                                                                 'S'::TEXT
+                                                             AND (caseassignment .objecttypekey::TEXT =
+                                                                  ANY (ARRAY ['5590'::CHARACTER VARYING::TEXT,
+                                                                              '2952'::CHARACTER VARYING::TEXT]))
+                                                             AND (   caseassignment .enddate
+                                                                        IS NULL
+                                                                  OR caseassignment .enddate >=
+                                                                     H.PAYMENT_START_DT)
+                                                    ORDER BY caseassignment .enddate DESC
+                                                       fetch first 1 row only))
+                                           AND USERPROFILE.ACTIVEFLAG = 1))
+                           AND USERPROFILE.ACTIVEFLAG = 1) AS CHILD_SUP_NM,
+                   (SELECT 
+                                         coalesce(firstname || ' ','') ||
+                                         coalesce(middlename || ' ','') ||
+                                         coalesce(lastname || ' ','') AS F_SNAME
+                      FROM USERPROFILE
+                     WHERE     (USERPROFILE.CJAMSPID  ::varchar IN
+                                   (SELECT caseassignment .toworkeridno
+                                        FROM caseassignment 
+                                       WHERE     caseassignment .objectid ::varchar =
+                                                 D.CASE_ID ::varchar 
+                                             AND caseassignment .RESPONSIBILITYtypekey::TEXT =
+                                                 'P'::TEXT
+                                             AND (caseassignment .objecttypekey::TEXT =
+                                                  ANY (ARRAY ['5590'::CHARACTER VARYING::TEXT,
+                                                              '2952'::CHARACTER VARYING::TEXT]))
+                                             AND (   caseassignment .enddate
+                                                        IS NULL
+                                                  OR caseassignment .enddate >=
+                                                     H.PAYMENT_START_DT)
+                                    ORDER BY caseassignment .enddate DESC
+                                       fetch first 1 row only))
+                           AND USERPROFILE.ACTIVEFLAG = 1)as  FAMILY_WRK_NM,
+                   (SELECT 
+                                         coalesce(firstname || ' ','') ||
+                                         coalesce(middlename || ' ','') ||
+                                         coalesce(lastname || ' ','') AS F_SNAME
+                      FROM USERPROFILE
+                     WHERE     (USERPROFILE.CJAMSPID IN
+                                   (SELECT F_SUPERVISOR (
+                                              USERPROFILE_1.CJAMSPID::CHARACTER VARYING) AS F_SUPERVISOR
+                                      FROM USERPROFILE USERPROFILE_1
+                                     WHERE     (USERPROFILE_1.CJAMSPID ::varchar IN
+                                                   (SELECT caseassignment .toworkeridno
+                                                        FROM caseassignment 
+                                                       WHERE     caseassignment .objectid ::varchar =
+                                                                 D.CASE_ID ::varchar  
+                                                             AND caseassignment .RESPONSIBILITYtypekey::TEXT =
+                                                                 'P'::TEXT
+                                                             AND (caseassignment .objecttypekey::TEXT =
+                                                                  ANY (ARRAY ['5590'::CHARACTER VARYING::TEXT,
+                                                                              '2952'::CHARACTER VARYING::TEXT]))
+                                                             AND (   caseassignment .enddate
+                                                                        IS NULL
+                                                                  OR caseassignment .enddate >=
+                                                                     H.PAYMENT_START_DT)
+                                                    ORDER BY caseassignment .enddate DESC
+                                                       fetch first 1 row only))
+                                           AND USERPROFILE.ACTIVEFLAG = 1))
+                           AND USERPROFILE.ACTIVEFLAG = 1) AS FAMILY_SUP_NM,
+                      h.payment_start_dt,
+    h.payment_end_dt
+   FROM tb_payment_header h
+     JOIN tb_payment_detail d ON h.payment_id = d.payment_id
+     JOIN tb_payment_status ps ON d.payment_id = ps.payment_id
+  WHERE (h.payment_type_cd::text = ANY (ARRAY['5689'::character varying::text, '7'::character varying::text, '3294'::character varying::text])) 
+aND d.subsidy_agreement_id IS NOT NULL AND d.delete_sw = 'N'::bpchar AND h.delete_sw = 'N'::bpchar AND ps.payment_status_cd::text = '1636'::text 
+AND ps.delete_sw = 'N'::bpchar
+and h.PAYMENT_START_DT>=CAST(Start_date AS DATE)
+AND h.PAYMENT_END_DT<=CAST(end_date  AS DATE) );
+end;
+$function$
+

@@ -1,0 +1,75 @@
+CREATE OR REPLACE FUNCTION as_rstnchangeformlist(restitutionno integer, skip integer, pagesize integer)
+ RETURNS TABLE(createddate timestamp without time zone, changeformreasontypes json, restitutionamount numeric, previousbalance numeric, newbalance numeric, waivedamount numeric, additionalamount numeric, liableperson character varying, changeformreason character varying, status character varying, changeformaddress json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+ v_restitutionno int;
+ v_pageoffset int;
+    v_liPageSize int;
+
+BEGIN
+
+ v_restitutionno := restitutionno; 
+ v_liPageSize := pagesize;
+ v_pageoffset := skip;
+
+ 
+RETURN QUERY
+   
+select isrr.insertedon as createddate
+, (select json_agg(rv.value_text) from restitutionchangeformreasonconfig rcfrc join
+ referencevalues rv on rv.ref_key = rcfrc.changeformreasontypekey join referencetype rt on rt.referencetypeid = rv.referencetypeid 
+ where rcfrc.intakeserreqrestitutionid = isrr.intakeserreqrestitutionid and rcfrc.activeflag = 1 and rt.tablename='Change_form_reason') as  changeformreasontypes
+, case
+ when isrr.approvestatus = 'RSTPND' then coalesce(isrr.payment, 0)
+ else (coalesce(isrr.payment, 0) + coalesce(isrr.waivedamount, 0) - coalesce(isrr.additionalamount, 0))
+ end as restitutionamount,
+case
+ when isrr.approvestatus = 'RSTPND' then (coalesce(isrr.payment, 0) - coalesce(isrr.paidamount,0))
+ else (coalesce(isrr.payment, 0) - coalesce(isrr.paidamount,0) + coalesce(isrr.waivedamount,0) - coalesce(isrr.additionalamount))
+ end as previousbalance,
+case
+ when isrr.approvestatus = 'RSTPND' then coalesce(coalesce(isrr.payment, 0) - coalesce(isrr.waivedamount, 0) + coalesce(isrr.additionalamount, 0) - coalesce(isrr.paidamount,0))
+ else (coalesce(isrr.payment, 0) - coalesce(isrr.paidamount,0))
+ end as newbalance,
+isrr.waivedamount as waivedamount,
+isrr.additionalamount as additionalamount,
+cast(p.firstname || ' ' || p.lastname as character varying) as liableperson,
+isrr.changeformreason, 
+(select rv.description from referencevalues rv join referencetype rt on rt.referencetypeid = rv.referencetypeid where rv.ref_key = isrr.approvestatus and rv.activeflag = 1 and rt.activeflag = 1 and rt.tablename = 'RestitutionApprStatusType') as status,
+
+ (select json_agg(x) from (
+ (select RPA.restitutionpersonaddressid, PA.personaddressid, PA.personid, PA.personaddresstypekey, PA.address, PA.address2, PA.zipcode, PA.city, PA.state, PA.county, PA.danger, PA.dangerreason, PA.personadrstartdate, PA.effectivedate, PA.personadrenddate, PA.expirationdate, PA.activeflag, PA.insertedby, PA.updatedby, PA.insertedon, PA.updatedon, S.statename , C.countyname, RPA.intakeserreqrestitutionid,RPA.restitutionno  from personaddress as PA
+JOIN intakeserreqrestitution as ir on ir.intakeserreqrestitutionid = isrr.intakeserreqrestitutionid and ir.approvestatus = 'RSTAPR' --and lower(ir.status) = 'active' 
+JOIN restitutionpersonaddress as RPA on RPA.personid = PA.personid and RPA.addressid = PA.addressid 
+and ir.intakeserreqrestitutionid = RPA.intakeserreqrestitutionid
+JOIN State as S on S.stateabbr = PA.state and S.activeflag = 1
+left JOIN county as C on C.countycode = PA.county and C.activeflag = 1 
+where (PA.personid = ir.youthpersonid or PA.personid = ir.victimpersonid or PA.personid = ir.liablepersonid) 
+and PA.activeflag = 1)
+UNION
+(select RPA.restitutionpersonaddressid, null, RPA.personid, RPA.personaddresstypekey, RPA.address, 
+RPA.address2, RPA.zipcode, RPA.city, RPA.state, RPA.county, RPA.danger, RPA.dangerreason, RPA.personadrstartdate, 
+RPA.effectivedate, RPA.personadrenddate, RPA.expirationdate, RPA.activeflag, RPA.insertedby, RPA.updatedby, 
+RPA.insertedon, RPA.updatedon, S.statename , C.countyname, RPA.intakeserreqrestitutionid,RPA.restitutionno  from restitutionpersonaddress as RPA
+JOIN intakeserreqrestitution as ir on ir.intakeserreqrestitutionid = isrr.intakeserreqrestitutionid and ir.approvestatus = 'RSTPND' --and lower(ir.status) = 'active' 
+JOIN State as S on S.stateabbr = RPA.state and S.activeflag = 1
+left JOIN county as C on C.countycode = RPA.county and C.activeflag = 1 
+where (RPA.personid = ir.youthpersonid or RPA.personid = ir.victimpersonid or RPA.personid = ir.liablepersonid) 
+and RPA.activeflag = 1 and ir.intakeserreqrestitutionid = RPA.intakeserreqrestitutionid)
+
+) as X ) as changeformaddress
+  
+from intakeserreqrestitution isrr 
+join person p on p.personid = isrr.liablepersonid
+join routing r on r.objectid = isrr.intakeserreqrestitutionid::varchar and r.routingstatustypeid = 46 
+where isrr.restitutionno = v_restitutionno --AND isrr.activeflag = 1
+ORDER BY isrr.insertedon desc
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

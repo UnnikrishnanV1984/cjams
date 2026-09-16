@@ -1,0 +1,68 @@
+CREATE OR REPLACE FUNCTION getassessmentdetailsbypersonids(i_personid uuid, i_searchtext character varying, lassessmenttemplateid uuid, iscaseworker boolean, v_roletypecode character varying DEFAULT ''::character varying)
+ RETURNS TABLE(l_assment json)
+ LANGUAGE plpgsql
+AS $function$
+
+declare l_assment json;
+declare querytxt text;
+declare youthstatussearch character varying;
+declare caseworkercondition character varying;
+begin
+ if(i_searchtext != '' and i_searchtext is not null)
+ then 
+youthstatussearch := ' AND fp.focuspersonstatustypekey = ''' || i_searchtext || '''';    
+ else
+ youthstatussearch='';
+ end if;
+ 
+ if(iscaseworker=false)
+ then 
+ caseworkercondition ='and coalesce(A.intakenumber ,'''') in  (select fp.intakenumber from  focuspersoncasestatus fp where fp.status=''Open'' and  fp.personid='''||i_personid||''' and fp.activeflag=1 '||youthstatussearch||')';
+ else 
+ caseworkercondition='and COALESCE(A.objectid :: character varying,'''') in  (select fp.intakeserviceid ::character varying from  focuspersoncasestatus fp where fp.status=''Open'' and  fp.personid='''||i_personid||'''  and fp.activeflag=1 '||youthstatussearch||' )';
+ end if;
+ 
+ querytxt=
+ 
+    'select json_agg(astmp)  from (select AST.assessmentTextPositionTypeKey,AST.assessmentscoresetupid,  
+          AST.assessmenttemplateid,AST.calculationmethod,AST.datamappingenabled,AST.description,
+    AST.effectivedate,AST.enableassessmentscore,AST.expirationdate,
+    AST.external_templateid,AST.helptext,AST.instructions,AST.isvisible,AST.name,
+    AST.scoringname,AST.titleheadertext,AST.version,
+          a.submissionid,a.submissiondata,coalesce(A.score,0) score ,inrs.servicerequestnumber,A.intakenumber,
+          A.assessmentstatustypekey,A.assessmentid ,
+     a.updatedon    updateddate,
+   CASE coalesce(A.ismigrated,0)  WHEN 1 THEN  ''Migrated'' ELSE coalesce(up.lastname,'''')||'', '' ||coalesce(up.firstname,'''') END  as username,
+    a.insertedon as createddate,AC.comments,
+     coalesce(A.ismigrated,0)   ismigration,
+     A.assessmentsubmissiontypekey
+         
+  FROM assessment A inner join  assessmenttemplate AST
+        ON AST.assessmenttemplateid = A.assessmenttemplateid
+        AND A.activeflag =1 
+  AND A.assessmenttemplateid ='''||lassessmenttemplateid||'''
+  LEFT join assessmentcomments AC on AC.assessmentid = A.assessmentid
+                                          and ac.activeflag =1
+  left join intakeservicerequest inrs on A.objectid=inrs.intakeserviceid 
+     LEFT join userprofile up on up.securityusersid = a.insertedby 
+--WHERE coalesce(A.intakenumber ,'''') in  (select fp.intakenumber from  focuspersoncasestatus fp where fp.personid='''||i_personid||''' and fp.activeflag=1 '||youthstatussearch||') 
+   --     WHERE coalesce(A.intakenumber ,'''') in (CASE '||iscaseworker||'  WHEN false THEN (select fp.intakenumber from  focuspersoncasestatus fp where fp.personid='''||i_personid||''' and fp.activeflag=1 '||youthstatussearch||') ELSE coalesce(A.intakenumber ,'''') end ) 
+  
+--      WHERE CASE   WHEN  '||iscaseworker||'  = false THEN  coalesce(A.intakenumber ,'''') in (select fp.intakenumber from  focuspersoncasestatus fp where fp.personid='''||i_personid||''' and fp.activeflag=1 '||youthstatussearch||') ELSE coalesce(A.intakenumber ,'''') end 
+--                     AND COALESCE(A.objectid :: character varying,'''') in  (case '||iscaseworker||'  
+--        WHEN true THEN   (select fp.intakeserviceid ::character varying from  focuspersoncasestatus fp where fp.personid='''||i_personid||'''  and fp.activeflag=1 '||youthstatussearch||' ) 
+--        ELSE coalesce(A.objectid :: character varying,'''')
+--              END 
+--              )
+   WHERE lower(A.assessmentstatustypekey) Not in ( CASE coalesce('''||v_roletypecode||''','''')  WHEN '''' then ''inprocess'' else '''' end)
+       '||caseworkercondition||'
+ ORDER by a.insertedon desc ) as astmp';
+        
+--LIMIT '||pagesize||'  offset '||v_pageoffset;
+--querytxt
+RAISE NOTICE 'Parsing %', querytxt ;
+return query execute querytxt;      
+end;
+
+$function$
+

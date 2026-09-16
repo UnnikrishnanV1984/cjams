@@ -1,0 +1,171 @@
+CREATE OR REPLACE FUNCTION cjams.sp_cw_autocaseclosure()
+RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 10/25/2021 
+
+-- B-108258
+-- To close the cases within 48 hours from the time the case is Reopened
+-- If the reopened reason is .. 
+-- Document a payment (DAP) or Enter a Contact Note (EACN) or Upload a document (UAD)
+
+-- Revision(s)
+-- 04/05/2022 - Logic changes to verify the last case disposition and the case status (CIDM-4364/B-119350)
+-- 02/26/2024 - Sundeep kiran Anugolu - Logic changes to verify If the IV-E has not approved the case closure before then case should not close. (CIDM-8350/B-185252)
+------------------------------------------------------------------------
+Declare v_servicecaseid uuid;
+Declare vl_servicecasenumber bigint;
+Declare v_servicecasedispositionid uuid;
+
+cur_reopened_cases record;
+cur_reopened_cases_refcur REFCURSOR;
+
+BEGIN
+	OPEN cur_reopened_cases_refcur FOR
+		select distinct sd.servicecaseid,
+			sc.servicecasenumber
+		from cjams.servicecasedisposition sd,
+			cjams.servicecase sc
+		where sd.servicecaseid = sc.servicecaseid 
+			and sd.activeflag = 1
+			and sc.activeflag = 1
+			and lower(sd.intakeserreqstatustypekey) = 'reopen'
+			and lower(sd.dispositioncode) = 'inprogress'
+			and sd.reopenreasonkey in ( 'DAP', 'EACN', 'UAD' )
+			and ( select count(*) 
+					from cjams.routing ro
+				  where ro.routingstatustypeid = 16 
+					and ro.eventcode::text = 'SCDR'::text 
+					and ro.activeflag = 1 
+					and ro.objectid::text = sd.servicecasedispositionid::character varying::text
+				) > 0
+			and sd.statusdate + interval '48 hours' <= current_timestamp
+			and (case when 
+					( select sd1.servicecasedispositionid  
+						from cjams.servicecasedisposition sd1
+						where sd1.servicecaseid = sd.servicecaseid
+							and sd1.activeflag = 1
+						order by sd1.insertedon desc
+						limit 1
+					) = sd.servicecasedispositionid then 
+				true 
+			else
+				false 
+			end )
+			and (select count(*) 
+					from cjams.ivecaseclosurereview iccr 
+					where iccr.objectid = sc.servicecaseid 
+					and iccr.activeflag =1 and iccr.ivereviewstatus='CCR_Approved') > 0
+			-- Unit Test	
+			-- and sd.servicecaseid = 'bb514773-f48a-4433-a82f-c594a74761f8'	
+			-- and sd.servicecaseid = '6773436a-6198-4767-b152-550860888f3e'
+			;
+	loop
+		fetch cur_reopened_cases_refcur into cur_reopened_cases;
+		exit when not found;
+
+		v_servicecaseid := cur_reopened_cases.servicecaseid;
+		vl_servicecasenumber := cur_reopened_cases.servicecasenumber;
+		
+		RAISE NOTICE 'vl_servicecasenumber >> %', vl_servicecasenumber;
+		
+		-- Close/End Date
+		-- Close Active Case Assignments 
+		update cjams.caseassignment
+		set enddate = now(),
+			updatedon = now(),
+			updatedby = 'admin'
+		where objectid = v_servicecaseid
+			and lower(objecttypekey) = 'servicecase'
+			and activeflag = 1
+			and enddate is null ;
+
+		-- Close Active Person Program Assignments 
+		update cjams.personprogramarea 
+		set enddate = current_date, 
+			updatedon = now(), 
+			updatedby = 'admin'
+		where objectid  = v_servicecaseid::character varying
+			and lower(objecttypekey) = 'servicecase'
+			and activeflag = 1
+			and enddate is null ;
+			
+		-- Insert
+		-- servicecasedisposition
+		insert into cjams.servicecasedisposition
+		(	servicecasedispositionid, servicecaseid, statusdate, intakeserreqstatustypekey, 
+			dispositioncode, "comments", effectivedate, activeflag, 
+			insertedby, insertedon, updatedby, updatedon, 
+			expirationdate, old_id, etl_userid, etl_load_date
+		)
+		values
+		(	gen_random_uuid(), v_servicecaseid, now(), 'Closed', 
+			'Closed', 'The case has been closed by the system.', now(), 1, 
+			'admin', now(), 'admin', now(), 
+			NULL, NULL, NULL, NULL
+		) RETURNING servicecasedispositionid into v_servicecasedispositionid  ;
+
+	   
+		-- routing
+		INSERT INTO cjams.routing
+		(	routingid, eventcode, fromsecurityusersid, tosecurityusersid, 
+			teamid, fromroleid, toroleid, objectid, 
+			routingstatustypeid, activeflag, insertedby, insertedon, 
+			updatedby, updatedon, isreviewrequest, remarks, 
+			old_id, routeddescription, servicerequestnumber, objecttypekey, 
+			old_from_id, old_to_id, principaltype, actiondatetime, 
+			etl_userid, etl_load_date, entityid, reassignnotes
+		)
+		VALUES
+		(	gen_random_uuid(), 'SCDR', 'admin', NULL, 
+			NULL::uuid, 'CWCW', 'CWSP', v_servicecasedispositionid, 
+			15, 0, 'admin', now(), 
+			'admin', now(), true, 'The case has been closed by the system.', 
+			NULL, '', vl_servicecasenumber, 'Servicecase', 
+			NULL, NULL, NULL, NULL, 
+			NULL, NULL, NULL, NULL
+		);
+
+
+		INSERT INTO cjams.routing
+		(	routingid, eventcode, fromsecurityusersid, tosecurityusersid, 
+			teamid, fromroleid, toroleid, objectid, 
+			routingstatustypeid, activeflag, insertedby, insertedon, 
+			updatedby, updatedon, isreviewrequest, remarks, 
+			old_id, routeddescription, servicerequestnumber, objecttypekey, 
+			old_from_id, old_to_id, principaltype, actiondatetime, 
+			etl_userid, etl_load_date, entityid, reassignnotes
+		)
+		VALUES
+		(	gen_random_uuid(), 'SCDR', 'admin', NULL, 
+			NULL::uuid, 'CWSP', 'CWCW', v_servicecasedispositionid, 
+			16, 1, 'admin', now(),
+			'admin', now(), true, 'Disposition Approved', 
+			NULL, 'Disposition Approved', NULL, NULL, 
+			NULL, NULL, NULL, NULL, 
+			NULL, NULL, NULL, NULL
+		);
+
+
+		-- Update servicecase
+		update servicecase
+		set enddate = now(), 
+			statustypekey = 'Closed', 
+			dispositioncode = 'Closed', 
+			updatedby = 'admin', 
+			updatedon = now()
+		where servicecaseid = v_servicecaseid
+			and activeflag = 1;
+		
+	end loop;
+	close cur_reopened_cases_refcur;
+
+	Return 1;
+	
+END;
+
+$function$
+;

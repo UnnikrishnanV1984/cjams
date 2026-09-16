@@ -1,0 +1,1 @@
+ALTER TABLE cjams.tb_ive_fostercare_audit ALTER COLUMN reasonfornotoptedtosuspendthessipaymentandclaimive TYPE varchar(100);

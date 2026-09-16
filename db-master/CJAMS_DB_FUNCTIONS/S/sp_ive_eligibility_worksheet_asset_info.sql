@@ -1,0 +1,54 @@
+ CREATE OR REPLACE FUNCTION public.sp_ive_eligibility_worksheet_asset_info(reqobj json)                                             
+  RETURNS TABLE(v_clientid bigint, v_assets_allowance integer, v_assets_marketvalue integer, v_ivepersondeprivationid uuid)         
+  LANGUAGE plpgsql                                                                                                                  
+ AS $function$                                                                                                                      
+                                                                                                                                    
+ DECLARE                                                                                                                            
+         v_clientid  BIGINT;                                                                                                        
+         returnStatus text;                                                                                                         
+         v_num INT;                                                                                                                 
+     v_assets_allowance INT;                                                                                                        
+     v_assets_marketvalue INT;                                                                                                      
+         v_ivepersondeprivationid UUID;                                                                                             
+                                                                                                                                    
+ BEGIN                                                                                                                              
+                                                                                                                                    
+         v_clientid := reqObj ->> 'clientId';                                                                                       
+                                                                                                                                    
+         v_assets_allowance := reqObj ->> 'assetsallowance';                                                                        
+         v_assets_marketvalue := reqObj ->> 'assetsmarketvalue';                                                                    
+         returnStatus := 'Success';                                                                                                 
+                                                                                                                                    
+         SELECT count(*) into v_num FROM ivepersondeprivation WHERE clientid = v_clientid;                                          
+                                                                                                                                    
+         IF (v_num) >= 1                                                                                                            
+         THEN                                                                                                                       
+                 UPDATE ivepersondeprivation                                                                                        
+         SET                                                                                                                        
+         assetsallowance = v_assets_allowance,                                                                                      
+         assetsmarketvalue = v_assets_marketvalue                                                                                   
+         WHERE clientid = v_clientid;                                                                                               
+                                                                                                                                    
+         else                                                                                                                       
+                                                                                                                                    
+                 Insert into ivepersondeprivation(ivepersondeprivationid, clientid, activeflag, assetsallowance, assetsmarketvalue) 
+             VALUES(gen_random_uuid() , v_clientid, 1, v_assets_allowance, v_assets_marketvalue);                                   
+                                                                                                                                    
+         end if;                                                                                                                    
+                                                                                                                                    
+ RETURN QUERY                                                                                                                       
+ select                                                                                                                             
+                                                                                                                                    
+ ipd.clientid                            as v_clientid,                                                                             
+ ipd.assetsallowance                     as v_assets_allowance,                                                                     
+ ipd.assetsmarketvalue           as v_assets_marketvalue,                                                                           
+ ipd.ivepersondeprivationid      as v_ivepersondeprivationid                                                                        
+                                                                                                                                    
+ from ivepersondeprivation ipd                                                                                                      
+ where ipd.clientid = v_clientid;                                                                                                   
+ --RETURN format('%s', returnStatus);                                                                                               
+                                                                                                                                    
+ end;                                                                                                                               
+                                                                                                                                    
+ $function$                                                                                                                         
+

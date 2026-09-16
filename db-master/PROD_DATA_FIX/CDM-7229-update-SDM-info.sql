@@ -1,0 +1,1 @@
+update intakeservicerequestsdm set ismalpa_caregiver = true, updatedby = 'CDM-7229', updatedon = now() where intakeservicerequestsdmid = '5d9900de-f37c-4070-bc3c-262b472f77b3';

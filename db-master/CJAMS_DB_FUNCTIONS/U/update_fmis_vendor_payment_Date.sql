@@ -1,0 +1,82 @@
+drop function if exists update_fmis_vendor_payment_Date(int,int,date,date,date,date,uuid);
+CREATE OR REPLACE FUNCTION update_fmis_vendor_payment_Date(p_year int ,
+p_month int,
+p_vendor_file_1_dt date,
+p_pay_file_1_dt date,
+p_vendor_file_2_dt date,
+p_pay_file_2_dt date,
+p_comments varchar,
+ securityuserid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+DECLARE
+    
+    v_fmis_pmnt_vendor_dt_id int;
+	v_new_id int;
+    v_securityuserid varchar;
+	v_result json;
+	v_year int;
+	v_month int;
+	v_vendor_file_1_dt timestamp; 
+v_pay_file_1_dt timestamp; 
+v_vendor_file_2_dt timestamp; 
+v_pay_file_2_dt timestamp; 
+v_comments varchar;
+
+	
+BEGIN
+    
+    
+    --v_securityuserid := securityuserid :: varchar;
+	select fullname into v_securityuserid from userprofile up where up.securityusersid = securityuserid :: varchar;
+	v_year  := p_year;
+	v_month := p_month;
+	v_vendor_file_1_dt := p_vendor_file_1_dt :: timestamp;
+v_pay_file_1_dt := p_pay_file_1_dt :: timestamp;
+v_vendor_file_2_dt := p_vendor_file_2_dt :: timestamp;
+v_pay_file_2_dt := p_pay_file_2_dt :: timestamp;
+v_comments := p_comments;
+    
+    --select fmis_pmnt_vendor_dt_id into v_fmis_pmnt_vendor_dt_id from tb_fmis_pmnt_vendor_dt where year_no = v_year and month_no = v_month;
+
+    update tb_fmis_pmnt_vendor_dt set 
+    delete_sw = 'Y',
+    update_user_id = coalesce(v_securityuserid :: varchar,'finance'),
+    --comments_tx = v_comments,
+    update_ts = now()  
+	where
+	--fmis_pmnt_vendor_dt_id = v_fmis_pmnt_vendor_dt_id and 
+	year_no = v_year and month_no = v_month and teamtypekey = 'CW'; 
+   
+   -- select max(fmis_pmnt_vendor_dt_id) into v_new_id from tb_fmis_pmnt_vendor_dt;
+ 
+   INSERT INTO tb_fmis_pmnt_vendor_dt
+( year_no, month_no, vendor_file_1_dt, pay_file_1_dt, vendor_file_2_dt, pay_file_2_dt, comments_tx, delete_sw, create_user_id, create_ts, update_user_id, update_ts, teamtypekey)
+VALUES( v_year, v_month, v_vendor_file_1_dt,v_pay_file_1_dt,v_vendor_file_2_dt, v_pay_file_2_dt,  v_comments, 'N', coalesce(v_securityuserid :: varchar,'finance'),  now(), coalesce(v_securityuserid :: varchar,'finance'),now(),'CW');
+
+    
+    
+    select json_agg(e) into v_result from (select 
+
+   fmis_pmnt_vendor_dt_id, year_no, month_no, 
+vendor_file_1_dt, 
+pay_file_1_dt, 
+vendor_file_2_dt, 
+pay_file_2_dt, 
+comments_tx, delete_sw, create_user_id, create_ts, update_user_id, update_ts
+    from tb_fmis_pmnt_vendor_dt where delete_sw = 'N'and year_no = v_year and month_no =v_month and teamtypekey = 'CW'
+   order by year_no,month_no) e;
+
+	
+RETURN v_result;
+
+END;
+
+
+
+$function$
+;

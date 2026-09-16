@@ -1,0 +1,111 @@
+CREATE OR REPLACE FUNCTION conv_src2trgtload_dblink(v_src_schema character varying, v_src_tablename character varying, v_trgt_schema character varying, v_trgt_tablename character varying, v_where_cndtn character varying DEFAULT NULL::character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+AS $function$\r
+\r
+  \r
+\r
+DECLARE   \r
+ v_sql     character varying;\r
+ v_sql1     character varying;\r
+ v_sql2     character varying;\r
+ v_sql3      character varying; \r
+ v_sql4      character varying; \r
+ v_sql5      character varying; \r
+ v_del     character varying; \r
+ v_del_b4_cnt      numeric; \r
+ v_del_aft_cnt     numeric:= 0;\r
+ v_b4_ins_cnt   numeric; \r
+ v_aft_ins_cnt   numeric; \r
+ rec      record; \r
+ \r
+ v_state varchar;\r
+ v_msg varchar;\r
+ v_detail varchar;\r
+ v_hint varchar;\r
+ v_context varchar;\r
+ v_begin_dt timestamp without time zone;\r
+v_end_dt timestamp without time zone;\r
+ -----------------------------------------------------------------------------\r
+    \r
+BEGIN      \r
+ v_begin_dt := now(); -- Load Begin date\r
+FOR rec IN (select table_schema,table_name,column_name,data_type,character_maximum_length from information_schema.columns where \r
+   table_schema =v_trgt_schema \r
+   and table_name = V_trgt_TABLENAME\r
+   order by ordinal_position )\r
+\r
+ LOOP\r
+  v_sql = v_sql||' ,'||REC.column_name; \r
+  If rec.data_type='character' then\r
+    v_sql1 = v_sql1||' ,'||REC.column_name||'  '||rec.data_type||'  '||'('||rec.character_maximum_length||')'; \r
+    else\r
+    v_sql1 = v_sql1||' ,'||REC.column_name||'  '||rec.data_type; \r
+    end if;\r
+ END LOOP; \r
+ \r
+    select RIGHT(v_sql, LENgth(v_sql) - 2) into v_sql;\r
+    select RIGHT(v_sql1, LENgth(v_sql1) - 2) into v_sql1;\r
+ \r
+ raise notice 'c1  %',v_where_cndtn;\r
+ \r
+    v_sql3 = 'insert into '||v_trgt_schema||'.'||V_trgt_TABLENAME||'('||v_sql||')';\r
+ v_sql = ' SELECT * from public.dblink(''remote_server_int'',''SELECT '||v_sql||' FROM '||v_src_schema||'.'||V_src_TABLENAME\r
+ ||' where session_id= ''''999'||'''''' ||\r
+         case when v_where_cndtn is null then ''else ' and '||v_where_cndtn end;\r
+ v_sql1 = ''') as x('||v_sql1||')'; \r
+ \r
+ v_sql2 = v_sql3||v_sql||v_sql1;   \r
+    \r
+ raise notice 'c1  %',v_sql2;\r
+ --v_sql4 ='select count(*)  from '||v_trgt_schema||'.'||V_trgt_TABLENAME|| ' where session_id=''999'''||case when v_where_cndtn is null  then ''else ' and '||v_where_cndtn end;\r
+ --EXECUTE  v_sql4 into v_del_b4_cnt;\r
+ RAISE NOTICE 'The current value v_del_b4_cnt  %', v_del_b4_cnt;\r
+ /*\r
+ if v_del_b4_cnt > 0 then\r
+ v_del = 'DELETE from '||v_trgt_schema||'.'||V_trgt_TABLENAME|| ' where session_id=''999'''||case when v_where_cndtn is null then ''else ' and '||v_where_cndtn end;\r
+ EXECUTE v_del;\r
+ GET DIAGNOSTICS v_del_aft_cnt = ROW_COUNT; \r
+ end if;\r
+ */\r
+ \r
+ \r
+ v_sql5 = 'SELECT * from public.dblink(''remote_server_int'',''SELECT count(*) FROM '||v_src_schema||'.'||V_src_TABLENAME||' where session_id= ''''999'||'''''' ||case when v_where_cndtn is null then ''else ' and '||v_where_cndtn end ||''') as x(c1  numeric)';\r
+ RAISE NOTICE 'The current value v_sql5  %', v_sql5;\r
+ EXECUTE  v_sql5 into v_b4_ins_cnt;\r
+ \r
+ RAISE NOTICE 'The current value of final is %', v_sql2;\r
+ EXECUTE v_sql2; \r
+ GET DIAGNOSTICS v_aft_ins_cnt = ROW_COUNT; \r
+ v_end_dt := now(); -- Load End date\r
+ insert into conv_src_trg_load_stat(src_schema_name,src_table_name,trgt_schema_name,trgt_table_name,trgt_b4_delete,trgt_aft_delete,Src_b4_insert,trgt_aft_insert,Status,insertedby,insertedon,load_begin_dt,load_end_dt)\r
+ values(v_src_schema, V_src_TABLENAME, v_trgt_schema, V_trgt_TABLENAME, v_del_b4_cnt, v_del_aft_cnt,v_b4_ins_cnt,v_aft_ins_cnt,'Successfully loaded',current_user,now(),v_begin_dt,v_end_dt );\r
+ \r
+ return 'Successfully load the table with count of - '||v_aft_ins_cnt;\r
+ /*--RAISE NOTICE 'The current value of final is %', v1;*/\r
+  commit; \r
+    exception \r
+    when others then        \r
+  GET STACKED DIAGNOSTICS\r
+ v_state   := RETURNED_SQLSTATE,\r
+v_msg     := MESSAGE_TEXT,\r
+v_detail  := PG_EXCEPTION_DETAIL,\r
+v_hint    := PG_EXCEPTION_HINT,\r
+v_context := PG_EXCEPTION_CONTEXT;\r
+--raise notice 'Got exception:\r
+--state  : %\r
+--message: %\r
+--detail : %\r
+--hint   : %\r
+--context: %', v_state, v_msg, v_detail, v_hint, v_context; \r
+     v_end_dt := now(); -- Load End date \r
+     insert into conv_src_trg_load_stat(src_schema_name,src_table_name,trgt_schema_name,trgt_table_name,status,insertedby,insertedon,load_begin_dt,load_end_dt) \r
+ values(v_src_schema, V_src_TABLENAME, v_trgt_schema, V_trgt_TABLENAME,'Failed loaded',current_user,now(),v_begin_dt,v_end_dt );\r
+\r
+        return 'Failed to load the table '||SQLSTATE||'-' ||SQLERRM||v_state||v_msg||v_detail||v_hint||v_context;\r
+rollback;  \r
+END;\r
+\r
+$function$
+

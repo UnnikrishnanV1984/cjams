@@ -1,0 +1,25 @@
+ CREATE OR REPLACE FUNCTION public.listschool(v_schoolname character varying)                
+  RETURNS TABLE(school_name character varying, school_code character varying, school_id uuid)
+  LANGUAGE plpgsql                                                                           
+ AS $function$                                                                               
+                                                                                             
+ DECLARE                                                                                     
+                                                                                             
+                                                                                             
+                                                                                             
+ BEGIN                                                                                       
+                                                                                             
+         RETURN QUERY                                                                        
+         SELECT                                                                              
+                 schoolname,                                                                 
+                 schoolcode,                                                                 
+                 schoolId                                                                    
+         FROM school                                                                         
+         WHERE activeflag= 1                                                                 
+         AND  schoolname ILIKE v_schoolname || '%'                                           
+         ORDER BY schoolname LIMIT 25;                                                       
+                                                                                             
+ END;                                                                                        
+                                                                                             
+ $function$                                                                                  
+

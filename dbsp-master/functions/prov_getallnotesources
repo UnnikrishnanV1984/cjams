@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION prov_getallnotesources(searchobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_isPublic boolean;
+v_object_id CHARACTER VARYING;
+v_provider_id character varying;
+jsondata  json;
+BEGIN
+
+v_isPublic := searchobj->>'isPublic';
+v_object_id := searchobj->>'object_id';
+
+
+if (v_isPublic)
+then 
+
+    select provider_id into v_provider_id from providerapprovalphaserecord 
+            where applicant_id = v_object_id
+            and delete_sw = 'N' limit 1;
+
+    if (v_provider_id is null or v_provider_id = '')
+    then 
+        v_provider_id = v_object_id;
+    end if;
+
+    SELECT Json_agg(a)
+    INTO      jsondata
+    FROM (
+    SELECT
+            count(1) over() as totalcount,
+            referral_id, applicant_id, provider_id 
+            from providerapprovalphaserecord 
+            where 
+            (referral_id = v_object_id or applicant_id=v_object_id or provider_id in (v_object_id, v_provider_id)) 
+            and delete_sw = 'N' and referral_id is not null
+    )  a;
+    
+else 
+
+    SELECT Json_agg(a)
+    INTO      jsondata
+    FROM (
+        select 
+            case when ta.provider_id is not null then ta.applicant_id else null end, 
+            ta.site_id::character varying as site_id,
+            (case when ta.site_id::character varying = v_object_id then ta.site_id::character varying else ta.provider_id end) as provider_id, 
+            referral_id
+        from tb_provider_applicant ta 
+        join tb_prov_ref_program_type tr on tr.applicant_id = ta.applicant_id
+        where ta.applicant_id = v_object_id 
+        or  ta.site_id::character varying = v_object_id
+        or  ta.provider_id::character varying = v_object_id
+        and ta.delete_sw='N'
+        and tr.activeflag=1
+    )  a;
+end if;
+
+RETURN  jsondata;
+END;
+
+$function$
+

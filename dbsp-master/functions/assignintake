@@ -1,0 +1,181 @@
+CREATE OR REPLACE FUNCTION assignintake(appeventcode character varying, v_intakenumber character varying, fromuserid character varying, assigneduserid character varying, status integer)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+ 
+
+DECLARE 
+v_teamid uuid;
+v_fromroleid character varying;
+v_toroleid character varying;
+v_fromusername character varying;
+v_tousername character varying;
+v_notifystatus  character varying;
+v_date timestamp without time zone;
+l_Status character varying;
+l_versionNumber bigint;
+v_id bigint;
+l_draftCount bigint;
+v_metadata json;
+v_auditlog character varying;
+
+v_status int;
+v_ispreintake bool;
+v_statustext character varying;
+
+v_preintakeuser character varying;
+v_preintakenotify_msg character varying;
+ 
+BEGIN
+v_date:= now() ;
+v_status:= status;
+v_ispreintake:=false;
+v_statustext:= 'pending';
+
+If v_status = 3 Then
+ v_ispreintake:=true;
+ v_statustext:= 'rejected';
+End If;
+ 
+ 
+/*Get from user role, team and name */
+ SELECT  tm.roletypekey  ,t.teamid , up.lastname || ', '|| up.firstname
+        into   v_fromroleid,v_teamid ,v_fromusername 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        inner join userprofile up on up.securityusersid = tma.securityusersid
+        and up.activeflag =1 
+        WHERE  tma.SecurityUsersId = fromuserid 
+        AND   tma.activeflag =1;
+        
+
+ /*Get assigned user role, team and name */
+  SELECT  tm.roletypekey , up.lastname || ', '|| up.firstname
+        into   v_toroleid ,v_tousername
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        inner join userprofile up on up.securityusersid = tma.securityusersid
+        and up.activeflag =1 
+        WHERE  tma.SecurityUsersId = assigneduserid
+        AND   tma.activeflag =1;
+  
+   /*Update assigned status  */
+    UPDATE routing SET activeflag =0, updatedon= v_date 
+      WHERE tosecurityusersid = fromuserid AND activeflag =1
+    AND  objectid  = v_intakenumber; --and routingstatustypeid =11;
+ 
+  /* routed to assinged user */   
+   INSERT INTO routing(
+                    eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                    fromroleid, toroleid,objectid , routingstatustypeid,
+                    insertedby,  updatedby,insertedon,updatedon,isreviewrequest )
+
+        values ( appeventcode, fromuserid,
+                assigneduserid   ,  v_teamid,
+                v_fromroleid , v_toroleid,
+                v_intakenumber,
+    --10,
+    v_status,
+                fromuserid,fromuserid,
+                v_date,v_date,
+                false );
+                
+                
+ SELECT COUNT(*) into l_draftCount FROM intakedastaging as i where i.intakenumber = v_intakenumber;
+
+ IF l_draftCount > 0 THEN 
+
+    SELECT MAX(versionnumber) ,max(id)  into 
+    l_versionNumber, v_id FROM intakedastaging as i 
+    where i.intakenumber = v_intakenumber;
+    
+    UPDATE intakedastaging set activeflag = 0 where intakenumber = v_intakenumber;
+    
+END IF;
+
+INSERT INTO intakedastaging(
+            intakenumber, dateRecieved, narrative, raname, entityname,  intakeuser,
+            cruworkername, data, insertedon, insertedby, timerecieved, updatedon, 
+            updatedby, status,jsondata,versionnumber,dispositiondescription,statusdescription,ispreintake)
+     select v_intakenumber, dateRecieved, narrative, raname, entityname, assigneduserid ,
+            cruworkername, data, v_date, fromuserid, timerecieved, v_date, 
+            fromuserid
+   --, 'pending'
+   , v_statustext
+   ,jsondata,coalesce(l_versionNumber,0)+1,
+            dispositiondescription,statusdescription
+   --,false
+   , v_ispreintake
+            from intakedastaging where id = v_id; 
+ 
+ UPDATE intakedastatus SET 
+ --status = 10 ,
+ status = v_status ,
+ assigneddate = v_date,
+ assignedto = assigneduserid
+ WHERE intakenumber = v_intakenumber;
+
+SELECT send_notification into v_notifystatus from send_notification(fromuserid,fromuserid,assigneduserid, 
+  'System', 'High', 'New Intake ('||v_intakenumber ||') assigned to '||  v_tousername ,
+   'New Intake ('||v_intakenumber ||') assigned to '|| v_tousername ,
+   v_intakenumber);
+   
+   
+
+ SELECT json_agg(e) from (SELECT   v_tousername  tousername, v_intakenumber  intakenumber, v_fromusername  fromusername)e INTO v_metadata;
+      
+ SELECT auditlog into v_auditlog from auditlog
+    ('IR','New Intake ('||v_intakenumber ||') assigned to '||  v_tousername ,null,v_intakenumber,null,
+     fromuserid,
+     v_metadata,
+     null,
+     true,false,false);
+   
+ -- Send notification to Assigned Intake user if approved
+    If v_status != 3 Then
+ 
+  SELECT send_notification into v_notifystatus from send_notification(assigneduserid,fromuserid,assigneduserid,
+   'System', 'High',   'New Intake ('||v_intakenumber ||')  assigned by '|| v_fromusername ,
+     'New Intake ('||v_intakenumber ||')  assigned by '|| v_fromusername ,
+    v_intakenumber);
+    
+ End If;
+ -- Send notification to Pre Intake user that Intake is approved / rejected
+ 
+ select fromsecurityusersid into v_preintakeuser from routing where objectid = v_intakenumber and substring(fromroleid, length(fromroleid)-1, length(fromroleid)) = 'SW' order by insertedon desc limit 1;
+ 
+ v_preintakenotify_msg:= 'Your Pre-Intake('||v_intakenumber ||') is approved by '|| v_fromusername;
+ 
+ If v_status = 3 Then
+  v_preintakenotify_msg:= 'Your Pre-Intake('||v_intakenumber ||') is rejected by '|| v_fromusername;
+ End If;
+ 
+ SELECT send_notification into v_notifystatus from send_notification(v_preintakeuser,fromuserid,v_preintakeuser,
+  'System', 'High',  v_preintakenotify_msg, v_preintakenotify_msg, v_intakenumber);
+ 
+ -- Audit Log
+      
+ SELECT auditlog into v_auditlog from auditlog
+    ('IR','New Intake ('||v_intakenumber ||') assigned by '||  v_fromusername ,null,v_intakenumber,null,
+     fromuserid,
+     v_metadata,
+     null,
+     true,false,false);
+  
+ If v_status != 3 Then
+  select send_appointment_notification into v_notifystatus from send_appointment_notification('AN', v_intakenumber, fromuserid, assigneduserid);
+    End If;
+    
+l_Status := 'SUCCESS';
+ 
+RETURN l_Status;
+
+END;
+
+$function$
+

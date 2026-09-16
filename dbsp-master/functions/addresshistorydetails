@@ -1,0 +1,36 @@
+CREATE OR REPLACE FUNCTION addresshistorydetails(v_providerid bigint)
+ RETURNS TABLE(address_type text, startdate date, enddate date, address text, fullname character varying, update_ts date)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+
+BEGIN  
+
+ RETURN QUERY 
+select ( select trim(value_tx) from tb_picklist_values where trim(picklist_value_cd)=trim(tpa.adr_type_cd)  and picklist_type_id='10' limit 1) as address_type,tpa.adr_start_dt,tpa.adr_end_dt,
+    ( concat_ws(' ',
+     coalesce(tpa.adr_street_tx,''),
+     (select coalesce(value_tx,'') from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+     tb_provider_addresses tpa where  tpa.parent_key_id =  TBP.provider_id::character varying and tpa.delete_sw ='N'  limit 1) and picklist_type_id='69')
+     ,coalesce(tpa.adr_street_nm,'')
+     ,(select coalesce(value_tx,'') from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+     tb_provider_addresses tpa where  tpa.parent_key_id = TBP.provider_id::character varying and tpa.delete_sw ='N'   limit 1) and picklist_type_id='212')
+     ,(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+     tb_provider_addresses tpa where  tpa.parent_key_id =  TBP.provider_id::character varying and tpa.delete_sw ='N'  limit 1) and picklist_type_id='250')
+     ,coalesce(tpa.adr_unit_no_tx,''),
+     coalesce(tpa.adr_city_nm,'')
+     ) || ', ' ||   concat_ws(' ',coalesce(tpa.adr_state_cd,''),coalesce(tpa.adr_zip5_no :: character varying,''))) as address
+     ,up.fullname,tpa.update_ts::date
+     from tb_provider_addresses tpa 
+     inner join tb_provider tbp on  tbp.provider_id = tpa.parent_key_id::int
+     left join muser m on m.securityusersid =tpa.update_user_id or m.username=tpa.update_user_id
+     left join userprofile up on up.securityusersid=m.securityusersid
+     where TBP.provider_id= v_providerid and tpa.adr_type_cd in ('3356','3357') 
+     --and tpa.adr_end_dt is not null 
+     and tpa.delete_sw='N' order by tpa.adr_end_dt desc;
+ END;
+
+$function$
+

@@ -1,0 +1,252 @@
+CREATE OR REPLACE FUNCTION reassigncase(appeventcode character varying, v_objectid uuid, fromuserid character varying, v_assignedsecurity character varying, v_responsibilitytypekey character varying, v_caseassignmentid uuid, v_enddate timestamp without time zone, v_remarks character varying, isanotherunit integer, v_toteamid uuid, v_children json, v_assignmenttype character varying DEFAULT NULL::character varying, v_startdate timestamp without time zone)
+ RETURNS TABLE(statuscode integer, status_description character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+ 
+ 
+ DECLARE 
+ 
+ statuscode integer;
+ status_description character varying;
+ 
+ caseworker_name text;
+ 
+ v_teamid uuid;
+ v_fromteamid uuid;
+ v_toroletypekey  character varying;
+ v_teamname character varying;
+ v_team_member_id  uuid;
+ v_torolesupervisor  bool;
+ 
+ v_roletypecode character varying;
+ v_fromroletypekey character varying;
+ v_routingid uuid;
+ v_status  int;
+ v_notifystatus character varying;
+ v_servicerequestno character varying;
+ v_statustypekey character varying;
+ l_fromldssid uuid;
+ l_toldssid uuid;
+ l_fromcountyid uuid;
+ l_closeworker character varying;
+ l_fromworkername character varying;
+ l_ldsstransfer int;
+ l_binsert int;
+ l_objecttypekey character varying;
+ l_caseassignmentid uuid;
+ l_child json;
+ 
+ 
+ BEGIN
+  v_status:= 4; 
+  l_ldsstransfer:= 0;
+  
+  /*Assigned service Case number*/
+  
+  l_objecttypekey := 'servicecase';
+ 
+  SELECT  servicecasenumber,statustypekey
+  INTO v_servicerequestno,v_statustypekey
+  FROM servicecase  
+  WHERE servicecaseid = v_objectid AND activeflag =1 LIMIT 1;
+   
+  IF (COALESCE(appeventcode,'') = 'ADPC') THEN
+   l_objecttypekey := 'adoptioncase';
+  
+   SELECT  adoptioncasenumber,statustypekey
+   INTO v_servicerequestno,v_statustypekey
+   FROM adoptioncase  
+   WHERE adoptioncaseid = v_objectid AND activeflag =1 LIMIT 1;
+ 
+  ELSIF (COALESCE(appeventcode,'') <> 'SRVC') THEN
+   
+   l_objecttypekey := 'servicerequest';
+  
+   SELECT  servicerequestnumber,'ASSIGN'
+   INTO v_servicerequestno,v_statustypekey
+   FROM intakeservicerequest  
+   WHERE intakeserviceid = v_objectid AND activeflag =1 LIMIT 1;
+ 
+  END IF;
+
+  /*Logged in user role details*/ 
+
+  SELECT u.roletypekey, u.teamid, u.countyid, u.countyid
+  INTO v_fromroletypekey, v_fromteamid, l_fromcountyid, l_fromldssid
+  FROM v_userprofile u where u.securityusersid= fromuserid;
+
+     v_teamid:= v_toteamid;
+
+
+  /*Assigned user team details*/
+  IF  (COALESCE(v_teamid::character varying,'') ='') THEN
+   SELECT teamid, roletypekey, teamname, teammemberid, isupervisor, countyid
+   INTO v_teamid, v_toroletypekey, v_teamname, v_team_member_id, v_torolesupervisor, l_toldssid
+   FROM v_userprofile u 
+   WHERE u.securityusersid = v_assignedsecurity
+   AND u.teamid = v_fromteamid;
+
+   ELSE
+    SELECT u.roletypekey, isupervisor, u.countyid
+   INTO  v_toroletypekey, v_torolesupervisor, l_toldssid
+   FROM v_userprofile u WHERE u.securityusersid = v_assignedsecurity and u.teamid = v_teamid ;
+
+    END IF;     
+  
+  IF (v_assignmenttype = 'T') THEN 
+    l_toldssid := v_teamid;
+    l_fromldssid := l_fromcountyid;
+    v_teamid:= null;
+    v_fromteamid := null;
+    l_ldsstransfer:=1;
+    v_status:=9;
+  END IF;
+   
+  IF (COALESCE(v_torolesupervisor,false)= true ) THEN
+   v_status:=9;
+  END IF;
+  
+        /*IF (isanotherunit = 1 ) THEN
+  
+        SELECT  tm.roletypekey,t.teamid, tma.securityusersid INTO v_toroletypekey,v_teamid,v_assignedsecurity
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1 and tm.isdefaultroute =1
+        INNER JOIN team t on t.teamid = tm.teamid  AND t.activeflag =1
+        WHERE tma.activeflag = 1 AND t.teamid = v_toteamid and tm.roletypekey like '%SP' LIMIT 1;
+   
+        END IF; */
+ 
+  l_binsert:=1;
+ 
+  IF (v_caseassignmentid IS NOT NULL) THEN
+     SELECT toworkeridno into l_closeworker  FROM caseassignment WHERE caseassignmentid = v_caseassignmentid;
+  
+     IF (l_closeworker=v_assignedsecurity) THEN
+       UPDATE caseassignment
+       SET enddate = v_enddate, startdate = v_startdate, responsibilitytypekey = v_responsibilitytypekey,remarks = v_remarks
+        , updatedby = fromuserid, updatedon = now()
+      WHERE caseassignmentid = v_caseassignmentid;
+    IF (v_enddate::DATE <= now()::DATE) THEN 
+     UPDATE usernotification
+       SET activeflag = 0 where objectid = v_objectid:: character varying and activeflag = 1;
+    END IF;
+    
+      l_binsert:=0;
+   ELSE
+    UPDATE caseassignment SET enddate = now(),remarks = v_remarks, updatedby = fromuserid, updatedon = now() WHERE caseassignmentid = v_caseassignmentid;
+    
+    SELECT routingid into v_routingid
+    FROM routing r 
+    WHERE tosecurityusersid = l_closeworker 
+      AND activeflag =1
+      AND r.objectid  = v_objectid::character varying
+    ORDER BY insertedon desc limit 1;
+   
+    UPDATE routing SET activeflag =0  ,updatedon= now() WHERE routingid = v_routingid;   
+   END IF;
+    
+    UPDATE caseassignmentactor SET activeflag = 0, updatedby = fromuserid, updatedon = now() WHERE caseassignmentid = v_caseassignmentid;
+    UPDATE usernotification
+       SET activeflag = 0 where objectid = v_objectid:: character varying and activeflag = 1;
+
+  END IF;
+
+  /*WHEN PRIMARY RESPONSIBILITY TRANSFER ALL ASSIGNMENTS ENDED  */
+     IF (l_ldsstransfer =1 AND LOWER(v_responsibilitytypekey) IN ('family') ) THEN
+      UPDATE routing SET activeflag =0  ,updatedon= now() WHERE objectid = v_objectid:: character varying AND routingstatustypeid =4 and activeflag =1; 
+         UPDATE caseassignment SET enddate = now() ,updatedon= now(), updatedby = fromuserid WHERE objectid = v_objectid  AND enddate IS NULL; 
+   UPDATE usernotification SET activeflag = 0 where objectid = v_objectid:: character varying and activeflag = 1;
+     END IF;
+      
+  IF (v_assignedsecurity IS NOT NULL  AND l_binsert =1) THEN
+  /*Routing to  user*/
+  
+   INSERT INTO routing(
+        eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+        fromroleid, toroleid,objectid , routingstatustypeid,
+        insertedby,  updatedby , servicerequestnumber,objecttypekey,routeddescription) 
+    VALUES(appeventcode,fromuserid,v_assignedsecurity,v_teamid,
+       v_fromroletypekey,v_toroletypekey,v_objectid,v_status,
+       fromuserid,fromuserid,v_servicerequestno,l_objecttypekey,'Case Assigned');
+ 
+   /*Notification*/
+ 
+   /*Get caseworker name for Notification*/
+   SELECT cast( lastname ||',' || firstname as character varying) INTO caseworker_name 
+   FROM userprofile 
+   WHERE SecurityUsersId=v_assignedsecurity AND activeflag =1;
+   
+   v_servicerequestno:= COALESCE(v_servicerequestno,'');
+   
+   SELECT send_notification INTO v_notifystatus from send_notification(fromuserid, fromuserid,v_assignedsecurity,
+   'System', 'Normal', 'Case #'||v_servicerequestno||  CASE l_ldsstransfer WHEN 1 THEN ' Transferred to ' ELSE ' Assigned to ' END || caseworker_name ,
+   'Case #'||v_servicerequestno|| CASE l_ldsstransfer WHEN 1 THEN ' Transferred to ' ELSE ' Assigned to ' END|| caseworker_name ,
+   cast(v_objectid as character varying));
+ 
+    SELECT COALESCE(displayname,fullname) INTO l_fromworkername FROM userprofile WHERE securityusersid = fromuserid AND activeflag =1;
+    
+    SELECT send_notification INTO v_notifystatus from send_notification(v_assignedsecurity,fromuserid,v_assignedsecurity,   
+   'System', 'Normal', ' Case #'||v_servicerequestno||  CASE l_ldsstransfer WHEN 1 THEN ' Transferred by ' ELSE ' Assigned by ' END || l_fromworkername ,
+   'Case #'|| v_servicerequestno|| CASE l_ldsstransfer WHEN 1 THEN ' Transferred to ' ELSE ' Assigned to ' END || l_fromworkername ,
+   cast(v_objectid as character varying));
+
+   IF (v_responsibilitytypekey NOT IN ('administrative')) THEN
+    SELECT toworkeridno INTO l_closeworker 
+    FROM caseassignment 
+    WHERE enddate IS NULL AND responsibilitytypekey= v_responsibilitytypekey AND activeflag =1 AND Objectid = v_objectid  LIMIT 1;
+    IF (v_children  is null ) THEN       
+     UPDATE caseassignment SET enddate = now(), updatedby = fromuserid, updatedon = now() WHERE enddate IS NULL AND responsibilitytypekey= v_responsibilitytypekey AND activeflag =1 AND Objectid = v_objectid  ;
+     
+     IF (COALESCE(l_closeworker,'')!='') THEN 
+      
+      SELECT routingid into v_routingid
+      FROM routing r 
+      WHERE tosecurityusersid = l_closeworker 
+       AND activeflag =1
+       AND r.objectid  = v_objectid::character varying
+      ORDER BY insertedon desc limit 1;
+    
+      UPDATE routing SET activeflag =0  ,updatedon= now() WHERE routingid = v_routingid; 
+
+      SELECT displayname INTO l_fromworkername FROM userprofile WHERE securityusersid = l_closeworker AND activeflag =1;
+      SELECT send_notification INTO v_notifystatus 
+      FROM send_notification( fromuserid, fromuserid,l_closeworker,
+            'System', 'Normal', l_fromworkername  || ' (Case #'||v_servicerequestno|| ') '||  initcap (v_responsibilitytypekey) || ' Responsibility ended  '|| 'on '|| TO_CHAR(now()::date,'MM/DD/YYYY') ,
+            caseworker_name  || ' (Case #'||v_servicerequestno|| ') '||  initcap (v_responsibilitytypekey) || ' Responsibility ended  '|| 'on '|| TO_CHAR(now()::date,'MM/DD/YYYY') ,
+            cast(v_objectid as character varying));
+     END IF;
+    END IF;
+   END IF;
+
+   INSERT INTO caseassignment
+   (fromworkeridno, toworkeridno, insertedby, updatedby, insertedon, updatedon, objecttypekey, objectid,responsibilitytypekey,startdate,fromteamid,toteamid,remarks,statustypekey,toldssid,fromldssid,assignmenttype,assigndate)
+   VALUES(fromuserid,v_assignedsecurity,fromuserid,fromuserid,now(),now(),l_objecttypekey,v_objectid,v_responsibilitytypekey,now(),v_fromteamid,v_teamid,v_remarks,v_statustypekey,l_toldssid,l_fromldssid,v_assignmenttype,now()::date)
+   returning "caseassignmentid" into v_caseassignmentid;
+  
+  END IF ; 
+
+  FOR l_child IN SELECT * FROM json_array_elements(v_children)                                                                                                                                                                                                                 
+  LOOP                                                                                                                                                                                                                                                                  
+  
+  INSERT INTO caseassignmentactor (
+  caseassignmentid,intakeservicerequestactorid,activeflag,insertedby, updatedby,insertedon, updatedon)
+  Values(v_caseassignmentid,(l_child ->>'intakeservicerequestactorid')::uuid,1,fromuserid,fromuserid,now(),now());
+  
+  END LOOP;                                                                                                                                                                                                                                                             
+                 
+  IF (l_objecttypekey = 'servicecase' and ((SELECT trim(statustypekey) = 'OPEN' FROM servicecase i2 WHERE servicecaseid = v_objectid) = true)) THEN
+   update servicecase
+   set statustypekey = 'ASSGN', updatedby = fromuserid, updatedon = now()
+   where servicecaseid = v_objectid;
+  END IF;
+  statuscode:= 200;
+     status_description := 'Case Assigned Successfully';
+         
+ RETURN  QUERY 
+ 
+  SELECT statuscode,status_description;
+ 
+ END;
+ 
+ $function$
+

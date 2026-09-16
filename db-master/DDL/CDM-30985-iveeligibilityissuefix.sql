@@ -1,0 +1,2 @@
+ALTER TABLE cjams.tb_ive_fostercare_audit ALTER COLUMN mandatorynoteonmissing2ndparentsignatureonvpa TYPE varchar USING mandatorynoteonmissing2ndparentsignatureonvpa::varchar;
+

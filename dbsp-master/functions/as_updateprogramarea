@@ -1,0 +1,125 @@
+CREATE OR REPLACE FUNCTION as_updateprogramarea(intakeserviceid uuid, securityuserid character varying)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+ /* 
+  * Purpose is to update the personprogramarea table automatically 
+  * from the intakeservicerequestservice and intakeservicerequestsubservice tables
+  * based on the intakeserviceid regardless of the type of case (intake or service).
+  * This will use the parent and childs ids from the actor table.
+  * Return codes: [int] 
+  *  1 (request case, success)
+  *  2 (service case, success)
+  *  -1 (error, can't locate record to update)
+  * 
+  * Author: Richard Ashley
+  * Date: 5/18/2019
+  */
+
+ declare 
+  v_securityuserid character varying;
+  v_intake_service_id uuid;
+  v_result int;
+  v_date timestamp  without  time  zone;
+  v_service_request_code character varying;
+  v_service_case_code character varying;
+  v_object_id uuid;
+  v_object_type_key character varying;
+
+ begin
+  v_intake_service_id := intakeserviceid;
+  v_securityuserid := securityuserid;
+  v_date :=  now()  at  time  zone  'utc';
+
+  v_service_request_code := 'ServiceRequest'; -- need a real look up table, hardcoded in ui
+  v_service_case_code := 'servicecase'; -- need a real look up table, hardcoded in ui
+ 
+  select
+   case when servicecaseid is null then i.intakeserviceid else servicecaseid end as objectid,
+   case when servicecaseid is null then v_service_request_code else v_service_case_code end as objecttypekey
+  from intakeservicerequest i into v_object_id, v_object_type_key
+  where i.intakeserviceid = v_intake_service_id;
+ 
+  /*
+   * expire previous records
+   * 
+   * */
+  update personprogramarea
+   set enddate = v_date,
+   endreasonkey = '',
+   updatedby = v_securityuserid
+  where objectid = v_object_id:: text
+    and objecttypekey = v_object_type_key
+    and enddate is null
+    and personid in (
+    select a.personid 
+    from intakeservicerequestservice service 
+    join actor a on a.intakeserviceid = service.intakeserviceid and a.actortype in ('PARENT', 'CHILD') and a.activeflag = 1
+    where service.intakeserviceid = v_intake_service_id
+      and service.activeflag = 1
+  );
+
+
+  /* add new records */
+  if (v_object_type_key = v_service_request_code ) then
+   insert into personprogramarea (
+    personid, 
+    programkey, subprogramkey, 
+    startdate, enddate, endreasonkey,
+    objecttypekey, objectid,
+    insertedby, updatedby
+    /* (defaults) insertedon, updatedon, activeflag  */
+   )
+   select 
+    a.personid,
+    service.intakeservreqservicekey, service_sub.intakeservsubtypekey,
+    v_date, null, null,
+    v_service_request_code, service.intakeserviceid,
+    v_securityuserid, v_securityuserid
+    
+   from intakeservicerequestservice service 
+   left join intakeservicerequestsubservice service_sub on service.intakeservreqserviceid = service_sub.intakeservreqserviceid and service_sub.activeflag = 1
+   join actor a on a.intakeserviceid = service.intakeserviceid and a.actortype in ('PARENT', 'CHILD') and a.activeflag = 1 
+   where service.intakeserviceid = v_object_id
+   and service.activeflag = 1;
+
+   v_result := 1;
+  
+  ELSIF (v_object_type_key = v_service_case_code) then
+   insert into personprogramarea (
+    personid, 
+    programkey, subprogramkey, 
+    startdate, enddate, endreasonkey,
+    objecttypekey, objectid,
+    insertedby, updatedby
+    /* (defaults) insertedon, updatedon, activeflag  */
+   )
+   select 
+    a.personid,
+    service.intakeservreqservicekey, service_sub.intakeservsubtypekey,
+    v_date, null, null,
+    v_service_case_code, v_object_id,
+    v_securityuserid, v_securityuserid
+    
+   from intakeservicerequestservice service 
+   left join intakeservicerequestsubservice service_sub on service.intakeservreqserviceid = service_sub.intakeservreqserviceid and service_sub.activeflag = 1
+   join actor a on a.intakeserviceid = service.intakeserviceid and a.actortype in ('PARENT', 'CHILD') and a.activeflag = 1 
+   where service.intakeserviceid = v_intake_service_id
+   and service.activeflag = 1;
+
+   v_result := 2;
+  
+  else 
+   v_result := -1;
+  
+  end if;
+  
+
+  
+  
+  return v_result;
+
+ END;
+$function$
+

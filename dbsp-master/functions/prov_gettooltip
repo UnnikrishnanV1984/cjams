@@ -1,0 +1,119 @@
+CREATE OR REPLACE FUNCTION prov_gettooltip(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+  DECLARE
+  jsondata json;
+  
+  BEGIN
+   
+  SELECT JSON_AGG(pla) INTO jsondata FROM (
+   select pm.monitoring_dt::date,  pm.announced_cd , pm.monitoring_id ,pmex.exit_dt ,
+   (select json_agg(a) from 
+    ( select ps.first_nm , ps.last_nm,ps.employee_type from 
+     prov_monitoring_exit_conf pmex 
+     join prov_monitoring_exit_conf_staff pmecs on pmecs.exit_conf_id  = pmex.exit_conf_id
+     join providerstaff ps on ps.provider_staff_id::character varying = pmecs.objectid 
+     where pm.monitoring_id  = pmex.monitoring_id 
+     union 
+     select pmas.first_nm , pmas.last_nm,pmas.job_title from 
+     prov_monitoring_exit_conf pmex 
+     join prov_monitoring_exit_conf_staff pmecs on pmecs.exit_conf_id  = pmex.exit_conf_id
+     join prov_monitoring_adhoc_staff pmas  on pmas.monitoring_adhoc_staff_id ::character varying = pmecs.objectid 
+     where pm.monitoring_id  = pmex.monitoring_id 
+    ) a
+   ) as exit_staff_list,
+   (select json_agg(licenseinfo)  from 
+  (select tpl.license_no, tpl.license_level, tpl.license_type, tpl.license_issue_dt ,tpl.license_expiry_dt ,
+  tpdesc.provider_description,tacc.children_no,ta.license_agency,tacc.minimum_age_no,tacc.maximum_age_no,
+  (select value_tx from tb_picklist_values where picklist_value_cd = tacc.gender_cd) as gender,
+  (select value_tx from tb_picklist_values where picklist_type_id=286 and trim(picklist_value_cd)=trim(tpl.license_status_cd)) as license_status_cd,
+  tpl.site_id, tp.provider_nm, tp.provider_category_cd, tp.adr_work_phone_tx,p.inspectedwith,
+  (select * from prov_get_formatted_addresses(pms.site_id)) as address,
+  (select phonenumber from userprofilephonenumber u where  u.securityusersid in (select toworkeridno from providerassignment where objectid = pms.site_id and activeflag = '1'  order by startdate desc limit 1)) as staffcell,
+  (select u.username from muser u where  u.securityusersid in (select toworkeridno from providerassignment where
+  objectid = pms.site_id and activeflag = '1'  order by startdate desc limit 1)) as staffname,
+  (select r.name from muser u join rolemapping r2 on r2.principalid = u.id and r2.activeflag = '1'
+  join role r on r.id = r2.roleid where  u.securityusersid in (select toworkeridno from providerassignment where
+  objectid = pms.site_id and activeflag = '1'  order by startdate desc limit 1) limit 1) as staffrole,  
+  (select json_agg(a)  from(select distinct recordreviewdate from prov_monitoring_record_site prms where prms.site_id = pms.site_id and prms.recordreviewdate is not null)a) as reviewdate
+  from 
+  prov_monitoring_site pms 
+  join prov_monitoring p on pms.monitoring_id = p.monitoring_id 
+  join tb_provider_licensing tpl on tpl.site_id = pms.site_id and active_sw ='Y'
+  join tb_provider tp on tpl.site_id = tp.provider_id
+  left join tb_provider_corp_info tpdesc on tpl.site_id = tpdesc.provider_id
+  left join tb_provider_applicant ta on tpl.site_id = ta.site_id and ta.application_status ='Approved'
+  left join tb_prov_applicant_accomodation tacc on ta.applicant_id = tacc.provider_applicant_id
+  where pms.monitoring_id = reqobj->>'monitoring_id' 
+ ) licenseinfo) as license_info,
+
+ -- Add new
+
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Child','Record')) as v_child_record,
+ (select * from prov_getchildaggmonitordetails(reqobj->>'monitoring_id', 'Child','Record')) as v_child_questions,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Staff','Record')) as v_staff_record,
+ (select * from prov_getchildaggmonitordetails(reqobj->>'monitoring_id', 'Staff','Record')) as v_staff_questions,
+
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Child', 'Record')) as v_ec_record_child,----
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Staff', 'Record')) as v_ec_record_staff,---
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Physical Plant', 'Record')) as v_ec_record_pplant,----
+-- Added new
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Incident Reporting','Record')) as v_ec_record_incident_record,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Physical Plant','Record')) as v_physical_plant,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Health Care & Medication Administration','Record')) as v_ec_record_health_record,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Basic Life Needs, Food & Nutrition, Youths’ Rights and Youth Grievances','Record')) as v_ec_record_basic_life_record,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Physical Restraints','Record')) as v_ec_record_physical_restraint_record,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Child Abuse and Neglect','Record')) as v_ec_record_child_neglect_record,
+ (select * from prov_getmonitordetails(reqobj->>'monitoring_id', 'Behavioral Interventions, Strategies and Supports','Record'))
+  as v_ec_record_behav_record,
+--
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Health Care & Medication Administration', 'Record')) as v_ec_record_health ,
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Incident Reporting', 'Record')) as v_ec_record_incident ,
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Child', 'Interview')) as v_ec_record_child_interview,  
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Basic Life Needs, Food & Nutrition, Youths’ Rights and Youth Grievances', 'Record')) as v_ec_record_basic_life ,
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Physical Restraints', 'Record')) as v_ec_record_physical_restraint ,
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Child Abuse and Neglect', 'Record')) as v_ec_record_child_neglect ,
+ (select * from prov_midyrgetnoncompliance_djs(reqobj->>'monitoring_id', 'Behavioral Interventions, Strategies and Supports', 'Record')) as v_ec_record_behav ,
+ (select * from prov_getmonitorinterviews_djs(reqobj->>'monitoring_id', 'Board member','Interview')) as v_board_interview,
+ (select * from prov_getmonitorinterviews_djs(reqobj->>'monitoring_id', 'Child','Interview')) as v_child_interview,
+ (select * from prov_getmonitorinterviews_djs(reqobj->>'monitoring_id', 'Staff','Interview')) as v_staff_interview,
+   (select json_agg(a) from 
+    (select up.displayname, r.description from 
+     prov_monitoring_entrance_conf pmec
+     join prov_monitoring_entrance_conf_staff pmecs on pmecs.entrance_conf_id  = pmec.entrance_conf_id
+     join userprofile up on up.securityusersid = pmecs.objectid 
+     join muser mu on mu.securityusersid = up.securityusersid and mu.activeflag = 1
+     join rolemapping rm on mu.id = rm.principalid and rm.activeflag = 1
+     join role r on r.id = rm.roleid and r.activeflag = 1
+     where pm.monitoring_id  = pmec.monitoring_id 
+     union 
+     select pmas.first_nm ||' '|| pmas.last_nm as displayname, pmas.job_title as description from 
+     prov_monitoring_entrance_conf pmec
+     join prov_monitoring_entrance_conf_staff pmecs on pmecs.entrance_conf_id  = pmec.entrance_conf_id
+     join prov_monitoring_adhoc_staff pmas  on pmas.monitoring_adhoc_staff_id ::character varying = pmecs.objectid 
+     where pm.monitoring_id  = pmec.monitoring_id 
+    ) a
+   ) as entrance_worker_list,
+   (select json_agg(a) from 
+    (select pma.checklist_task  from 
+     tb_provider_applicant_checklist pma
+     where pma.monitoring_id  = pm.monitoring_id 
+    ) a
+   ) as monitoring_activities,
+   (select json_agg(a) from 
+    (select tp.provider_nm, pms.site_id  from 
+     prov_monitoring_site pms
+     join tb_provider tp on pms.site_id =tp.provider_id 
+     where pms.monitoring_id  = pm.monitoring_id 
+    ) a
+   ) as monitoring_sites,
+   (select prov_getviolationsdjs from prov_getviolationsdjs(reqobj)) as deficiencies_list
+   from prov_monitoring pm 
+   left join prov_monitoring_exit_conf pmex on pm.monitoring_id  = pmex.monitoring_id 
+   where pm.monitoring_id::character varying = (reqobj->>'monitoring_id')::character varying
+  ) AS pla;
+  RETURN jsondata;
+  END;
+$function$
+

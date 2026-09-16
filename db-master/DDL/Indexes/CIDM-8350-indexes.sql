@@ -1,0 +1,3 @@
+create index Xie2_ivecaseclosurereview_objectid on ivecaseclosurereview(objectid,activeflag);
+create index Xie2_ivecaseclosurereview_insertedon on ivecaseclosurereview(date(insertedon),activeflag);
+create index Xie2_ivecaseclosurereview_ivereviewstatus on ivecaseclosurereview(ivereviewstatus,activeflag);

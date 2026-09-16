@@ -1,0 +1,98 @@
+CREATE OR REPLACE FUNCTION getvendorapprovallist(searchobj json)
+ RETURNS TABLE(displayname character varying, email character varying, title character varying, securityuserid character varying, teamtypekey character varying, usertypekey character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+v_timestamp timestamp;
+  v_returnstatus character varying;
+  v_routingstatus character varying;
+  v_vendorid character varying;
+  v_securityuserid character varying;
+ v_vendorapplicantid uuid;
+  v_teamid uuid;
+  v_roletypekey character varying;
+  v_routingstatustypekey character varying;
+  v_sourcerolekey character varying;
+  v_targetrolekey character varying;
+  v_fromteamtypekey character varying;
+  v_toteamtypekey character varying;
+  v_isotheragency int;
+ v_routing_rec record;  
+  v_routingid uuid;
+  v_msg character varying;
+  v_username character varying;
+ v_addupdatepaymentinfo character varying; 
+ v_jursidiction character varying;
+ v_title character varying;
+  -- v_juri record;
+
+BEGIN 
+v_vendorapplicantid := searchobj ->> 'vendorapplicantid';
+v_vendorid := searchobj ->> 'vendorid';
+v_securityuserid := searchobj ->> 'securityuserid';
+v_jursidiction := searchobj ->> 'jurisdiction';
+v_timestamp := now()::timestamp with time zone;
+
+raise notice 'v_vendorapplicantid%',v_vendorapplicantid;
+IF (v_vendorapplicantid is not null) then 
+select addupdatepaymentinfo into v_addupdatepaymentinfo from addupdatepaymentinfo(searchobj);
+--update tb_vendor_applicant set status='Submitted for Approval' where vendorapplicantid=(v_vendorapplicantid)::uuid;
+ SELECT tm.teamid,  tm.roletypekey  into v_teamid,v_roletypekey
+   FROM    teammemberassignment tma 
+   INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+   INNER JOIN muser mu ON mu.securityusersid = tma.securityusersid 
+   INNER JOIN rolemapping rm ON rm.principalid = mu.id 
+   INNER JOIN role r ON r.id = rm.roleid 
+   WHERE  tma.SecurityUsersId = v_securityuserid AND   tma.activeflag =1 AND rm.teamtypekey = 'LDSS';
+SELECT routingstatustypekey,sourcerolekey,targetrolekey,
+        ftmrt.teamtypekey , ttmrt.teamtypekey  ,
+                             CASE ftmrt.teamtypekey WHEN ttmrt.teamtypekey THEN 0 ELSE 1 END isotheragency
+        into v_routingstatustypekey, v_sourcerolekey,v_targetrolekey,v_fromteamtypekey,v_toteamtypekey,v_isotheragency
+                             FROM routingconfig  rc
+                       INNER JOIN teammemberroletype ftmrt   on  ftmrt.roletypekey  = rc.sourcerolekey AND ftmrt.activeflag =1
+                       INNER JOIN teammemberroletype ttmrt   on  ttmrt.roletypekey  = rc.targetrolekey AND ttmrt.activeflag =1
+         WHERE  eventcode = 'VENDSS' AND  sourcerolekey =v_roletypekey  
+                             AND rc.activeflag =1;
+        
+        /* SELECT  COALESCE(up.lastname,'') || ',' || COALESCE(up.firstname,'')  
+       INTO  v_username
+       FROM userprofile up 
+    WHERE up.securityusersid = v_securityuserid; */
+     
+ for v_routing_rec in  
+            SELECT  tma.securityusersid
+      , COALESCE(up.firstname,'') || ' ' || COALESCE(up.lastname,'')    
+    FROM  team  t
+      INNER JOIN teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+      INNER JOIN teammemberassignment tma on tma.teammemberid= tm.teammemberid and tma.activeflag=1
+      INNER JOIN userprofile up on up.securityusersid= tma.securityusersid and up.activeflag=1
+      
+    WHERE   tm.roletypekey=v_targetrolekey AND t.activeflag=1 AND t.teamtypekey = v_toteamtypekey
+                
+    
+    loop
+    
+      SELECT routingid into v_routingid
+               FROM routing r WHERE tosecurityusersid = v_routing_rec.securityusersid 
+               AND activeflag =1
+               AND r.objectid  = v_vendorid
+               ORDER BY insertedon desc limit 1;
+     
+    select description into v_title from role r where roletypekey=v_targetrolekey;
+   
+     RETURN QUERY 
+   select up.displayname,up.email,v_title,up.securityusersid as securityuserid,up.teamtypekey,up.usertypekey from userprofile up 
+   where up.securityusersid = v_routing_rec.securityusersid  and up.activeflag = 1;
+
+    --end loop;
+    end loop;
+
+end if;
+
+END;
+
+$function$
+

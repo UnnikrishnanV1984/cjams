@@ -1,0 +1,246 @@
+CREATE OR REPLACE FUNCTION as_eicm_nightly_interface()
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+
+ DECLARE
+    v_sqlstate text;
+    v_message text;
+    v_context text;
+BEGIN
+
+-- Purge recs older than 90 days
+delete from as_eicm_interface
+where run_date < current_date-90;
+
+-- Upd prev run 
+update as_eicm_interface 
+   set activeflag = 0 ,updatedon=now()
+   where activeflag = 1;
+   
+  -- Populate stg tbl to consider for incremental run 
+   with client_temp as
+(select * from actor a inner join (select
+ar.personid
+from intakeservicerequest a
+inner join intakeservicerequestactor b on a.intakeserviceid = b.intakeserviceid and b.objecttype like 'as%' and a.teamtypekey = 'AS'
+inner join actor ar on b.actorid = ar.actorid
+where a.updatedon > coalesce((select max(run_date) from as_eicm_interface),now() -1)
+and  a.countyid = 'f6ab02d5-c386-4659-8810-687fc191a967'
+
+union
+select
+ar.personid
+from intakedastaging a
+inner join intakeservicerequestactor b on a.intakenumber = b.intakenumber and b.objecttype like 'as%'--and a.teamtypekey = 'AS'
+inner join actor ar on b.actorid = ar.actorid
+where a.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+and a.jsondata -> 'General' ->> 'countyid' = 'f6ab02d5-c386-4659-8810-687fc191a967'
+and a.activeflag=1
+union
+select personid from
+(select
+a.personid, b.countyid
+from  actor a
+inner join (select coalesce(id.intakenumber,a.intakenumber )  intakenumber, coalesce(a.countyid::varchar,id.jsondata -> 'General' ->> 'countyid') countyid
+             from intakedastaging id  
+             left join intakeservicerequest a on a.intakenumber = id.intakenumber and a.countyid = 'f6ab02d5-c386-4659-8810-687fc191a967'
+             where id.jsondata -> 'General' ->> 'countyid' = 'f6ab02d5-c386-4659-8810-687fc191a967'
+and id.activeflag=1
+             ) b on a.intakenumber = b.intakenumber
+inner join
+(select personid from person where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personaddress where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personphonenumber where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personemail where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personaddress where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from alias where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personincome where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personeducation where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personemployerdetail where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personemployment where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personasset where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personidentifier where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+union
+select personid from personracetypemap where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+) p on a.personid = p.personid
+) a
+ 
+union
+select
+a.personid
+from actor a
+inner join (select coalesce(id.intakenumber,a.intakenumber )  intakenumber, coalesce(a.countyid::varchar,id.jsondata -> 'General' ->> 'countyid') countyid
+from intakedastaging id  
+             left join intakeservicerequest a on a.intakenumber = id.intakenumber and a.countyid = 'f6ab02d5-c386-4659-8810-687fc191a967'
+             where id.jsondata -> 'General' ->> 'countyid' = 'f6ab02d5-c386-4659-8810-687fc191a967'
+and id.activeflag=1
+             ) c on a.intakenumber = c.intakenumber
+inner join intakeservicerequestactor b on a.actorid = b.actorid
+where b.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+
+union
+select
+a.personid
+from personrole a
+inner join (select coalesce(id.intakenumber,a.intakenumber )  intakenumber, coalesce(a.countyid::varchar,id.jsondata -> 'General' ->> 'countyid') countyid
+from intakedastaging id  
+             left join intakeservicerequest a on a.intakenumber = id.intakenumber and a.countyid = 'f6ab02d5-c386-4659-8810-687fc191a967'
+             where id.jsondata -> 'General' ->> 'countyid' = 'f6ab02d5-c386-4659-8810-687fc191a967'
+and id.activeflag=1
+             ) b on a.intakenumber = b.intakenumber
+where a.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+
+union
+select distinct
+ar.personid
+from intakeservicerequest a
+inner join intakeservicerequestactor b on a.intakeserviceid = b.intakeserviceid and b.objecttype like 'as%' and a.teamtypekey = 'AS'
+inner join actor ar on b.actorid = ar.actorid
+inner join
+(
+/*select objectid from serviceplangoal r where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select objectid from serviceplanactivity sa where sa.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union*/
+ select objectid::varchar from caseassignment  where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select intakeserviceid::Varchar from personrole sa where sa.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select intakeserviceid::Varchar from actorrelationship sa where sa.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select a2.ascaseid::varchar from asservicesoncase a2  where a2.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select ac.entitytypeid::varchar from ascaseaddress ac where ac.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select pa.entitytypeid from progressnote pa where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union  
+ select pa.entitytypeid from progressnote pa inner join contactparticipant cp on pa.progressnoteid = cp.progressnoteid
+ where cp.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union
+ select pa.caseid::varchar from collateral pa where updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union  
+ select pa.caseid::varchar from collateral pa inner join collateraladdress ca  on pa.collateralid=ca.collateralid
+where ca.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ union  
+ select pa.caseid::varchar from collateral pa inner join collateralroleconfig ca  on pa.collateralid=ca.collateralid
+where ca.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+ )r  on r.objectid = a.intakeserviceid::varchar
+ where a.countyid = 'f6ab02d5-c386-4659-8810-687fc191a967'
+
+union
+select
+ar.personid
+from intakedastaging a
+inner join intakeservicerequestactor b on a.intakenumber = b.intakenumber and b.objecttype like 'as%'--and a.teamtypekey = 'AS'
+inner join actor ar on b.actorid = ar.actorid
+inner join actorrelationship r on r.intakenumber = a.intakenumber
+where r.updatedon> coalesce((select max(run_date) from as_eicm_interface),now() -1)
+and a.jsondata -> 'General' ->> 'countyid' = 'f6ab02d5-c386-4659-8810-687fc191a967'
+and a.activeflag=1
+)b on a.personid = b.personid)
+--select  * from client_temp
+insert into as_eicm_interface
+(select distinct ir.servicerequestnumber ,ac.intakeserviceid ,ac.intakenumber ,p.old_id ,p.cjamspid ,p.personid ,now(),1,now(),'Daily Interface data'
+from actor ac
+inner join intakeservicerequest ir on ac.intakeserviceid = ir.intakeserviceid  and countyid = 'f6ab02d5-c386-4659-8810-687fc191a967' and ir.teamtypekey='AS'
+inner join person p on ac.personid = p.personid
+where ac.intakeserviceid in (select intakeserviceid from client_temp where intakeserviceid is not null)
+and ac.objecttype like 'as%'
+union
+select distinct ir.servicerequestnumber ,ac.intakeserviceid ,ac.intakenumber ,p.old_id ,p.cjamspid ,p.personid ,now(),1,now(),'Daily Interface data'
+from actor ac
+inner join person p on ac.personid = p.personid
+left join intakeservicerequest ir on ac.intakeserviceid = ir.intakeserviceid  and countyid = 'f6ab02d5-c386-4659-8810-687fc191a967' and ir.teamtypekey='AS'
+where ac.intakenumber in (select intakenumber from client_temp ct1 where intakeserviceid is null
+      and exists (select '1' from intakedastaging ids
+        where ct1.intakenumber = ids.intakenumber
+        and ids.activeflag=1
+        and ids.jsondata -> 'General' ->> 'countyid' = 'f6ab02d5-c386-4659-8810-687fc191a967' ) 
+      )
+and ac.intakeserviceid is null
+and ac.objecttype like 'as%');
+
+    RAISE NOTICE 'INSERT Completed: %', now();
+
+-- Inactivate stg tbl recs which is not eICM MoCo
+with tmp as (select t1.intakeserviceid from as_eicm_interface  t1, intakeservicerequest t2
+where t1.activeflag=1
+and t1.servicerequestnumber is null  
+and t1.intakeserviceid is not null
+and t1.intakeserviceid = t2.intakeserviceid
+and coalesce(t2.countyid,'00000000-0000-0000-0000-000000000000') <> 'f6ab02d5-c386-4659-8810-687fc191a967'
+      )
+ update as_eicm_interface tt
+ set tt.activeflag=0,updatedon=now(),remarks = 'INACTIVATE-Not a MoCo case'
+ from tmp
+ where tt.activeflag=1
+ and tt.intakeserviceid =tmp.intakeserviceid;
+ 
+RAISE NOTICE 'Update 1 Completed: %', now();
+
+-- Inactivate stg tbl recs which is not eICM MoCo
+with tmp as (select t1.intakenumber from as_eicm_interface  t1, intakedastaging t2
+where t1.activeflag=1
+and t1.intakenumber is not null  
+and t1.intakeserviceid is  null
+and t1.intakenumber = t2.intakenumber and t2.activeflag=1
+and t2.jsondata -> 'General' ->> 'countyid' != 'f6ab02d5-c386-4659-8810-687fc191a967')
+update as_eicm_interface  tt
+set activeflag=0,updatedon=now(),remarks = 'INACTIVATE-Not a MoCo Intake'
+from tmp
+where tt.activeflag=1
+and tt.intakenumber = tmp.intakenumber ;
+
+RAISE NOTICE 'Update 2 Completed: %', now();
+
+-- Find recs/cases with ONLY unknown unknown person and inactivate 
+-- since the asservicesoncase interface has AV personid but not sent in personprofile interface
+with tupd as(
+select t2.personid,t1.servicerequestnumber,t1.intakeserviceid,t1.personid tmp_personid
+ from as_eicm_interface t1 ,asservicesoncase t2
+where t1.intakeserviceid =t2.ascaseid
+and t2.activeflag=1 and t1.activeflag=1 
+and t1.servicerequestnumber is not null and t1.intakeserviceid is not null
+and t1.personid= '00000000-0000-0000-0000-000000000000'
+and NOT exists (select '1' from as_eicm_interface t3
+  where t3.activeflag=1 
+  and t3.intakeserviceid = t2.ascaseid
+  and t3.personid=t2.personid)
+)
+update as_eicm_interface tmain
+set tmain.activeflag=0,updatedon=now(),
+remarks= 'Inactivate missing case Benfit person:'||tupd.personid||' in personprofile i/f'
+--select * from tupd;
+from tupd
+where tmain.servicerequestnumber= tupd.servicerequestnumber
+and tmain.intakeserviceid = tupd.intakeserviceid
+and tmain.activeflag=1;
+
+RAISE NOTICE 'Update 3 Completed: %', now();
+
+EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS
+        v_sqlstate = returned_sqlstate,
+        v_message = message_text,
+        v_context = pg_exception_context;
+    RAISE NOTICE 'sqlstate: %', v_sqlstate;
+    RAISE NOTICE 'message: %', v_message;
+    RAISE NOTICE 'context: %', v_context;
+ END;
+
+
+$function$
+

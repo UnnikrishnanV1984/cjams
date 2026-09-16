@@ -1,0 +1,67 @@
+CREATE OR REPLACE FUNCTION interstatecompact25thnotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+v_intakeserviceid uuid;
+v_intakeservreqtypeid uuid;
+v_intakeservicerequestclassid uuid;
+v_investigationid uuid;
+v_securityusersid character varying;
+v_status character varying;
+v_status1 character varying;
+v_activity  record;
+v_msg character varying;
+
+BEGIN     
+/* DJS - Notifications for the due date of the "Home Evaluation Report form VIII" should be sent as a reminder on the 25th day to the assigned case worker and supervisor : System --- Chloe & Tonya --- 25th day from 1st Case Assignment date */ 
+
+FOR  v_activity  IN
+
+select distinct ISR.intakeserviceid, ISR.servicerequestnumber, ISR.intakenumber, cast((TRIM(UP.lastname)|| '' , '' ||TRIM(UP.firstname)) as  character varying) as fromuser,
+cast((TRIM(UP1.lastname)|| '' , '' ||TRIM(UP1.firstname)) as  character varying) as touser,R.fromsecurityusersid,R.tosecurityusersid,
+cast((TRIM(P.lastname)|| '' , '' ||TRIM(P.firstname)) as  character varying) as youthname 
+           from intakeservicerequest as ISR
+      JOIN routing as R 
+           ON R.objectid = ISR.intakeserviceid::character varying and R.routingstatustypeid = 4
+      JOIN IntakeServiceRequestType as ISRT
+           ON ISRT.intakeservreqtypeid = ISR.intakeservreqtypeid and ISRT.intakeservreqtypekey = 'Interstate Compact' and ISRT.activeflag = 1
+      JOIN userprofile as UP
+           ON UP.securityusersid = R.fromsecurityusersid and UP.activeflag = 1  
+      JOIN userprofile as UP1
+           ON UP1.securityusersid = R.tosecurityusersid and UP1.activeflag = 1 
+      JOIN intakeservicerequestactor as ISRA
+           ON ISR.intakeserviceid  = ISRA.intakeserviceid  and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+      JOIN actor as A
+           ON A.actorid  = ISRA.actorid  and A.activeflag = 1  
+      JOIN Person as P
+           ON P.personid  = A.personid  and P.activeflag = 1
+      JOIN intakeserreqstatustype IRST 
+           ON IRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND IRST.activeflag = 1      
+      --WHERE R.insertedon < now() - '25 day'::interval
+      --WHERE R.insertedon = now() - '1 day'::interval
+      WHERE R.insertedon::date = now()::date - '25 day'::interval AND lower( IRST.intakeserreqstatustypekey ) NOT IN ( 'closed' )
+      --and ISRA.intakeserviceid 
+
+LOOP
+--Home Evaluation report for “Youth Name” is due in 5 days  for Case#. Please complete it on or before “30th Day – Date
+v_msg:=   'Home Evaluation report for '|| v_activity.youthname ||' is due in 5 days  for ('|| v_activity.servicerequestnumber || ') . Please complete it on or before ' || TO_CHAR(NOW() :: DATE + '5 day'::interval, 'dd/mm/yyyy') ||' .';
+
+SELECT send_notification INTO v_status FROM send_notification(v_activity.tosecurityusersid, v_activity.fromsecurityusersid, v_activity.tosecurityusersid,
+'System', 'High', v_msg, v_msg , v_activity.intakeserviceid::character varying);
+
+SELECT send_notification INTO v_status1 FROM send_notification(v_activity.fromsecurityusersid, v_activity.fromsecurityusersid, v_activity.fromsecurityusersid,
+'System', 'High', v_msg, v_msg , v_activity.intakeserviceid::character varying);
+
+END  LOOP;
+
+RETURN
+
+'Success';
+
+END;
+
+$function$
+

@@ -1,0 +1,275 @@
+CREATE OR REPLACE FUNCTION cjams.sp_final_disbursment_approve(v_disbursement_id bigint, v_status bigint, v_securityid character varying, request json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Child Account Final Disbursement Transaction Approvals 
+-- Revision(s) 
+-- 06/28/2021 Vineet Tirodkar - Fail-safe fix to update funding approval status as 3047 at Payment Approval (CDM-14430)
+------------------------------------------------------------------------------------------------------------	
+DECLARE
+
+v_paymentid integer;
+v_provider_id integer;
+v_fromroleid character varying;
+v_fromloadnumber character varying;
+v_toroleid character varying;
+v_securityuserid character varying;
+vl_pay_header_id BIGINT DEFAULT 0;
+vl_pay_status_id BIGINT DEFAULT 0;
+vl_pay_detail_id BIGINT DEFAULT 0;
+vl_tb_client_account BIGINT DEFAULT 0;
+v_fiscal_category_cd character varying;
+v_client_account_id integer;
+v_totalamount numeric ;
+v_payment_method integer;
+v_startdate date ;
+v_enddate date ;
+v_type_1099_cd character varying;
+v_report_1099_sw bpchar;
+v_client_acc_sw bpchar;
+v_status_cd character varying;
+v_service_cd character varying;
+v_picklistvalue character varying;
+v_picklisttype character varying;
+v_final_close_dt date;
+v_close_dt date;
+
+v_adr_format_cd character varying;
+v_adr_street_tx character varying;
+v_adr_box_no integer;
+v_adr_pre_dir_cd character varying;
+v_adr_street_nm character varying;
+v_adr_street_suffix_cd character varying;
+v_adr_post_dir_cd character varying;
+v_adr_unit_type_cd character varying;
+v_adr_unit_no_tx character varying;
+v_adr_city_nm character varying;
+v_adr_county_cd character varying;
+v_adr_state_cd character varying;
+v_adr_zip5_no numeric ;
+v_adr_zip4_no numeric ;
+v_adr_direction_tx character varying;
+v_adr_foreign_tx character varying;
+v_adr_foreign_state_tx character varying;
+v_adr_postal_code_tx character varying;
+v_adr_country_tx character varying;
+v_payee_nm character varying;
+v_funding_approval_status character varying;
+
+begin
+
+v_provider_id   := (request ->> 'provider_id') :: integer;
+v_paymentid   := (request ->> 'payment_id')  :: integer;
+v_totalamount := (request ->> 'amount') :: numeric;
+v_client_account_id := (request ->> 'client_account_id') :: integer;
+v_payment_method := (request ->> 'payment_method_cd') ;
+v_startdate := (request ->> 'start_date') ::date;
+v_enddate  := (request ->> 'end_date') :: date;
+v_fiscal_category_cd := request ->> 'fiscal_category_cd';
+v_report_1099_sw := (request ->> 'report_1099_sw') ::bpchar;
+v_type_1099_cd := (request ->> 'type_1099_cd');
+v_client_acc_sw := (request ->> 'client_acc_sw');
+v_service_cd := (request ->> 'service_id');
+v_final_close_dt := (request ->>'close_dt');
+
+-- 56 (Final Disbursement for finance approval)
+if(v_status = 56) then
+
+	update tb_child_account_disbursement
+		set funding_approval_status = '3045',
+			update_user_id = v_securityid,
+			update_ts = current_timestamp
+	where disbursement_id = v_disbursement_id;
+
+	UPDATE "cjams".tb_client_account
+		SET final_close_dt = v_final_close_dt,
+			update_user_id = v_securityid,
+			update_ts = current_timestamp
+	WHERE client_account_id=v_client_account_id;
+
+end if;
+
+-- 57 (Final Disbursement for payment approval)
+if(v_status = 57) then
+
+	update tb_child_account_disbursement
+		set funding_approval_status = '3047',
+			payment_approval_status = '3045',
+			update_user_id = v_securityid,
+			update_ts = current_timestamp
+	where disbursement_id = v_disbursement_id;
+
+-- 58 (Final Disbursement approved)
+else if(v_status = 58) then
+	-- To get Address details to update in tb_payment_header
+	select adr_format_cd, case when length(adr_street_no) > 10 then replace(adr_street_no, ' ', '') else  adr_street_no end As adr_street_no, --adr_street_tx,
+		adr_box_no, adr_pre_dir_cd,
+		adr_street_nm, adr_street_suffix_cd,
+		adr_post_dir_cd, adr_unit_type_cd,
+		adr_unit_no_tx, adr_city_nm,
+		adr_county_cd, adr_state_cd,
+		adr_zip5_no, adr_zip4_no,
+		adr_direction_tx, adr_foreign_tx,
+		adr_foreign_state_tx, adr_postal_code_tx,
+		adr_country_tx, payee_nm, 
+		funding_approval_status
+	into v_adr_format_cd, v_adr_street_tx,
+		v_adr_box_no, v_adr_pre_dir_cd,
+		v_adr_street_nm, v_adr_street_suffix_cd,
+		v_adr_post_dir_cd, v_adr_unit_type_cd,
+		v_adr_unit_no_tx, v_adr_city_nm,
+		v_adr_county_cd, v_adr_state_cd,
+		v_adr_zip5_no, v_adr_zip4_no,
+		v_adr_direction_tx, v_adr_foreign_tx,
+		v_adr_foreign_state_tx, v_adr_postal_code_tx,
+		v_adr_country_tx, v_payee_nm,
+		v_funding_approval_status
+	from tb_child_account_disbursement
+	where delete_sw = 'N'
+		and disbursement_id = v_disbursement_id ;
+
+	IF v_funding_approval_status = '3045' THEN -- CDM-14430
+		update tb_child_account_disbursement
+			set funding_approval_status = '3047',
+				payment_approval_status = '3047',
+				update_user_id = v_securityid,
+				update_ts = current_timestamp
+		where disbursement_id = v_disbursement_id;
+	ELSE
+		update tb_child_account_disbursement
+			set payment_approval_status = '3047',
+				update_user_id = v_securityid,
+				update_ts = current_timestamp
+		where disbursement_id = v_disbursement_id;
+	END IF;
+	
+	--select * from tb_payment_header;
+	SELECT al_next_value from sp_nextid ( 'sq_payment_header') into vl_pay_header_id;
+	SELECT al_next_value from sp_nextid ( 'sq_payment_detail') into vl_pay_detail_id;
+	SELECT al_next_value from sp_nextid ( 'sq_payment_status') into vl_pay_status_id;
+
+	INSERT INTO tb_payment_header
+	(	payment_id, provider_id, client_account_id, payment_dt,
+		payment_type_cd, check_status_cd, payment_method_cd, gross_amount_no,
+		offset_amount_no, manual_sw, approval_status_cd, adr_format_cd,
+		adr_street_tx, adr_box_no, adr_pre_dir_cd, adr_street_nm,
+		adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx,
+		adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no,
+		adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx,
+		adr_postal_code_tx, adr_country_tx, create_ts, create_user_id,
+		update_ts, update_user_id, delete_sw,payee_nm )
+	VALUES( vl_pay_header_id, v_provider_id, v_client_account_id, now(),
+			'5989', '', v_payment_method, v_totalamount,
+			0, '', '3047', v_adr_format_cd,
+			v_adr_street_tx, v_adr_box_no, v_adr_pre_dir_cd, v_adr_street_nm,
+			v_adr_street_suffix_cd, v_adr_post_dir_cd, v_adr_unit_type_cd, v_adr_unit_no_tx,
+			v_adr_city_nm, (select statecountycode from county c where countyid::character varying = v_adr_county_cd), v_adr_state_cd, v_adr_zip5_no,
+			v_adr_zip4_no, v_adr_direction_tx, v_adr_foreign_tx, v_adr_foreign_state_tx,
+			v_adr_postal_code_tx, v_adr_country_tx, now(), v_securityid,
+			now(), v_securityid, 'N',v_payee_nm )
+	RETURNING payment_id into v_paymentid;
+
+	/* Old code
+	--select * from tb_payment_header;
+	INSERT INTO tb_payment_header
+	( payment_id, provider_id, client_account_id, payment_dt, payment_type_cd, check_status_cd,
+	  payment_method_cd, gross_amount_no, offset_amount_no, manual_sw, approval_status_cd,
+	  create_ts,  create_user_id, update_ts, update_user_id, delete_sw)
+	VALUES
+	( vl_pay_header_id, v_provider_id, v_client_account_id , now() , '5989', '',
+	  v_payment_method, v_totalamount, 0, '', '3047',
+	  now(),v_securityid,now(),v_securityid,'N' )
+	RETURNING payment_id into v_paymentid;
+	*/
+
+	INSERT INTO tb_payment_detail
+	( payment_detail_id, payment_id,county_cd, payment_amount_no, client_id, final_service_id,
+	  final_service_start_dt, final_service_end_dt, final_amount_no, create_ts, create_user_id,
+	  update_ts, update_user_id,case_id,type_1099_cd,report_1099_sw,final_fiscal_category_cd)
+	select vl_pay_detail_id,v_paymentid, tca.county_cd,v_totalamount,  tca.client_id , tcad.service_id,
+		now(), now(), v_totalamount,now(), v_securityid,
+		now(), v_securityid, tca.case_id, v_type_1099_cd, v_report_1099_sw,v_fiscal_category_cd
+	from tb_client_account tca
+		join tb_child_account_disbursement tcad on tcad.client_account_id= tca.client_account_id
+	where tca.client_account_id=v_client_account_id
+		and tcad.disbursement_id = v_disbursement_id
+	limit 1;
+
+	INSERT INTO tb_payment_status
+	( payment_status_id, payment_status_cd, payment_status_dt, payment_id,  create_ts, create_user_id,
+	  update_ts, update_user_id)
+	VALUES( vl_pay_status_id,'1634', now(), v_paymentid,now(),v_securityid,now(),v_securityid);
+
+	update routing
+		set remarks = 'Approved',
+			routingstatustypeid = 58
+	where objectid = v_disbursement_id :: character varying
+		and eventcode='FINALDIS'
+		and routingstatustypeid = 57
+		and activeflag = 1;
+
+	IF(v_service_cd = '101') THEN
+		v_picklistvalue = '5529';
+		v_picklisttype = '5470';
+	ELSIF(v_service_cd = '102') then
+		v_picklistvalue =  '5483';
+		v_picklisttype = '5484';
+	else
+		v_picklistvalue =  '5483';
+		v_picklisttype = '5485';
+	END IF;
+
+	INSERT INTO tb_account_transaction
+	( client_account_id, transaction_type_cd, transaction_source_cd, benefit_start_dt, benefit_end_dt,
+	  transaction_amount_no, transaction_dt, credit_debit_sw,
+      notes_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw,payment_detail_id)
+	select v_client_account_id,v_picklistvalue,v_picklisttype , now(), now() ,
+		v_totalamount , now(), 'D','',now(),v_securityid,now(),v_securityid,'N',vl_pay_detail_id ;
+
+	if (v_client_acc_sw = 'Y') then
+		update tb_client_account
+		set total_balance_no = coalesce (total_balance_no ,0) - v_totalamount,
+			available_balance_no = coalesce (available_balance_no ,0) - v_totalamount,
+			status_cd='592'
+		where client_account_id = v_client_account_id;
+	end if;
+
+	if(v_client_acc_sw = 'N') then
+		select final_close_dt
+			into v_close_dt
+		from tb_client_account
+		where client_account_id = v_client_account_id;
+
+		update tb_client_account
+		set total_balance_no = coalesce (total_balance_no ,0) - v_totalamount,
+			available_balance_no = coalesce (available_balance_no ,0) - v_totalamount,
+			status_cd = '593',
+			close_dt = v_close_dt,
+			update_user_id = v_securityid,
+			update_ts = current_timestamp
+		where client_account_id = v_client_account_id;
+	end if;
+
+	update tb_child_account_disbursement
+		set payment_id = vl_pay_header_id,
+			activeflag = 0,
+			update_user_id = v_securityid,
+			update_ts = current_timestamp
+	where disbursement_id = v_disbursement_id;
+
+	update tb_commingled_account
+		set total_balance_no = coalesce (total_balance_no ,0)::numeric  - v_totalamount,
+			update_user_id = v_securityid,
+			update_ts = current_timestamp
+	where comm_account_id =
+		(select comm_account_id from tb_client_account where client_account_id = v_client_account_id);
+
+	end if;
+end if;
+
+RETURN 'success';
+
+END;
+$function$
+;

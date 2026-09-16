@@ -1,0 +1,2 @@
+update routing set activeflag=0, updatedby='CDM-13980', updatedon =now() where objectid='9ade1632-6231-4a42-a9d7-3de0380eddb7' and routingstatustypeid =15 and routingid='d712a226-2cfb-484d-9a33-82882f4d849b';
+update routing set activeflag=0, updatedby='CDM-13980', updatedon =now() where objectid='454737e8-8da8-4f28-8531-b90e07658adf' and routingstatustypeid =15 and routingid='44a738c8-a91c-46c5-8ebc-3cdbeb11a306';

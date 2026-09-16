@@ -1,0 +1,100 @@
+CREATE OR REPLACE FUNCTION prov_getproviderqipviolationdetails(v_securityusersid character varying, v_referencevalueid character varying, v_referencetype character varying, p_status character varying, v_providerid integer, v_cap_no character varying, pagenumber integer, pagelimit integer, sortorder character varying, sortcolumn character varying, cap_list character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                   
+ DECLARE                                                                                                                                                                                                                                                                                                           
+ v_pageoffset int;                                                                                                                                                                                                                                                                                                 
+ v_pagenumber int;                                                                                                                                                                                                                                                                                                 
+ v_pagelimit int;                                                                                                                                                                                                                                                                                                  
+ v_limit int;                                                                                                                                                                                                                                                                                                      
+  totalcount integer;                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                   
+             v_result json;                                                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                   
+  BEGIN                                                                                                                                                                                                                                                                                                            
+  v_limit=pagelimit;                                                                                                                                                                                                                                                                                               
+  v_pagenumber := pageNumber-1;                                                                                                                                                                                                                                                                                 
+  v_pageoffset = v_pagenumber * v_limit;                                                                                                                                                                                                                                                                        
+
+   if (v_providerid is null) then 
+    select provider_id  into v_providerid from prov_violation where reference_value_id=v_referencevalueid;
+   end if;
+  
+ SELECT JSON_AGG(pla) into v_result FROM (  SELECT violation_id, reference_id, referencetype, reference_value_id, deficiency_number, qip_number, applicant_id, record_id, 
+ child_id, site_id, record_question_id, comments, objectid, objecttype, create_ts, create_user_id, update_ts, update_user_id, 
+ delete_sw, provider_id, isdraft, cap_status, cap_status_description, planofcorrection, cap_findings, disputecomarcitation, 
+ targetdate, isdispute, isnotificationsent, isacknowledged, prv_signimage, prv_signdate, qa_signimage, qa_signdate, pm_signimage, 
+ pm_signdate, ed_signimage, ed_signdate,notificationsecurityuserid,
+   (select case (prviolation.referencetype)  
+      when 'Monitoring' then
+       (SELECT JSON_AGG(mon) from (
+       select count(1) OVER() totalcount, impact_deficiency as impactofdeficiency,scope_deficiency as scopeofdeficiency,
+       frequency_deficiency as frequencyofdeficiency,question as deficiency_violationname,findings as findings
+       ,(select json_agg(st) from (select  concat(ps.first_nm , ' ',ps.last_nm) as program_admin_nm, ps.staff_phone_no ,ps.staff_email from providerstaff ps where ps.object_id=pv.provider_id limit 1)st) staff_info
+     ,(select json_agg(licinfo) from (select tpl.license_no,tpl.license_level,tpl.license_type, tpa.provider_nm as programname,(cast(initcap(trim(tbpad2.adr_street_tx) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_street_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_city_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_state_cd) 
+                                                    ||' ' 
+                                                    || trim(tbpad2.adr_zip5_no::character VARYING)) AS character VARYING)) AS mailing_address,
+                                                    case when tpa.provider_last_nm is null then tpa.provider_first_nm else tpa.provider_last_nm ||','||tpa.provider_first_nm end as fullname,tpa.adr_email_tx, upn.phonenumber
+       from  tb_provider pi
+       left join tb_provider_addresses tbpad2  on tbpad2.parent_key_id = pi.provider_id :: character varying and tbpad2.delete_sw ='N'
+       inner join tb_provider tpa on tpa.affiliate_provider_id = pi.provider_id       
+       join  tb_provider_licensing tpl on tpa.provider_id::int = tpl.site_id
+       left join tb_provider_decision tpd on tpa.provider_id = tpd.objectid and tpd.fromroleid = 'Licensing Administrator' and tpd.status = 'Approved'
+        left join userprofile up on up.securityusersid = tpd.fromsecurityusersid
+        left join userprofilephonenumber upn on up.securityusersid = upn.securityusersid and  upn.userprofiletypekey = 'cell'
+        where  pi.provider_id = pv.provider_id  limit 1)licinfo) license_info
+      from prov_monitoring_record_data pmrd
+      left join prov_record_question prq on pmrd.record_question_id=prq.record_question_id      
+      left join prov_violation pv on pv.reference_id=pmrd.monitoring_record_data_id  and pv.record_question_id=pmrd.record_question_id 
+      where pv.reference_value_id=prviolation.reference_value_id  and pv.delete_sw='N' and pv.violation_id=prviolation.violation_id
+      )mon) 
+      when 'Complaints' then 
+       (SELECT JSON_AGG(com) from (
+        select count(1) over() totalcount, tcd.tb_provider_complaint_deficiencyid,tcd.provider_complaintid,tcd.deficiency_violationname,                                                                                                                                                                 
+            tcd.citation,tcd.comments,tcd.frequencyofdeficiency as frequencyofdeficiency,tcd.impactofdeficiency as impactofdeficiency,tcd.scopeofdeficiency as scopeofdeficiency,tcd.findings,
+            tcd.need_cap,tpc.complaint_number
+     ,(select json_agg(st) from (select  concat(ps.first_nm , ' ',ps.last_nm) as program_admin_nm, ps.staff_phone_no ,ps.staff_email from providerstaff ps where ps.object_id=pv.provider_id limit 1)st) staff_info
+     ,(select json_agg(licinfo) from (select tpl.license_no,tpl.license_level,tpl.license_type, tpa.provider_nm as programname,
+     (cast(initcap(trim(tbpad2.adr_street_tx) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_street_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_city_nm) 
+                                                    ||' ' 
+                                                    ||trim(tbpad2.adr_state_cd) 
+                                                    ||' ' 
+                                                    || trim(tbpad2.adr_zip5_no::character VARYING)) AS character VARYING)) AS mailing_address,
+                                                    case when tpa.provider_last_nm is null then tpa.provider_first_nm else tpa.provider_last_nm ||','||tpa.provider_first_nm end as fullname,tpa.adr_email_tx, upn.phonenumber
+       from  tb_provider pi
+       left join tb_provider_addresses tbpad2  on tbpad2.parent_key_id = pi.provider_id :: character varying and tbpad2.delete_sw ='N'
+       inner join tb_provider tpa on tpa.affiliate_provider_id = pi.provider_id
+       join  tb_provider_licensing tpl on tpa.provider_id::int = tpl.site_id
+       left join tb_provider_decision tpd on tpa.provider_id = tpd.objectid and tpd.fromroleid = 'Licensing Administrator' and tpd.status = 'Approved'
+        left join userprofile up on up.securityusersid = tpd.fromsecurityusersid
+        left join userprofilephonenumber upn on up.securityusersid = upn.securityusersid and  upn.userprofiletypekey = 'cell'
+        where pi.provider_id= pv.provider_id limit 1)licinfo) license_info
+     from prov_violation pv
+     left join tb_provider_complaint_deficiency  tcd on pv.reference_id=tcd.tb_provider_complaint_deficiencyid
+     left join tb_provider_complaint tpc on tcd.provider_complaintid =tpc.provider_complaintid        
+     where tpc.complaint_number=prviolation.reference_value_id  and pv.violation_id=prviolation.violation_id
+      )com)
+   end  as violationdetails)   
+ from prov_violation prviolation
+ where prviolation.provider_id=v_providerid and delete_sw='N' and (notification_type='QIP' or notification_type is null) and
+ case when v_cap_no is not null then qip_number=v_cap_no else true end and
+ CASE WHEN v_referencevalueid IS NOT NULL THEN reference_value_id = v_referencevalueid ELSE true end
+ and CASE WHEN cap_list=true THEN qip_number is not null ELSE true end
+        ) pla;
+
+return v_result;
+                                                                                                                                                                                                                                                                                                                   
+ end;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+ $function$
+

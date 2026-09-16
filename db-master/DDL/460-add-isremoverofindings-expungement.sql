@@ -1,0 +1,1 @@
+ALTER TABLE cjams.expungement ADD COLUMN IF NOT EXISTS isremoverofindings bool NULL;

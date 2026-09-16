@@ -1,0 +1,1 @@
+   alter table personracetypemap drop constraint if exists fk_personracetypemap_racetype;

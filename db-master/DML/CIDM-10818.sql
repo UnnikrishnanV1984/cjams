@@ -1,0 +1,95 @@
+
+/*
+Category/Module: Person Search
+Root Cause: Louisiana parish values were missing from the reference values table, causing the County/Parish dropdown in Person Search to display an incomplete list.
+Fix Provided: Added all 64 Louisiana parish values to the reference values table through a database data script.
+Is Code Fix Required?: NO
+Code Fix Ticket #: N/A
+Reason Why No Related Code Fix: This was a missing reference data issue and was resolved through a database data fix.
+*/
+
+
+
+INSERT INTO cjams.referencevalues
+(
+    ref_key,
+    referencetypeid,
+    value_text,
+    description,
+    teamtypekey,
+    activeflag,
+    displayorder,
+    insertedby,
+    insertedon,
+    updatedby,
+    updatedon,
+    parenttypeid,
+    parentkey,
+    mdmcode,
+    referencevaluesid
+)
+VALUES
+    ('LA1', 306, 'Acadia', 'Acadia', NULL, 1, 1, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ACADIA', cjams.gen_random_uuid()),
+    ('LA2', 306, 'Allen', 'Allen', NULL, 1, 2, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ALLEN', cjams.gen_random_uuid()),
+    ('LA3', 306, 'Ascension', 'Ascension', NULL, 1, 3, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ASCENSION', cjams.gen_random_uuid()),
+    ('LA4', 306, 'Assumption', 'Assumption', NULL, 1, 4, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ASSUMPTION', cjams.gen_random_uuid()),
+    ('LA5', 306, 'Avoyelles', 'Avoyelles', NULL, 1, 5, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~AVOYELLES', cjams.gen_random_uuid()),
+    ('LA6', 306, 'Beauregard', 'Beauregard', NULL, 1, 6, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~BEAUREGARD', cjams.gen_random_uuid()),
+    ('LA7', 306, 'Bienville', 'Bienville', NULL, 1, 7, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~BIENVILLE', cjams.gen_random_uuid()),
+    ('LA8', 306, 'Bossier', 'Bossier', NULL, 1, 8, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~BOSSIER', cjams.gen_random_uuid()),
+    ('LA9', 306, 'Caddo', 'Caddo', NULL, 1, 9, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CADDO', cjams.gen_random_uuid()),
+    ('LA10', 306, 'Calcasieu', 'Calcasieu', NULL, 1, 10, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CALCASIEU', cjams.gen_random_uuid()),
+    ('LA11', 306, 'Caldwell', 'Caldwell', NULL, 1, 11, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CALDWELL', cjams.gen_random_uuid()),
+    ('LA12', 306, 'Cameron', 'Cameron', NULL, 1, 12, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CAMERON', cjams.gen_random_uuid()),
+    ('LA13', 306, 'Catahoula', 'Catahoula', NULL, 1, 13, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CATAHOULA', cjams.gen_random_uuid()),
+    ('LA14', 306, 'Claiborne', 'Claiborne', NULL, 1, 14, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CLAIBORNE', cjams.gen_random_uuid()),
+    ('LA15', 306, 'Concordia', 'Concordia', NULL, 1, 15, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~CONCORDIA', cjams.gen_random_uuid()),
+    ('LA16', 306, 'De Soto', 'De Soto', NULL, 1, 16, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~DE SOTO', cjams.gen_random_uuid()),
+    ('LA17', 306, 'East Baton Rouge', 'East Baton Rouge', NULL, 1, 17, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~EAST BATON ROUGE', cjams.gen_random_uuid()),
+    ('LA18', 306, 'East Carroll', 'East Carroll', NULL, 1, 18, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~EAST CARROLL', cjams.gen_random_uuid()),
+    ('LA19', 306, 'East Feliciana', 'East Feliciana', NULL, 1, 19, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~EAST FELICIANA', cjams.gen_random_uuid()),
+    ('LA20', 306, 'Evangeline', 'Evangeline', NULL, 1, 20, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~EVANGELINE', cjams.gen_random_uuid()),
+    ('LA21', 306, 'Franklin', 'Franklin', NULL, 1, 21, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~FRANKLIN', cjams.gen_random_uuid()),
+    ('LA22', 306, 'Grant', 'Grant', NULL, 1, 22, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~GRANT', cjams.gen_random_uuid()),
+    ('LA23', 306, 'Iberia', 'Iberia', NULL, 1, 23, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~IBERIA', cjams.gen_random_uuid()),
+    ('LA24', 306, 'Iberville', 'Iberville', NULL, 1, 24, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~IBERVILLE', cjams.gen_random_uuid()),
+    ('LA25', 306, 'Jackson', 'Jackson', NULL, 1, 25, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~JACKSON', cjams.gen_random_uuid()),
+    ('LA26', 306, 'Jefferson', 'Jefferson', NULL, 1, 26, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~JEFFERSON', cjams.gen_random_uuid()),
+    ('LA27', 306, 'Jefferson Davis', 'Jefferson Davis', NULL, 1, 27, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~JEFFERSON DAVIS', cjams.gen_random_uuid()),
+    ('LA28', 306, 'Lafayette', 'Lafayette', NULL, 1, 28, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~LAFAYETTE', cjams.gen_random_uuid()),
+    ('LA29', 306, 'Lafourche', 'Lafourche', NULL, 1, 29, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~LAFOURCHE', cjams.gen_random_uuid()),
+    ('LA30', 306, 'LaSalle', 'LaSalle', NULL, 1, 30, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~LASALLE', cjams.gen_random_uuid()),
+    ('LA31', 306, 'Lincoln', 'Lincoln', NULL, 1, 31, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~LINCOLN', cjams.gen_random_uuid()),
+    ('LA32', 306, 'Livingston', 'Livingston', NULL, 1, 32, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~LIVINGSTON', cjams.gen_random_uuid()),
+    ('LA33', 306, 'Madison', 'Madison', NULL, 1, 33, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~MADISON', cjams.gen_random_uuid()),
+    ('LA34', 306, 'Morehouse', 'Morehouse', NULL, 1, 34, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~MOREHOUSE', cjams.gen_random_uuid()),
+    ('LA35', 306, 'Natchitoches', 'Natchitoches', NULL, 1, 35, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~NATCHITOCHES', cjams.gen_random_uuid()),
+    ('LA36', 306, 'Orleans', 'Orleans', NULL, 1, 36, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ORLEANS', cjams.gen_random_uuid()),
+    ('LA37', 306, 'Ouachita', 'Ouachita', NULL, 1, 37, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~OUACHITA', cjams.gen_random_uuid()),
+    ('LA38', 306, 'Plaquemines', 'Plaquemines', NULL, 1, 38, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~PLAQUEMINES', cjams.gen_random_uuid()),
+    ('LA39', 306, 'Pointe Coupee', 'Pointe Coupee', NULL, 1, 39, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~POINTE COUPEE', cjams.gen_random_uuid()),
+    ('LA40', 306, 'Rapides', 'Rapides', NULL, 1, 40, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~RAPIDES', cjams.gen_random_uuid()),
+    ('LA41', 306, 'Red River', 'Red River', NULL, 1, 41, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~RED RIVER', cjams.gen_random_uuid()),
+    ('LA42', 306, 'Richland', 'Richland', NULL, 1, 42, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~RICHLAND', cjams.gen_random_uuid()),
+    ('LA43', 306, 'Sabine', 'Sabine', NULL, 1, 43, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~SABINE', cjams.gen_random_uuid()),
+    ('LA44', 306, 'St Bernard', 'St Bernard', NULL, 1, 44, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST BERNARD', cjams.gen_random_uuid()),
+    ('LA45', 306, 'St Charles', 'St Charles', NULL, 1, 45, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST CHARLES', cjams.gen_random_uuid()),
+    ('LA46', 306, 'St Helena', 'St Helena', NULL, 1, 46, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST HELENA', cjams.gen_random_uuid()),
+    ('LA47', 306, 'St James', 'St James', NULL, 1, 47, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST JAMES', cjams.gen_random_uuid()),
+    ('LA48', 306, 'St John the Baptist', 'St John the Baptist', NULL, 1, 48, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST JOHN THE BAPTIST', cjams.gen_random_uuid()),
+    ('LA49', 306, 'St Landry', 'St Landry', NULL, 1, 49, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST LANDRY', cjams.gen_random_uuid()),
+    ('LA50', 306, 'St Martin', 'St Martin', NULL, 1, 50, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST MARTIN', cjams.gen_random_uuid()),
+    ('LA51', 306, 'St Mary', 'St Mary', NULL, 1, 51, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST MARY', cjams.gen_random_uuid()),
+    ('LA52', 306, 'St Tammany', 'St Tammany', NULL, 1, 52, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~ST TAMMANY', cjams.gen_random_uuid()),
+    ('LA53', 306, 'Tangipahoa', 'Tangipahoa', NULL, 1, 53, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~TANGIPAHOA', cjams.gen_random_uuid()),
+    ('LA54', 306, 'Tensas', 'Tensas', NULL, 1, 54, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~TENSAS', cjams.gen_random_uuid()),
+    ('LA55', 306, 'Terrebonne', 'Terrebonne', NULL, 1, 55, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~TERREBONNE', cjams.gen_random_uuid()),
+    ('LA56', 306, 'Union', 'Union', NULL, 1, 56, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~UNION', cjams.gen_random_uuid()),
+    ('LA57', 306, 'Vermilion', 'Vermilion', NULL, 1, 57, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~VERMILION', cjams.gen_random_uuid()),
+    ('LA58', 306, 'Vernon', 'Vernon', NULL, 1, 58, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~VERNON', cjams.gen_random_uuid()),
+    ('LA59', 306, 'Washington', 'Washington', NULL, 1, 59, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~WASHINGTON', cjams.gen_random_uuid()),
+    ('LA60', 306, 'Webster', 'Webster', NULL, 1, 60, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~WEBSTER', cjams.gen_random_uuid()),
+    ('LA61', 306, 'West Baton Rouge', 'West Baton Rouge', NULL, 1, 61, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~WEST BATON ROUGE', cjams.gen_random_uuid()),
+    ('LA62', 306, 'West Carroll', 'West Carroll', NULL, 1, 62, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~WEST CARROLL', cjams.gen_random_uuid()),
+    ('LA63', 306, 'West Feliciana', 'West Feliciana', NULL, 1, 63, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~WEST FELICIANA', cjams.gen_random_uuid()),
+    ('LA64', 306, 'Winn', 'Winn', NULL, 1, 64, NULL, now(), 'CIDM-10818', now(), NULL, NULL, 'LA~WINN', cjams.gen_random_uuid());

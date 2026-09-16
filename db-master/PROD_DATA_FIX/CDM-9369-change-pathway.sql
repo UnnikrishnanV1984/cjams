@@ -1,0 +1,1 @@
+update intakeservicerequestsdm set isar = true, updatedon = now(), updatedby = 'CDM-9369' where intakeserviceid = '9ec5cabf-4567-4fdc-ad68-24dc9634e8e8';

@@ -1,0 +1,108 @@
+CREATE OR REPLACE FUNCTION usersrtest(userid character varying, page integer, pagelimit integer, searchval character varying, searchcol character varying)
+ RETURNS TABLE(totalcount bigint, groupnumber character varying, intakeserviceid uuid, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, displayname character varying, county character varying, duedate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE v_pageoffset int;
+v_pagenumber int;
+searchstring character varying;
+DECLARE totalcount integer;
+ 
+BEGIN
+ 
+v_pagenumber := (page-1)*   10;
+ 
+
+searchstring:='';
+ 
+ if(searchcol!='' and  searchval !='' ) then
+         if (searchcol='groupnumber') then 
+   searchstring:= ' inner join (
+       SELECT distinct ISGD.intakeserviceid , ISG.groupnumber 
+       FROM  intakeservicerequestgroup as ISG 
+       INNER JOIN intakeservicerequestgroupdetails as ISGD 
+        ON ISG.groupid=ISGD.groupid 
+        AND lower(ISG.groupnumber) LIKE ''' || lower(searchval) || '%'' ) as ISGD 
+         ON   ISGD.intakeserviceid =ISR.intakeserviceid ';
+   end if;
+         if (searchcol='servicerequestnumber') then 
+   searchstring:= ' AND lower(ISR.servicerequestnumber) like  ''' || lower(searchval) || '%'''; 
+   end if;
+        if (searchcol='srtype') then 
+   searchstring:= ' INNER JOIN intakeservicerequesttype as itsrt
+    ON  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid 
+    AND  lower(itsrt.intakeservreqtypekey )  LIKE ''' || lower(searchval) || '%'''; 
+    end if;
+        if (searchcol='srsubtype') then 
+   searchstring:= ' INNER JOIN servicerequestsubtype as srst
+     ON  srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+     AND  lower(srst.classkey )  LIKE ''' || lower(searchval) || '%''';
+   end if;
+
+  if (searchcol='county') then 
+   searchstring:= ' INNER JOIN (SELECT personid, county FROM personaddress  pa
+        WHERE  personaddresstypekey=''C'' 
+        AND lower(pa.county) LIKE ''' || lower(searchval) || '%'' limit 1 ) pa 
+        ON pa.personid = ar.personid  '; 
+  end if;
+        
+        if (searchcol='displayname')  then
+         searchstring:= ' AND lower(cast(PN.lastname|| '', '' || PN.firstname as  character varying))  LIKE ''' || lower(searchval) || '%''';
+        end if;
+  -- searchstring:='  lower( cast('|| searchcol   || ' as character varying)) like ''' || lower(searchval) || '%'' AND'; 
+    END IF;
+     
+ RETURN QUERY
+    execute ' 
+    SELECT count(1)   over(),
+            (SELECT ISG.groupnumber 
+            from  intakeservicerequestgroup as ISG 
+            INNER JOIN intakeservicerequestgroupdetails as ISGD on ISG.groupid=ISGD.groupid 
+            WHERE ISGD.intakeserviceid  =ISR.intakeserviceid 
+            
+            limit 1
+            ),
+            ISR.intakeserviceid,ISR.servicerequestnumber,
+            (SELECT itsrt.intakeservreqtypekey 
+             FROM intakeservicerequesttype as itsrt
+            WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid
+            AND itsrt.activeflag =1  limit 1),
+            (SELECT srst.classkey FROM servicerequestsubtype as srst
+            WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+             AND srst.activeflag =1  limit 1),
+            ISR.effectivedate, cast(PN.lastname|| '', '' || PN.firstname as  character varying),
+            (SELECT pa.county FROM personaddress pa 
+            WHERE pa.personid = ar.personid
+            and pa.activeflag =1
+            AND  personaddresstypekey=''C'' limit 1) ,
+            (SELECT  CASE 
+                     WHEN ISR.TargetCompleteDate is null  then CAST(ISR.ReportedDate as date) + CAST(src.DueDateOffset as integer)
+                     ELSE ISR.TargetCompleteDate  END  
+            FROM  ServiceRequestTypeConfig  as src 
+            WHERE  src.intakeservreqtypeid = isr.IntakeServReqTypeId 
+            AND src.servicerequestsubtypeid = isr.IntakeServiceRequestClassId 
+            and src.activeflag =1
+            limit 1
+            ) as duedate
+
+    FROM intakeservicerequest as ISR 
+    JOIN intakeservicerequestactor as ISRA 
+        ON ISRA.intakeserviceid=ISR.intakeserviceid 
+    JOIN actor as AR
+        ON AR.actorid=ISRA.actorid 
+    JOIN person as PN 
+        ON PN.personid=AR.personid ' 
+        || searchstring ||
+     ' WHERE ISRA.intakeservicerequestpersontypekey=''RA''
+        AND ISR.intakeserviceid in
+        ( SELECT atmsr.intakeserviceid 
+            FROM areateammemberservicerequest as atmsr 
+            WHERE atmsr.teammemberid in 
+                (SELECT teammemberid FROM teammemberassignment 
+                    WHERE securityusersid= ''S-1-5-21-152097760-152508613-1969071786-1008''))
+        ORDER BY ISR.effectivedate desc LIMIT 10  OFFSET ' || v_pagenumber ;
+
+END; 
+
+$function$
+

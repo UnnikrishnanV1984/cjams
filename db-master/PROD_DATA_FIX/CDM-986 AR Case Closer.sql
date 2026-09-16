@@ -1,0 +1,1 @@
+update intakeservicerequest set activeflag = 0 where servicerequestnumber = '20200140018895';

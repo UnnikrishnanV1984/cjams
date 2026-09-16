@@ -1,0 +1,328 @@
+-- FUNCTION: cjams.sp_commingled_interest_alloc(bigint)
+
+DROP FUNCTION IF EXISTS cjams.sp_commingled_interest_alloc(bigint);
+
+CREATE OR REPLACE FUNCTION cjams.sp_commingled_interest_alloc(
+	an_comming_trans_id bigint,
+	OUT as_error character varying,
+	OUT al_sqlcode integer)
+    RETURNS record
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+------------------------------------------------------------------------
+-- SQL Stored Procedure 
+-- APC
+-- Created on 05/23/2002
+-- Commingled Interest Allocation
+-- Revision History
+-- Vinodh M - PRJ-01585 - Add code to calculate and update Available for anc.
+-- Vineet Tirodkar - PRJ-04304 - Correct Commingled Account Service Log Category Code 7502 Logic
+-- To fix issue of difference in sum total of interest allocated to child accounts and interest amount. (BDSD Req: 5)
+-- 1) Round the calculated interest amount at 2nd decimal place.
+-- 2) Even after rounding if there is any difference then allocate that amount to the last child account in process.
+------------------------------------------------------------------------
+  
+
+DECLARE SQLCODE INT DEFAULT 0;
+DECLARE vl_row_cnt BIGINT DEFAULT 0;
+DECLARE vl_counter BIGINT DEFAULT 0;
+DECLARE vl_client_acc_id BIGINT DEFAULT 0;
+DECLARE vn_ca_amount DECIMAL(10,2);
+DECLARE vdc_obligated_for_ANC DECIMAL(10,2);
+DECLARE vdc_obligated_for_COC DECIMAL(10,2);
+DECLARE vdc_available_bal DECIMAL(10,2);
+DECLARE vn_comming_amount DECIMAL(10,2);
+DECLARE vn_interest DECIMAL(10,2);
+DECLARE vn_pro_rate_share DECIMAL(10,2);
+DECLARE vdc_total_pro_rate_share DECIMAL(10,2) DEFAULT 0.00;
+DECLARE vl_trans_id BIGINT DEFAULT 0;
+DECLARE vl_comm_account_id BIGINT DEFAULT 0;
+DECLARE vl_total_rows BIGINT DEFAULT 0;
+DECLARE vl_count BIGINT DEFAULT 0;
+DECLARE vdc_newCommingtotal DECIMAL(10,2);
+DECLARE vd_start_date Date;
+DECLARE vd_end_date Date;
+DECLARE vd_trans_date Date;
+DECLARE vs_user VARCHAR(50);
+DECLARE vs_notes VARCHAR(300);
+DECLARE vs_sequence VARCHAR(50) DEFAULT 'sq_account_transaction';
+  
+--Declare Cursor for all clients Accounts associated to the commingled account
+DECLARE cursor_client_acc CURSOR FOR  
+
+SELECT CLIENT_ACCOUNT_ID, 
+	COALESCE(TOTAL_BALANCE_NO,0) AS TOTAL_BALANCE_NO,
+	COALESCE(OBLIGATED_FOR_ANC,0) AS OBLIGATED_FOR_ANC, 
+	COALESCE(OBLIGATED_FOR_COC,0) AS OBLIGATED_FOR_COC
+FROM TB_CLIENT_ACCOUNT A
+WHERE A.DELETE_SW = 'N'
+	AND A.CLOSE_DT IS NULL
+	AND A.COMM_ACCOUNT_ID = vl_comm_account_id and A.status_cd = '592' --added by venkatesh for restrict intrest transation to closed and inactive accounts
+ORDER BY COALESCE(TOTAL_BALANCE_NO,0) ; 
+BEGIN
+IF al_sqlcode <> 0 THEN
+	 as_error := 'Declare Cursor for tb_client_account failed';
+	--GOTO ERROR_SECTION;
+	--EXIT;
+END IF;
+
+-- Getting the commingled account id from the transaction id passed to the procedure
+SELECT COMM_ACCOUNT_ID 
+	INTO vl_comm_account_id
+FROM TB_COMM_ACCT_TRANSACTIONS 
+WHERE COMM_ACCT_TRANS_ID = an_comming_trans_id ; --added by venkatesh for restrict intrest transation to closed and inactive accounts
+	
+ al_sqlcode := SQLCODE;
+IF al_sqlcode <> 0 THEN
+	 as_error := 'select TB_COMM_ACCT_TRANSACTIONS failed';
+	--GOTO ERROR_SECTION;
+	--EXIT;
+END IF;
+
+-- Getting the commingled account balance on which interest is calculated
+SELECT TOTAL_BALANCE_NO 
+	INTO vn_comming_amount
+FROM TB_COMMINGLED_ACCOUNT
+WHERE COMM_ACCOUNT_ID = vl_comm_account_id;
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode <> 0 THEN
+	 as_error := 'select TB_COMMINGLED_ACCOUNT - Amount failed';
+	--GOTO ERROR_SECTION;
+	--EXIT;
+END IF;
+	
+IF vn_comming_amount is NULL THEN
+	 vn_comming_amount := 0;
+END IF;	
+	
+-- Error interest can not be given to a 0 balance
+IF vn_comming_amount = 0 Then
+	 as_error := 'Commingle Amount cannot be zero';
+	--GOTO ERROR_SECTION;
+	--EXIT;
+END IF;
+    
+SELECT COUNT(*) 
+	INTO vl_total_rows
+FROM TB_CLIENT_ACCOUNT A
+WHERE A.DELETE_SW = 'N'
+AND A.CLOSE_DT IS  NULL
+AND A.COMM_ACCOUNT_ID = vl_comm_account_id and A.status_cd = '592'; --added by venkatesh for restrict intrest transation to closed and inactive accounts; 
+
+IF vl_total_rows = 0 THEN
+	 as_error := 'Client Account Not associated to Commingled Account';
+	--GOTO ERROR_SECTION;
+	--EXIT;
+END IF;
+
+-- Populate commingled account transaction table values
+SELECT INTEREST_START_DT,
+	INTEREST_END_DT,
+	INTEREST_AMOUNT_NO,
+	CREATE_USER_ID,
+	NOTES_TX
+INTO vd_start_date,
+	vd_end_date,
+	vn_interest,
+	vs_user,
+	vs_notes
+FROM TB_COMM_ACCT_TRANSACTIONS
+WHERE COMM_ACCT_TRANS_ID = an_comming_trans_id;
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode <> 0 THEN
+	 as_error := 'select TB_COMM_ACCT_TRANSACTIONS failed';
+	--GOTO ERROR_SECTION;
+	--EXIT;
+END IF;
+	
+-- Cursor open Statement
+OPEN cursor_client_acc;
+
+-- Loop Start Here
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode <> 0 THEN
+	 as_error := 'Open Cursor for tb_client_account failed';
+	--GOTO ERROR_SECTION; 
+	--EXIT;
+END IF;
+RAISE NOTICE 'loop cpount :%', vl_total_rows;
+--WHILE ( vl_total_rows > vl_count ) DO
+WHILE ( vl_total_rows > vl_count ) LOOP
+ 
+	
+    -- Fetch Rows
+    FETCH cursor_client_acc INTO vl_client_acc_id, vn_ca_amount, vdc_obligated_for_ANC, vdc_obligated_for_COC;
+   
+   RAISE NOTICE ' cursor_client_acc :%', vl_client_acc_id;
+
+     al_sqlcode := SQLCODE;
+	IF al_sqlcode <> 0 AND al_sqlcode <> 100 THEN
+		 as_error := 'Fetch Cursor for tb_client_account failed';
+		--GOTO ERROR_SECTION;
+		EXIT;
+	END IF;
+    
+	
+    IF vn_ca_amount is NULL THEN
+         vn_ca_amount := 0.00;
+    END IF;--	
+	
+	-- Apply interest Logic Start
+	-- PRJ-04304
+	RAISE NOTICE ' vn_ca_amount :%', vn_ca_amount;
+	RAISE NOTICE ' vl_count :%', vl_count;
+	
+	
+	
+	IF vl_count = vl_total_rows - 1 THEN -- Last Child Account
+		 vn_pro_rate_share := vn_interest - vdc_total_pro_rate_share;
+		 RAISE NOTICE ' vn_pro_rate_share :%', vn_pro_rate_share;
+	else
+	RAISE NOTICE ' vn_comming_amount :%', vn_comming_amount;
+	RAISE NOTICE ' vn_interest :%', vn_interest;
+	
+		 vn_pro_rate_share := ROUND(((vn_ca_amount/vn_comming_amount) * vn_interest),2);
+		 vdc_total_pro_rate_share := vdc_total_pro_rate_share + vn_pro_rate_share;
+	END IF;
+	RAISE NOTICE ' vn_pro_rate_share :%', vn_pro_rate_share;
+	 vn_ca_amount := vn_ca_amount + vn_pro_rate_share;
+	
+	-- Available Balance = Total Balance - ( Obligated for COC + Obligated for ANC )
+	 RAISE NOTICE ' vdc_obligated_for_COC :%', vdc_obligated_for_COC;
+	IF vdc_obligated_for_COC is NULL THEN
+         vdc_obligated_for_COC := 0.00;
+    END IF;
+
+    IF vdc_obligated_for_ANC is NULL THEN
+     	 vdc_obligated_for_ANC := 0.00;
+    END IF;--
+	 RAISE NOTICE ' vn_ca_amount :%', vn_ca_amount;
+     vdc_available_bal := vn_ca_amount - ( vdc_obligated_for_ANC + vdc_obligated_for_COC );
+ 
+    -- Update tb_client_account : Start
+    UPDATE TB_CLIENT_ACCOUNT 
+    SET TOTAL_BALANCE_NO = vn_ca_amount, 
+		AVAILABLE_BALANCE_NO = vdc_available_bal
+    WHERE CLIENT_ACCOUNT_ID = vl_client_acc_id;
+   	
+     al_sqlcode := SQLCODE;
+    IF al_sqlcode <> 0 THEN
+        as_error := 'Update tb_client_account failed';
+      -- GOTO ERROR_SECTION;
+	  EXIT;
+    END IF;
+    -- Update tb_client_account : End
+
+    -- Insert in to tb_client_account_transaction : Start
+    -- generate sequence
+     vs_sequence := 'sq_account_transaction';
+    SELECT sp_nextid ( vs_sequence) INTO vl_trans_id;
+
+     al_sqlcode := SQLCODE;
+    IF al_sqlcode < 0 THEN
+        as_error := 'Next ID gen -sq_account_transaction- failed';
+     --  GOTO ERROR_SECTION;
+	 EXIT;
+    END IF;
+    
+	-- 589 - Receipts
+	-- 584 - Interest
+    INSERT INTO TB_ACCOUNT_TRANSACTION (
+		TRANSACTION_ID,
+		CLIENT_ACCOUNT_ID,
+		TRANSACTION_TYPE_CD,
+		TRANSACTION_SOURCE_CD,
+		BENEFIT_START_DT,
+		BENEFIT_END_DT,
+		TRANSACTION_AMOUNT_NO,
+		TRANSACTION_DT,
+		CREDIT_DEBIT_SW,
+		NOTES_TX,
+		CREATE_TS,
+		FREQUENCY_CD,
+		CREATE_USER_ID,
+		UPDATE_TS,
+		UPDATE_USER_ID,
+		DELETE_SW,
+		ADJUSTMENT_APPROVAL_STATUS_CD,
+		MANUAL_DB_APPROVAL_STATUS_CD,
+		REFERENCE_TRANSACTION_ID ,comm_acct_trans_id)
+     VALUES ( vl_trans_id,
+			vl_client_acc_id,
+			'589',
+			'584',
+			vd_start_date,
+			vd_end_date,
+			vn_pro_rate_share,
+			CURRENT_DATE, 
+			'C',
+			vs_notes,
+			CURRENT_TIMESTAMP,
+			'N',
+			vs_user,
+			CURRENT_TIMESTAMP,
+			vs_user,
+			'N',
+			NULL,
+			NULL,
+			null,an_comming_trans_id);
+
+	 al_sqlcode := SQLCODE;
+	IF al_sqlcode <> 0 THEN
+		 as_error := 'Insert in to tb_account_transaction failed';
+		--GOTO ERROR_SECTION;
+		EXIT;
+	END IF;
+    -- Insert tb_client_account_transaction : End
+	--Apply interest Logic End
+	
+	 vl_count := vl_count + 1;
+--END WHILE;
+END LOOP;--
+-- Sum the total balance for all child accounts belonging to this Commingled ID
+-- Consider all active or inactive accounts and update the commingled account
+SELECT SUM(TOTAL_BALANCE_NO) 
+	INTO vdc_newCommingtotal 
+FROM TB_CLIENT_ACCOUNT 
+WHERE CLOSE_DT IS NULL 
+	AND DELETE_SW = 'N' 
+	AND COMM_ACCOUNT_ID = vl_comm_account_id and status_cd = '592'; --added by venkatesh for restrict intrest transation to closed and inactive accounts;
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode <> 0 THEN
+    as_error := 'select tb_client_account failed';
+   --GOTO ERROR_SECTION;
+  -- EXIT;
+END IF;
+
+UPDATE TB_COMMINGLED_ACCOUNT 
+	SET TOTAL_BALANCE_NO = vdc_newCommingtotal
+WHERE COMM_ACCOUNT_ID = vl_comm_account_id;
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode <> 0 THEN
+    as_error := 'Update tb_commingled_account failed';
+  -- GOTO ERROR_SECTION;
+  --EXIT;
+END IF;
+CLOSE cursor_client_acc;
+-- COMMIT WORK;--
+--RETURN al_sqlcode;
+
+-- Error handler
+--ERROR_SECTION:
+--<<ERROR_SECTION>>
+--ROLLBACK WORK;--
+--RETURN al_sqlcode;
+END;
+
+$BODY$;
+
+
+

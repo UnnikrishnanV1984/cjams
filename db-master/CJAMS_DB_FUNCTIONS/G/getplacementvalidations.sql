@@ -1,0 +1,59 @@
+DROP function if exists getplacementvalidations(uuid);
+CREATE OR REPLACE FUNCTION cjams.getplacementvalidations(v_person uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+declare 
+l_placementvalidations json;
+v_caseplan boolean default true;
+v_eligibility boolean default true;
+v_childage boolean default false;
+v_servicelog boolean default false;
+v_livingarrgangement boolean default true;
+isserviceexists bigint;
+v_livingcount bigint;
+
+begin
+
+	select case when EXTRACT(YEAR FROM age(cast(dob as date))):: integer <= 21 
+	then true else false end as childage into v_childage from person where personid= v_person;
+
+	select count(1) into isserviceexists from tb_service_log tsl where tsl.delete_sw = 'N' and  tsl.client_id in (select p.cjamspid from person p where  p.personid = v_person);
+	if(isserviceexists > 0)
+	then 
+	select case when count(1) > 0 then false else true end as servicelog into v_servicelog  from tb_service_log tls where coalesce(tls.end_dt,null) is null  and tls.client_id in (select p.cjamspid from person p where  p.personid = v_person);
+	else 
+	v_servicelog := true;
+	end if;	
+	
+	
+	select count(1) into v_livingcount from livingarrangement liv 
+	join placement p on p.placementid = liv.placementid and p.activeflag =1 and p.placementtypekey = 'LA'
+	join intakeservicerequestactor isr on isr.intakeservicerequestactorid = p.intakeservicerequestactorid 
+	join actor a on a.actorid = isr.actorid 
+	join person pr on pr.personid = a.personid 
+	where pr.personid = v_person and liv.livingarrangementtypekey = 'UNK' and liv.activeflag =1;
+
+	if(v_livingcount>0)
+	then
+	select  case when count(1) > 0 then false else true end as livingcount into v_livingarrgangement from livingarrangement liv 
+	join placement p on p.placementid = liv.placementid and p.activeflag =1 and p.placementtypekey = 'LA'
+	join intakeservicerequestactor isr on isr.intakeservicerequestactorid = p.intakeservicerequestactorid 
+	join actor a on a.actorid = isr.actorid 
+	join person pr on pr.personid = a.personid 
+	where pr.personid = v_person and liv.livingarrangementtypekey = 'UNK'  and liv.activeflag =1 and coalesce(p.enddatetime,null) is null ;
+	else
+	v_livingarrgangement := true;
+	end if;
+
+	SELECT  json_agg(placementvalidations) INTO  l_placementvalidations FROM (
+		select v_caseplan as iscaseplan,v_eligibility as iscaseplaneligibility,v_childage as ischildage ,v_servicelog as is_servicelog,
+		v_livingarrgangement as islivingarrgangement
+		)placementvalidations;
+
+return l_placementvalidations;        
+end;
+
+$function$
+;

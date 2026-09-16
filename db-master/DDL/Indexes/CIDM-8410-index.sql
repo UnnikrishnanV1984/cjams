@@ -1,0 +1,1 @@
+create index if not exists Xie2_servicecase on servicecase(to_int_char(servicecasenumber));

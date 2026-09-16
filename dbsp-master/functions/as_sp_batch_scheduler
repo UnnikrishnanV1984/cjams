@@ -1,0 +1,527 @@
+CREATE OR REPLACE FUNCTION as_sp_batch_scheduler()
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+----------------------------------------------------------------------------------------------
+-- Author          : Samir Patil
+-- Date            : 07/19/2012
+-- Description     : This SP determines whether a batch ran or not.
+--     If the batch has ran then it updates the status in TB_BATCH_STATUS.
+--     Updates - Run date & scheduled Job.
+--     If batch has not run then it inserts in TB_BATCH_STATUS AS "DID NOT RUN." 
+--     for scheduled job & run date.
+--     This SP is being called in script which sends email & notifies how many batches ran & status.
+-- Request #       : PRJ-02667 - MD CHESSIE Batch Process Redesign
+
+-- Argument(s):
+-- None
+
+-- Revision:
+----------------------------------------------------------------------------------------------
+
+--P1: BEGIN
+ DECLARE 
+    
+    SQLCODE     INTEGER         DEFAULT 0;
+ SQLSTATE     CHARACTER(5)         DEFAULT '00000';
+ p_sp_error              CHARACTER(5)    DEFAULT  '99999' ;
+ vs_message_text   VARCHAR(3000)   DEFAULT '';
+ vl_ret_status    INTEGER         DEFAULT 0;
+ vs_Procedure_nm   VARCHAR(100)    DEFAULT 'SP_BATCH_SCHEDULER';
+ 
+ al_sqlcode    INTEGER         DEFAULT 0;
+ as_error     VARCHAR(3000)   DEFAULT '';
+
+ vs_success_sw   CHARACTER(1);
+ vl_batch_id    Integer         DEFAULT 0;
+ vl_batch_log_id   Integer         DEFAULT 0;
+ vs_batch_nm    VARCHAR(50);
+ vs_status    VARCHAR(5000);
+ vs_frequency   VARCHAR(2);
+ vs_ampm     VARCHAR(2);
+ vs_batch_desc   VARCHAR(200);
+ vs_err_tx    VARCHAR(500);
+ vl_err_count   Integer         DEFAULT 0;
+ vl_cnt     Integer         DEFAULT 0;
+ vd_batch_dt    DATE;
+ vd_current_dt   DATE;
+ vd_prev_dt    DATE;
+ vs_sev_level   VARCHAR(5);
+ 
+ 
+--Variables start here. 
+ vs_day_name   VARCHAR(10);
+ 
+ -- Identify the batches for the scheduled day.
+ -- Identify the frequency.
+ -- Identify the current day name
+ BATCH_ID_CUR CURSOR FOR 
+  
+        select  batchsch.batch_master_id, 
+                batchsch.batch_nm, 
+                batchsch.batch_desc_tx,
+                batchsch.frequency,
+                batchsch.schedtm,
+                batchsch.alert_cd
+  from    (   select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                    WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                    ELSE 'PM'
+                                END ) as schedtm, 
+                            active_sw, 
+                            alert_cd 
+                    from    tb_batch_master 
+              where   (TO_CHAR(current_date,'DAY') in ('Monday','Tuesday','Wednesday','Thursday','Friday')
+                      and frequency = 'WD' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ) )
+                      OR 
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Monday','Tuesday','Wednesday','Thursday','Friday')
+                      and frequency = 'WD' 
+                            and ((  CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+              where   (TO_CHAR(current_date,'DAY') in ('Saturday','Sunday')
+                      and frequency = 'WE' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM'  ))
+                      OR 
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Saturday','Sunday')
+                      and frequency = 'WE' 
+                            and ( (  CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) <12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                           (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd 
+                    from    tb_batch_master 
+              where   (TO_CHAR(current_date,'DAY') in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')
+                      and frequency = 'W6' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ) )
+                      OR 
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')
+                      and frequency = 'W6' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )as schedtm, 
+                            active_sw, 
+                            alert_cd 
+              from    tb_batch_master 
+              where   frequency = 'D' 
+                            and batch_nm <> 'late_valid_pmnt.sh'
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd 
+              from    tb_batch_master 
+              where   batch_nm = 'late_valid_pmnt.sh' 
+                            and frequency = 'D' 
+                            and (TO_CHAR(current_date,'DAY') NOT IN (2,14)) 
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd 
+                    from    tb_batch_master 
+              where   (frequency = (TO_CHAR(current_date,'DAY')) 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ) )
+                      OR (frequency = TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY')
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Sunday') 
+                            and frequency = 'D1' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM')  )
+                      OR  
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Sunday') 
+                            and frequency = 'D1' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Monday') 
+                            and frequency = 'D2' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ))
+                      OR  (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY')in ('Monday') 
+                            and frequency = 'D2' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Tuesday') 
+                            and frequency = 'D3' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ))
+                      OR  (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY')in ('Tuesday') 
+                            and frequency = 'D3' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM, 1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Wednesday') 
+                            and frequency = 'D4' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ))
+                      OR  
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Wednesday') 
+                            and frequency = 'D4' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Thursday') 
+                            and frequency = 'D5' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ))
+                      OR 
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Thursday') 
+                            and frequency = 'D5' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Friday') 
+                            and frequency = 'D6' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ))
+                      OR 
+                            (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY')in ('Friday') 
+                            and frequency = 'D6' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) = 'PM'))
+              union
+              select  batch_master_id,
+                            batch_nm, 
+                            batch_desc_tx, 
+                            frequency,
+                            (   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END ) as schedtm, 
+                            active_sw, 
+                            alert_cd  
+                    from    tb_batch_master 
+                    where   (TO_CHAR(current_date,'DAY') in ('Saturday') 
+                            and frequency = 'D7' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM'  ))
+                      OR  (TO_CHAR((current_date - INTERVAL '1 DAY '),'DAY') in ('Saturday') 
+                            and frequency = 'D7' 
+                            and ((   CASE 
+                                        WHEN SUBSTRING(SCHEDULED_TM,1,2) < 12 THEN 'AM' 
+                                        ELSE 'PM'
+                                    END )= 'AM' ) )
+          ) batchsch 
+  where   batchsch.batch_master_id not in (34,56,57,36,40,41)  
+                and batchsch.active_sw = 'Y';--
+  --WITH UR; 
+ 
+ 
+ 
+    
+    BEGIN
+
+
+ EXCEPTION
+ WHEN OTHERS THEN 
+    BEGIN
+  GET STACKED DIAGNOSTICS  vs_message_text =  MESSAGE_TEXT;
+     al_sqlcode  := -1 ;
+  as_error    := COALESCE(as_error ,'') || TO_CHAR(CURRENT_TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;
+  as_error    := COALESCE(as_error ,'') || '::RO Batch id ::' || TO_CHAR(vl_batch_id) ;
+  as_error    := as_error || vs_message_text;
+
+  SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,
+           vl_batch_id, 
+                                         NULL,
+                                         NULL,
+                                         NULL,
+                                         NULL,
+                                         SQLCODE,
+                                         as_error,
+                                         'BStatus',
+                                         vl_ret_status);
+  
+  RETURN ; 
+ END;--
+
+    
+
+ OPEN BATCH_ID_CUR;--
+ 
+ SELECT  CURRENT_DATE, 
+            ((current_date - INTERVAL '1 DAY '),'DAY')
+ INTO vd_current_dt,
+            vd_prev_dt;--
+ --FROM SYSIBM.SYSDUMMY1;
+ 
+ SET al_sqlcode = SQLCODE;
+ IF al_sqlcode <> 0 THEN
+  SET as_error = 'Error in selecting Current Date, Previous Date.';
+  --GNAL p_sp_error  ;
+ END IF ; 
+ 
+ FETCH   BATCH_ID_CUR
+  INTO   vl_batch_id, 
+            vs_batch_nm, 
+            vs_batch_desc, 
+            vs_frequency, 
+            vs_ampm, 
+            vs_sev_level;--
+ 
+ --WHILE_LOOP:
+ WHILE (SQLCODE = 0)
+ LOOP 
+ 
+  If vs_ampm = 'AM' Then
+   SET vd_batch_dt = vd_current_dt;--
+  ELSEIF vs_ampm = 'PM' Then
+   SET vd_batch_dt = vd_prev_dt;--
+  End If;--
+  
+  -- Get Batch Log ID for the Batch Master ID
+  SELECT  MAX(LG.BATCH_LOG_ID)
+  INTO vl_batch_log_id
+  FROM TB_BATCH_LOG LG
+    ,TB_BATCH_STATUS ST
+  WHERE  LG.BATCH_MASTER_ID = vl_batch_id
+  AND  LG.BATCH_LOG_ID = ST.BATCH_LOG_ID
+  AND  LG.RUN_DT = vd_batch_dt;  
+  --WITH UR;
+ -- AND  LG.RUN_DT = ST.RUN_DT;
+
+  SET al_sqlcode = SQLCODE;
+  IF (al_sqlcode <> 0) AND (al_sqlcode <> 100) THEN
+   SET as_error = 'Error in selecting BATCH_LOG_ID.';
+   --GNAL p_sp_error  ;
+  END IF ;
+
+ 
+  If (al_sqlcode = 100) OR (vl_batch_log_id is Null OR vl_batch_log_id = 0) Then
+  
+      vs_status := 'Job ID:' || vl_batch_id || ', ' || 'Job Name:' || LTRIM(RTRIM(vs_batch_desc)) || ', Status [' || ' Did Not Run. ' || ']' || ', Severity Level:'|| LTRIM(RTRIM(vs_sev_level)) || '.'; 
+    
+   -- This particular Batch did not run so insert as 'Did not run.'
+        INSERT INTO     TB_BATCH_STATUS (   STATUS,
+                              BATCH_LOG_ID,
+                              SCHEDULED_JOB,
+                              RUN_DT,
+                              BATCH_MASTER_ID      ) 
+      VALUES                          (   vs_status,
+                           Null,
+                           vs_batch_nm,
+                           vd_current_dt,
+                           vl_batch_id);
+      SET al_sqlcode = SQLCODE;
+       IF al_sqlcode <> 0 THEN
+           SET as_error = 'Error in inserting TB_BATCH_STATUS.';
+           --GNAL p_sp_error;
+       END IF ;   
+  ELSE
+   -- Batch has run so update the scheduled job & run date.
+   UPDATE  TB_BATCH_STATUS A
+   SET  A.RUN_DT =  (   SELECT  B.RUN_DT 
+                                    FROM    TB_BATCH_LOG B 
+                                    WHERE   B.BATCH_LOG_ID = A.BATCH_LOG_ID 
+                                            AND B.BATCH_MASTER_ID = A.BATCH_MASTER_ID),
+     A.SCHEDULED_JOB = vs_batch_nm
+   WHERE A.BATCH_LOG_ID = vl_batch_log_id;
+   
+   SET al_sqlcode = SQLCODE;
+   IF al_sqlcode <> 0 THEN
+    SET as_error = 'Error in updating TB_BATCH_STATUS : RUN_DT,SCHEDULED_JOB';
+    --GNAL p_sp_error  ;
+   END IF ;    
+  
+  END IF;--
+  
+  --Reset Variables.
+  vl_batch_log_id     := 0;--
+  vs_batch_nm         := '';--
+  vs_ampm             := '';--
+  vs_batch_desc       := '';--
+  vs_sev_level        := '';--
+  vs_status           := '';--
+  
+ 
+  FETCH   BATCH_ID_CUR
+  INTO    vl_batch_id, 
+                vs_batch_nm,
+                vs_batch_desc, 
+                vs_frequency, 
+                vs_ampm, 
+                vs_sev_level;--
+ 
+ END LOOP ;--
+  
+ CLOSE BATCH_ID_CUR ;--
+ 
+ 
+ --Unscheduled Jobs will not have run date. populate the run date from tb_batch_log for last one day & current date. 
+ UPDATE  TB_BATCH_STATUS A
+  SET A.RUN_DT= ( SELECT  B.RUN_DT 
+                        FROM    TB_BATCH_LOG B 
+                        WHERE   B.BATCH_LOG_ID = A.BATCH_LOG_ID 
+                                AND B.BATCH_MASTER_ID = A.BATCH_MASTER_ID)
+     WHERE  A.BATCH_LOG_ID IN ( SELECT  BATCH_LOG_ID 
+                                    FROM    TB_BATCH_LOG 
+                                    WHERE   RUN_DT > (CURRENT_DATE - INTERVAL '2 DAY'))
+             AND  A.RUN_DT IS NULL;
+ 
+ COMMIT;
+ 
+ Return;
+ 
+END ;
+$function$
+

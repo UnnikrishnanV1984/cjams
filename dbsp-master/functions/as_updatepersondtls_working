@@ -1,0 +1,210 @@
+CREATE OR REPLACE FUNCTION as_updatepersondtls_working(updatedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                            
+
+DECLARE
+v_Persondata json;
+v_Personaddressesdata json;
+v_Personphonenumberdata json;
+v_Actordata json;
+v_Aliasdata json;
+v_Personidentifierdata json;
+v_Actorrelationdata json;
+v_ReqPersonId uuid;
+v_ReqPersonaddressid uuid;
+v_ReqPersonphonenumberid uuid;
+v_ReqAliasid uuid;
+v_ReqPersonidentifierid uuid;
+v_Actorid uuid;
+returnStatus text;
+
+PersonaddressesdataItr json;
+PersonphonenumberdataItr json;
+ActordataItr json;
+AliasdataItr json;
+PersonidentifierdataItr json;
+ActorrelationdataItr json;
+
+generated_actorid uuid;
+
+
+BEGIN
+
+v_Persondata := updatedtlsobj->>'People';
+v_Personaddressesdata := updatedtlsobj->>'Personaddresses';
+v_Personphonenumberdata := updatedtlsobj->>'Personphonenumber';
+v_Actordata := updatedtlsobj->>'Actor';
+v_Aliasdata := updatedtlsobj->>'Alias';
+v_Personidentifierdata := updatedtlsobj->>'Personidentifier';
+v_Actorrelationdata := updatedtlsobj->>'Actorrelation';
+v_ReqPersonId := v_Persondata->>'personid';
+
+
+IF LENGTH(v_Persondata->>'personid') > 1
+THEN
+UPDATE person
+  SET activeflag= (v_Persondata->>'activeflag')::int, firstname=v_Persondata->> 'firstname', lastname=v_Persondata->> 'lastname', 
+       middlename=v_Persondata->> 'middlename', suffix=v_Persondata->> 'nameSuffix', dangerlevel=(v_Persondata->> 'dangerlevel')::int, 
+       dangerreason=v_Persondata->> 'dangerreason', updatedby=v_Persondata->> 'updatedby', 
+       dob=(v_Persondata->> 'dob')::date,maritalstatustypekey=v_Persondata->> 'maritalstatustypekey', gendertypekey=v_Persondata->> 'gendertypekey',
+       racetypekey=v_Persondata->> 'racetypekey',ethnicgrouptypekey=v_Persondata->> 'ethnicgrouptypekey',
+       primarylanguageid=(v_Persondata->> 'primarylanguageid')::uuid, secondarylanguageid=(v_Persondata->> 'secondarylanguageid')::uuid
+WHERE personid = v_ReqPersonId;
+
+
+
+--Person Address Add/Update
+FOR PersonaddressesdataItr IN SELECT * FROM json_array_elements(v_Personaddressesdata)
+LOOP
+IF LENGTH(PersonaddressesdataItr->>'personaddressid') > 0 THEN  
+--Update Existing Record
+ v_ReqPersonaddressid := (PersonaddressesdataItr->>'personaddressid')::uuid;
+ UPDATE personaddress
+    SET  personid=v_ReqPersonId, 
+  activeflag=(PersonaddressesdataItr->> 'activeflag')::int, personaddresstypekey=PersonaddressesdataItr->> 'personaddresstypekey',
+  address=PersonaddressesdataItr->> 'address', zipcode=PersonaddressesdataItr->> 'zipcode', city=PersonaddressesdataItr->> 'city',
+  state=PersonaddressesdataItr->> 'state', country=PersonaddressesdataItr->> 'country', county=PersonaddressesdataItr->> 'county',
+  updatedby=PersonaddressesdataItr->> 'updatedby',address2=PersonaddressesdataItr->> 'address2',
+  directions=PersonaddressesdataItr->> 'directions', danger=(PersonaddressesdataItr->> 'danger')::boolean, 
+  dangerreason=PersonaddressesdataItr->> 'dangerreason'
+ WHERE personaddressid = v_ReqPersonaddressid;
+ELSE
+--Insert New Record
+INSERT INTO personaddress(personid, activeflag, personaddresstypekey, 
+            address, zipcode, city, state, country, county, insertedby,address2, directions, danger, dangerreason)
+    VALUES (v_ReqPersonId, (PersonaddressesdataItr->> 'activeflag')::int,PersonaddressesdataItr->> 'personaddresstypekey',PersonaddressesdataItr->> 'address',
+  PersonaddressesdataItr->> 'zipcode',PersonaddressesdataItr->> 'city',PersonaddressesdataItr->> 'state',PersonaddressesdataItr->> 'country',
+  PersonaddressesdataItr->> 'county',PersonaddressesdataItr->> 'insertedby',PersonaddressesdataItr->> 'address2',
+  PersonaddressesdataItr->> 'directions',(PersonaddressesdataItr->> 'danger')::boolean,PersonaddressesdataItr->> 'dangerreason');
+END IF;
+END LOOP;
+
+--Person Phone Add/Update
+FOR PersonphonenumberdataItr IN SELECT * FROM json_array_elements(v_Personphonenumberdata)
+LOOP
+IF LENGTH(PersonphonenumberdataItr->>'personphonenumberid') > 0 THEN  
+--Update Existing Record
+ v_ReqPersonphonenumberid := (PersonphonenumberdataItr->>'personphonenumberid')::uuid; 
+UPDATE personphonenumber
+   SET personid=v_ReqPersonId,
+   activeflag=(PersonphonenumberdataItr->> 'activeflag')::int, personphonetypekey=PersonphonenumberdataItr->> 'personphonetypekey', 
+       phonenumber=PersonphonenumberdataItr->> 'phonenumber', phoneextension=PersonphonenumberdataItr->> 'phoneextension',
+       reversephonenumber=PersonphonenumberdataItr->> 'phonenumber', updatedby=PersonphonenumberdataItr->> 'insertedby'
+ WHERE personphonenumberid = v_ReqPersonphonenumberid;
+
+ELSE
+--Insert New Record
+INSERT INTO personphonenumber(
+            personid, activeflag, personphonetypekey, 
+            phonenumber, phoneextension, reversephonenumber,insertedby)
+    VALUES (v_ReqPersonId, (PersonphonenumberdataItr->> 'activeflag')::int, PersonphonenumberdataItr->> 'personphonetypekey',PersonphonenumberdataItr->> 'phonenumber',
+    PersonphonenumberdataItr->> 'phoneextension', PersonphonenumberdataItr->> 'phonenumber', PersonphonenumberdataItr->> 'insertedby');
+
+END IF;
+END LOOP;
+
+--Person Alias Add/Update
+FOR AliasdataItr IN SELECT * FROM json_array_elements(v_Aliasdata)
+LOOP
+IF LENGTH(AliasdataItr->>'aliasid') > 0 THEN  
+--Update Existing Record
+ v_ReqAliasid := (AliasdataItr->>'aliasid')::uuid; 
+UPDATE alias
+   SET activeflag=(AliasdataItr->>'activeflag')::int, personid=v_ReqPersonId, firstname=AliasdataItr->>'firstname', lastname=AliasdataItr->>'lastname',middlename=AliasdataItr->>'middlename', updatedby=AliasdataItr->>'updatedby', dcn=AliasdataItr->>'dcn',
+   ssn=AliasdataItr->>'ssn', licenseno=AliasdataItr->>'licenseno',sfxname = AliasdataItr->>'sfxname'
+ WHERE aliasid = v_ReqAliasid;
+
+
+ELSE
+--Insert New Record
+INSERT INTO alias(activeflag, personid, firstname, lastname, middlename, 
+            sfxname,insertedby, dcn, ssn, licenseno)
+    VALUES ((AliasdataItr->>'activeflag')::int, v_ReqPersonId, AliasdataItr->>'firstname', AliasdataItr->>'lastname',AliasdataItr->>'middlename',AliasdataItr->>'sfxname',AliasdataItr->>'insertedby',AliasdataItr->>'dcn',AliasdataItr->>'ssn',AliasdataItr->>'licenseno');
+END IF;
+END LOOP;
+
+--Person Identifier Add/Update
+FOR PersonidentifierdataItr IN SELECT * FROM json_array_elements(v_Personidentifierdata)
+LOOP
+IF LENGTH(PersonidentifierdataItr->>'personidentifierid') > 0 THEN  
+--Update Existing Record
+ v_ReqPersonidentifierid := (PersonidentifierdataItr->>'personidentifierid')::uuid; 
+UPDATE personidentifier
+   SET personid=v_ReqPersonId, personidentifiertypekey=PersonidentifierdataItr->>'personidentifiertypekey', 
+       personidentifiervalue=PersonidentifierdataItr->>'personidentifiervalue', updatedby=PersonidentifierdataItr->>'insertedby', activeflag=(PersonidentifierdataItr->>'activeflag')::int
+ WHERE personidentifierid = v_ReqPersonidentifierid;
+
+
+
+ELSE
+--Insert New Record
+INSERT INTO personidentifier(personid, personidentifiertypekey, personidentifiervalue, 
+            insertedby, activeflag)
+    VALUES (v_ReqPersonId,PersonidentifierdataItr->>'personidentifiertypekey',PersonidentifierdataItr->>'personidentifiervalue',PersonidentifierdataItr->>'insertedby',(PersonidentifierdataItr->>'activeflag')::int);
+
+END IF;
+END LOOP;
+
+--Person Actor Add/Update
+FOR ActordataItr IN SELECT * FROM json_array_elements(v_Actordata)
+LOOP
+IF LENGTH(ActordataItr->>'actorid') > 0 THEN  
+--Update Existing Record
+ v_Actorid := (ActordataItr->>'actorid')::uuid; 
+UPDATE actor
+   SET activeflag=1, personid=v_ReqPersonId, actortype=ActordataItr->>'actortype', dangerlevel=(ActordataItr->>'dangerlevel')::int, 
+       dangerreason=ActordataItr->>'dangerreason', insertedby=ActordataItr->>'insertedby ',  
+       primarylanguageid=(ActordataItr->>'primarylanguageid')::uuid, secondarylanguageid=(ActordataItr->>'secondarylanguageid')::uuid, 
+       employeetypeid=(ActordataItr->>'employeetypeid')::uuid, employeetypename=ActordataItr->>'employeetypename', medicaideligibility=(ActordataItr->>'medicaideligibility')::boolean, 
+       blockgranteligibility=(ActordataItr->>'blockgranteligibility')::boolean, recipientstatus=(ActordataItr->>'recipientstatus')::boolean, livingarrangementtypekey=ActordataItr->>'livingarrangementtypekey', 
+      guardianname=ActordataItr->>'guardianname', guardianinfo = ActordataItr->>'guardianinfoActordataItr', ramentalhealth=(ActordataItr->>'ramentalhealth')::boolean, 
+       ramentalretarted=(ActordataItr->>'ramentalretarted')::boolean, ramentalretartedtype=ActordataItr->>'ramentalretartedtype'
+ WHERE actorid = v_Actorid;
+ 
+ UPDATE intakeservicerequestactor
+   SET intakeservicerequestpersontypekey=ActordataItr->>'actortype', 
+       updatedby=ActordataItr->>'updatedby', updatedon = now()
+ WHERE intakeserviceid = (ActordataItr->>'intakeserviceid')::uuid and actorid= v_Actorid;
+
+
+
+
+
+ELSE
+--Insert New Record
+
+INSERT INTO actor(activeflag, personid, actortype, dangerlevel, dangerreason, 
+            insertedby, primarylanguageid, secondarylanguageid, employeetypeid, 
+            employeetypename, medicaideligibility, blockgranteligibility, 
+            recipientstatus, livingarrangementtypekey, interpreterrequired, 
+            guardianname, guardianinfo, ramentalhealth, ramentalretarted, 
+            ramentalretartedtype)
+    VALUES (1, v_ReqPersonId, ActordataItr->>'actortype', (ActordataItr->>'dangerlevel')::int, ActordataItr->>'dangerreason', ActordataItr->>'insertedby', 
+            (ActordataItr->>'primarylanguageid')::uuid, (ActordataItr->>'secondarylanguageid')::uuid, (ActordataItr->>'employeetypeid')::uuid, ActordataItr->>'employeetypename', (ActordataItr->>'medicaideligibility')::boolean, 
+            (ActordataItr->>'blockgranteligibility')::boolean, (ActordataItr->>'recipientstatus')::boolean, ActordataItr->>'livingarrangementtypekey', ActordataItr->>'interpreterrequired', 
+            ActordataItr->>'guardianname', ActordataItr->>'guardianinfo', (ActordataItr->>'ramentalhealth')::boolean, 
+            (ActordataItr->>'ramentalretarted')::boolean, ActordataItr->>'ramentalretartedtype') RETURNING "actorid" into generated_actorid;
+RAISE NOTICE 'generated_actorid--->%',generated_actorid;
+
+
+INSERT INTO intakeservicerequestactor(actorid, intakeservicerequestpersontypekey, 
+            rapersontypekey, insertedby, 
+             intakeserviceid,  
+            employeetypeid, employeetypename, medicaideligibility, blockgranteligibility, 
+            livingarrangementtypekey, guardianname, guardianinfo, ramentalhealth, 
+            ramentalretarted, ramentalretartedtype, refusessn, refusedob)
+    VALUES (generated_actorid,ActordataItr->>'actortype',ActordataItr->>'rapersontypekey',ActordataItr->>'insertedby',
+ (ActordataItr->>'intakeserviceid')::uuid,(ActordataItr->>'employeetypeid')::uuid,
+ ActordataItr->>'employeetypename',(ActordataItr->>'medicaideligibility')::boolean,(ActordataItr->>'blockgranteligibility')::boolean,ActordataItr->>'livingarrangementtypekey',ActordataItr->>'guardianname',ActordataItr->>'guardianinfo',(ActordataItr->>'ramentalhealth')::boolean,(ActordataItr->>'ramentalretarted')::boolean,ActordataItr->>'ramentalretartedtype',(ActordataItr->>'refusessn')::boolean,(ActordataItr->>'refusedob')::boolean);
+   
+   
+END IF;
+END LOOP;
+END IF;
+returnStatus:= 'Success';
+RETURN returnStatus;
+                                                      
+END;
+$function$
+

@@ -1,0 +1,1 @@
+ALTER TABLE cjams.ivessissadata ALTER COLUMN notefornotsuspendingssi TYPE varchar(750) ;

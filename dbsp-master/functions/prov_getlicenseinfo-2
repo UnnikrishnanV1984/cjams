@@ -1,0 +1,136 @@
+CREATE OR REPLACE FUNCTION prov_getlicenseinfo(appid character varying, v_providerid character varying, v_securityuserid character varying, v_roleid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+declare
+
+v_applicantprofileid uuid;
+v_licenseinfo json;
+
+
+begin
+select json_agg(t)
+from (
+SELECT count(1) over() as total_count,y.* from (
+SELECT DISTINCT ON (x.request_id) x.* from ((select  tpd.request_id, tpd.request_no, tpd.provider_id, tpd.request_comments,  
+ tpd.request_type, tpd.license_no, tpd.site_id, tpd.min_age_from, tpd.max_age_from,
+tpd.gender_from, tpd.children_no_from, tpd.min_age_to, tpd.gender_to, tpd.children_no_to, tpd.max_age_to, tpd.signimage, 
+tpd.program_address,
+tpd.comar_citation, tpd.program_phone, tpd.program_fax, tpd.variance_type, tpd.waiver_type, tpd.state, tpd.city, tpd.zip_no, tpd.request_date, 
+tpd.completing_person_name, tpd.person_name, tpd.dob, tpd.gender, tpd.reason_for_request_variance, tpd.reason_for_request_waiver, 
+tpd.alternate_measures, tpd.request_effectivedate, tpd.request_expirationdate, tpd.continuous,
+(select tp.status from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 limit 1) as status,
+ (select 
+ case when tp.status = 'Rejected'then 'Rejected'
+  when (tp.toroleid in  ('OLMED','PVRDJSSD') and tp.fromroleid in  ('OLMED','PVRDJSSD')) then 'Approved'
+ else 'Pending' end as remarks 
+from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 limit 1) as remarks,
+tpa.program_name,tpa.program_type--,
+--attachment.attachments
+/* (select json_agg(doc) AS attachments
+from 
+(select dp.filename,  dp.title,  dp.mime,  dp.numberofbytes, dp.s3bucketpathname,  dp.originalfilename
+from documentproperties dp where dp.objectid::character varying = tpd.request_id::character varying and dp.activeflag = 1) doc)as attachment
+ */
+from Providerportalrequest tpd 
+join tb_provider_decision td on td.objectid = tpd.request_no and td.eventcode = 'LIC' 
+join tb_provider_applicant tpa on tpd.site_id = tpa.site_id::character varying
+/* inner join lateral (select json_agg(doc) AS attachments
+from 
+(select dp.filename,  dp.title,  dp.mime,  dp.numberofbytes, dp.s3bucketpathname,  dp.originalfilename
+from documentproperties dp where dp.objectid::character varying = tpd.request_id::character varying and dp.activeflag = 1) doc)as attachment on (1=1) */
+where 
+(case when v_providerid is not null then tpd.provider_id = v_providerid else true end)
+and
+ (case when appid is not null then tpd.site_id = appid else true end)
+)
+
+union all
+
+(
+select   tpd.request_id, tpd.request_no, tpd.provider_id, tpd.request_comments,
+ tpd.request_type, tpd.license_no, tpd.site_id, tpd.min_age_from, tpd.max_age_from,
+tpd.gender_from, tpd.children_no_from, tpd.min_age_to, tpd.gender_to, tpd.children_no_to, tpd.max_age_to, tpd.signimage, 
+tpd.program_address,
+tpd.comar_citation, tpd.program_phone, tpd.program_fax, tpd.variance_type, tpd.waiver_type, tpd.state, tpd.city, tpd.zip_no, tpd.request_date, 
+tpd.completing_person_name, tpd.person_name, tpd.dob, tpd.gender, tpd.reason_for_request_variance, tpd.reason_for_request_waiver, 
+tpd.alternate_measures, tpd.request_effectivedate, tpd.request_expirationdate, tpd.continuous,
+(select tp.status from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 limit 1) as status,
+(select 
+ case when tp.status = 'Rejected'
+ then 'Rejected'
+   when (tp.toroleid in  ('OLMED','PVRDJSSD')
+  and tp.fromroleid in  ('OLMED','PVRDJSSD'))
+  then 'Approved'
+ else 'Pending' end as remarks 
+from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 limit 1) as remarks,
+tpa.program_name,tpa.program_type--,
+--(t.attachments)as attachment
+from Providerportalrequest tpd 
+join tb_provider_decision td on td.objectid = tpd.request_no  and td.eventcode = 'LICR' 
+join tb_provider_applicant tpa on tpd.site_id = tpa.site_id::character varying
+/* inner join LATERAL (select json_agg(doc) AS attachments
+from 
+(select dp.filename,  dp.title,  dp.mime,  dp.numberofbytes, dp.s3bucketpathname,  dp.originalfilename
+from documentproperties dp where dp.intakenumber = tpd.request_id and dp.activeflag = 1) doc ) as t ON (1=1)
+ */ where 
+ (case when v_roleid = 'PPROSA' then td.fromroleid= v_roleid 
+ when v_roleid in  ('OLMPM','OLMQA') then td.toroleid in (v_roleid,'OLMQA')
+ else td.toroleid in (v_roleid) end)
+ and
+ (case when v_providerid is not null then tpd.provider_id = v_providerid else true end)
+ and
+ (case when appid is not null then tpd.site_id = appid else true end)
+)
+union all
+
+(
+---- only for License Extention for Provider Portal
+select   tpd.request_id, tpd.request_no, tpd.provider_id, tpd.request_comments,
+ tpd.request_type, tpd.license_no, tpd.site_id, tpd.min_age_from, tpd.max_age_from,
+tpd.gender_from, tpd.children_no_from, tpd.min_age_to, tpd.gender_to, tpd.children_no_to, tpd.max_age_to, tpd.signimage, 
+tpd.program_address,
+tpd.comar_citation, tpd.program_phone, tpd.program_fax, tpd.variance_type, tpd.waiver_type, tpd.state, tpd.city, tpd.zip_no, tpd.request_date, 
+tpd.completing_person_name, tpd.person_name, tpd.dob, tpd.gender, tpd.reason_for_request_variance, tpd.reason_for_request_waiver, 
+tpd.alternate_measures, tpd.request_effectivedate, tpd.request_expirationdate, tpd.continuous,
+(select tp.status from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 limit 1) as status,
+(select 
+ case when tp.status = 'Rejected'
+ then 'Rejected'
+   when (tp.toroleid in  ('OLMED','PVRDJSSD')
+  and tp.fromroleid in  ('OLMED','PVRDJSSD'))
+  then 'Approved'
+ else 'Pending' end as remarks 
+from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 limit 1) as remarks,
+tpa.program_name,tpa.program_type--,
+--t1.attachments
+from Providerportalrequest tpd 
+join tb_provider_decision td on td.objectid = tpd.request_no  and td.eventcode = 'LIC' 
+join tb_provider_applicant tpa on tpd.site_id = tpa.site_id::character varying
+/* inner join lateral (select json_agg(doc) AS attachments
+from 
+(select dp.filename,  dp.title,  dp.mime,  dp.numberofbytes, dp.s3bucketpathname,  dp.originalfilename
+from documentproperties dp where dp.objectid = tpd.request_id::uuid and dp.activeflag = 1) doc) t1 on (1=1) */
+ where td.activeflag = 1 and tpd.request_type = 'License Extend' and  v_roleid = 'PPROSA' 
+ and 
+ (case when v_providerid is not null then tpd.provider_id = v_providerid else true end)
+ and
+ (case when appid is not null then tpd.site_id = appid else true end)
+
+)) x
+) y
+/*group by x.request_id, x.request_no, x.provider_id, x.request_comments,  
+ x.request_type, x.license_no, x.site_id, x.min_age_from, x.max_age_from,
+x.gender_from, x.children_no_from, x.min_age_to, x.gender_to, x.children_no_to, x.max_age_to, x.signimage, 
+x.program_address,
+x.comar_citation, x.program_phone, x.program_fax, x.variance_type, x.waiver_type, x.state, x.city, x.zip_no, x.request_date, 
+x.completing_person_name, x.person_name, x.dob, x.gender, x.reason_for_request_variance, x.reason_for_request_waiver, 
+x.alternate_measures, x.request_effectivedate, x.request_expirationdate, x.continuous,x.status,x.remarks,x.program_name,x.program_type*/
+
+) t into v_licenseinfo;
+
+return v_licenseinfo;
+ 
+end;
+$function$
+

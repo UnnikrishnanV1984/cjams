@@ -1,0 +1,45 @@
+DROP FUNCTION IF EXISTS f_cis_county(character varying);
+
+CREATE OR REPLACE FUNCTION cjams.f_cis_county(ls_county character varying)
+RETURNS character varying
+LANGUAGE plpgsql
+AS $function$ 
+DECLARE
+ls_county_cd character varying;
+
+BEGIN
+
+select 
+(CASE WHEN ls_county ='1427'  THEN  '01'
+WHEN ls_county ='1428'  THEN   '02'
+WHEN ls_county ='1430'  THEN   '03'
+WHEN ls_county ='1431'  THEN   '04'
+WHEN ls_county ='1432'  THEN   '05'
+WHEN ls_county ='1433'  THEN   '06'
+WHEN ls_county ='1434'  THEN   '07'
+WHEN ls_county ='1435'  THEN   '08'
+WHEN ls_county ='1436'  THEN   '09'
+WHEN ls_county ='1437'  THEN   '10'
+WHEN ls_county ='1438'  THEN   '11'
+WHEN ls_county ='1439'  THEN   '12'
+WHEN ls_county ='1440'  THEN   '13'
+WHEN ls_county ='1441'  THEN   '14'
+WHEN ls_county ='1442'  THEN   '15'
+WHEN ls_county ='1443'  THEN   '16'
+WHEN ls_county ='1444'  THEN   '17'
+WHEN ls_county ='1446'  THEN   '18'
+WHEN ls_county ='1445'  THEN   '19'
+WHEN ls_county ='1447'  THEN   '20'
+WHEN ls_county ='1448'  THEN   '21'
+WHEN ls_county ='1449'  THEN   '22'
+WHEN ls_county ='1450'  THEN   '23'
+WHEN ls_county ='1429'  THEN   '30'
+ELSE
+    '21'
+END) into ls_county_cd;
+
+return ls_county_cd;
+
+end;
+
+ $function$;

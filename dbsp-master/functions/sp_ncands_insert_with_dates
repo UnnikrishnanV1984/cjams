@@ -1,0 +1,208 @@
+CREATE OR REPLACE FUNCTION sp_ncands_insert_with_dates(vl_start_date character varying, vl_end_date character varying, OUT vl_output_sqlcode character varying, OUT vs_message character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- PL/PGSQL STORED FUNCTION
+-- AUTHOR :  
+-- DATE CREATED :07/29/2019
+-- GENERATES CHILD DATA V1 
+
+-- Revision(s):
+-- 01/08/2021 - Vineet Tirodkar - Modifications for WP.INVSTRTM
+-- 01/12/2021 - Vineet Tirodkar - Modifications to nullify deathdt & maldeath if mal1lev = 05 (Ruled-Out)
+--------------------------------------------------------------------------
+
+declare
+
+   vl_error_flag    integer;
+    v1_from_date    date;
+  v1_to_date     date;
+begin  
+
+ vl_error_flag := 0;--
+ v1_from_date := vl_start_date::date;
+ v1_to_date := vl_end_date::date;
+ 
+ RAISE NOTICE 'CALLING sp_ncands_child_data_insert';
+ RAISE NOTICE 'v1_from_date %', v1_from_date;
+ RAISE NOTICE 'v1_from_date %', v1_to_date;
+ 
+ select * FROM sp_ncands_child_data_insert(v1_from_date::character varying, v1_to_date::character varying) INTO vs_message;
+ 
+ BEGIN 
+  -- To Nullify deathdt & maldeath if mal1lev = 05 (Ruled-Out)
+  update ncands_work_perp wp
+   set wp.deathdt = null
+  where ( wp.rptid, wp.chid )
+   in (
+    select md.rptid, md.chid
+     from ncands_maltreator_info md
+    where md.mal1lev = '05'
+     and md.maldeath = '1'
+    ) ;
+    
+  update ncands_maltreator_info md
+   set md.maldeath = '2'
+  where md.mal1lev = '05'
+   and md.maldeath = '1' ;  
+ END; 
+  
+ BEGIN 
+ 
+   if (select count(*) from tb_ncands_elements) > 0 then
+    delete from tb_ncands_elements;
+   end if;
+
+   RAISE NOTICE 'Inserting Data into tb_ncands_elements table';   
+   insert into tb_ncands_elements (    SUBYR,   STATERR,  RPTID,   CHID,   RPTCNTY,  RPTDT,   INVDATE,  RPTSRC, 
+            RPTDISP,   RPTDISDT,  NOTIFS,   CHAGE,   CHBDATE,   CHSEX,   CHRACAI,  CHRACAS, 
+            CHRACBL,  CHRACNH,  CHRACWH,  CHRACUD,  CHETHN,   CHCNTY,   CHLVNG,   CHMIL, 
+            CHPRIOR,  chmal1,   mal1lev,  chmal2,   mal2lev,  chmal3,   mal3lev,  chmal4, 
+            mal4lev,  maldeath,  CDALC,   CDDRUG,   CDRTRD,   CDEMOTNL,  CDVISUAL,  CDLEARN, 
+            CDPHYS,   CDBEHAV,  CDMEDICL,  FCALC,   FCDRUG,   FCRTRD,   FCEMOTNL,  FCVISUAL, 
+            FCDLEARN,  FCPHYS,   FCMEDICL,  FCVIOL,   FCHOUSE,  FCMONEY,  FCPUBLIC,  POSTSERV, 
+            SERVDATE,  FAMSUP,   FAMPRES,  FOSTERCR,  RMVDATE,  JUVPET,   PETDATE,  COCHREP, 
+            ADOPT,   CASEMANG,  COUNSEL,  DAYCARE,  EDUCATN,  EMPLOY,   FAMPLAN,  HEALTH, 
+            HOMEBASE,  HOUSING,  TRANSLIV,  INFOREF,  LEGAL,   MENTHLTH,  PREGPAR,  RESPITE, 
+            SSDISABL,  SSDELINQ,  SUBABUSE,  TRANSPRT,  OTHERSV,  WRKRID,   SUPRVID,  PER1ID, 
+            PER1REL,  PER1PRNT,  PER1CR,   PER1AGE,  PER1SEX,  P1RACAI,  P1RACAS,  P1RACBL, 
+            P1RACNH,  P1RACWH,  P1RACUD,  PER1ETHN,  PER1MIL,  PER1PIOR,  PER1MAL1,  PER1MAL2, 
+            PER1MAL3,  PER1MAL4,  PER2ID,   PER2REL,  PER2PRNT,  PER2CR,   PER2AGE,  PER2SEX, 
+            P2RACAI,  P2RACAS,  P2RACBL,  P2RACNH,  P2RACWH,  P2RACUD,  PER2ETHN,  PER2MIL, 
+            PER2PIOR,  PER2MAL1,  PER2MAL2,  PER2MAL3,  PER2MAL4,  PER3ID,   PER3REL,  PER3PRNT, 
+            PER3CR,   PER3AGE,  PER3SEX,  P3RACAI,  P3RACAS,  P3RACBL,  P3RACNH,  P3RACWH, 
+            P3RACUD,  PER3ETHN,  PER3MIL,  PER3PIOR,  PER3MAL1,  PER3MAL2,  PER3MAL3,  PER3MAL4, 
+            AFCARSID,  INCIDDT,  RPTTM,   INVSTRTM,  DEATHDT,  FCDCHDT,  HPSCC,    RTCRC)
+     (select distinct      CD.SUBYR,  CD.STATERR,  CD.RPTID,  CD.CHID,  CD.RPTCNTY,  CD.RPTDT, 
+                                                case  when ((to_date(CD.INVDATE,'MMDDYYYY') >=to_date(CD.RPTDT,'MMDDYYYY') ) and (to_date(CD.INVDATE,'MMDDYYYY') <=to_date(CD.RPTDISDT,'MMDDYYYY'))) then CD.INVDATE
+                                                        when (to_date(CD.INVDATE,'MMDDYYYY') <to_date(CD.RPTDT,'MMDDYYYY') )  then CD.RPTDT
+                                                        when (to_date(CD.INVDATE,'MMDDYYYY') >to_date(CD.RPTDISDT,'MMDDYYYY')) then CD.RPTDISDT
+                                                        else CD.INVDATE end,
+                                        CD.RPTSRC,
+            CD.RPTDISP,  CD.RPTDISDT,  CD.NOTIFS,   CD.CHAGE,   CD.CHBDATE,  CD.CHSEX,   CD.CHRACAI,  CD.CHRACAS,
+            CD.CHRACBL,  CD.CHRACNH,  CD.CHRACWH,  CD.CHRACUD,  CD.CHETHN,   CD.CHCNTY,   CD.CHLVNG,   CD.CHMIL,
+            CD.CHPRIOR,  chmal1,   mal1lev,   chmal2,   mal2lev,   chmal3,   mal3lev,   chmal4,
+            mal4lev,   MD.maldeath,  CRD.CDALC,   CRD.CDDRUG,  CRD.CDRTRD,  CRD.CDEMOTNL,  CRD.CDVISUAL,  CRD.CDLEARN,
+            CRD.CDPHYS,  CRD.CDBEHAV,  CRD.CDMEDICL,  CGD.FCALC,   CGD.FCDRUG,  CGD.FCRTRD,  CGD.FCEMOTNL,  CGD.FCVISUAL,
+            CGD.FCDLEARN,  CGD.FCPHYS,  CGD.FCMEDICL,  CGD.FCVIOL,  CGD.FCHOUSE,  CGD.FCMONEY,  CGD.FCPUBLIC,  SD.POSTSERV,
+            SD.SERVDATE,  SD.FAMSUP,   SD.FAMPRES,  SD.FOSTERCR,  SD.RMVDATE,  SD.JUVPET,   SD.PETDATE,  SD.COCHREP,
+            SD.ADOPT, 
+            case when (SD.FAMSUP='1' or SD.FAMPRES='1' or SD.FOSTERCR='1' or SD.CASEMANG='1') then '1' else '2' END,
+                    SD.COUNSEL,  SD.DAYCARE,  SD.EDUCATN,  SD.EMPLOY,   SD.FAMPLAN,  SD.HEALTH,
+            SD.HOMEBASE,  SD.HOUSING,  SD.TRANSLIV,  '2',    SD.LEGAL,   SD.MENTHLTH,  SD.PREGPAR,  SD.RESPITE,
+            SD.SSDISABL,  SD.SSDELINQ,  SD.SUBABUSE,  SD.TRANSPRT,  SD.OTHERSV,  WP.WRKRID,   WP.SUPRVID,
+                                                case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null  else WP.PER1ID end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null  else WP.PER1REL end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1PRNT end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null  else WP.PER1CR end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1AGE end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1SEX end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.P1RACAI end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.P1RACAS end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.P1RACBL end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.P1RACNH end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.P1RACWH end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.P1RACUD end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1ETHN end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1MIL end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1PIOR end,
+            case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1MAL1 end,
+                                                case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1MAL2 end,
+                                                case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1MAL3 end,
+                                                case when (WP.PER1MAL1='2' and WP.PER1MAL2='2' and WP.PER1MAL3='2' and WP.PER1MAL4='2') then null else WP.PER1MAL4 end,
+                                                case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2ID end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2REL end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2PRNT end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2CR end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2AGE end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2SEX end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.P2RACAI end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.P2RACAS end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.P2RACBL end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.P2RACNH end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.P2RACWH end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.P2RACUD end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2ETHN end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2MIL end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2PIOR end,
+            case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2MAL1 end,
+                                                case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2MAL2 end,
+                                                case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2MAL3 end,
+                                                case when (WP.PER2MAL1='2' and WP.PER2MAL2='2' and WP.PER2MAL3='2' and WP.PER2MAL4='2') then null else WP.PER2MAL4 end,
+                                                case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3ID end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3REL end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3PRNT end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3CR end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3AGE end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3SEX end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.P3RACAI end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.P3RACAS end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.P3RACBL end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.P3RACNH end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.P3RACWH end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.P3RACUD end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3ETHN end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3MIL end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3PIOR end,
+            case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3MAL1 end,
+                                                case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3MAL2 end,
+                                                case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3MAL3 end,
+                                                case when (WP.PER3MAL1='2' and WP.PER3MAL2='2' and WP.PER3MAL3='2' and WP.PER3MAL4='2') then null else WP.PER3MAL4 end,
+                                                CD.CHID,
+                                                case when ((to_date(WP.INCIDDT,'MMDDYYYY') >= to_date(CD.RPTDT,'MMDDYYYY')) or (WP.INCIDDT is null))  then CD.RPTDT else WP.INCIDDT end,
+            WP.RPTTM,   
+            -- WP.INVSTRTM, 
+            (case when ((to_date(CD.INVDATE,'MMDDYYYY') >=to_date(CD.RPTDT,'MMDDYYYY') ) 
+             and (to_date(CD.INVDATE,'MMDDYYYY') <=to_date(CD.RPTDISDT,'MMDDYYYY'))) then
+              WP.INVSTRTM
+            when (to_date(CD.INVDATE,'MMDDYYYY') <to_date(CD.RPTDT,'MMDDYYYY') )  then 
+             wp.RPTTM
+            when (to_date(CD.INVDATE,'MMDDYYYY') >to_date(CD.RPTDISDT,'MMDDYYYY')) then 
+             wp.RPTTM
+            else 
+             WP.INVSTRTM
+            end ) as INVSTRTM,
+            WP.DEATHDT, WP.FCDCHDT, CRD.HPSCC, CRD.RTCRC
+                     from   ncands_child_data CD
+                                  join ncands_maltreator_info MD on CD.RPTID = MD.RPTID  and CD.CHID = MD.CHID AND MD.CHMAL1 IS NOT NULL
+                                  join ncands_childrisk CRD on MD.RPTID = CRD.RPTID and MD.CHID = CRD.CHID
+                                  join ncands_caregiver CGD on CRD.RPTID = CGD.RPTID and  CRD.CHID = CGD.CHID
+                                  join ncands_services SD on SD.RPTID = CGD.RPTID  and SD.CHID = CGD.CHID 
+                                  join ncands_work_perp WP on WP.RPTID=SD.RPTID and WP.CHID=SD.CHID); 
+--     where CD.RPTDISP in ('01','02') and MD.chmal1 is not null);
+       
+                EXCEPTION WHEN OTHERS THEN 
+    
+     vl_output_sqlcode := SQLSTATE;
+     vs_message := 'Ncands Final insert failed ';--
+     vl_error_flag := -1;
+              
+        END;
+  
+  IF VL_ERROR_FLAG = -1 THEN 
+  
+   insert into interfaceserrorlog ( interfaceid,
+            currentruntimestamp,
+            errorsqlcode,
+            errordescription
+            )
+         values ( 'SP_NCANDS_INSERT',
+            current_timestamp,
+            vl_output_sqlcode,
+            vs_message);--
+            
+   return;--
+  
+   
+  ELSE 
+    
+   vs_message:= 'SP RAN SUCCESSFULLY';--
+   vl_output_sqlcode = '00000';--
+   
+  END IF;--
+  
+       
+       END;
+$function$
+

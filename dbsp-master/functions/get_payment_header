@@ -1,0 +1,119 @@
+CREATE OR REPLACE FUNCTION get_payment_header(request json)
+ RETURNS TABLE(totalcount bigint, payment_id integer, gross_amount_no numeric, offset_amount_no numeric, payment_start_dt date, payment_end_dt date, payment_type_cd character varying, payment_type_nm character varying, payment_status_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ v_pageSize INT;
+ v_pageNumber INT;
+ v_pageNum INT; 
+ v_pageOffset INT;
+
+ v_payment_id INT;
+ v_payee_nm CHARACTER VARYING(50);
+ v_provider_id INT;
+ v_client_id INT;
+ v_client_name CHARACTER VARYING(100);
+ v_DateFrom TIMESTAMP(3);                        
+ v_DateTo TIMESTAMP(3);
+ v_adr_type_cd CHARACTER VARYING(50);
+ v_adr_city_nm CHARACTER VARYING(50);
+ v_adr_zip5_no INT;
+ v_adr_county_cd CHARACTER VARYING(50);
+ v_adr_work_phone_tx CHARACTER VARYING(10);
+ 
+  v_DOBDateFrom   TIMESTAMP(3);                
+ v_DOBDateTo TIMESTAMP(3);
+ v_ayear character varying(30);
+v_payment_type_cd CHARACTER varying; 
+v_payment_status_cd CHARACTER varying;
+v_county_cd CHARACTER varying;
+
+v_clientfirstnm CHARACTER VARYING(100);
+v_clientlastnm CHARACTER VARYING(100);
+v_clientmiddlenm CHARACTER VARYING(100);
+
+BEGIN  
+
+ v_clientfirstnm := lower(trim( request ->> 'clientfirstnm'));
+v_clientlastnm := lower(trim( request->> 'clientlastnm'));
+v_clientmiddlenm := lower(trim(request->> 'clientmiddlenm'));
+ v_pageNumber   := request ->> 'pagenumber' ;
+ v_pageNum := v_pageNumber - 1;
+ v_pageSize     := request ->> 'pagesize' ;
+ v_pageOffset = v_pageNum  * v_pageSize; 
+
+ v_payee_nm := request ->> 'providername';
+ v_payment_id   := request ->> 'paymentid';
+ v_provider_id  := request ->> 'providerid';
+ v_client_id := request ->> 'clientid';
+ v_client_name := request ->> 'clientname';
+ v_DateFrom   := request ->> 'daterangefrom';                       
+ v_DateTo    := request ->> 'daterangeto';
+ v_adr_type_cd := request ->> 'address';
+ v_adr_city_nm := request ->> 'city';
+ v_adr_zip5_no := request ->> 'zip';
+ v_adr_county_cd := request ->> 'county';
+ v_adr_work_phone_tx := request ->> 'phonenumber';
+   v_payment_type_cd := request ->> 'payment_type_cd';
+  v_payment_status_cd := request ->> 'payment_status_cd';
+  v_county_cd := request ->> 'county_cd';
+   v_DOBDateFrom   := request ->> 'dobdaterangefrom';                       
+ v_DOBDateTo    := request ->> 'dobdaterangeto';
+ v_ayear := request ->> 'ayear';
+ 
+RAISE NOTICE 'v_payment_type_cd%', v_payment_type_cd;
+
+RETURN QUERY 
+select  count(1) over(), 
+payhead.payment_id
+,payhead.gross_amount_no
+--,SUM(paydet.final_amount_no)
+ --,CASE WHEN (payhead.offset_amount_no != null) THEN payhead.offset_amount_no ELSE 0.00 END AS offset_amount_no
+ ,payhead.offset_amount_no
+,payhead.payment_start_dt
+,payhead.payment_end_dt
+,payhead.payment_type_cd
+,case when (payhead.payment_type_cd='3294' and payhead.manual_sw='Y') then 'Manual Adjustments' else (select value_tx from tb_picklist_values where TRIM(PICKLIST_VALUE_CD)=payhead.payment_type_cd
+AND PICKLIST_TYPE_ID='2') end as payment_type_nm
+,(select distinct PV.value_tx from tb_payment_status PS 
+INNER JOIN tb_picklist_values PV on PS.payment_status_cd=TRIM(PV.PICKLIST_VALUE_CD) 
+AND PV.PICKLIST_TYPE_ID='133'
+AND PS.payment_id=payhead.payment_id limit 1) as payment_status_nm
+from tb_payment_header payhead 
+INNER join tb_payment_detail paydet on paydet.payment_id=payhead.payment_id 
+left join person client on client.cjamspid=paydet.client_id 
+INNER JOIN tb_provider as prov ON payhead.provider_id = prov.provider_id 
+INNER JOIN tb_payment_status paystat ON payhead.payment_id=paystat.payment_id
+WHERE payhead.delete_sw='N' and payhead.payment_type_cd not in  ('5989','4','21','22')  and  payhead.manual_sw != 'Y'
+and  (v_payment_id is null or payhead.payment_id = v_payment_id)
+  AND (v_provider_id is null or payhead.provider_id = v_provider_id)
+AND (v_client_id is null or paydet.client_id = v_client_id)
+
+ 
+and (case when  (trim(v_clientfirstnm) !=''  or v_clientfirstnm is not null) then (COALESCE(lower(client.firstname) ,'') LIKE '%'|| COALESCE(v_clientfirstnm ,'')||'%') else true end
+or case when  (trim(v_clientfirstnm) !=''  or v_clientfirstnm is not null) then soundex(lower(trim(client.firstname))) = soundex(v_clientfirstnm) else true end)
+and (case when  (trim(v_clientlastnm) !=''  or v_clientlastnm is not null) then (COALESCE(lower(client.lastname) ,'') LIKE '%'||COALESCE(v_clientlastnm ,'')||'%') else true end
+or case when  (trim(v_clientlastnm) !=''  or v_clientlastnm is not null) then soundex(lower(trim(client.LastName)))  = soundex(v_clientlastnm) else true end)
+ 
+  
+  
+and
+(v_payment_type_cd is null or payhead.payment_type_cd = v_payment_type_cd) and
+(v_payment_status_cd is null or paystat.payment_status_cd = v_payment_status_cd) and
+(v_payment_id is null or payhead.payment_id = v_payment_id)
+and
+
+ 
+  (v_DateFrom IS null or  to_char(payhead.payment_start_dt, 'YYYY-MM-DD') ::date >= to_char(DATE(v_DateFrom ::varchar), 'YYYY-MM-DD')  :: date) 
+ and 
+  (v_DateTo IS null or  to_char(payhead.payment_start_dt, 'YYYY-MM-DD') ::date <= to_char(DATE(v_DateTo ::varchar), 'YYYY-MM-DD')  :: date)
+
+group by payhead.payment_id,payhead.gross_amount_no,payhead.offset_amount_no,payhead.payment_start_dt,payhead.payment_end_dt,
+payhead.payment_type_cd,payhead.manual_sw
+order by payhead.payment_id desc
+LIMIT v_pageSize OFFSET v_pageOffset;
+
+ END;
+$function$
+

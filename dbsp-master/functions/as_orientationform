@@ -1,0 +1,64 @@
+CREATE OR REPLACE FUNCTION as_orientationform(i_evalutionid uuid)
+ RETURNS TABLE(youthname character varying, youthid character varying, cw_name character varying, cw_address character varying, cw_phone character varying, sup_name character varying, courtcondition character varying, courtstatus character varying, courtorderdate timestamp without time zone, authorizing character varying, provider_name character varying, guardian_name character varying)
+ LANGUAGE plpgsql
+AS $function$
+declare P_ID UUID;
+   BEGIN  
+             
+ RETURN QUERY    
+ (        select distinct
+             cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+             CAST(p.cjamspid as character varying) as youthid,
+             CAST(cw.cwname as character varying) as cw_name,
+             CAST(cw.cwaddress as character varying) as cw_address,
+             CAST(cw.cwphone as character varying) as cw_phone,
+             CAST(sup.supname as character varying) as sup_name,
+    CAST(ca.conditiontypedescription as character varying) as courtcondition,
+    CAST((select description from courthearingstatustype where hearingstatustypekey=ca.hearingstatustypekey) as character varying) as courtstatus,
+    cast(ca.hearingdatetime as timestamp) as courtorderdate ,
+    cast(case when ca.courtordertypekey is null then 'No'
+      else 'Yes' end as character varying) as authorizing,
+      cast(pr.providername as character varying) as provider_name,
+    CAST(COALESCE(
+                  (select distinct person.firstname||' '||person.lastname 
+         from  intakeservicerequest INT
+                        left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='mother'
+                        left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                        left join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakenumber=INTSR.intakenumber limit 1),
+              (select distinct person.firstname||' '||person.lastname 
+         from  intakeservicerequest INT 
+                        left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='father'
+                        left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                        left join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakenumber=INTSR.intakenumber limit 1),
+              (select distinct person.firstname||' '||person.lastname 
+         from  intakeservicerequest INT 
+                        left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey not in ('father','mother')
+                        left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                        left join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakenumber=INTSR.intakenumber limit 1)) as character varying ) 
+             as guardian_name
+             from intakeservicerequestevaluation inve
+             join intakeservicerequest INTSR on INTSR.intakenumber=inve.intakenumber and INTSR.activeflag=1
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             left join placement pl on INTSR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+             join 
+            (select objectid,up.fullname as cwname,cast(upa.address ||','|| upa.city ||','|| upa.state ||','|| upa.country ||','|| coalesce(upa.zipcode,'') as character varying)  as cwaddress,upp.phonenumber as cwphone
+             from routing join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSCW'
+              left join userprofileaddress upa on routing.tosecurityusersid=upa.securityusersid and upa.activeflag=1 and userprofileaddresstypekey='O'
+             left join userprofilephonenumber upp on routing.tosecurityusersid=upp.securityusersid and upp.activeflag=1 and upp.userprofiletypekey='office' ) cw
+            on cast(INTSR.intakeserviceid as character varying)=cw.objectid
+             join
+             (select objectid,up.fullname as supname from routing  join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP'  ) sup
+             on INTSR.intakenumber=sup.objectid
+    join intakeservicerequestcourtaction ca on ca.intakenumber=INTSR.intakenumber and ca.activeflag=1
+              where  inve.intakeservicerequestevaluationid = i_evalutionid   limit 1) ;   
+   end;
+  $function$
+

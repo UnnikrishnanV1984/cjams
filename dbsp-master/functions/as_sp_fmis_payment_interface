@@ -1,0 +1,1071 @@
+CREATE OR REPLACE FUNCTION as_sp_fmis_payment_interface(vn_batch_sz integer, adt_rundate date, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created: 09/14/2020
+-- Description: Generate Adult Services Monthly Service Plan Payment data to Interface with FMIS.
+
+-- Revisions:
+-- 05/11/2021 Vineet Tirodkar - Modifications for Provider schema changes (B-102023)
+------------------------------------------------------------------------------------------------
+DECLARE vs_message_text    VARCHAR(3000) DEFAULT '';
+DECLARE vl_ret_status     INTEGER DEFAULT 0;
+DECLARE vs_procedure_nm    VARCHAR(100) DEFAULT 'AS_SP_FMIS_PAYMENT_INTERFACE';
+
+DECLARE vs_error_county_cd    VARCHAR(5);
+DECLARE vs_batch_no     VARCHAR(5);
+DECLARE vs_error_tx     VARCHAR(500);
+DECLARE vs_batchno     VARCHAR(3); 
+DECLARE vs_curr_doc_no    VARCHAR(8); 
+DECLARE vs_payment_type_cd   VARCHAR(50) DEFAULT '22' ; --  referencetypeid: 20003 -> ref_key: 22 (Service Plan Payment)
+
+DECLARE vd_run_date     DATE;
+DECLARE prev_month_last_day   DATE;
+DECLARE prev_month_first_day   DATE;
+
+DECLARE vn_header_cnt     INTEGER DEFAULT 0;
+DECLARE vn_detail_cnt     INTEGER DEFAULT 0;
+DECLARE vn_appropriation_year   INTEGER DEFAULT 0;
+DECLARE vn_cur_batch     INTEGER DEFAULT 0;
+DECLARE vn_dtl_cnt      INTEGER DEFAULT 0;
+-- DECLARE vn_batch_cnt     INTEGER DEFAULT 0;
+DECLARE vn_error_payment_id   INTEGER;
+DECLARE vn_error_client_id    INTEGER;
+DECLARE vn_error_provider_id   INTEGER;
+
+DECLARE vl_offset_cnt    INTEGER;
+DECLARE vl_fmis_detail_id   INTEGER;
+DECLARE vl_doc_num_suffix   INTEGER;
+DECLARE vl_current_doc_num_suffix INTEGER;
+DECLARE vl_payment_id    INTEGER;
+DECLARE vl_batch_size    INTEGER;
+DECLARE vl_total_cnt    INTEGER;
+DECLARE vl_curr_doc_no    INTEGER;
+
+--Cursor for populating the Batch numbers in the FMIS Detail table
+-- DECLARE cur4 CURSOR  FOR SELECT VN_BATCH_CNT;
+
+DECLARE cur_updt_doc_suffix CURSOR FOR  
+ SELECT fmis_payment_detail_record_id,
+     (current_document_nbr_suffix)::INTEGER AS current_document_nbr_suffix
+  FROM as_tb_fmis_payment_detail_interface
+ ORDER BY fmis_payment_detail_record_id;
+  
+  
+DECLARE cur_updt_batch_no CURSOR FOR  
+ SELECT DISTINCT (invoice_nbr)::INTEGER AS invoice_nbr
+  FROM (  SELECT fmis_payment_detail_record_id, invoice_nbr
+     FROM as_tb_fmis_payment_detail_interface
+    WHERE batch_no IS NULL 
+    ORDER BY fmis_payment_detail_record_id 
+    ) TAB;
+     
+     
+DECLARE cur_updt_batch_seq CURSOR FOR  
+ SELECT DISTINCT batch_no
+  FROM as_tb_fmis_payment_detail_interface
+ ORDER BY 1;
+ 
+
+DECLARE error_cur CURSOR  FOR
+ SELECT pd.payment_id
+  ,pd.client_id
+  ,pd.county_cd AS county
+  ,hd.provider_id
+  ,fmis.batch_no
+  ,'County Name : '|| county.countyname ||', Provider Name: ' ||
+  ( CASE WHEN pr.provider_first_nm IS NOT NULL AND btrim(pr.provider_first_nm ) <> '' THEN
+   COALESCE(pr.provider_first_nm, '') || ' ' || COALESCE(pr.provider_last_nm, '')
+   ELSE
+   COALESCE(pr.provider_nm, '')
+   END ) 
+   ||', Transaction amount is missing for Payment ID: ' || hd.payment_id::VARCHAR
+ FROM tb_payment_detail pd, 
+  as_tb_fmis_payment_detail_interface fmis,
+  tb_payment_header hd,
+  tb_provider pr,
+  county 
+ WHERE pd.payment_id = (fmis.invoice_nbr::INTEGER)
+  AND hd.payment_id = pd.payment_id
+  AND hd.provider_id = pr.provider_id
+  AND county.statecountycode = pd.county_cd
+  AND hd.delete_sw = 'N'
+  AND pd.delete_sw = 'N'
+  AND fmis.delete_sw = 'N'
+  and pr.delete_sw = 'N'
+  AND pd.final_amount_no IS NULL
+  AND Btrim(hd.payment_type_cd) = vs_payment_type_cd ;
+
+BEGIN 
+ -- Temporary table for the distinct fields to be populated in 'as_tb_fmis_payment_detail_interface'  
+ DROP TABLE IF EXISTS TTB_FMIS_MAIN CASCADE;
+  
+ CREATE TEMPORARY TABLE TTB_FMIS_MAIN(   VN_TEMP_PROVIDER_ID INTEGER
+                                            ,VS_TEMP_PAYMENT_TYPE_CD VARCHAR(4)
+           ,VN_TEMP_PAYMENT_ID INTEGER
+           ,VS_TEMP_MAIL_CODE_TX VARCHAR(3)
+           ,VS_EFT_SW VARCHAR(1)
+           ,VS_TRANSACTION_AMT VARCHAR(13)
+           ,VS_COLLECTED_AMT VARCHAR(500)
+           ,VS_AGENCY_OBJECT_CD VARCHAR(4)
+           ,VN_TAX_ID INTEGER
+           ,VS_OFFSET_FLAG CHAR(1)
+           ,VS_TEMP_REVERSE_IND CHAR(1)
+           ,VL_UNDER_19 INTEGER
+           ,VL_OVER_18 INTEGER
+           ,VS_PROV_PLMT_TYPE VARCHAR(5)
+           ,VS_PROV_AFF  VARCHAR(5)
+           ,VS_DIST_TYPE VARCHAR(2)
+           ,VN_PRV_ADR_56_CNT INTEGER
+           ,VN_PRV_ADR_57_CNT INTEGER
+           ,VN_CURR_DOC_NBR INTEGER
+           ,VN_CURR_DOC_SUFFIX INTEGER
+           ,VS_PCA_CODE VARCHAR(5)
+                                        );
+
+ IF adt_rundate is null OR adt_rundate = '1900-01-01' THEN
+  vd_run_date := current_date;
+ ELSE
+  vd_run_date := adt_rundate;
+ END IF;
+
+ -- Get previous months first & last date
+ prev_month_first_day := (SELECT (date_trunc('month', vd_run_date) - INTERVAL '1 month')::DATE);
+ prev_month_last_day := (SELECT (date_trunc('month', vd_run_date)::DATE - 1));
+
+ -- Delete the records from the parent tables if exists - START
+ SELECT COUNT(*) 
+  INTO vn_header_cnt
+ FROM as_tb_fmis_payment_header_interface;
+
+ IF vn_header_cnt > 0 THEN 
+  BEGIN
+   DELETE FROM as_tb_fmis_payment_header_interface;
+  
+   EXCEPTION WHEN OTHERS THEN
+    as_error := 'ERROR in Deleting as_tb_fmis_payment_header_interface.';
+    vs_message_text :=  SQLERRM;
+    al_sqlcode := -1 ;
+    as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::varchar) ||'::' || vs_procedure_nm || '.' ;
+    as_error := as_error || vs_message_text;
+    SELECT sp_batch_error_log 
+     ( vs_procedure_nm::CHARACTER VARYING, 
+      NULL::BIGINT, 
+      NULL::BIGINT, 
+      NULL::CHARACTER VARYING, 
+      NULL::INTEGER, 
+      NULL::CHARACTER VARYING, 
+      SQLSTATE::CHARACTER VARYING, 
+      as_error::CHARACTER VARYING, 
+      NULL::CHARACTER VARYING
+     ) INTO vl_ret_status;
+   RETURN;
+  END;  
+ END IF;
+
+ SELECT COUNT(*) 
+  INTO vn_detail_cnt
+ FROM as_tb_fmis_payment_detail_interface;
+
+ IF vn_detail_cnt > 0 THEN
+  BEGIN
+   DELETE FROM as_tb_fmis_payment_detail_interface;
+  
+   EXCEPTION WHEN OTHERS THEN
+    as_error := 'ERROR in Deleting as_tb_fmis_payment_detail_interface.';
+    vs_message_text :=  SQLERRM;
+    al_sqlcode := -1 ;
+    as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::varchar) ||'::' || vs_procedure_nm || '.' ;
+    as_error := as_error || vs_message_text;
+    SELECT sp_batch_error_log 
+     (  vs_procedure_nm::CHARACTER VARYING, 
+      NULL::BIGINT, 
+      NULL::BIGINT, 
+      NULL::CHARACTER VARYING, 
+      NULL::INTEGER, 
+      NULL::CHARACTER VARYING, 
+      SQLSTATE::CHARACTER VARYING, 
+      as_error::CHARACTER VARYING, 
+      NULL::CHARACTER VARYING
+     ) INTO vl_ret_status;
+   RETURN; 
+  END;
+ END IF;
+ -- Delete the records from the parent tables if exists - END
+
+ -- Set BATCH_NO to start with in this run - START
+ -- from January to June BATCH_NO from previous run + 1
+ IF EXTRACT(MONTH FROM vd_run_date) in (1,2,3,4,5,6) THEN
+  vn_appropriation_year := EXTRACT(YEAR FROM vd_run_date);
+
+  BEGIN
+   SELECT (batch_no::INTEGER) 
+    INTO vn_cur_batch 
+   FROM as_tb_fmis_payment_detail_interface_iss 
+   ORDER BY fmis_payment_detail_record_id DESC, 
+     run_no DESC 
+   FETCH FIRST 1 ROW ONLY;
+   
+   EXCEPTION WHEN OTHERS THEN
+    as_error := 'ERROR in getting max batch number from as_tb_fmis_payment_detail_interface_iss ';
+    vs_message_text :=  SQLERRM;
+    al_sqlcode := -1 ;
+    as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+    as_error := as_error || vs_message_text;
+    SELECT SP_BATCH_ERROR_LOG 
+     ( vs_procedure_nm::CHARACTER VARYING, 
+      NULL::BIGINT, 
+      NULL::BIGINT, 
+      NULL::CHARACTER VARYING, 
+      NULL::INTEGER, 
+      NULL::CHARACTER VARYING, 
+      SQLSTATE::CHARACTER VARYING, 
+      as_error::CHARACTER VARYING, 
+      NULL::CHARACTER VARYING
+     ) INTO vl_ret_status;
+   RETURN;
+  END;
+ ELSE
+  vn_appropriation_year := (SELECT EXTRACT(YEAR FROM vd_run_date) + 1);
+  -- In July reset BATCH_NO to 1 (Change in Fiscal Year)
+  -- FMIS run on 13th of the month
+  IF EXTRACT(MONTH FROM vd_run_date) = 7 THEN --  AND EXTRACT(DAY FROM vd_run_date) < 13 THEN 
+    vn_cur_batch := 0;
+  ELSE 
+   -- Starting 8th month
+   -- N/A - from July 13 to December BATCH_NO from previous run + 1
+   BEGIN 
+    SELECT (BATCH_NO::INTEGER) 
+     INTO vn_cur_batch 
+    FROM as_tb_fmis_payment_detail_interface_iss 
+    ORDER BY fmis_payment_detail_record_id DESC,
+      run_no DESC 
+    FETCH FIRST 1 ROW ONLY;
+    
+    EXCEPTION WHEN OTHERS THEN
+     as_error := 'ERROR in getting max batch number from as_tb_fmis_payment_detail_interface_iss ';
+     vs_message_text :=  SQLERRM;
+     al_sqlcode := -1 ;
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+     as_error := as_error || vs_message_text;
+     SELECT SP_BATCH_ERROR_LOG 
+      ( vs_procedure_nm::CHARACTER VARYING, 
+       NULL::BIGINT, 
+       NULL::BIGINT, 
+       NULL::CHARACTER VARYING, 
+       NULL::INTEGER, 
+       NULL::CHARACTER VARYING, 
+       SQLSTATE::CHARACTER VARYING, 
+       as_error::CHARACTER VARYING, 
+       NULL::CHARACTER VARYING
+      ) INTO vl_ret_status;
+    RETURN;
+   END;
+  END IF;
+ END IF;
+ -- Set BATCH_NO to start with in this run - END
+
+ -- Load Temporary table with Payments - START
+ INSERT INTO TTB_FMIS_MAIN
+ (   SELECT p.provider_id -- PROVIDER_ID
+   ,ph.payment_type_cd -- PAYMENT_TYPE_CD
+   ,ph.payment_id -- PAYMENT_ID
+   ,p.mail_code_tx -- MAIL_CODE_TX
+   ,COALESCE(p.eft_sw,'N') -- EFT_SW
+   ,NULL -- TRANSACTION_AMT
+   ,NULL -- COLLECTED_AMT
+   ,NULL -- AGENCY_OBJECT_CD
+   ,( SELECT COALESCE(tp.tax_id_no,
+     ( SELECT tax_id_no 
+       FROM tb_provider
+      WHERE provider_id = ( SELECT affiliate_provider_id 
+             FROM tb_provider
+            WHERE provider_id = p.provider_id
+           )
+     ) ) AS tax_id_no  
+     FROM tb_provider tp
+    WHERE tp.provider_id = p.provider_id 
+     AND tp.delete_sw = 'N'
+   ) -- TAX_ID
+   ,NULL -- OFFSET_FLAG
+   ,NULL -- REVERSE_IND
+   ,( SELECT COUNT(client_id) 
+     FROM tb_payment_detail
+    WHERE payment_id = ph.payment_id
+     AND client_id IN ( SELECT cjamspid 
+           FROM person 
+          WHERE F_AGE(dob_dt) < 19 
+           AND activeflag = 1
+         )
+     AND delete_sw = 'N'  
+   ) -- UNDER_19
+   ,( SELECT COUNT(client_id) 
+     FROM tb_payment_detail
+    WHERE payment_id = ph.payment_id
+     AND client_id IN ( SELECT cjamspid 
+           FROM person 
+          WHERE F_AGE(dob_dt) >= 19 
+           AND activeflag = 1
+         )
+     AND delete_sw = 'N'  
+   ) -- OVER_18
+   ,COALESCE(F_PRVPCKLST_CAT(p.provider_id,'ASSERVICEPLAN'),'') -- PROV_PLMT_TYPE
+   ,( SELECT LTRIM(RTRIM(pay_to_affiliate_cd)) 
+     FROM tb_provider
+    WHERE delete_sw = 'N' 
+     AND provider_id = p.provider_id
+   ) -- PROV_AFF
+   ,NULL -- DIST_TYPE
+   ,( SELECT COUNT(*) 
+     FROM tb_provider_addresses
+    WHERE parent_key_id::INTEGER = p.provider_id::INTEGER
+     AND adr_default_sw = 'Y'
+     AND adr_type_cd = '3356' 
+     AND adr_format_cd = 'F'
+     AND delete_sw = 'N'
+   ) -- PRV_ADR_56_CNT
+   ,( SELECT COUNT(*) 
+     FROM tb_provider_addresses
+    WHERE parent_key_id::INTEGER = p.provider_id::INTEGER
+     AND adr_default_sw = 'Y'
+     AND adr_type_cd = '3357' 
+     AND adr_format_cd = 'F'
+     AND delete_sw = 'N'
+   ) -- PRV_ADR_57_CNT
+   ,NULL -- CURR_DOC_NBR
+   ,1 -- CURR_DOC_SUFFIX
+  FROM tb_provider p, 
+   tb_payment_status ps,  
+   tb_payment_header ph
+  WHERE p.provider_id = ph.provider_id 
+   AND ph.payment_id = ps.payment_id
+   AND ph.delete_sw = 'N' 
+   AND ps.delete_sw = 'N' 
+   AND p.delete_sw = 'N'
+   AND ps.payment_status_cd = '1634' 
+   AND Btrim(ph.payment_type_cd) = vs_payment_type_cd -- Adult Services - Service Plan Monthly Payment 
+   /*
+   AND ( ph.payment_start_dt <= prev_month_last_day 
+     OR ph.payment_start_dt BETWEEN prev_month_first_day AND prev_month_last_day
+    )
+   AND ( ph.payment_end_dt >= prev_month_first_day 
+     OR ph.payment_end_dt BETWEEN prev_month_first_day AND prev_month_last_day
+    )
+   */
+  GROUP BY p.provider_id, ph.payment_type_cd, ph.payment_id, p.mail_code_tx, p.eft_sw, p.dob_dt              
+  ORDER BY p.provider_id, ph.payment_id, ph.payment_type_cd
+ );
+ -- Load Temporary table with Payments - END
+
+ -- Update Transaction Amount and Collected Amount in Temporary Table- START
+ -- Transaction Amount
+ UPDATE TTB_FMIS_MAIN
+  SET VS_TRANSACTION_AMT = (  SELECT LPAD(LTRIM(RTRIM(((SUM(final_amount_no * 100))::INTEGER)::VARCHAR)),13,'0') 
+          FROM tb_payment_detail 
+         WHERE payment_id = TTB_FMIS_MAIN.VN_TEMP_PAYMENT_ID
+          AND delete_sw = 'N'
+        );
+    
+ -- Update PCA Code - (Assuming one PCA code for all Services else need to send some constant value like CW) 
+ UPDATE TTB_FMIS_MAIN
+  SET VS_PCA_CODE = ( select final_fiscal_category_cd 
+        from tb_payment_detail 
+       where payment_id = TTB_FMIS_MAIN.VN_TEMP_PAYMENT_ID
+        and delete_sw = 'N'
+       order by payment_detail_id
+       limit 1
+        ) ; 
+ 
+ -- Not Required - Assuming there will be NO offsets for Adult Services Payment ??????
+ /*
+ -- Collected Amount if Offset is present (ONLY for Maintenance payments)
+ UPDATE TTB_FMIS_MAIN
+  SET VS_COLLECTED_AMT = (  SELECT LPAD(LTRIM(RTRIM(((SUM(rl.collected_amount_no * 100))::INTEGER)::VARCHAR)),13,'0') 
+          FROM tb_receivable_offset ro, 
+             tb_receivable_liquidation rl, 
+             tb_receivable_detail rd, 
+             tb_payment_detail pd
+         WHERE ro.offset_id = rl.offset_id
+          AND rd.receivable_detail_id = rl.receivable_detail_id
+          AND pd.payment_detail_id = rd.payment_detail_id
+          AND ro.payment_id = TTB_FMIS_MAIN.VN_TEMP_PAYMENT_ID
+          AND rl.delete_sw = 'N'
+          AND pd.delete_sw = 'N'
+          AND rd.delete_sw = 'N'
+          AND ro.delete_sw = 'N'
+          AND rl.collected_amount_no is not null 
+        )
+ WHERE VS_TEMP_PAYMENT_TYPE_CD = '6' ;
+ -- Update Transaction Amount and Collected Amount in Temporary Table- END
+
+ -- To skip payment where offset amount equals payment amount (INC0030993) - START 
+
+ -- Delete payments from Temporary table where offset amount equals payment amount - START
+ DELETE FROM TTB_FMIS_MAIN 
+ WHERE VS_TEMP_PAYMENT_TYPE_CD = '6'
+  AND TTB_FMIS_MAIN.VS_COLLECTED_AMT = TTB_FMIS_MAIN.VS_TRANSACTION_AMT ;
+ -- Delete payments from Temporary table where offset amount equals payment amount - END
+
+ -- To skip payment where offset amount equals payment amount (INC0030993) - END
+
+ -- Set the Offset flag to identify offset transactions in Temporary Table - START
+ UPDATE TTB_FMIS_MAIN
+  SET VS_OFFSET_FLAG = 'Y'
+ WHERE (VS_COLLECTED_AMT::INTEGER) > 0;
+ -- WHERE INT(VS_COLLECTED_AMT) < INT(VS_TRANSACTION_AMT); -- (INC0030993)
+ -- Set the Offset flag to identify offset transactions in Temporary Table - END
+ */
+
+ -- Update Distribution Type in Temporary Table - START
+ -- Providers with EFT_SW = 'Y' 
+ UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '86'
+ WHERE TTB_FMIS_MAIN.VS_EFT_SW = 'Y';
+
+ -- Providers with EFT_SW = 'N' and '3356' - Provider Payment address and '3357' - Provider Location address; both are Not Foreign address
+ UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '00'
+ WHERE TTB_FMIS_MAIN.VS_EFT_SW = 'N' 
+  AND TTB_FMIS_MAIN.VN_PRV_ADR_56_CNT = 0 
+  AND TTB_FMIS_MAIN.VN_PRV_ADR_57_CNT = 0 ;
+ 
+ -- Remaining all
+ UPDATE TTB_FMIS_MAIN
+  SET VS_DIST_TYPE = '01'
+ WHERE TTB_FMIS_MAIN.VS_DIST_TYPE is NULL ;
+ -- Update Distribution Type in Temporary Table - END
+
+ -- Update Agency Object Code in Temporary Table - START
+ -- Adult Services are provided by Private Providers
+ UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '0856' -- Private Providers
+ WHERE RTRIM(LTRIM(TTB_FMIS_MAIN.VS_AGENCY_OBJECT_CD)) = '' 
+    OR TTB_FMIS_MAIN.VS_AGENCY_OBJECT_CD IS NULL;
+
+ /*
+ -- '1783' - Local Department Home with Maintenance payments and 5 or more clients age over 18
+ UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '1298' -- Taxable
+ WHERE TTB_FMIS_MAIN.VL_OVER_18 > 5  
+  AND TTB_FMIS_MAIN.VS_TEMP_PAYMENT_TYPE_CD = '6' 
+  AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783';
+
+ -- '1783' - Local Department Home with Maintenance payments and 
+ -- 5 or more clients age over 18
+ -- OR
+ -- more than 10 clients age under 19 
+ UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '1298'   -- Taxable
+ WHERE (TTB_FMIS_MAIN.VL_OVER_18 > 5 OR TTB_FMIS_MAIN.VL_UNDER_19 > 10) 
+  AND TTB_FMIS_MAIN.VS_TEMP_PAYMENT_TYPE_CD = '6' 
+  AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE = '1783';
+
+ -- Default all private providers to '0856' for Maintenance Payments 
+ UPDATE TTB_FMIS_MAIN
+ SET VS_AGENCY_OBJECT_CD = '0856'   -- Private Providers
+ WHERE TTB_FMIS_MAIN.VS_TEMP_PAYMENT_TYPE_CD = '6' 
+  AND TTB_FMIS_MAIN.VS_PROV_PLMT_TYPE <> '1783';
+  
+
+ -- for all remaining update Non-Taxable 
+ UPDATE TTB_FMIS_MAIN
+  SET VS_AGENCY_OBJECT_CD = '1201'   -- Non - Taxable
+ WHERE RTRIM(LTRIM(TTB_FMIS_MAIN.VS_AGENCY_OBJECT_CD)) = '' 
+    OR TTB_FMIS_MAIN.VS_AGENCY_OBJECT_CD IS NULL;
+ */   
+ -- Update Agency Object Code in Temporary Table - END
+
+ -- Not Required - Assuming there will be NO offsets for Adult Services Payment ??????
+ /*
+ -- Load Temporary table for Offset Values - START
+ INSERT INTO TTB_FMIS_MAIN
+ ( SELECT tph.provider_id
+   ,tph.payment_type_cd
+   ,offset_rec.payment_id
+   ,tp.mail_code_tx
+   ,tp.eft_sw
+   ,LPAD(LTRIM(RTRIM(((offset_rec.amt_no)::INTEGER)::VARCHAR)),13,'0')
+   ,NULL
+   ,(SELECT B.VS_AGENCY_OBJECT_CD 
+    FROM TTB_FMIS_MAIN B 
+     WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.payment_id 
+    AND VS_OFFSET_FLAG = 'Y'
+   )
+   ,(SELECT B.VN_TAX_ID 
+    FROM TTB_FMIS_MAIN b 
+     WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.payment_id 
+    AND VS_OFFSET_FLAG = 'Y'
+   )
+   ,NULL
+   ,'R'
+   ,NULL
+   ,NULL
+   ,NULL
+   ,NULL
+   ,(SELECT B.VS_DIST_TYPE 
+    FROM TTB_FMIS_MAIN B 
+     WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID 
+    AND VS_OFFSET_FLAG = 'Y'
+   )
+   ,NULL
+   ,NULL
+ --  ,(SELECT VN_CURR_DOC_NBR 
+ --   FROM TTB_FMIS_MAIN B 
+ --    WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID 
+ --   AND VS_OFFSET_FLAG = 'Y'
+ --  )
+   ,NULL 
+ --  ,(SELECT VN_CURR_DOC_SUFFIX + 1 
+ --   FROM TTB_FMIS_MAIN B 
+ --    WHERE B.VN_TEMP_PAYMENT_ID = offset_rec.PAYMENT_ID 
+ --   AND VS_OFFSET_FLAG = 'Y'
+ --  )
+   ,NULL
+  FROM 
+   ( SELECT pd.county_cd, pd.agency_object_cd, ro.payment_id, ((sum(rl.collected_amount_no*100))::INTEGER)::VARCHAR AS amt_no
+    FROM tb_receivable_offset ro, 
+      tb_receivable_liquidation rl, 
+      tb_receivable_detail rd, 
+      tb_payment_detail pd
+     WHERE ro.offset_id = rl.offset_id
+    AND rl.receivable_detail_id = rd.receivable_detail_id
+    AND rd.payment_detail_id = pd.payment_detail_id
+    AND ro.payment_id IN (SELECT VN_TEMP_PAYMENT_ID 
+          FROM TTB_FMIS_MAIN 
+           WHERE VS_OFFSET_FLAG = 'Y'
+          )
+    AND ro.delete_sw = 'N' 
+    AND rl.delete_sw = 'N' 
+    AND rd.delete_sw = 'N' 
+    AND pd.delete_sw = 'N'
+   GROUP BY pd.agency_object_cd, pd.county_cd, ro.payment_id 
+   ) as offset_rec, 
+   tb_payment_header tph, 
+   tb_provider TP
+  WHERE offset_rec.payment_id = tph.payment_id 
+   and tph.delete_sw = 'N'
+   and TP.provider_id = tph.provider_id
+ ); 
+ -- Load Temporary table for Offset Values - END
+ */
+
+ -- Load FMIS Detail table from Temporary table - START
+ BEGIN
+  INSERT INTO as_tb_fmis_payment_detail_interface
+   (   fmis_payment_detail_record_id
+    ,agency_object_cd
+    ,vendor_tax_type_cd
+    ,vendor_mail_code_tx
+    ,invoice_nbr
+    ,transaction_amt
+    ,reverse_ind
+    --,batch_sequence_no
+    --,current_document_nbr_cd
+    ,current_document_nbr_suffix
+    ,payment_type_cd
+    ,payment_dis_type_cd
+    ,pca_cd
+   )
+   ( SELECT NEXTVAL('as_sq_fmis_payment_detail_interface')
+     ,M.VS_AGENCY_OBJECT_CD
+     ,'W' || LPAD(LTRIM(RTRIM((M.VN_TAX_ID::VARCHAR))),9,'0')
+     ,M.VS_TEMP_MAIL_CODE_TX
+     ,LPAD(LTRIM(RTRIM((M.VN_TEMP_PAYMENT_ID::VARCHAR))),14,'0')
+     ,M.VS_TRANSACTION_AMT
+     ,M.VS_TEMP_REVERSE_IND
+     -- ,NEXTVAL FOR SQ_FMIS_BATCH_SEQ_N0
+     -- ,'VY' || LPAD(LTRIM(RTRIM(CHAR(VN_CURR_DOC_NBR))),6,'0')
+     ,LPAD(LTRIM(RTRIM((M.VN_CURR_DOC_SUFFIX::VARCHAR))),3,'0')
+     ,M.VS_TEMP_PAYMENT_TYPE_CD
+     ,M.VS_DIST_TYPE
+     ,M.VS_PCA_CODE
+    FROM TTB_FMIS_MAIN M
+    WHERE (M.VS_TRANSACTION_AMT IS NOT NULL OR (M.VS_TRANSACTION_AMT::INTEGER) > 0 )
+    ORDER BY M.VN_TEMP_PAYMENT_ID 
+   );
+  
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'ERROR in Inserting as_tb_fmis_payment_detail_interface.';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode := -1 ;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   Select sp_batch_error_log 
+    (  vs_procedure_nm::character varying, 
+     NULL::bigint, 
+     NULL::bigint, 
+     NULL::character varying, 
+     NULL::INTEGER, 
+     NULL::character varying, 
+     SQLSTATE::character varying, 
+     as_error::character varying, 
+     NULL::character varying
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+ -- Load FMIS Detail table from Temporary table - END
+
+ -- Not Required - Assuming there will be NO offsets for Adult Services Payment ??????
+ /*
+ -- To fix logic of CURRENT_DOCUMENT_NBR_SUFFIX (INC0030993) - START
+ SELECT COUNT(*)
+  INTO vl_offset_cnt
+ FROM as_tb_fmis_payment_detail_interface
+ WHERE reverse_ind = 'R' ;
+
+ IF vl_offset_cnt > 0 THEN
+  OPEN cur_updt_doc_suffix;
+    <<cur_updt_doc>>
+  LOOP 
+  FETCH cur_updt_doc_suffix INTO vl_fmis_detail_id, vl_doc_num_suffix;
+  EXIT cur_updt_doc WHEN NOT FOUND; 
+   
+   IF vl_doc_num_suffix is NOT NULL AND vl_doc_num_suffix > 0 THEN -- Payment Record
+     vl_current_doc_num_suffix := vl_doc_num_suffix;
+   ELSE
+    vl_current_doc_num_suffix := vl_current_doc_num_suffix + 1;
+    UPDATE as_tb_fmis_payment_detail_interface
+     SET current_document_nbr_suffix = LPAD(LTRIM(RTRIM((vl_current_doc_num_suffix)::VARCHAR)),3,'0')
+    WHERE fmis_payment_detail_record_id = vl_fmis_detail_id;
+   END IF;
+  END LOOP;
+  CLOSE cur_updt_doc_suffix;
+ END IF; 
+ -- To fix logic of CURRENT_DOCUMENT_NBR_SUFFIX (INC0030993) - END
+ */
+
+ -- Update FMIS Detail for all constant columns - START
+ BEGIN
+  UPDATE as_tb_fmis_payment_detail_interface
+   SET batch_agency_cd = F_picklist_ctxt('9000',1550)
+    ,batch_type_cd = F_picklist_ctxt('8088',1550)
+    ,user_operator_id = F_picklist_ctxt('7733',1550)
+    ,transaction_cd = F_picklist_ctxt('7743',1550)
+    ,finance_agency_cd = F_picklist_ctxt('7744',1550)
+    -- If PCA code is NOT the same for all Services else need to send some constant value like CW
+    -- ,pca_cd = F_picklist_ctxt('7745',1550) -- Pending need new value ?????
+    ,IRS_1099_SW = F_picklist_ctxt('8089',1550)
+    ,discount_amt = F_picklist_ctxt('7741',1550)
+    ,interest_Terms_CD = F_picklist_ctxt('7746',1550)
+    ,penalty_amt = F_picklist_ctxt('7747',1550)
+    ,document_agency_cd = F_picklist_ctxt('9001',1550)
+    ,appropriation_year = VN_APPROPRIATION_YEAR
+    ,document_year = VN_APPROPRIATION_YEAR
+    ,invoice_description_tx = F_picklist_ctxt('7749',1550)
+    ,index_cd = '7' ||
+       ( 
+        select Btrim(( case when tab.county_cd = '1427' then '01' -- Allegany
+          when tab.county_cd = '1428' then '02' -- Anne arundel
+          when tab.county_cd = '1430' then '03' -- Baltimore county
+          when tab.county_cd = '1431' then '04' -- Calvert
+          when tab.county_cd = '1432' then '05' -- Caroline
+          when tab.county_cd = '1433' then '06' -- Carroll
+          when tab.county_cd = '1434' then '07' -- Cecil
+          when tab.county_cd = '1435' then '08' -- Charles
+          when tab.county_cd = '1436' then '09' -- Dorchester
+          when tab.county_cd = '1437' then '10' -- Frederick
+          when tab.county_cd = '1438' then '11' -- Garrett
+          when tab.county_cd = '1439' then '12' -- Harford
+          when tab.county_cd = '1440' then '13' -- Howard
+          when tab.county_cd = '1441' then '14' -- Kent
+          when tab.county_cd = '1442' then '15' -- Montgomery
+          when tab.county_cd = '1443' then '16' -- Prince george
+          when tab.county_cd = '1444' then '17' -- Queen anne
+          when tab.county_cd = '1446' then '18' -- St. marys
+          when tab.county_cd = '1445' then '19' -- Somerset
+          when tab.county_cd = '1447' then '20' -- Talbot
+          when tab.county_cd = '1448' then '21' -- Washington
+          when tab.county_cd = '1449' then '22' -- Wicomico
+          when tab.county_cd = '1450' then '23' -- Worcester
+          when tab.county_cd = '1429' then '24' -- Baltimore city
+         else
+          '99'  
+         end ))  
+        from ( 
+        select distinct Btrim(county_cd) as county_cd 
+         from tb_payment_detail
+        where delete_sw = 'N'
+         and payment_id = as_tb_fmis_payment_detail_interface.invoice_nbr::INTEGER
+        ) tab
+       ) || '00' ;
+    
+
+  EXCEPTION WHEN OTHERS THEN 
+   as_error = 'ERROR in Updating as_tb_fmis_payment_detail_interface for Constant Columns';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode = -1;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log 
+    ( vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+
+ -- Update PAYMENT_TYPE_SW 
+ BEGIN 
+  UPDATE as_tb_fmis_payment_detail_interface
+   SET payment_type_sw = 'D' -- Adult Services 
+  WHERE Btrim(payment_type_cd) = vs_payment_type_cd ; -- Adult Services - Service Plan Monthly Payment
+
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'ERROR in Updating as_tb_fmis_payment_detail_interface for Adult Services Payments PAYMENT_TYPE_SW';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode := -1 ;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log 
+    ( vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+ -- Update FMIS Detail for all constant columns - END  
+
+ -- Grouping records based on the batch size input parameter & Update BATCH_SEQUENCE_NO - START
+ BEGIN
+  SELECT COUNT(*) 
+   INTO vn_dtl_cnt 
+  FROM as_tb_fmis_payment_detail_interface;
+
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'ERROR in getting record count from as_tb_fmis_payment_detail_interface ';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode := -1 ;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log 
+    (  vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+
+ --<<NEXT_BATCH_NO>>
+ --WHILE VN_DTL_CNT > 0 LOOP
+ IF vn_cur_batch is null THEN
+  vn_cur_batch := 0;
+ END IF;
+ vn_cur_batch := vn_cur_batch + 1;
+ vl_batch_size := vn_batch_sz;
+  
+ OPEN cur_updt_batch_no;
+  <<cur_updt_batch>>
+  LOOP
+   FETCH cur_updt_batch_no INTO vl_payment_id; 
+   
+   EXIT cur_updt_batch WHEN NOT FOUND;
+   
+   SELECT COUNT(*)
+    INTO vl_total_cnt
+   FROM as_tb_fmis_payment_detail_interface
+   WHERE (invoice_nbr)::INTEGER = vl_payment_id ; 
+   
+   IF vl_batch_size >= vl_total_cnt THEN
+    SELECT NEXTVAL('as_sq_fmis_curr_doc_nbr') 
+     INTO vl_curr_doc_no;
+    
+    vs_curr_doc_no := 'VX' || LPAD(LTRIM(RTRIM((vl_curr_doc_no)::VARCHAR)),6,'0');
+    
+    UPDATE as_tb_fmis_payment_detail_interface
+     SET batch_no = vn_cur_batch,
+      current_document_nbr_cd = vs_curr_doc_no
+    WHERE (invoice_nbr::INTEGER) = vl_payment_id;
+    
+    vl_batch_size := vl_batch_size - vl_total_cnt;
+    vn_dtl_cnt := vn_dtl_cnt - vl_total_cnt;
+   END IF;
+   
+   IF vl_batch_size = 0 THEN
+    vn_cur_batch := vn_cur_batch + 1;
+    vl_batch_size := vn_batch_sz;
+    --continue NEXT_BATCH_NO;
+   END IF;
+  END LOOP;
+ CLOSE cur_updt_batch_no;
+ --END LOOP;
+
+ -- Update BATCH_SEQUENCE_NO in FMIS Detail table - START
+ OPEN cur_updt_batch_seq;
+ <<cur_updted_batch_seq>>
+
+ LOOP
+   FETCH cur_updt_batch_seq INTO vs_batchno;
+   EXIT cur_updted_batch_seq WHEN NOT FOUND;
+  
+  UPDATE as_tb_fmis_payment_detail_interface 
+   SET batch_sequence_no =  (  SELECT LPAD(RTRIM(LTRIM((TAB.num)::VARCHAR)),5,'0')
+          FROM ( SELECT row_number() over() AS num, 
+             a.fmis_payment_detail_record_id, 
+             a.batch_no
+            FROM as_tb_fmis_payment_detail_interface A
+            WHERE a.batch_no = vs_batchno
+            ORDER BY a.batch_no, a.fmis_payment_detail_record_id
+             ) TAB
+          WHERE tab.fmis_payment_detail_record_id = as_tb_fmis_payment_detail_interface.fmis_payment_detail_record_id
+           )
+  WHERE as_tb_fmis_payment_detail_interface.batch_no = vs_batchno;
+  
+ END LOOP;
+ CLOSE cur_updt_batch_seq;
+ -- Update BATCH_SEQUENCE_NO in FMIS Detail table - END
+
+ -- Grouping records based on the batch size input parameter & Update BATCH_SEQUENCE_NO - END
+
+ -- Load FMIS Header for all batch Nos - START
+ INSERT INTO as_tb_fmis_payment_header_interface
+  (  fmis_payment_header_record_id
+   ,batch_no
+   ,batch_last_sequence_no
+   ,batch_entered_count
+   ,batch_entered_amt
+   ,payment_type_cd
+   ,fillter_3_tx
+  )
+  ( SELECT NEXTVAL('as_sq_fmis_payment_header_interface')
+    ,batch_no
+    ,max(batch_sequence_no)
+    ,max(batch_sequence_no)
+    ,LPAD(LTRIM(RTRIM((SUM(transaction_amt::INTEGER))::VARCHAR)),13,'0')
+    ,''
+    ,LPAD('',618)
+   FROM as_tb_fmis_payment_detail_interface
+   GROUP BY batch_no
+  );
+ -- Load FMIS Header for all batch Nos - END
+
+ -- Update FMIS Header for all constant columns & Batch No with leading 0 - START
+ BEGIN
+  UPDATE as_tb_fmis_payment_header_interface
+   SET batch_agency_cd = F_picklist_ctxt('9000',1550)
+    ,batch_type_cd = F_picklist_ctxt('8088',1550)
+    ,batch_user_operator_id = F_picklist_ctxt('7733',1550)
+    ,batch_dis_method_ind =  F_picklist_ctxt('7734',1550)
+    ,fast_entry_ind = F_picklist_ctxt('7735',1550)
+    ,batch_amt_count_entered_ind = F_picklist_ctxt('7736',1550)
+    ,batch_status_ind = F_picklist_ctxt('7737',1550)
+    ,batch_header_count_ind = F_picklist_ctxt('7738',1550)
+    ,batch_master_file_ind = F_picklist_ctxt('7739',1550)
+    ,batch_computed_cnt = F_picklist_ctxt('7740',1550)
+    ,batch_computed_amt = F_picklist_ctxt('7741',1550)
+    ,approval_to_post_ind = F_picklist_ctxt('7742',1550)
+    ,create_ts = CURRENT_TIMESTAMP
+    ,create_user_id = 'asfinance'
+    ,update_ts = CURRENT_TIMESTAMP
+    ,update_user_id = 'asfinance'
+    ,delete_sw = 'N'
+    ,batch_no = LPAD(LTRIM(RTRIM(batch_no)),3, '0');
+
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'ERROR in Updating as_tb_fmis_payment_header_interface for Constant Columns & for Batch No with leading 0';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode :=-1;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log 
+    ( vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+
+ -- Update PAYMENT_TYPE_CD for Adult Services Payments
+ BEGIN
+  UPDATE as_tb_fmis_payment_header_interface
+   SET payment_type_cd = 'D' ; -- Adult Services
+   
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'ERROR in Updating as_tb_fmis_payment_header_interface for Adult Services Payments';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode := -1 ;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log 
+    ( vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+ -- Update FMIS Header for all constant columns & Batch No with leading 0 - END
+
+ -- Update FMIS Detail Batch No with leading 0 - START
+ BEGIN
+  UPDATE as_tb_fmis_payment_detail_interface
+   SET batch_no = LPAD(LTRIM(RTRIM(batch_no)),3, '0') ;
+  
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'ERROR in Updating as_tb_fmis_payment_detail_interface for Batch No with leading 0';
+   vs_message_text :=  SQLERRM;
+   al_sqlcode := -1 ;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log
+    ( vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+ -- Update FMIS Detail Batch No with leading 0 - END
+
+ -- Update Payment Status as '1636' -Interfaced - START
+ BEGIN 
+  UPDATE tb_payment_status 
+   SET payment_status_cd = '1636'
+    ,payment_status_dt = (CURRENT_TIMESTAMP::DATE)
+    ,update_ts = CURRENT_TIMESTAMP
+  WHERE (tb_payment_status.payment_status_cd = '1634')
+   AND (tb_payment_status.payment_id IN ( SELECT DISTINCT VN_TEMP_PAYMENT_ID FROM TTB_FMIS_MAIN )
+    OR
+     tb_payment_status.payment_id IN 
+      (  SELECT ph.payment_id
+        FROM tb_payment_header ph,
+         tb_payment_status ps
+       WHERE ph.payment_id = ps.payment_id
+        AND ph.delete_sw = 'N' 
+        AND ps.delete_sw = 'N' 
+        AND ps.payment_status_cd = '1634' 
+        AND Btrim(ph.payment_type_cd) = vs_payment_type_cd -- Adult Services - Service Plan Monthly Payment 
+        /*
+        AND ( ph.payment_start_dt <= prev_month_last_day 
+          OR ph.payment_start_dt BETWEEN prev_month_first_day AND prev_month_last_day
+         )
+        AND ( ph.payment_end_dt >= prev_month_first_day 
+          OR ph.payment_end_dt BETWEEN prev_month_first_day AND prev_month_last_day
+         )
+        */ 
+        AND gross_amount_no = COALESCE(offset_amount_no,0) )
+      )   
+  AND delete_sw = 'N';
+
+  EXCEPTION WHEN OTHERS THEN
+   as_error := 'UPDATE FAILED IN TB_PAYMENT_STATUS' ;
+   vs_message_text :=  SQLERRM;
+   al_sqlcode := -1 ;
+   as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::VARCHAR) ||'::' || vs_procedure_nm || '.' ;
+   as_error := as_error || vs_message_text;
+   SELECT sp_batch_error_log 
+    ( vs_procedure_nm::CHARACTER VARYING, 
+     NULL::BIGINT, 
+     NULL::BIGINT, 
+     NULL::CHARACTER VARYING, 
+     NULL::INTEGER, 
+     NULL::CHARACTER VARYING, 
+     SQLSTATE::CHARACTER VARYING, 
+     as_error::CHARACTER VARYING, 
+     NULL::CHARACTER VARYING
+    ) INTO vl_ret_status;
+  RETURN;
+ END;
+ -- Update Payment Status as '1636' -Interfaced - START
+
+ --Error logging
+ OPEN error_cur;
+ <<ERROR_CUR_CODE>>
+ LOOP
+  FETCH error_cur INTO vn_error_payment_id, vn_error_client_id, vs_error_county_cd, vn_error_provider_id, vs_batch_no, vs_error_tx;
+  EXIT ERROR_CUR_CODE WHEN NOT FOUND;
+  
+  INSERT INTO interfaceserrorlog   
+   ( interfaceid,
+    currentruntimestamp,
+    errorsqlcode,
+    insertedby,
+    insertedon,
+    errordescription,
+    batchnumber,
+    payment_id,
+    provider_id,
+    county_cd,
+    client_id 
+   )
+   VALUES 
+   ( 'AS_FMIS_PAYMENT',
+    CURRENT_TIMESTAMP,
+    NULL::VARCHAR,
+    'asfinance',
+    CURRENT_TIMESTAMP,
+    vs_error_tx::VARCHAR,
+    vs_batch_no::VARCHAR,
+    vn_error_payment_id::BIGINT,
+    vn_error_provider_id::BIGINT,
+    vs_error_county_cd::VARCHAR,
+    vn_error_client_id::BIGINT
+   );
+ END LOOP;
+ CLOSE error_cur;
+  
+ INSERT INTO interfacesruntimeslog  
+  (   interfaceid,
+   currentruntimestamp,
+   batchnumber,
+   insertedon,
+   insertedby,
+   updatedon,
+   updatedby,
+   activeflag,
+   old_id
+  )
+    VALUES
+    (  'AS_FMIS_PAYMENT',
+   CURRENT_TIMESTAMP,
+   vs_batch_no::BIGINT,
+   CURRENT_TIMESTAMP,
+   'asfinance',                              
+   CURRENT_TIMESTAMP,
+   'asfinance',
+   1,
+   NULL
+  );
+  
+ al_sqlcode := 0;
+ RETURN;
+END; 
+
+$function$
+

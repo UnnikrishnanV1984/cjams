@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_intakedastaging_lower_status ON cjams.intakedastaging USING btree (lower(status));

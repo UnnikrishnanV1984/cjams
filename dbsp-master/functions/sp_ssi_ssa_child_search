@@ -1,0 +1,93 @@
+CREATE OR REPLACE FUNCTION sp_ssi_ssa_child_search(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, client_id bigint, client_name character varying, client_dob timestamp without time zone, ssn character varying, client_gender character varying, case_id character varying, case_nm character varying, case_worker_id bigint, case_worker_name character varying, case_worker_phone_no character varying, local_dept character varying, county_cd text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_client_id bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_client_firstname character varying;
+ v_client_middlename character varying;
+ v_client_lastname character varying;
+  v_DOBDateFrom   TIMESTAMP(3);                
+  v_DOBDateTo TIMESTAMP(3);
+  v_ssn character varying;
+ v_caseworker_name character varying;
+BEGIN 
+v_client_id := searchobj ->> 'client_id';
+v_client_firstname := searchobj ->> 'client_firstname';
+v_client_middlename := searchobj ->> 'client_middlename';
+v_client_lastname := searchobj ->> 'client_lastname';
+v_DOBDateFrom   := searchobj ->> 'dobdaterangefrom';                       
+v_DOBDateTo   := searchobj ->> 'dobdaterangeto';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+v_ssn := (searchobj ->> 'ssn') ; 
+v_caseworker_name :=searchobj ->> 'caseworker_name';
+
+raise notice 'v_liPageSize %',v_liPageSize;
+ return query
+
+SELECT  COUNT(1) OVER() totalcount, 
+ P.cjamspid as client_ids, 
+ CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as client_names, 
+        P.dob as client_dob
+ ,PIDE.personidentifiervalue as ssn
+ ,GT.typedescription as client_gender  
+ ,sc.servicecasenumber as case_id 
+ ,ISRT.description as case_nm
+ ,up.cjamspid as case_worker_id
+ ,up.displayname as case_worker_name
+ ,uppn.phonenumber as case_worker_phone_no
+ ,upa.county as local_dept
+ ,(select trim(PICKLIST_VALUE_CD) from tb_picklist_values where TRIM(lower(value_tx)) like TRIM(lower('%' || upa.county || '%')) AND PICKLIST_type_id=104 AND delete_sw='N' AND active_sw='Y') as  county_cd  
+  FROM person as P
+ JOIN tb_placement pl ON P.cjamspid=pl.client_id and pl.delete_sw='N'
+ JOIN gendertype as GT ON GT.gendertypekey = p.gendertypekey and GT.activeflag =1
+-- JOIN actor as actor ON actor.personid=P.personid and actor.activeflag =1
+-- JOIN intakeservicerequestactor as inseract ON inseract.actorid=actor.actorid and inseract.activeflag =1 and lower(inseract.intakeservicerequestpersontypekey)='rc'
+ join servicecase sc on sc.servicecasenumber = pl.case_id :: character varying  and sc.activeflag=1
+ JOIN intakeservicerequest as ISR ON ISR.servicecaseid=sc.servicecaseid and ISR.activeflag =1
+ JOIN IntakeServiceRequestType ISRT ON ISRT.intakeservreqtypeid=sc.intakeservreqtypeid and ISRT.activeflag =1
+        --JOIN routing rr on rr.objectid=isr.intakeserviceid :: character varying and rr.toroleid='CWCW' and rr.activeflag =1
+        JOIN userprofile up on up.securityusersid=sc.insertedby  and up.activeflag =1
+        LEFT join userprofilephonenumber uppn on up.securityusersid=uppn.securityusersid and uppn.userprofiletypekey='office' and uppn.activeflag =1
+        LEFT join userprofileaddress upa on up.securityusersid=upa.securityusersid  and upa.activeflag =1
+        LEFT JOIN personidentifier as PIDE ON PIDE.personid=P.personid and PIDE.activeflag =1
+        Where --P.cjamspid =  v_client_id 
+  (v_client_id is null or P.cjamspid = v_client_id)
+--        AND (v_client_name is null or lower(CAST(INITCAP(TRIM(P.firstname)||' ' ||
+-- CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ELSE '' END
+--   || ' '||TRIM(P.lastname) )as character varying)) like lower('%' || v_client_name || '%') )
+ AND (v_client_firstname is null or lower(p.firstname) like lower('%' || v_client_firstname || '%') )
+ AND (v_client_middlename is null or lower(p.middlename) like lower('%' || v_client_middlename || '%') )
+ AND (v_client_lastname is null or lower(p.lastname) like lower('%' || v_client_lastname || '%') )
+    AND case WHEN v_DOBDateFrom IS NOT NULL THEN to_date(cast(p.dob ::date as TEXT), 'YYYY-MM-DD') 
+ BETWEEN to_date(cast(v_DOBDateFrom as TEXT), 'YYYY-MM-DD') 
+ AND to_date(cast(v_DOBDateTo as TEXT), 'YYYY-MM-DD') ELSE TRUE end
+    AND (v_ssn is null or p.ssnno  = v_ssn )
+    AND (v_caseworker_name is null or lower(TRIM(up.fullname)) like lower('%' || v_caseworker_name || '%') )
+ AND pl.placement_id=(SELECT MAX(PLA.placement_id) from tb_placement PLA where PLA.client_id=P.cjamspid)
+-- AND ISR.servicerequestnumber=pl.case_id::character varying
+ AND p.activeflag =1
+ group by client_ids, 
+ client_names, 
+    client_dob
+ , ssn
+ ,client_gender  
+ ,  sc.servicecasenumber
+ , case_nm
+ ,case_worker_id
+ , case_worker_name
+ , case_worker_phone_no
+ , local_dept
+ , county_cd  
+ LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

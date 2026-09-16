@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION as_listhearings(intakenumber character varying, pagenumber bigint, pagesize bigint, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, intakeservicerequestcourthearingid uuid, hearingtypekey character varying, hearingtype character varying, hearingdatetime timestamp without time zone, hearingstatustypekey character varying, hearingstatustype character varying, createddate timestamp without time zone, associatedattorneys character varying, transferpetitionid character varying, transfernotes text, petitions json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset int;
+    v_pagenumber int;
+ v_intakenumber character varying;
+ 
+BEGIN
+
+ v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+ v_intakenumber := intakenumber;
+
+RETURN QUERY
+select count(1) over(), ch.intakeservicerequestcourthearingid, ht.hearingtypekey, ht.description as hearingtype, 
+ch.hearingdatetime, hst.hearingstatustypekey, hst.description as hearingstatustype, ch.insertedon as createddate,ch.associatedattorneys, ch.transferpetitionid, ch.transfernotes, 
+(select json_agg(x) from (
+select isrp.petitionid,isrp.intakeservicerequestpetitionid, (select json_agg(x) from (
+ select isre.intakeservicerequestevaluationid, isre.complaintid, isre.offensedate,
+ (select json_agg(x) from (
+  select p.personid as personid, p.firstname, p.lastname from intakeservreqevalactorconfig isreac
+   left join intakeservicerequestactor isra on isra.intakeservicerequestactorid = isreac.intakeservicerequestactorid --and isra.intakeservicerequestpersontypekey='Youth'
+   left join actor ac on isra.actorid = ac.actorid
+   left join person p on p.personid = ac.personid
+   where isreac.intakeservicerequestevaluationid = isre.intakeservicerequestevaluationid
+   and isreac.activeflag = 1 and isra.activeflag = 1 and ac.activeflag = 1 and p.activeflag = 1
+  ) as x) as victims,
+  (select json_agg(x) from (
+   select a.allegationid, a."name" from intakeservicerequestevaluationconfig isreg 
+   left join allegation a on a.allegationid = isreg.allegationid
+   where isreg.intakeservicerequestevaluationid = isre.intakeservicerequestevaluationid
+   and isreg.activeflag = 1 and a.activeflag = 1
+  ) as x) as offences
+ from intakeservreqevalpetitionconfig isrepc 
+  join intakeservicerequestevaluation isre on isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid
+  where isrepc.intakeservicerequestpetitionid = isrp.intakeservicerequestpetitionid
+  and isrepc.activeflag = 1 and isre.activeflag = 1
+) as x) as complaints from 
+intakeservreqpetitionhearingconfig isrphc join intakeservicerequestpetition isrp
+ on isrp.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid
+where isrphc.intakeservicerequestcourthearingid = ch.intakeservicerequestcourthearingid
+and isrphc.activeflag = 1 and isrp.activeflag = 1
+) as x) as petitions
+from intakeservicerequestcourthearing ch 
+left join hearingtype ht on ht.hearingtypekey = ch.hearingtypekey
+left join hearingstatustype hst on hst.hearingstatustypekey = ch.hearingstatustypekey
+where ch.intakenumber = v_intakenumber and 
+ch.activeflag = 1
+/* ORDER BY    
+ ( CASE sortorder when 'asc' then 
+  CASE sortcolumn 
+  when 'createddate' then 
+          cast( ch.insertedon as character varying) 
+  when 'petitionid' then 
+          cast( isrp.petitionid as character varying) 
+  else cast( isrp.insertedon as character varying) end end) asc,
+ ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'createddate' then 
+          cast( ch.insertedon as character varying) 
+  when 'petitionid' then 
+          cast( isrp.petitionid as character varying) 
+  else cast( isrp.insertedon as character varying) end end) desc */
+ORDER BY ch.insertedon desc
+LIMIT pagesize OFFSET v_pageoffset;
+
+END;
+
+$function$
+

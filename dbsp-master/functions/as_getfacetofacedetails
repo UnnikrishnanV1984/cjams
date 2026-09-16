@@ -1,0 +1,75 @@
+CREATE OR REPLACE FUNCTION as_getfacetofacedetails(v_intakeserviceid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+ DECLARE l_taskdetails json;
+ DECLARE l_count integer;
+ DECLARE v_entitytypeid character varying(50);
+
+BEGIN
+
+ v_entitytypeid = v_intakeserviceid;
+
+ SELECT count(1) INTO l_count 
+ FROM contactparticipant ct
+ INNER JOIN progressnote pt ON ct.progressnoteid=pt.progressnoteid AND  ct.activeflag=1 AND pt.activeflag=1
+ INNER JOIN intakeservicerequest isr ON isr.intakeserviceid::CHARACTER VARYING = pt.entitytypeid AND isr.teamtypekey = 'AS'
+ INNER JOIN progressnotetype pty ON pty.progressnotetypeid=pt.progressnotetypeid AND pty.activeflag=1
+ LEFT JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid=ct.intakeservicerequestactorid AND isra.activeflag=1 AND isra.objecttype like 'as%'  
+ WHERE pty.progressnotetypekey='Initialfacetoface' 
+ AND pt.attemptindicator IS NOT NULL AND pt.entitytypeid in (v_entitytypeid);
+            
+ SELECT json_agg(ltask) INTO l_taskdetails FROM 
+ (
+  SELECT 
+   'initalfacetoface' AS taskname,
+   CASE coalesce(l_count,0) WHEN 0 THEN UPPER('no') ELSE UPPER('yes') END AS status,
+   1 AS isvalid
+  
+  UNION ALL
+     
+  SELECT 
+   'mdapstool' AS taskname,
+   (SELECT (
+   CASE
+    WHEN (SELECT COUNT(*) FROM intakeservicerequest isr
+      INNER JOIN assessment ast ON ast.objectid = isr.intakeserviceid AND
+      ast.assessmentstatustypekey ilike 'Approved' AND ast.assessmenttemplateid ='daa0b267-87aa-4f5e-b20b-93aa80e9b30f'
+      WHERE isr.intakeserviceid =v_intakeserviceid AND isr.teamtypekey='AS' )>0
+    THEN UPPER('yes')
+    ELSE UPPER('no')   
+   END
+   )) AS status,
+   1 AS isvalid
+
+  UNION ALL 
+  SELECT 'actionletter' AS taskname,
+  (SELECT CASE count(*) WHEN 0 THEN UPPER('no') ELSE UPPER('yes') END FROM oasactionletterprogramactionconfig oalpac 
+  INNER JOIN oasactionletter oal ON oal.oasactionletterid = oalpac.oasactionletterid AND oal.activeflag = 1
+  WHERE oalpac.actiontypekey = 'CACL' AND oalpac.activeflag = 1 AND oal.intakeserviceid::CHARACTER VARYING = v_entitytypeid
+  ) AS status,
+  1 AS isvalid
+
+  UNION ALL 
+  SELECT 'serviceapp' AS taskname,
+  (SELECT CASE count(*) WHEN 0 THEN UPPER('no') ELSE UPPER('yes') END FROM assessment asm
+  WHERE assessmenttemplateid = 'b6ee9907-2d62-47b3-a713-16c7b9b6a8e3' AND assessmentstatustypekey = 'Approved' 
+  AND activeflag = 1 AND objectid::CHARACTER VARYING = v_entitytypeid
+  ) AS status,
+  1 AS isvalid
+
+  UNION ALL 
+  SELECT 'closingsummary' AS taskname,
+  (SELECT CASE count(*) WHEN 0 THEN UPPER('no') ELSE UPPER('yes') END FROM assessment asm
+  WHERE assessmenttemplateid = '932496da-9238-4bd0-aa33-d4fa729e009a' AND assessmentstatustypekey = 'Approved' 
+  AND activeflag = 1 AND objectid::CHARACTER VARYING = v_entitytypeid
+  ) AS status,
+  1 AS isvalid  
+ )  ltask;
+    
+ RETURN  l_taskdetails;                
+END;
+
+$function$
+

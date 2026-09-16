@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION updateuserrole(v_email character varying, v_roletypekey character varying, issuperadmin integer DEFAULT 0)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+declare  v_teammemberid uuid ;
+v_securityusersid character varying(100); 
+v_message character varying(100);
+v_oldroletypekey character varying;
+v_userid int;
+BEGIN
+ v_message:= 'Role changed Successfully';
+ 
+ 
+  IF NOT EXISTS (SELECT * FROM role WHERE  lower(roletypekey)=lower(v_roletypekey) ) THEN
+    v_message:= 'Role does not exist';
+  ELSE 
+
+   Select securityusersid into v_securityusersid from userprofile where lower(email ) = lower(v_email) AND activeflag =1;
+   SELECT teammemberid  INTO v_teammemberid FROM teammemberassignment WHERE securityusersid = v_securityusersid AND activeflag =1;
+  
+   IF (coalesce(v_securityusersid::character varying,'')='' or coalesce(v_teammemberid::character varying,'')='') THEN 
+    v_message:= 'User is not  available to change Role';
+      
+   ELSE
+     SELECT roletypekey  INTO v_oldroletypekey FROM teammember  WHERE teammemberid =v_teammemberid AND activeflag =1;
+  
+    IF (LOWER(v_oldroletypekey)<> LOWER(v_roletypekey)) THEN
+     SELECT id  INTO v_userid from muser where  securityusersid = v_securityusersid AND activeflag =1;
+     
+     UPDATE teammember SET roletypekey =v_roletypekey WHERE teammemberid =v_teammemberid AND activeflag =1;
+     UPDATE rolemapping SET activeflag =0 WHERE principalid= v_userid:: character varying;
+     
+     INSERT INTO rolemapping
+      (id, principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon)
+      select nextval('rolemapping_id_seq'),'USER',id::character varying,
+       case issuperadmin when 1 then  4 else (select id from role where lower(roletypekey)=lower(v_roletypekey) and activeflag =1 limit 1) end ,1, 'admin', 'admin', now(), now()
+      from muser where securityusersid in (v_securityusersid );
+      
+     v_message:= 'Role changed from ' || v_oldroletypekey || ' to ' || v_roletypekey;      
+    ELSE
+     v_message:= 'User currently belongs '|| v_oldroletypekey || ' role. Please verify the Role param';
+    END IF;
+   END IF;
+  
+ END IF;   
+ return v_message;
+ END  
+  
+$function$
+

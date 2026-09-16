@@ -1,0 +1,80 @@
+CREATE OR REPLACE FUNCTION reasonintakeinterviewisrequired(jsondata json)
+ RETURNS TABLE(totalcount integer, reasonintakeinterviewdetails json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+j_offenselist json;
+v_placementstatus boolean;
+v_personalert boolean;
+v_persondod boolean;
+v_offensestatus boolean;
+v_youthestatus boolean;
+v_personid uuid;
+ 
+BEGIN
+               -- DROP TABLE IF EXISTS temp_tbl_reasonintakeinterviewisrequired;
+                
+  CREATE TABLE temp_tbl_reasonintakeinterview_isrequired
+  (
+  reasonintakeinterviewisrequiredid int,
+  reasonintakeinterview varchar(50),
+  isrequired boolean
+
+  );
+        
+                j_offenselist:= jsondata ->>'offenselist';
+                v_personid:= jsondata ->>'personid';
+        
+  -- Youth Placement Past 25th Day Validation
+  select (CASE WHEN COUNT(1) = 0 THEN FALSE ELSE TRUE END) as v_placementstatus into v_placementstatus from placement as PM
+  join intakeservicerequestactor as ISRA
+  on ISRA.intakeservicerequestactorid = PM.intakeservicerequestactorid and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+  join actor as A    
+  on A.actorid = ISRA.actorid and A.activeflag = 1
+  join person as P      
+  on P.personid = A.personid and P.activeflag = 1
+  where PM.insertedon >= current_date - 25 and P.personid = v_personid;
+
+  -- Youth Runaway Past 25th Day Validation
+  select (CASE WHEN COUNT(1) = 0 THEN FALSE ELSE TRUE END) as v_personalert into v_personalert from personalert as PA
+  where PA.status='Active' and PA.alerttype='AWOL' and PA.insertedon >= current_date -  25 
+  and PA.personid = v_personid and PA.activeflag = 1;
+
+  -- Youth Felony Offense Type Validation
+  /*select (CASE WHEN COUNT(1) = 0 THEN FALSE ELSE TRUE END) as v_offensestatus from allegation as A
+  where A.offensetype='Felony' and A.activeflag=1 and A.allegationid = any(j_offenselist); */
+
+  -- Youth Deceased and Date of Death Validation
+  select (CASE WHEN COUNT(1) = 0 THEN FALSE ELSE TRUE END) as v_persondod into v_persondod from person as P 
+  where  (current_date >= P.doddate or current_date >= P.dateofdeath) -- P.deceased = '1' and
+  and P.personid = v_personid and P.activeflag = 1;
+
+                -- Youth DJS Supervision and Felony offense type
+  select (CASE WHEN COUNT(1) = 0 THEN FALSE ELSE TRUE END) as v_youthestatus into v_youthestatus FROM intakeservicerequest isr 
+  JOIN intakeservicerequestactor isra ON isra.intakeserviceid = isr.intakeserviceid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey = 'Youth'
+  JOIN actor ar ON ar.actorid = isra.actorid AND ar.activeflag = 1
+  JOIN intakeservicerequestcourtaction isrca ON isrca.intakenumber = isr.intakenumber AND isrca.activeflag = 1
+  JOIN courtactionallegationconfig caac ON caac.intakeservicerequestcourtactionid = isrca.intakeservicerequestcourtactionid AND caac.activeflag = 1
+  JOIN Intakeservicerequestcourtordertypeconfig isrcotc ON isrcotc.courtactionallegationconfigid = caac.courtactionallegationconfigid AND isrcotc.activeflag = 1
+  JOIN allegation a ON a.allegationid = caac.allegationid AND a.activeflag = 1  AND a.felony = TRUE
+  WHERE isrcotc.courtordertypekey in ('PB', 'PDS', 'ATD', 'PS', 'SC') AND ar.personid = v_personid;
+ 
+        
+  insert into temp_tbl_reasonintakeinterview_isrequired values(1,'Placement',v_placementstatus);
+  insert into temp_tbl_reasonintakeinterview_isrequired values(1,'Person Alert',v_personalert);
+  insert into temp_tbl_reasonintakeinterview_isrequired values(1,'Person Date Of Death',v_persondod);
+  --insert into temp_tbl_reasonintakeinterview_isrequired values(1,'Offense - Felony','False'); -- v_offensestatus
+  insert into temp_tbl_reasonintakeinterview_isrequired values(1,'Youth Status',v_youthestatus); -- v_youthestatus
+
+  RETURN QUERY 
+
+  SELECT reasonintakeinterviewisrequiredid, (select json_agg(x) from (SELECT a.reasonintakeinterview,a.isrequired from temp_tbl_reasonintakeinterview_isrequired as a 
+         where a.reasonintakeinterviewisrequiredid = b.reasonintakeinterviewisrequiredid ) as  x) as reasonintakeinterviewdetails
+                from temp_tbl_reasonintakeinterview_isrequired as b group by reasonintakeinterviewisrequiredid;
+
+         DROP TABLE temp_tbl_reasonintakeinterview_isrequired;
+  
+END;
+$function$
+

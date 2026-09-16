@@ -1,0 +1,133 @@
+CREATE OR REPLACE FUNCTION prov_create_private_relicensure_application(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                                                       
+ declare
+  v_license_status_cd character varying;
+  v_application_type_cd character varying;
+  v_license_decision_cd character varying;
+  l_applicant_id character varying;
+  v_providerid character varying;
+  v_securityuserid uuid;
+  v_programtype text;
+  --v_prgm character varying;
+  v_licenseno character varying;
+  v_application_status  character varying;
+  v_siteid character varying;
+  l_license_application_id bigint;
+  old_applicant_id character varying;
+  v_program_type_id uuid;
+  v_application_type character varying;
+  v_license_agency character varying;
+  v_agency character varying;
+  v_picklist_type_id number;
+ 
+  BEGIN
+  v_providerid := insertedtlsobj->>'parent_provider_id';
+  v_siteid := insertedtlsobj->>'site_id';
+  v_securityuserid := insertedtlsobj->>'securityuserid';
+  v_programtype := insertedtlsobj->>'program_type';
+  v_licenseno := insertedtlsobj->>'license_no';
+  v_application_type := insertedtlsobj->>'application_type';
+  v_application_status := insertedtlsobj->>'application_status';
+  v_license_status_cd := '3263';
+  v_application_type_cd := '3069';
+  v_license_decision_cd := '3263';
+  l_applicant_id := insertedtlsobj->>'application_id_new';
+  v_picklist_type_id = 111;
+--  if (v_application_status = 'RELICENSURE') then 
+  
+  select applicant_id into old_applicant_id
+  FROM tb_provider_applicant where site_id = v_siteid and (application_type is null or application_type not in ('LICENSEUPDATE')) order by create_ts desc limit 1;
+
+  select tpv.value_tx INTO v_license_agency 
+  from tb_provider_licensing tpl 
+  join tb_picklist_values tpv on trim(tpl.licensing_agency_cd) = trim(tpv.picklist_value_cd)
+  where tpl.site_id = v_siteid and tpl.active_sw ='Y'
+  and tpv.picklist_type_id = v_picklist_type_id limit 1;
+
+  if v_license_agency = 'DJS' then  
+   v_agency = 'OLMDJS';
+  ELSE 
+   v_agency = 'OLM';
+  END IF;
+  
+  INSERT INTO tb_provider_applicant
+  (applicant_id, application_status, application_type, prgram, program_name, contact_first_nm, mailing_address, contact_phonenumber, contact_email, contact_fax, program_type, program_type_other, prgram_size, current_license, licenced_by_dda, facesheet_dev_by_consultant, create_ts, create_user_id, update_ts, update_user_id, delete_sw, license_no, provider_id, applicant_profile_id, program_tax_id_no, contact_last_nm, contact_middle_nm, contact_suffix_cd, contact_prefix_cd, requested_license_effective_date, requested_license_end_date, site_id, application_decision, corporation_name, uploadsignature, 
+  agency, accreditation, profit, execsignature, license_agency)
+  (SELECT l_applicant_id, 'Pending', v_application_type, prgram, program_name, contact_first_nm, mailing_address, contact_phonenumber, 
+  contact_email, contact_fax, program_type, program_type_other, prgram_size, current_license, licenced_by_dda, 
+  facesheet_dev_by_consultant, now(), v_securityuserid, now(), v_securityuserid, delete_sw, license_no, provider_id, 
+  applicant_profile_id, program_tax_id_no, contact_last_nm, contact_middle_nm, contact_suffix_cd, contact_prefix_cd, 
+  requested_license_effective_date, requested_license_end_date, site_id, application_decision, corporation_name, uploadsignature,
+   v_agency, accreditation, profit, null, 
+  license_agency
+  FROM tb_provider_applicant where site_id = v_siteid order by create_ts desc limit 1); 
+  
+ 
+  INSERT INTO tb_prov_ref_program_type
+  (referral_id, program_type, activeflag, insertedby, insertedon, updatedby, updatedon, applicant_id)
+  (select referral_id, program_type, 1, v_securityuserid,now(),v_securityuserid,now(),l_applicant_id from tb_prov_ref_program_type where applicant_id = old_applicant_id limit 1 ) returning program_type_id into v_program_type_id;
+
+ 
+  INSERT INTO tb_prov_applicant_accomodation
+  (prov_applicant_accomodation_id,program_type_id,provider_applicant_id,minimum_age_no,maximum_age_no,gender_cd,children_no,create_ts,create_user_id,update_ts,update_user_id,delete_sw,min_age_months_no,max_age_months_no,iq_range_from,iq_range_to,license_no)
+  (select gen_random_uuid(),v_program_type_id,l_applicant_id,     minimum_age_no,maximum_age_no,gender_cd,children_no,now(),v_securityuserid,now(),v_securityuserid,delete_sw,min_age_months_no,max_age_months_no,iq_range_from,iq_range_to,v_licenseno
+  from tb_prov_applicant_accomodation taa where taa.provider_applicant_id = old_applicant_id limit 1);
+ 
+ if (v_application_type = 'MIDLICENSURE') THEN 
+  update tb_prov_applicant_accomodation tpn 
+  set tpn.requested_license_effective_date = tpl.license_issue_dt,
+  tpn.requested_license_end_date = tpl.license_expiry_dt
+  from tb_provider_licensing tpl
+  where tpl.site_id = v_siteid and tpl.delete_sw ='N' and tpl.active_sw ='Y'
+  and tpn.provider_applicant_id = l_applicant_id;
+ end if;
+ 
+  -- Insert addresses
+  INSERT INTO tb_provider_applicant_addresses
+  (parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx,
+  adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx , adr_county_cd_tx,adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx,  adr_postal_code_tx,  adr_default_sw, adr_start_dt, adr_end_dt )
+  select l_applicant_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, 
+  adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx, now(), v_securityuserid, now(), v_securityuserid, 'N', adr_street_tx , adr_county_cd_tx,adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx,  adr_postal_code_tx,  adr_default_sw, adr_start_dt, adr_end_dt 
+  FROM tb_provider_addresses pra
+  WHERE pra.parent_key_id = v_siteid and delete_sw='N';
+
+
+  INSERT INTO providerassignment
+  (fromworkeridno,fromsupervisoridno,toworkeridno,tosupervisoridno,objecttypekey,
+   objectid,activeflag,startdate,enddate,fromteamid,
+   toteamid,remarks,statustypekey,fromldssid,toldssid,assigndate,isrestricted,assigndescription,summary,
+   insertedby,updatedby,insertedon,updatedon) 
+   select fromworkeridno,fromsupervisoridno,toworkeridno,tosupervisoridno,objecttypekey,
+   l_applicant_id, activeflag,startdate,enddate,fromteamid,
+   toteamid,remarks,statustypekey,fromldssid,toldssid,assigndate,isrestricted,assigndescription,summary,
+   v_securityuserid, v_securityuserid,now(), now() 
+   from providerassignment pa
+   where pa.objectid = v_siteid
+   and activeflag =1 limit 1;
+
+  -- INSERT INTO tb_provider_address_mapping                                                                                                                                                                                                
+   -- (address_mapping_id, object_id, address_id, address_type, create_ts, create_user_id, update_ts, update_user_id, delete_sw) 
+   -- select gen_random_uuid(),l_applicant_id, address_id, address_type, now(), v_securityuserid, now(), v_securityuserid, delete_sw
+  -- from tb_provider_address_mapping where object_id = old_applicant_id limit 1;
+ 
+--   INSERT INTO tb_provider_licensing(
+--   provider_id, license_type_cd, license_status_cd, application_type_cd, license_decision_cd, license_issue_dt, license_expiry_dt, license_modification_dt, license_no, licensing_agency_cd, licensing_corodinator_id, licensed_beds_no, requirement_sw, midterm_issue_dt, active_sw, comments_tx, program_id, site_id, revoke_dt, revoke_approval_status_cd, midterm_rqrmnt_sw, create_ts, create_user_id, update_ts, update_user_id, delete_sw, ref_license_application_id, lic_entry_dt, request_revoke_sw, pre_revoke_status_cd, license_level, license_type, etl_userid, etl_load_date)
+--   (SELECT provider_id, license_type_cd, null, application_type_cd, null, null, null, null, license_no, licensing_agency_cd, licensing_corodinator_id, licensed_beds_no, requirement_sw, midterm_issue_dt, active_sw, comments_tx, program_id, site_id, null, null, midterm_rqrmnt_sw, now(), v_securityuserid, now(), v_securityuserid, 'N', null, lic_entry_dt, request_revoke_sw, pre_revoke_status_cd, license_level, license_type, etl_userid, etl_load_date
+--   FROM tb_provider_licensing where license_no = v_licenseno limit 1) returning license_application_id into l_license_application_id; 
+  
+--   INSERT INTO tb_prov_accomodation(
+--   prov_accomodation_id,license_application_id,minimum_age_no, maximum_age_no, gender_cd, children_no, create_ts, create_user_id, update_ts, update_user_id, delete_sw, min_age_months_no, max_age_months_no, old_prov_accomodation_id, etl_userid, etl_load_date, execsignature, program_type_id, license_no, requested_license_end_date, requested_license_effective_date)
+--   (select gen_random_uuid(),l_license_application_id, minimum_age_no, maximum_age_no, gender_cd, children_no, now(), v_securityuserid, now(), v_securityuserid, 'N', min_age_months_no, max_age_months_no, old_prov_accomodation_id, etl_userid, etl_load_date, execsignature, program_type_id, license_no, requested_license_end_date, requested_license_effective_date
+--   FROM tb_prov_accomodation where license_no = v_licenseno limit 1);
+  
+  
+  RETURN l_applicant_id; 
+--  ELSE 
+--  RETURN 'RELICENSURE FAILED!!';
+--  END IF;
+  
+ END;
+ $function$
+

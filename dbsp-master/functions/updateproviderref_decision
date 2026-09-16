@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION updateproviderref_decision(objectls json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+declare
+
+v_provider_referral_id character varying;
+v_from_securityuserid character varying;
+v_to_securityuserid character varying;
+v_referral_status character varying;
+v_referral_decision character varying;
+v_comment  character varying;
+v_success character varying;
+v_subject character varying;
+v_referralname character varying;
+v_provider_referral_nm character varying;
+begin
+v_provider_referral_id:= objectls->>'provider_referral_id';
+v_from_securityuserid:= objectls->>'securityuserid';
+v_to_securityuserid:= objectls->>'tosecurityusersid';
+v_referral_status:= objectls->>'referral_status';
+v_referral_decision:= objectls->>'referral_decision';
+v_comment := objectls->>'comment';
+
+
+select coalesce((select provider_referral_nm from tb_provider_referral 
+where provider_referral_id=v_provider_referral_id),'') into v_provider_referral_nm;
+
+v_subject := v_provider_referral_id||' Referral '|| v_referral_status ||' with comments "'|| v_comment || '" - Provider :' || v_provider_referral_nm ;
+
+
+UPDATE tb_provider_referral 
+SET  referral_status= v_referral_status, referral_decision= v_referral_decision , comments_tx =v_comment,update_ts=now() 
+WHERE provider_referral_id=v_provider_referral_id;
+
+INSERT INTO tb_provider_decision
+(decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+toroleid,tosecurityusersid)
+VALUES(gen_random_uuid(),objectls->>'eventcode', v_from_securityuserid, objectls->>'fromroleid', v_provider_referral_id, 1, v_from_securityuserid, now(), v_from_securityuserid,
+now(), false, v_comment, v_referral_status,  now(), objectls->>'toroleid',v_to_securityuserid);
+
+select prov_send_notification into v_success
+from  prov_send_notification(v_to_securityuserid, v_from_securityuserid, v_to_securityuserid, 'System', 'High', v_subject, v_subject, v_provider_referral_id,   false, false, objectls->>'eventcode');
+
+
+RETURN 'success';
+end;
+$function$
+

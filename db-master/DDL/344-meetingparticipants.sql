@@ -1,0 +1,1 @@
+alter table meetingparticipants alter column   participanttype  type  character varying(50)

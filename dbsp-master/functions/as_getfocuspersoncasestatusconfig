@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION as_getfocuspersoncasestatusconfig(v_personid uuid, v_intakeserviceid uuid, v_intakenumber character varying, v_eventcode character varying, servicerequesttypeconfigdispositioncodeid uuid, servicerequestdispositionsubtypeconfigid uuid, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+searchstring character varying(2000);
+s_focuspersonstatustypekey character varying;
+s_statustypekey character varying;
+v_savefocuspersoncasestatus Character varying;
+j_focuspersoncasestatusconfigdetails json;
+v_servicerequesttypeconfigdispositioncodeid uuid;
+v_servicerequestdispositionsubtypeconfigid uuid;
+j json;
+v_dispositioncode character varying;
+v_servicerequestdispositionsubtypekey character varying;
+v_statustypekey character varying;
+i_focuspersoncasenostatuscount int;
+v_savefocuspersoncasenostatus Character varying;
+v_temp_intakeserviceid uuid;
+ 
+BEGIN
+
+        v_servicerequesttypeconfigdispositioncodeid := servicerequesttypeconfigdispositioncodeid;
+        v_servicerequestdispositionsubtypeconfigid := servicerequestdispositionsubtypeconfigid;
+ 
+        select srdstc.dispositioncode into v_servicerequestdispositionsubtypekey from servicerequestdispositionsubtypeconfig srdstc
+        where srdstc.servicerequestdispositionsubtypeconfigid = v_servicerequestdispositionsubtypeconfigid;
+
+        select isrst.intakeserreqstatustypekey, srtcdc.dispositioncode into v_statustypekey, v_dispositioncode
+ from servicerequesttypeconfigdispositioncode srtcdc
+ join intakeserreqstatustype isrst on isrst.intakeserreqstatustypeid = srtcdc.intakeserreqstatustypeid
+  and isrst.activeflag = 1
+ where srtcdc.servicerequesttypeconfigiddispostionid = v_servicerequesttypeconfigdispositioncodeid and srtcdc.activeflag = 1;
+ 
+        searchstring:= coalesce(searchstring,'');
+        -- Eventcode
+        if (v_eventcode!='' or v_eventcode is not null) then
+ searchstring:= coalesce(searchstring,'')|| ' AND lower(cast( coalesce(eventcode,'''') as  character varying)) = '''||lower(v_eventcode)||''' ';
+        end if;
+        -- Dispositioncode
+        if (v_dispositioncode!='' or v_dispositioncode is not null) then
+ searchstring:= coalesce(searchstring,'')|| ' AND lower(cast( coalesce(dispositioncode,'''') as  character varying)) = '''||lower(v_dispositioncode)||''' ' ;
+        end if;
+        -- Servicerequestdispositionsubtypekey
+        if (v_servicerequestdispositionsubtypekey!='' or v_servicerequestdispositionsubtypekey is not null) then
+ searchstring:= coalesce(searchstring,'')|| ' AND lower(cast( coalesce(servicerequestdispositionsubtypekey,'''') as  character varying)) = '''||lower(v_servicerequestdispositionsubtypekey)||''' ';
+        end if;
+        -- Statustypekey
+        if (v_statustypekey!='' or v_statustypekey is not null) then
+ searchstring:= coalesce(searchstring,'')|| ' AND lower(cast( coalesce(statustypekey,'''') as  character varying)) = '''||lower(v_statustypekey)||''' ';
+        end if; 
+
+        RAISE NOTICE 'eventcode:%', v_eventcode;
+        RAISE NOTICE 'v_dispositioncode:%', v_dispositioncode;
+        RAISE NOTICE 'v_servicerequesttypeconfigdispositioncodeid:%', v_servicerequesttypeconfigdispositioncodeid;
+        RAISE NOTICE 'v_statustypekey:%', v_statustypekey;
+        RAISE NOTICE 'v_servicerequestdispositionsubtypekey:%', v_servicerequestdispositionsubtypekey;
+        RAISE NOTICE 'v_servicerequestdispositionsubtypeconfigid:%', v_servicerequestdispositionsubtypeconfigid;
+           
+     
+        --execute ' SELECT focuspersonstatustypekey, status from focuspersoncasestatusconfig  WHERE activeflag=1 '|| searchstring ||' ' into s_focuspersonstatustypekey, s_statustypekey ;
+        execute ' SELECT json_agg(e)from (SELECT focuspersonstatustypekey, status,focuspersonstatustypelevel from focuspersoncasestatusconfig  WHERE 
+        activeflag=1 '|| searchstring ||') e ' into j_focuspersoncasestatusconfigdetails ;
+        FOR j IN SELECT * FROM json_array_elements(j_focuspersoncasestatusconfigdetails)
+        loop
+        v_temp_intakeserviceid :=v_intakeserviceid;
+             IF (j->>'focuspersonstatustypelevel' = 'Intake') THEN
+             v_temp_intakeserviceid = null;
+             
+             END IF;
+             SELECT savefocuspersoncasestatus into v_savefocuspersoncasestatus from as_savefocuspersoncasestatus(v_personid,v_temp_intakeserviceid,v_intakenumber,j->>'focuspersonstatustypekey',
+             j->>'status',v_securityuserid, null, null);
+
+        END LOOP;
+
+        /*IF(v_intakeserviceid is null) THEN
+        v_intakeserviceid = null;
+        END IF;*/
+
+        select count(1) into i_focuspersoncasenostatuscount from focuspersoncasestatus where status = 'Open' and personid= v_personid --and intakeserviceid = v_intakeserviceid 
+        and intakenumber = v_intakenumber;
+        IF (i_focuspersoncasenostatuscount = 0) THEN
+
+               SELECT savefocuspersoncasestatus into v_savefocuspersoncasenostatus from as_savefocuspersoncasestatus(v_personid,v_intakeserviceid,v_intakenumber,'NOSTATUS',
+               'Open',v_securityuserid, null, null);
+        
+        END IF;
+
+ Return 'Success';    
+
+END;
+
+$function$
+

@@ -1,0 +1,81 @@
+CREATE OR REPLACE FUNCTION cjams.addapplicantprofileandprovider(insertedtlsobj json)
+ RETURNS TABLE(providerid integer, applicantprofileid uuid)
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+
+v_ReqReferralId text;
+returnStatus text;
+v_securityuserid text;
+v_randomuuid uuid;
+v_randomuuid1 uuid;
+v_provid int;
+v_providerid text;
+v_statuscode text;
+v_categorycode text;
+v_adrtypecd text;
+v_email text;
+
+BEGIN
+
+v_ReqReferralId := insertedtlsobj->>'provider_referral_id';
+v_securityuserid := insertedtlsobj->>'securityuserid';
+v_provid := insertedtlsobj->>'provider_id';
+v_statuscode := '1793';
+v_categorycode := '3049';
+v_adrtypecd := '3357';
+RAISE NOTICE '%','11111111111111111111111111111111111111111111111111111';
+
+Select provider_id , adr_email_tx into v_providerid , v_email from tb_provider_referral where provider_referral_id = v_ReqReferralId;
+RAISE NOTICE 'v_providerid%',v_providerid;
+IF LENGTH(v_providerid) > 1
+then
+
+v_provid := v_providerid;
+
+else 
+
+select gen_random_uuid() into v_randomuuid; 
+RAISE NOTICE '%','11111111111111111111111111111111111111111111111111111';
+select gen_random_uuid() into v_randomuuid1; 
+
+INSERT INTO tb_provider_applicant_profile
+(provider_applicant_profile_id, provider_id ,tax_id_no, provider_applicant_nm, provider_applicant_prefix_cd, provider_applicant_first_nm, provider_applicant_middle_nm, provider_applicant_last_nm, provider_applicant_suffix_cd,dob_dt,adr_email_tx, adr_fax_tx, adr_cell_phone_tx, adr_url_tx, adr_other_contact_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw, co_prefix_cd, co_first_nm, co_middle_nm, co_last_nm, co_suffix_cd, co_ssn_no, co_dob_dt)
+select v_randomuuid,v_provid,(pr.corporation_entity_taxid)::int,pr.provider_referral_nm,pr.provider_referral_prefix_cd,pr.provider_referral_first_nm,pr.provider_referral_middle_nm,pr.provider_referral_last_nm, pr.provider_referral_suffix_cd,pr.dob_dt,v_email,pr.adr_fax_tx,pr.adr_cell_phone_tx,pr.adr_url_tx,pr.adr_other_contact_tx,now()::timestamp,v_securityuserid,now()::timestamp,v_securityuserid,'N'::bpchar,pr.co_prefix_cd,pr.co_first_nm, pr.co_middle_nm, pr.co_last_nm, pr.co_suffix_cd, pr.co_ssn_no,pr.co_dob_dt from tb_provider_referral pr where pr.provider_referral_id = v_ReqReferralId;
+
+INSERT INTO tb_provider_applicant_email
+(email_unique_id, object_id, email, activeflag, insertedby, insertedon, updatedby, updatedon, email_type)
+VALUES(gen_random_uuid(), v_randomuuid, v_email, 1, v_securityuserid, now(), v_securityuserid, now(), 'Main');
+
+
+INSERT INTO tb_provider_applicant_addresses
+(address_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx,create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx,adr_county_cd_tx)
+SELECT v_randomuuid1, pra.adr_type_cd, pra.adr_format_cd, pra.adr_street_no,pra.adr_box_no,pra.adr_pre_dir_cd, pra.adr_street_nm, pra.adr_street_suffix_cd,pra.adr_post_dir_cd,pra.adr_unit_type_cd, pra.adr_unit_no_tx,pra.adr_city_nm, pra.adr_county_cd, pra.adr_state_cd, pra.adr_zip5_no, pra.adr_country_tx, now(),v_securityuserid,now(), v_securityuserid,'N',pra.adr_street_tx,pra.adr_county_cd_tx
+FROM tb_provider_referral_addresses pra
+WHERE pra.parent_key_id = v_ReqReferralId;
+
+INSERT INTO tb_provider
+(provider_id, tax_id_no, provider_category_cd, provider_status_cd,provider_nm, provider_first_nm, provider_middle_nm,provider_last_nm,adr_work_phone_tx, adr_work_xtn_tx, adr_home_phone_tx, adr_pager_tx, adr_email_tx, adr_fax_tx, adr_cell_phone_tx, adr_url_tx, adr_other_contact_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw,county_cd,county_cd_tx)
+select v_provid,pr.tax_id_no,v_categorycode,v_statuscode, pr.provider_referral_nm, pr.provider_referral_first_nm, pr.provider_referral_middle_nm, pr.provider_referral_last_nm, pr.adr_work_phone_tx, pr.adr_work_xtn_tx, pr.adr_home_phone_tx, pr.adr_pager_tx, v_email, pr.adr_fax_tx, pr.adr_cell_phone_tx, pr.adr_url_tx, pr.adr_other_contact_tx, now()::timestamp, v_securityuserid, now()::timestamp, v_securityuserid, 'N'::bpchar , pr.county_cd, pr.county_cd_tx from tb_provider_referral pr where pr.provider_referral_id = v_ReqReferralId;
+
+INSERT INTO tb_provider_address_mapping
+(address_mapping_id, object_id, address_id, address_type, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(gen_random_uuid(), v_randomuuid, v_randomuuid1, 'Main', now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+
+INSERT INTO tb_provider_addresses
+(parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx , adr_county_cd_tx)
+select v_provid, v_adrtypecd, pra.adr_format_cd, pra.adr_street_no,pra.adr_box_no,pra.adr_pre_dir_cd, pra.adr_street_nm, pra.adr_street_suffix_cd,pra.adr_post_dir_cd,pra.adr_unit_type_cd, pra.adr_unit_no_tx,pra.adr_city_nm, pra.adr_county_cd, pra.adr_state_cd, pra.adr_zip5_no, pra.adr_country_tx, now(),v_securityuserid,now(),v_securityuserid,'N',pra.adr_street_tx , pra.adr_country_tx
+FROM tb_provider_referral_addresses pra
+WHERE pra.parent_key_id = v_ReqReferralId;
+
+update tb_provider_referral set provider_id=v_provid where provider_referral_id = v_ReqReferralId;
+
+
+end if;
+
+RETURN query select v_provid,v_randomuuid;
+
+END;
+
+$function$

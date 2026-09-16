@@ -1,0 +1,74 @@
+CREATE OR REPLACE FUNCTION getancillaryadjustmentlist(v_providerid integer, v_lipagesize bigint, v_lipagenumber bigint, v_status character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, provider_id integer, payment_id integer, payment_dt date, payment_start_dt date, payment_end_dt date, gross_amount_no numeric, localdepartment character varying, county_cd character varying, reference_payment_detail_id integer, final_service_id integer, final_service_nm character varying, provider_nm character varying, tax_id_no numeric, taxidtype character varying, client_id bigint, clientfirstname character varying, clientlastname character varying, final_service_start_dt date, final_service_end_dt date, payment_status_cd character varying, paymentstatus character varying, manual_sw character, payment_type_cd character varying, payment_method_cd character varying, payment_method_nm character varying, change_reason_cd character varying, reason_changed character varying, report_1099_sw character, type_1099_cd character varying, type1099nm character varying, fiscal_category_cd character, fiscal_category_desc character varying, notes_tx character varying, originaldetails json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+if (v_status = 'All')
+then v_status = null;
+end if;
+ if (v_status = 'A')
+then v_status = '1634';
+end if;
+ if (v_status = 'P')
+then v_status = '1637';
+end if;
+ if (v_status = 'R')
+then v_status = '1638';
+end if;
+
+return query
+
+select count(1) over() as totalcount,payhead.provider_id,payhead.payment_id,payhead.payment_dt,payhead.payment_start_dt,payhead.payment_end_dt,payhead.gross_amount_no,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=paydet.county_cd
+AND PICKLIST_TYPE_ID='104') localdepartment,paydet.county_cd,paydet.reference_payment_detail_id,paydet.final_service_id,
+(select service_nm from tb_services where delete_sw='N' and service_id =paydet.final_service_id) as 
+final_service_nm,prov.provider_nm,prov.tax_id_no,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=prov.prov_tax_type_cd
+AND PICKLIST_TYPE_ID='216') as taxidtype,paydet.client_id,client.firstname,client.lastname,paydet.final_service_start_dt,paydet.final_service_end_dt,
+tps.payment_status_cd,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=tps.payment_status_cd
+AND PICKLIST_TYPE_ID='133') as paymentstatus,payhead.manual_sw,payhead.payment_type_cd,payhead.payment_method_cd,(select value_tx from tb_picklist_values where TRIM(PICKLIST_VALUE_CD)=payhead.payment_method_cd
+AND PICKLIST_TYPE_ID='1') as payment_method_nm,paydet.change_reason_cd,(select value_tx from tb_picklist_values where PICKLIST_type_id=277 AND delete_sw='N' AND active_sw='Y' AND TRIM(PICKLIST_VALUE_CD)=TRIM(paydet.change_reason_cd)) as  reason_changed,
+paydet.report_1099_sw,paydet.type_1099_cd,(select value_tx from tb_picklist_values where TRIM(PICKLIST_VALUE_CD)=paydet.type_1099_cd
+AND PICKLIST_TYPE_ID='308') type1099cd,paydet.final_fiscal_category_cd,(select tfc.fiscal_category_desc from tb_fiscal_category_master tfc where tfc.fiscal_category_cd = paydet.final_fiscal_category_cd
+limit 1) as final_fiscal_category,paydet.notes_tx,(select json_agg(x) from (select tph.payment_id as originalpaymentid,tph.gross_amount_no as originalpaymentamount,tph.payment_dt as originalpaymentdate from tb_payment_detail tpd 
+join tb_payment_header tph on tph.payment_id = tpd.payment_id
+where tpd.payment_detail_id = paydet.reference_payment_detail_id and tph.payment_type_cd='4')as x) as originaldetails 
+from tb_payment_header payhead
+INNER JOIN tb_payment_detail as paydet ON payhead.payment_id = paydet.payment_id
+inner join tb_provider prov on prov.provider_id = payhead.provider_id
+INNER JOIN person as client ON paydet.client_id = client.cjamspid
+inner join tb_payment_status tps on tps.payment_id = payhead.payment_id
+where payhead.payment_type_cd='3294' and payhead.manual_sw='Y' and paydet.reference_payment_detail_id is not null and payhead.provider_id=v_providerid
+and (v_status is null or trim(tps.payment_status_cd) = v_status)
+order by payhead.payment_id desc
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+
+$function$
+

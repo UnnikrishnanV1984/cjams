@@ -1,0 +1,49 @@
+ CREATE OR REPLACE FUNCTION public.addupdateprovprogramrates(insertedtlsobj json)                                                                        
+  RETURNS text                                                                                                                                           
+  LANGUAGE plpgsql                                                                                                                                       
+ AS $function$                                                                                                                                           
+                                                                                                                                                         
+ DECLARE                                                                                                                                                 
+ returnStatus text;                                                                                                                                      
+ providerId numeric;                                                                                                                                     
+ monthlyRate numeric;                                                                                                                                    
+ annualRate numeric;                                                                                                                                     
+ dimRate numeric;                                                                                                                                        
+ stdate date;                                                                                                                                            
+ enddate date;                                                                                                                                           
+ programRateId numeric;                                                                                                                                  
+                                                                                                                                                         
+                                                                                                                                                         
+ BEGIN                                                                                                                                                   
+                                                                                                                                                         
+ providerId=insertedtlsobj->>'provider_id';                                                                                                              
+ monthlyRate =insertedtlsobj->>'monthly_rate';                                                                                                           
+ annualRate= insertedtlsobj->>'annual_rate';                                                                                                             
+ dimRate =insertedtlsobj->>'per_diem_rate';                                                                                                              
+ stdate=insertedtlsobj->>'start_dt';                                                                                                                     
+ enddate= insertedtlsobj->>'end_dt';                                                                                                                     
+ programRateId= insertedtlsobj->>'program_rate_id';                                                                                                      
+                                                                                                                                                         
+                                                                                                                                                         
+ IF programRateId>0                                                                                                                                      
+ then                                                                                                                                                    
+ update tb_prov_program_rates set prov_program_actual_max_cd='5590', rate_status='Expired' where program_id=providerId and program_rate_id=programRateId;
+                                                                                                                                                         
+ END IF;                                                                                                                                                 
+                                                                                                                                                         
+ insert into tb_prov_program_rates (program_id,  annual_rate_no, monthly_rate_no, per_diem_rate_no, start_dt, end_dt,                                    
+                         create_ts, create_user_id, update_ts, update_user_id, delete_sw, prov_program_actual_max_cd,rate_status)                        
+                 values(providerId, annualRate,                                                                                                          
+                 monthlyRate, dimRate,stdate ,enddate,                                                                                                   
+                 insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id',       
+                 'N', '5590','Active');                                                                                                                  
+                                                                                                                                                         
+                                                                                                                                                         
+ returnStatus:= 'Success';                                                                                                                               
+                                                                                                                                                         
+ RETURN returnStatus;                                                                                                                                    
+                                                                                                                                                         
+ END;                                                                                                                                                    
+                                                                                                                                                         
+ $function$                                                                                                                                              
+

@@ -1,0 +1,674 @@
+CREATE OR REPLACE FUNCTION as_sp_list_payable_approvels(v_securityid character varying, v_role character varying, v_approveltype character varying, v_status character varying, pagenumber bigint, pagesize bigint, v_sortcolumn character varying DEFAULT NULL::character varying, v_sortorder character varying DEFAULT NULL::character varying, v_searchobj character varying DEFAULT NULL::character varying, assigned_pa boolean DEFAULT true)
+ RETURNS TABLE(totalcount bigint, ispaymentapproved boolean, funding_approval_dt date, payment_approval_dt date, ads_approval_dt date, client_id bigint, client_name text, age integer, paymentaddress character varying, adr_street_nm character varying, adr_city_nm character varying, adr_state_cd character varying, adr_zip5_no numeric, adr_street_no character varying, adr_unit_no_tx character varying, adr_unit_type_cd character varying, adr_street_suffix_cd character varying, adr_pre_dir_cd character varying, dob timestamp without time zone, gender character varying, service_nm character varying, provider_nm character varying, service_start_dt date, service_end_dt date, authorization_id integer, justification_tx character varying, cost_no numeric, voucher character, fiscal_category_cd character, fiscal_category_desc character varying, payee character varying, ads_approval_status_cd character varying, service_log_id integer, actionstatus text, amount_no numeric, payment_id integer, payment_end_dt date, payment_start_dt date, payment_method_cd character varying, provider_id integer, intakeserviceid uuid, remarks text, isapproved integer, request_date date, client_account_id integer, routingstatustypeid integer, report_1099_sw character, type_1099_cd character varying, store_receipt_id character varying, reason_tx text, objecttypekey character varying, bmanualrouting boolean, programkey character varying, description_tx character varying, case_id bigint, service_id integer)
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE 
+query_funding text;
+query_payment text;
+query_other text;
+v_pageoffset int;
+v_pagenumber int;
+v_sprvsr_approval_status_cd character varying default '';
+v_funding_approval_status_cd character varying default '';
+v_payment_approval_status_cd character varying default '';
+v_ads_approval_status_cd character varying default '';
+v_fromroleid character varying default null;
+v_toroleid character varying default null;
+v_appendstring character varying default '';
+v_sortval character varying default '';
+v_payee_nm character varying;
+v_addresstype character varying;
+v_approvestatus  character varying;
+assigned_auth character varying default ''; 
+
+begin
+v_pagenumber := pagenumber-1;
+v_pageoffset = v_pagenumber * pagesize;
+v_payee_nm := v_searchObj;
+v_addresstype := '{3356,3357}';
+v_approvestatus := '3047';
+if(v_searchObj is null)
+then
+v_searchObj :='';
+end if;
+
+ IF (v_role = 'ASSP') THEN
+  RAISE NOTICE '%', 'INSIDE BLOCK';
+  v_fromroleid = '{ASSP}';
+  v_toroleid = 'ASSP';
+  v_sprvsr_approval_status_cd= '3047';
+  v_funding_approval_status_cd='' ;
+  v_payment_approval_status_cd= '' ;
+  v_ads_approval_status_cd = '3047';
+ END IF;
+ 
+if(v_role = 'ASFS') then
+ if(v_approveltype = 'funding') then 
+  v_fromroleid = '{ASSP,ASLDSSD,ASFS}';
+  v_toroleid = 'ASFS';
+  v_sprvsr_approval_status_cd= '3047';
+   v_funding_approval_status_cd='' ;
+  v_payment_approval_status_cd= '' ;
+  v_ads_approval_status_cd = '3047';
+ else 
+  if(v_approveltype = 'payment') then 
+-- drop table if exists temp_payment_detail_pa;
+-- drop table if exists temp_payment_header_pa;
+--
+-- CREATE TEMP TABLE temp_payment_header_pa AS
+-- SELECT ph.gross_amount_no,ph.payment_id,ph.authorization_id,ph.store_receipt_id,ph.payment_method_cd, PH.PAYMENT_TYPE_CD, PH.MANUAL_SW, PH.DELETE_SW
+-- FROM tb_payment_header ph 
+-- join tb_service_purchase_authorization ta on ta.authorization_id = ph.authorization_id
+-- join routing r on r.objectid = ta.authorization_id :: character varying
+-- where (r.tosecurityusersid=v_securityid or r.toroleid = 'ASFS') and ph.authorization_id is not null ;
+--
+-- create temp table temp_payment_detail_pa as 
+-- select  pd.report_1099_sw,pd.type_1099_cd,pd.payment_id,PD.PAYMENT_DETAIL_ID 
+-- from tb_payment_detail pd join temp_payment_header_pa tp on  tp.PAYMENT_ID  = pd.PAYMENT_ID;   
+
+ 
+
+   v_fromroleid = '{ASFW,ASFS}';
+   v_toroleid = 'ASFS';
+   v_sprvsr_approval_status_cd= '3047';
+   v_funding_approval_status_cd='3047' ;
+   v_payment_approval_status_cd= '' ;
+   v_ads_approval_status_cd = '3047';
+  end if;
+ end if;
+
+else 
+ if(v_role = 'ASLDSSD') then
+  v_fromroleid = '{ASSP}';
+  v_toroleid = '{ASSP,ASLDSSD}';
+  v_sprvsr_approval_status_cd= '3047';
+  v_funding_approval_status_cd='' ;
+  v_payment_approval_status_cd= '' ;
+  v_ads_approval_status_cd = '3047';
+ else 
+  if(v_role = 'ASFW') then
+   if(v_approveltype = 'funding') then 
+    v_fromroleid = '{ASSP,ASLDSSD}';
+    v_toroleid = 'ASFW';
+    v_sprvsr_approval_status_cd= '3047';
+     v_funding_approval_status_cd='' ;
+    v_payment_approval_status_cd= '' ;
+    v_ads_approval_status_cd = '3047';
+   end  if;
+  end  if;
+ end  if;
+end  if;
+
+v_appendstring = '';
+if (v_status = 'A')
+then 
+
+if(v_approveltype = 'funding') then 
+ v_appendstring = ' and r.routingstatustypeid in  (40,44) and r.activeflag=0 ';
+else if(v_approveltype = 'payment') then 
+    v_appendstring = '  and (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1) in ( ''Approved'') '; 
+else   
+ v_appendstring = 'and r.routingstatustypeid = 42 and r.activeflag=0 ';
+end if;
+end if;
+end if;
+
+if (v_status = 'R')
+then 
+v_appendstring = ' and (select r.routingstatustypeid from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1) in (''62'')';
+end if;
+
+
+if (v_status = 'P')
+then 
+--v_appendstring = '  and r.routingstatustypeid != 62 and r.activeflag=1';
+if(v_approveltype = 'funding') then 
+v_appendstring = ' and r.routingstatustypeid in  (40,44) and r.activeflag=1';
+
+else if(v_approveltype = 'payment') then 
+v_appendstring = '  and r.routingstatustypeid = 41 and r.activeflag=1';
+
+else   
+v_appendstring = '  and r.routingstatustypeid = 42 and r.activeflag=1';
+end if;
+end if;
+end if;
+
+if (v_status is null)
+then
+v_appendstring = '';
+end if;
+
+if((v_sortcolumn is not null) and (v_sortorder is not null))
+then
+v_sortval := 'order by coalesce(x.provider_nm,x.authorization_id :: character varying) '||v_sortorder||''; -- provider_first_nm, provider_middle_nm,provider_last_nm,
+raise notice 'v_sortval %',v_sortval;
+else 
+v_sortval := ' order by x.authorization_id desc ';
+raise notice 'v_sortval %',v_sortval;
+end if;
+
+if(assigned_pa = true)
+then
+assigned_auth := ' and r.tosecurityusersid ='''||v_securityid||''' ';
+else 
+assigned_auth := ' and r.tosecurityusersid !='''||v_securityid||''' ';
+end if;
+
+
+query_funding :=
+' select count(1) over(),x.* from (
+select 
+(select case when count(1) > 0 then true else false end as ispaymentapproved from tb_service_purchase_authorization tss
+where tss.authorization_id = tspa.authorization_id  and coalesce(tss.payment_approval_status_cd,'''') = '''||v_approvestatus||'''),
+tspa.funding_approval_dt,tspa.payment_approval_dt, tspa.ads_approval_dt,
+tsl.client_id,concat(p.firstname,'' '',p.middlename,'' '',p.lastname) as pname,
+(EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+(select provider_adr as paymentaddress from get_provider_address(tp.provider_id,trim('''||v_addresstype||''') :: character varying)),
+--tpa.adr_street_nm,tpa.adr_city_nm,tpa.adr_state_cd,tpa.adr_zip5_no,
+(select tpa.adr_street_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_nm,
+(select tpa.adr_city_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_city_nm,
+(select tpa.adr_state_cd from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_state_cd,
+(select tpa.adr_zip5_no from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_zip5_no,
+(select tpa.adr_street_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_tx ,
+(select tpa.adr_unit_no_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_unit_no_tx,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''250'') as adr_unit_type_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''212'') as adr_street_suffix_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''69'') as adr_pre_dir_cd,
+
+p.dob,gt.typedescription,ts.service_nm,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,tsl.start_dt as startdate,tsl.end_dt  as enddate,
+ tspa.authorization_id, tspa.justification_tx::character varying,tspa.cost_no,tspa.voucher_sw,Trim(tspa.fiscal_category_cd) ::bpchar as fiscal_category_cd ,tfcm.fiscal_category_desc,
+ --tp.provider_nm as payee,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee, 
+ tspa.ads_approval_status_cd,tspa.service_log_id,
+case when tspa.ads_approval_status_cd=''3047'' then ''Approved'' else ''Pending'' end as actionval
+,0.00 as gross_amount_no,0 as payment_id,tspa.end_dt,tspa.start_dt ,null :: character varying as paymentval,tp.provider_id,sc.servicecaseid
+,case when coalesce('''||v_status||''','''') = ''A''
+then ''Approved''
+when (r.activeflag=1 and r.routingstatustypeid!=62 ) 
+then ''Pending'' 
+else (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1)  end 
+as remarks,
+r.activeflag,tspa.sprvsr_approval_dt as request_date ,(case when (trim(tspa.fiscal_category_cd) in (''7502'',''7503'')) then tspa.client_account_id else null end) as client_account_id,r.routingstatustypeid
+,tpd.report_1099_sw,tpd.type_1099_cd,tph.store_receipt_id,tspa.reason_tx,r.objecttypekey
+,case when r.objecttypekey =''ServiceCase'' then false else true end as is_servicecase,APA.programkey
+,tsl.description_tx,tsl.case_id,ts.service_id
+from tb_service_purchase_authorization tspa 
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw=''N''
+LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = ''N''
+join tb_provider tp on tp.provider_id=tps.provider_id
+join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd
+left join tb_payment_header tph on tph.authorization_id = tspa.authorization_id
+left join tb_payment_detail tpd on tpd.payment_id = tph.payment_id
+-- join intakeservicerequest isn on isn.servicerequestnumber=tsl.case_id :: character varying 
+left join 
+(select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ sc on sc.servicecasenumber = tsl.case_id :: character varying  --and sc.activeflag=1
+
+join person p on p.cjamspid = tsl.client_id 
+left join gendertype gt on gt.gendertypekey = p.gendertypekey
+ join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw=''N''
+where   r.toroleid= '''||v_toroleid||''' and r.fromroleid= ANY ('''||v_fromroleid||''') and r.eventcode= ''ASPCAUTH'' and 
+sprvsr_approval_status_cd='''|| v_sprvsr_approval_status_cd ||'''
+--and coalesce(funding_approval_status_cd,'''') = '''|| v_funding_approval_status_cd ||''' 
+and coalesce(ads_approval_status_cd,'''') = '''||v_ads_approval_status_cd||''' '||v_appendstring|| '' ||assigned_auth||'
+--and coalesce(payment_approval_status_cd,'''') ='''||v_payment_approval_status_cd|| ''' 
+
+union all
+
+select 
+(select case when count(1) > 0 then true else false end as ispaymentapproved from tb_service_purchase_authorization tss
+where tss.authorization_id = tspa.authorization_id  and coalesce(tss.payment_approval_status_cd,'''') = '''||v_approvestatus||'''),
+tspa.funding_approval_dt,tspa.payment_approval_dt, tspa.ads_approval_dt,
+tsl.client_id,concat(p.firstname,'' '',p.middlename,'' '',p.lastname) as pname,
+(EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+(select provider_adr as paymentaddress from get_provider_address(tp.provider_id,trim('''||v_addresstype||''') :: character varying)),
+--tpa.adr_street_nm,tpa.adr_city_nm,tpa.adr_state_cd,tpa.adr_zip5_no,
+(select tpa.adr_street_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_nm,
+(select tpa.adr_city_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_city_nm,
+(select tpa.adr_state_cd from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_state_cd,
+(select tpa.adr_zip5_no from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_zip5_no,
+(select tpa.adr_street_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_tx ,
+(select tpa.adr_unit_no_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_unit_no_tx,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''250'') as adr_unit_type_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''212'') as adr_street_suffix_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''69'') as adr_pre_dir_cd,
+
+p.dob,gt.typedescription,ts.service_nm,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,tsl.start_dt as startdate,tsl.end_dt  as enddate,
+ tspa.authorization_id, tspa.justification_tx::character varying,tspa.cost_no,tspa.voucher_sw,Trim(tspa.fiscal_category_cd) ::bpchar  as fiscal_category_cd ,tfcm.fiscal_category_desc,
+ --tp.provider_nm as payee,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee, 
+ tspa.ads_approval_status_cd,tspa.service_log_id,
+case when tspa.ads_approval_status_cd=''3047'' then ''Approved'' else ''Pending'' end as actionval
+,0.00 as gross_amount_no,0 as payment_id,tspa.end_dt,tspa.start_dt ,null :: character varying as paymentval,tp.provider_id,sc.servicecaseid
+,case  when coalesce('''||v_status||''','''') = ''A''
+then ''Approved''
+when r.activeflag=1 and r.routingstatustypeid!=62  then ''Pending'' else (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1)  end as remarks,
+r.activeflag,tspa.sprvsr_approval_dt as request_date ,(case when (trim(tspa.fiscal_category_cd) in (''7502'',''7503'')) then tspa.client_account_id else null end) as client_account_id,r.routingstatustypeid
+,tpd.report_1099_sw,tpd.type_1099_cd,tph.store_receipt_id,tspa.reason_tx,r.objecttypekey
+,case when r.objecttypekey =''ServiceCase'' then false else true end as is_servicecase,APA.programkey
+,tsl.description_tx,tsl.case_id,ts.service_id
+from tb_service_purchase_authorization tspa 
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw=''N''
+LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = ''N''
+join tb_provider tp on tp.provider_id=tps.provider_id
+join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd
+left join tb_payment_header tph on tph.authorization_id = tspa.authorization_id
+left join tb_payment_detail tpd on tpd.payment_id = tph.payment_id
+-- join intakeservicerequest isn on isn.servicerequestnumber=tsl.case_id :: character varying 
+left join 
+(select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ sc on sc.servicecasenumber = tsl.case_id :: character varying  --and sc.activeflag=1
+join person p on p.cjamspid = tsl.client_id 
+left join gendertype gt on gt.gendertypekey = p.gendertypekey
+ join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw=''N''
+where  
+(select t.countyid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join as_teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+where mu.securityusersid = '''||v_securityid||''' )
+=(select tt.countyid from team tt where tt.teamid = r.teamid)
+and
+ r.toroleid= '''||v_toroleid||''' and r.fromroleid= ANY ('''||v_fromroleid||''') and r.eventcode= ''ASPCAUTHR'' and 
+sprvsr_approval_status_cd='''|| v_sprvsr_approval_status_cd ||'''
+--and coalesce(funding_approval_status_cd,'''') = '''|| v_funding_approval_status_cd ||'''
+and coalesce(ads_approval_status_cd,'''') = '''||v_ads_approval_status_cd||''' '||v_appendstring|| '  
+--and coalesce(payment_approval_status_cd,'''') ='''||v_payment_approval_status_cd|| ''' 
+) x 
+where x.client_id is not null and x.provider_nm ilike '''|| v_searchObj ||'%'' 
+group by  x.client_id,x.pname,x.gross_amount_no,x.payment_id,x.ispaymentapproved,
+x.adr_street_nm,x.adr_city_nm,x.adr_state_cd,x.adr_zip5_no,
+x.dob,x.typedescription,x.service_nm,
+ x.provider_nm,x.startdate,x.enddate,
+ x.authorization_id, x.justification_tx,x.cost_no,x.voucher_sw
+ ,x.fiscal_category_desc,x.provider_nm , x.ads_approval_status_cd,x.service_log_id,
+x.actionval,x.end_dt,x.start_dt ,x.provider_id,x.servicecaseid
+,x.remarks,x.payee,x.fiscal_category_cd,
+x.activeflag,x.request_date ,x.client_account_id,x.routingstatustypeid
+,x.report_1099_sw,x.type_1099_cd,x.store_receipt_id,x.reason_tx,x.objecttypekey,x.paymentaddress
+, x.is_servicecase,x.programkey,x.paymentval,x.age,x.description_tx,
+x.funding_approval_dt,x.payment_approval_dt, x.ads_approval_dt ,x.adr_street_tx,x.case_id,x.service_id, x.adr_unit_no_tx, x.adr_unit_type_cd, x.adr_street_suffix_cd, x.adr_pre_dir_cd
+-- order by x.authorization_id desc
+'||v_sortval|| ' limit '||pagesize||' offset '|| v_pageoffset;
+
+query_payment :=' select count(1) over(),x.* from (
+select 
+(select case when count(1) > 0 then true else false end as ispaymentapproved from tb_service_purchase_authorization tss
+where tss.authorization_id = tspa.authorization_id  and coalesce(tss.payment_approval_status_cd,'''') = '''||v_approvestatus||'''),
+tspa.funding_approval_dt,tspa.payment_approval_dt, tspa.ads_approval_dt,
+tsl.client_id,concat(p.firstname,'' '',p.middlename,'' '',p.lastname) as pname,
+(EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+(select provider_adr as paymentaddress from get_provider_address(tp.provider_id,trim('''||v_addresstype||''') :: character varying)),
+(select tpa.adr_street_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_city_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_state_cd from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_zip5_no from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_street_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_tx ,
+(select tpa.adr_unit_no_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_unit_no_tx,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''250'') as adr_unit_type_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''212'') as adr_street_suffix_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''69'') as adr_pre_dir_cd,
+
+p.dob,gt.typedescription,ts.service_nm,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,tsl.start_dt as startdate,tsl.end_dt as enddate,
+ tspa.authorization_id,tspa.justification_tx::character varying,tspa.cost_no,tspa.voucher_sw,Trim(tspa.fiscal_category_cd)  ::bpchar as fiscal_category_cd,tfcm.fiscal_category_desc, 
+ CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee,
+ tspa.ads_approval_status_cd,tspa.service_log_id,
+case when tspa.ads_approval_status_cd=''3047'' then ''Approved'' else ''Pending'' end as actionval
+,0.00 as gross_amount_no,0 as payment_id,tspa.end_dt,tspa.start_dt,null :: character varying as paymentval,tp.provider_id,sc.servicecaseid
+,case when coalesce('''||v_status||''','''') = ''A''
+then ''Approved''
+ when r.remarks=''Approved'' then ''Approved''   when r.activeflag=1 and r.routingstatustypeid!=62  then ''Pending'' else  (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1)  end as remarks,
+r.activeflag,tspa.sprvsr_approval_dt as request_date,(case when (trim(tspa.fiscal_category_cd) in (''7502'',''7503'')) then tspa.client_account_id else null end) as client_account_id,r.routingstatustypeid
+,null::character report_1099_sw,null::character varying type_1099_cd,null::character varying store_receipt_id,tspa.reason_tx,r.objecttypekey
+,case when r.objecttypekey =''ServiceCase'' then false else true end as is_servicecase,APA.programkey
+,tsl.description_tx,tsl.case_id,ts.service_id
+from tb_service_purchase_authorization tspa 
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw=''N''
+LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = ''N''
+join tb_provider tp on tp.provider_id=tps.provider_id
+join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd
+
+left join 
+(select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ sc on sc.servicecasenumber = tsl.case_id :: character varying  --and sc.activeflag=1
+join person p on p.cjamspid = tsl.client_id 
+left join gendertype gt on gt.gendertypekey = p.gendertypekey
+join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw=''N''
+where 
+'''||v_securityid||''' not in (select fromsecurityusersid from routing where routingstatustypeid in (41) and objectid = tspa.authorization_id :: character varying and eventcode in (''ASPCAUTH'',''ASPCAUTHR'')) 
+and r.toroleid= '''||v_toroleid||''' and r.fromroleid= ANY ('''||v_fromroleid||''') and r.eventcode= ''ASPCAUTH'' and r.activeflag = 1 and 
+sprvsr_approval_status_cd='''|| v_sprvsr_approval_status_cd ||'''
+and coalesce(funding_approval_status_cd,'''') = '''|| v_funding_approval_status_cd ||'''
+and coalesce(ads_approval_status_cd,'''') = '''||v_ads_approval_status_cd||''''||v_appendstring|| '' ||assigned_auth||'
+--and coalesce(payment_approval_status_cd,'''') ='''||v_payment_approval_status_cd|| ''' 
+
+union all
+
+select 
+(select case when count(1) > 0 then true else false end as ispaymentapproved from tb_service_purchase_authorization tss
+where tss.authorization_id = tspa.authorization_id  and coalesce(tss.payment_approval_status_cd,'''') = '''||v_approvestatus||'''),
+tspa.funding_approval_dt,tspa.payment_approval_dt, tspa.ads_approval_dt,
+tsl.client_id,concat(p.firstname,'' '',p.middlename,'' '',p.lastname) as pname,
+(EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+(select provider_adr as paymentaddress from get_provider_address(tp.provider_id,trim('''||v_addresstype||''') :: character varying)),
+(select tpa.adr_street_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_city_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_state_cd from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_zip5_no from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_street_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_tx ,
+(select tpa.adr_unit_no_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_unit_no_tx,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''250'') as adr_unit_type_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''212'') as adr_street_suffix_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''69'') as adr_pre_dir_cd,
+
+p.dob,gt.typedescription,ts.service_nm,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,tsl.start_dt as startdate,tsl.end_dt as enddate,
+ tspa.authorization_id,tspa.justification_tx::character varying,tspa.cost_no,tspa.voucher_sw,Trim(tspa.fiscal_category_cd)  ::bpchar as fiscal_category_cd ,tfcm.fiscal_category_desc,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee,
+ tspa.ads_approval_status_cd,tspa.service_log_id,
+case when tspa.ads_approval_status_cd=''3047'' then ''Approved'' else ''Pending'' end as actionval
+,0.00 as gross_amount_no,0 as payment_id,tspa.end_dt,tspa.start_dt,null :: character varying as paymentval,tp.provider_id,sc.servicecaseid
+,case when coalesce('''||v_status||''','''') = ''A''
+then ''Approved''
+when r.remarks=''Approved'' then ''Approved''   when r.activeflag=1 and r.routingstatustypeid!=62  then ''Pending'' else  (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1)  end as remarks,
+r.activeflag,tspa.sprvsr_approval_dt as request_date,(case when (trim(tspa.fiscal_category_cd) in (''7502'',''7503'')) then tspa.client_account_id else null end) as client_account_id,r.routingstatustypeid
+,null::character report_1099_sw,null::character varying type_1099_cd,null::character varying store_receipt_id
+,tspa.reason_tx,r.objecttypekey
+,case when r.objecttypekey =''ServiceCase'' then false else true end as is_servicecase,APA.programkey
+,tsl.description_tx,tsl.case_id,ts.service_id
+from tb_service_purchase_authorization tspa 
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw=''N''
+LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = ''N''
+join tb_provider tp on tp.provider_id=tps.provider_id
+join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd
+left join 
+(select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ sc on sc.servicecasenumber = tsl.case_id :: character varying  --and sc.activeflag=1
+join person p on p.cjamspid = tsl.client_id 
+left join gendertype gt on gt.gendertypekey = p.gendertypekey
+join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw=''N''
+where 
+(select t.countyid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join as_teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+where mu.securityusersid = '''||v_securityid||''' )
+=(select tt.countyid from team tt where tt.teamid = r.teamid)
+and
+'''||v_securityid||''' not  in (select tosecurityusersid from routing where routingstatustypeid in (40,44) and objectid = tspa.authorization_id :: character varying and eventcode in (''ASPCAUTH'',''ASPCAUTHR'')) and
+ r.toroleid= '''||v_toroleid||''' and r.fromroleid= ANY ('''||v_fromroleid||''') and r.eventcode= ''ASPCAUTHR'' and r.activeflag = 1 and 
+sprvsr_approval_status_cd='''|| v_sprvsr_approval_status_cd ||'''
+and coalesce(funding_approval_status_cd,'''') = '''|| v_funding_approval_status_cd ||'''
+and coalesce(ads_approval_status_cd,'''') = '''||v_ads_approval_status_cd||''''||v_appendstring|| '
+--and coalesce(payment_approval_status_cd,'''') ='''||v_payment_approval_status_cd|| ''' 
+
+) x 
+where x.client_id is not null and x.provider_nm ilike '''|| v_searchObj ||'%''
+group by  x.client_id,x.pname,x.gross_amount_no,x.payment_id,x.ispaymentapproved,
+x.adr_street_nm,x.adr_city_nm,x.adr_state_cd,x.adr_zip5_no,
+x.dob,x.typedescription,x.service_nm,
+ x.provider_nm,x.startdate,x.enddate,
+ x.authorization_id, x.justification_tx,x.cost_no,x.voucher_sw
+ ,x.fiscal_category_desc,x.provider_nm , x.ads_approval_status_cd,x.service_log_id,
+x.actionval,x.end_dt,x.start_dt ,x.provider_id,x.servicecaseid
+,x.remarks,x.payee,x.fiscal_category_cd,
+x.activeflag,x.request_date ,x.client_account_id,x.routingstatustypeid
+,x.report_1099_sw,x.type_1099_cd,x.store_receipt_id,x.reason_tx,x.objecttypekey,x.paymentaddress
+, x.is_servicecase,x.programkey,x.paymentval,x.age,x.description_tx
+,x.funding_approval_dt,x.payment_approval_dt, x.ads_approval_dt,x.adr_street_tx,x.case_id,x.service_id, x.adr_unit_no_tx, x.adr_unit_type_cd, x.adr_street_suffix_cd, x.adr_pre_dir_cd
+-- order by x.authorization_id desc
+'||v_sortval|| ' limit '||pagesize||' offset '|| v_pageoffset;
+--order by x.authorization_id desc limit '||pagesize||' offset '|| v_pageoffset;
+
+query_other :='
+ select count(1) over(),x.* from (
+select
+(select case when count(1) > 0 then true else false end as ispaymentapproved from tb_service_purchase_authorization tss
+where tss.authorization_id = tspa.authorization_id  and coalesce(tss.payment_approval_status_cd,'''') = '''||v_approvestatus||'''),
+tspa.funding_approval_dt,tspa.payment_approval_dt, tspa.ads_approval_dt,
+tsl.client_id,concat(p.firstname,'' '',p.middlename,'' '',p.lastname) as pname,
+(EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+(select provider_adr as paymentaddress from get_provider_address(tp.provider_id,trim('''||v_addresstype||''') :: character varying)),
+--tpa.adr_street_nm,tpa.adr_city_nm,tpa.adr_state_cd,tpa.adr_zip5_no,
+(select tpa.adr_street_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_city_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_state_cd from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_zip5_no from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_street_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_tx ,
+(select tpa.adr_unit_no_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_unit_no_tx,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''250'') as adr_unit_type_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''212'') as adr_street_suffix_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''69'') as adr_pre_dir_cd,
+
+p.dob,gt.typedescription,ts.service_nm,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,tsl.start_dt as startdate,tsl.end_dt as enddate,
+tspa.authorization_id, tspa.justification_tx::character varying,tspa.cost_no,tspa.voucher_sw,Trim(tspa.fiscal_category_cd)  ::bpchar as fiscal_category_cd,tfcm.fiscal_category_desc,
+--tp.provider_nm as payee,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee,
+ tspa.ads_approval_status_cd,tspa.service_log_id,
+case when tspa.ads_approval_status_cd=''3047'' then ''Approved'' else ''Pending'' end as actionval
+,tph.gross_amount_no,tph.payment_id,tspa.end_dt,tspa.start_dt,tph.payment_method_cd as paymentval,tp.provider_id
+--,isn.intakeserviceid
+,sc.servicecaseid
+,case when coalesce('''||v_status||''','''') = ''A''
+then ''Approved''
+ when r.activeflag=1 and r.routingstatustypeid!=62  then ''Pending'' else (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1)  end as remarks,
+r.activeflag,tspa.sprvsr_approval_dt as request_date,(case when (trim(tspa.fiscal_category_cd) in (''7502'',''7503'')) then tspa.client_account_id else null end) as client_account_id,r.routingstatustypeid
+,tpd.report_1099_sw,tpd.type_1099_cd,tph.store_receipt_id,tspa.reason_tx,r.objecttypekey
+,case when r.objecttypekey =''ServiceCase'' then false else true end as is_servicecase,APA.programkey
+,tsl.description_tx,tsl.case_id,ts.service_id
+from tb_service_purchase_authorization tspa 
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw=''N''
+LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = ''N''
+join tb_provider tp on tp.provider_id=tps.provider_id
+join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd
+left join tb_payment_header tph on tph.authorization_id = tspa.authorization_id
+left join tb_payment_detail tpd on tpd.payment_id = tph.payment_id
+ --join intakeservicerequest isn on isn.servicerequestnumber=tsl.case_id :: character varying
+  join 
+(select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ sc on sc.servicecasenumber = tsl.case_id :: character varying -- and sc.activeflag=1
+join person p on p.cjamspid = tsl.client_id 
+left join gendertype gt on gt.gendertypekey = p.gendertypekey
+join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw=''N''
+where  r.toroleid= ANY ('''||v_toroleid||''')  and r.fromroleid= ANY ('''||v_fromroleid||''') and r.eventcode= ''ASPCAUTH'' and 
+sprvsr_approval_status_cd='''|| v_sprvsr_approval_status_cd ||''''||v_appendstring|| '' ||assigned_auth||'
+--and coalesce(funding_approval_status_cd,'''') = '''|| v_funding_approval_status_cd ||'''
+--and coalesce(ads_approval_status_cd,'''') = '''||v_ads_approval_status_cd||'''
+-- and coalesce(payment_approval_status_cd,'''') ='''||v_payment_approval_status_cd|| '''
+
+union all
+
+select
+(select case when count(1) > 0 then true else false end as ispaymentapproved from tb_service_purchase_authorization tss
+where tss.authorization_id = tspa.authorization_id  and coalesce(tss.payment_approval_status_cd,'''') = '''||v_approvestatus||'''),
+tspa.funding_approval_dt,tspa.payment_approval_dt, tspa.ads_approval_dt,
+tsl.client_id,concat(p.firstname,'' '',p.middlename,'' '',p.lastname) as pname,
+(EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+(select provider_adr as paymentaddress from get_provider_address(tp.provider_id,trim('''||v_addresstype||''') :: character varying)),
+--tpa.adr_street_nm,tpa.adr_city_nm,tpa.adr_state_cd,tpa.adr_zip5_no,
+(select tpa.adr_street_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_city_nm from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_state_cd from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_zip5_no from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1),
+(select tpa.adr_street_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_street_tx ,
+(select tpa.adr_unit_no_tx  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) as adr_unit_no_tx,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_unit_type_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''250'') as adr_unit_type_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_street_suffix_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''212'') as adr_street_suffix_cd,
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)= ANY(select trim(tpa.adr_pre_dir_cd)  from 
+tb_provider_addresses tpa where  tpa.parent_key_id = tp.provider_id::character varying and tpa.delete_sw =''N'' limit 1) and picklist_type_id=''69'') as adr_pre_dir_cd,
+
+p.dob,gt.typedescription,ts.service_nm,
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,tsl.start_dt as startdate,tsl.end_dt as enddate,
+tspa.authorization_id, tspa.justification_tx::character varying,tspa.cost_no,tspa.voucher_sw,Trim(tspa.fiscal_category_cd)  ::bpchar as fiscal_category_cd,tfcm.fiscal_category_desc,
+--tp.provider_nm as payee, 
+CASE WHEN (tp.provider_nm = null OR tp.provider_nm='''') 
+THEN CONCAT(tp.provider_first_nm,'' '',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee,
+tspa.ads_approval_status_cd,tspa.service_log_id,
+case when tspa.ads_approval_status_cd=''3047'' then ''Approved'' else ''Pending'' end as actionval
+,tph.gross_amount_no,tph.payment_id,tspa.end_dt,tspa.start_dt,tph.payment_method_cd as paymentval,tp.provider_id
+--,isn.intakeserviceid
+,sc.servicecaseid
+,case when coalesce('''||v_status||''','''') = ''A''
+then ''Approved''
+ when r.activeflag=1 and r.routingstatustypeid!=62  then ''Pending'' else (select r.remarks from routing r where r.activeflag=1 and r.objectid=tspa.authorization_id :: character varying and r.eventcode in (''ASPCAUTH'',''ASPCAUTHR'') limit 1)  end as remarks,
+r.activeflag,tspa.sprvsr_approval_dt as request_date,(case when (trim(tspa.fiscal_category_cd) in (''7502'',''7503'')) then tspa.client_account_id else null end) as client_account_id,r.routingstatustypeid
+,tpd.report_1099_sw,tpd.type_1099_cd,tph.store_receipt_id,tspa.reason_tx,r.objecttypekey
+,case when r.objecttypekey =''ServiceCase'' then false else true end as is_servicecase,APA.programkey
+,tsl.description_tx,tsl.case_id,ts.service_id
+from tb_service_purchase_authorization tspa 
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw=''N''
+LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = ''N''
+join tb_provider tp on tp.provider_id=tps.provider_id
+join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd
+left join tb_payment_header tph on tph.authorization_id = tspa.authorization_id
+left join tb_payment_detail tpd on tpd.payment_id = tph.payment_id
+ --join intakeservicerequest isn on isn.servicerequestnumber=tsl.case_id :: character varying
+  join 
+(select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ sc on sc.servicecasenumber = tsl.case_id :: character varying 
+join person p on p.cjamspid = tsl.client_id 
+left join gendertype gt on gt.gendertypekey = p.gendertypekey
+join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw=''N''
+where  
+(select t.countyid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join as_teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+where mu.securityusersid = '''||v_securityid||''' )
+=(select tt.countyid from team tt where tt.teamid = r.teamid)
+and
+r.toroleid= ANY ('''||v_toroleid||''')  and r.fromroleid= ANY ('''||v_fromroleid||''') and r.eventcode= ''ASPCAUTHR'' and 
+sprvsr_approval_status_cd='''|| v_sprvsr_approval_status_cd ||''''||v_appendstring|| '
+--and coalesce(funding_approval_status_cd,'''') = '''|| v_funding_approval_status_cd ||'''
+--and coalesce(ads_approval_status_cd,'''') = '''||v_ads_approval_status_cd||'''
+-- and coalesce(payment_approval_status_cd,'''') ='''||v_payment_approval_status_cd|| '''
+) x
+where x.client_id is not null --and x.provider_nm ilike '''|| v_searchObj ||'%''
+group by  x.client_id,x.pname,x.gross_amount_no,x.payment_id,
+x.adr_street_nm,x.adr_city_nm,x.adr_state_cd,x.adr_zip5_no,x.ispaymentapproved,
+x.dob,x.typedescription,x.service_nm,
+ x.provider_nm,x.startdate,x.enddate,
+ x.authorization_id, x.justification_tx,x.cost_no,x.voucher_sw
+ ,x.fiscal_category_desc,x.provider_nm , x.ads_approval_status_cd,x.service_log_id,
+x.actionval,x.end_dt,x.start_dt ,x.provider_id,x.servicecaseid
+,x.remarks,x.payee,x.fiscal_category_cd,
+x.activeflag,x.request_date ,x.client_account_id,x.routingstatustypeid
+,x.report_1099_sw,x.type_1099_cd,x.store_receipt_id,x.reason_tx,x.objecttypekey,x.paymentaddress
+, x.is_servicecase,x.programkey,x.paymentval,x.age,x.description_tx
+,x.funding_approval_dt,x.payment_approval_dt, x.ads_approval_dt,x.adr_street_tx,x.case_id,x.service_id, x.adr_unit_no_tx, x.adr_unit_type_cd, x.adr_street_suffix_cd, x.adr_pre_dir_cd
+-- order by x.authorization_id desc
+'||v_sortval|| ' limit '||pagesize||' offset '|| v_pageoffset;
+-- order by x.authorization_id desc 
+-- limit '||pagesize||' offset '|| v_pageoffset;
+
+ 
+ if(v_approveltype = 'funding') then 
+  RAISE NOTICE 'query_funding %', query_funding ;
+  return query execute query_funding ;
+ else if(v_approveltype = 'payment') then 
+  RAISE NOTICE 'query_payment %', query_payment ;
+  return query execute query_payment ;
+ else 
+   RAISE NOTICE 'query_other %', query_other ;
+   return query execute query_other;
+ 
+ end if;
+end if;
+-- drop table if exists temp_payment_detail_pa;
+-- drop table if exists temp_payment_header_pa;
+END;
+
+$function$
+

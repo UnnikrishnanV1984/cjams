@@ -1,0 +1,1 @@
+update assessment set activeflag = 0, updatedon = now(), updatedby = 'CDM-12034' where assessmentid= 'e250f09c-0ccd-43f1-8469-db2ba59b973c';

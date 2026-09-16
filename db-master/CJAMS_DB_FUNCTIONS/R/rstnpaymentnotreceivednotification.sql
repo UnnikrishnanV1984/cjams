@@ -1,0 +1,94 @@
+ CREATE OR REPLACE FUNCTION public.rstnpaymentnotreceivednotification(v_type character varying)                                                                                               
+  RETURNS character varying                                                                                                                                                                   
+  LANGUAGE plpgsql                                                                                                                                                                            
+ AS $function$                                                                                                                                                                              
+                                                                                                                                                                                            
+ DECLARE                                                                                                                                                                                    
+                                                                                                                                                                                            
+ v_intakeserviceid uuid;                                                                                                                                                                    
+ v_intakeservreqtypeid uuid;                                                                                                                                                                
+ v_intakeservicerequestclassid uuid;                                                                                                                                                        
+ v_investigationid uuid;                                                                                                                                                                    
+ v_securityusersid character varying;                                                                                                                                                       
+ v_status character varying;                                                                                                                                                                
+ v_status1 character varying;                                                                                                                                                               
+ v_restitutionpaymentrecord  record;                                                                                                                                                        
+ v_msg character varying;                                                                                                                                                                   
+                                                                                                                                                                                            
+ BEGIN                                                                                                                                                                                      
+                                                                                                                                                                                            
+  IF (lower(v_type) = 'common') THEN                                                                                                                                                        
+                                                                                                                                                                                            
+  -- No Payments was made for the Restitution A/C # xxxxxxxxx in last 30 days. Please send a reminder letter to Parent/Guardian.                                                            
+                                                                                                                                                                                            
+ FOR  v_restitutionpaymentrecord  IN                                                                                                                                                        
+                                                                                                                                                                                            
+ select tma.securityusersid as fromsecurityusersid,isrr.restitutionno,isrr.intakeserviceid from teammemberassignment tma                                                                    
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1                                                                                                            
+ join team t on t.teamid = tm.teamid and t.activeflag = 1                                                                                                                                   
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1                                                                                                              
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1                                                                                                                       
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1                                                                                                                                
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active'                                                                  
+ join intakeserreqrestitutionpayment as isrrp on isrrp.restitutionno = isrr.restitutionno and isrrp.activeflag=1                                                                            
+ WHERE r.roletypekey ilike'%JSRTC%' and tma.activeflag = 1 and  isrrp.insertedon::date = now()::date - '1 day'::interval                                                                    
+ and isrrp.insertedon =(select max(insertedon) from intakeserreqrestitutionpayment where restitutionno=isrrp.restitutionno limit 1)                                                         
+ group by tma.securityusersid,isrr.restitutionno,isrr.intakeserviceid                                                                                                                       
+                                                                                                                                                                                            
+ LOOP                                                                                                                                                                                       
+                                                                                                                                                                                            
+ -- No Payments was made for the Restitution A/C # xxxxxxxxx in last 30 days. Please send a reminder letter to Parent/Guardian.                                                             
+                                                                                                                                                                                            
+ v_msg:=   'No Payments was made for the Restitution A/C ('|| v_restitutionpaymentrecord.restitutionno ||') in last 30 days. Please send a reminder letter to Parent/Guardian.';            
+                                                                                                                                                                                            
+ SELECT send_notification INTO v_status1 FROM send_notification(v_restitutionpaymentrecord.fromsecurityusersid, 'System'::character varying, v_restitutionpaymentrecord.fromsecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_restitutionpaymentrecord.intakeserviceid::character varying);                                                                                           
+                                                                                                                                                                                            
+ END LOOP;                                                                                                                                                                                  
+                                                                                                                                                                                            
+  ELSIF (lower(v_type) = 'court') THEN                                                                                                                                                      
+                                                                                                                                                                                            
+  -- No Payments was made for the Restitution A/C # xxxxxxxxx in last 120 days. Please send the Restitution Account to CCU.                                                                 
+                                                                                                                                                                                            
+ FOR  v_restitutionpaymentrecord  IN                                                                                                                                                        
+                                                                                                                                                                                            
+ select tma.securityusersid as fromsecurityusersid,isrr.restitutionno,isrr.intakeserviceid from teammemberassignment tma                                                                    
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1                                                                                                            
+ join team t on t.teamid = tm.teamid and t.activeflag = 1                                                                                                                                   
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1                                                                                                              
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1                                                                                                                       
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1                                                                                                                                
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active'                                                                  
+ join intakeserreqrestitutionpayment as isrrp on isrrp.restitutionno = isrr.restitutionno and isrrp.activeflag=1                                                                            
+ WHERE r.roletypekey ilike'%JSRTC%' and tma.activeflag = 1 and  isrrp.insertedon::date = now()::date - '1 day'::interval                                                                    
+ and isrrp.insertedon =(select max(insertedon) from intakeserreqrestitutionpayment where restitutionno=isrrp.restitutionno limit 1)                                                         
+ and isrr.isccu = true and lower(isrr.restitutiontype) = 'court'                                                                                                                            
+ group by tma.securityusersid,isrr.restitutionno,isrr.intakeserviceid                                                                                                                       
+                                                                                                                                                                                            
+ LOOP                                                                                                                                                                                       
+                                                                                                                                                                                            
+ -- No Payments was made for the Restitution A/C # xxxxxxxxx in last 120 days. Please send the Restitution Account to CCU.                                                                  
+                                                                                                                                                                                            
+ v_msg:=   'No Payments was made for the Restitution A/C ('|| v_restitutionpaymentrecord.restitutionno ||') in last 120 days. Please send the Restitution Account to CCU.';                 
+                                                                                                                                                                                            
+ SELECT send_notification INTO v_status1 FROM send_notification(v_restitutionpaymentrecord.fromsecurityusersid, 'System'::character varying, v_restitutionpaymentrecord.fromsecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_restitutionpaymentrecord.intakeserviceid::character varying);                                                                                           
+                                                                                                                                                                                            
+ update intakeserreqrestitution set isccusent = true where restitutionno = v_restitutionpaymentrecord.restitutionno and activeflag=1;                                                       
+                                                                                                                                                                                            
+ END LOOP;                                                                                                                                                                                  
+                                                                                                                                                                                            
+ END IF;                                                                                                                                                                                    
+                                                                                                                                                                                            
+                                                                                                                                                                                            
+                                                                                                                                                                                            
+                                                                                                                                                                                            
+ RETURN                                                                                                                                                                                     
+                                                                                                                                                                                            
+ 'Success';                                                                                                                                                                                 
+                                                                                                                                                                                            
+ END;                                                                                                                                                                                       
+                                                                                                                                                                                            
+                                                                                                                                                                                            
+ $function$                                                                                                                                                                                   
+

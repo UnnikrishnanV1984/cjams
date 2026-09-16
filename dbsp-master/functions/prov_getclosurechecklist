@@ -1,0 +1,419 @@
+CREATE OR REPLACE FUNCTION prov_getclosurechecklist(v_providerid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+  v_closurechecklist json;
+  
+ v_provapproval number;
+ v_provapprovalmsg character varying;
+ v_adoptionsubsidy number;
+ v_adoptionsubsidymsg character varying;
+ v_provlicenses number;
+ v_provlicensesmsg character varying;
+ v_provguardsubsidy number;
+ v_provguardsubsidymsg character varying;
+ v_contract number;
+ v_contractmsg character varying;
+
+ v_provplacement number;
+ v_provplacementmsg character varying;
+ v_provcpaplacement number;
+ v_provcpaplacementmsg character varying;
+
+ v_paymentheaders number;
+ v_paymentheadersmsg character varying;
+
+ v_acctreceivable number;
+ v_acctreceivablemsg character varying;
+
+ v_purchaseauth number;
+ v_purchaseauthmsg character varying;
+ v_purchaseauth_caseid character varying;
+
+ v_addressenddated number;
+ v_addressenddatedmsg character varying;
+
+ v_services number;
+ v_servicesmsg character varying;
+ v_services_caseid character varying;
+ v_placementvalidation number;
+ v_placementvalidationmsg character varying;
+ v_contractprograms number;
+ v_contractprogramsmsg character varying;
+ v_categorycd int8;
+    isPublic character varying;
+    isPrivate character varying;
+   current_date date;
+ begin   
+
+  isPublic=false;
+ isPrivate=false;
+ select now()::date into current_date;
+raise notice '%',current_date;
+ --current_date=now()::date;
+
+select count(provider_id) into v_categorycd::int  from tb_provider_picklist tpp where picklist_type_id = '155' and provider_id=v_providerid and delete_sw='N' and picklist_value_cd in('1783','1785');
+if (v_categorycd>0) then
+ isPublic:='Y';
+else
+ select count(provider_id) into v_categorycd::int  from tb_provider_picklist tpp where picklist_type_id = '155' and provider_id=v_providerid and delete_sw='N' and picklist_value_cd in('3049');
+ if (v_categorycd>0) then
+  isPrivate:='Y';
+ end if;
+end if;
+/*select picklist_value_cd into v_categorycd::int  from tb_provider_picklist tpp where picklist_type_id = '155' and provider_id=v_providerid and delete_sw='N';
+
+ if ((v_categorycd=1783) or (v_categorycd=1785)) then
+  isPublic:='Y';
+ else 
+  if (v_categorycd = 3049) then
+   isPrivate:='Y';
+  end if;
+ end if;*/
+raise notice 'v_categorycd%',v_categorycd;
+raise notice 'isPublic%',isPublic;
+-- Home Approvals  Public
+-- # 811 - This provider cannot be closed until all home approval episodes have expired or are revoked.
+if (isPublic='Y' ) then
+  v_provapproval:=-1;
+  select count(*) into v_provapproval
+  from tb_provider_approval
+  where provider_id::bigint = v_providerid::bigint
+   and delete_sw = 'N' 
+   and active_sw='Y'
+   and next_recon_dt > now()::date
+   and approval_status_cd in ( '3579', '3586');
+  if (v_provapproval<>0) then 
+   v_provapprovalmsg:='This provider cannot be closed until all home approval episodes have expired or are revoked';
+  else
+   v_provapprovalmsg:='All home approval episodes have expired or are revoked.';
+  end if;
+
+  -- GAP and Adoption Subsidy   PUBLIC
+  -- # 817 - This provider cannot be closed until the Adoption / Guardianship Subsidy are end-dated.
+  v_adoptionsubsidy:=-1;
+  select count(*) into v_adoptionsubsidy
+  from tb_adoption ad,
+   tb_adoption_subsidy_agreement asa
+  where ad.adoption_id = asa.adoption_id
+   and asa.provider_id = v_providerid 
+   and ad.subsidy_end_dt > current_date
+   and ad.delete_sw = 'N' 
+   and asa.delete_sw = 'N' ; 
+  
+  if (v_adoptionsubsidy<>0) then 
+   v_adoptionsubsidymsg:=' This provider cannot be closed until the Adoption Subsidy are end-dated.';
+  else
+   v_adoptionsubsidymsg:='Adoption Subsidies are end-dated.';
+  end if;
+end if;--end of if (isPublic=true ) 
+if (isPrivate='Y' ) then
+ -- Provider Licenses PRivate
+ -- # 812 - This provider cannot be closed until all licenses have expired or are revoked.
+ v_provlicenses:=-1;
+ select count(*) into v_provlicenses
+ from tb_provider_licensing
+ where ( provider_id = v_providerid or site_id = v_providerid ) 
+  and delete_sw = 'N'  
+  and license_status_cd in ('3263','3266','3260', '3261')  
+  and license_issue_dt <  current_date 
+  and license_expiry_dt > current_date ;
+ if (v_provlicenses<>0) then 
+  v_provlicensesmsg:='This provider cannot be closed until all licenses have expired or are revoked.';
+ else
+  v_provlicensesmsg:='All licenses have expired or are revoked.';
+ end if;
+ v_provguardsubsidy:=-1;
+ select count(*) into v_provguardsubsidy
+ from tb_guardian_subsidy  
+ where provider_id = v_providerid   
+  and subsidy_end_dt > current_date 
+  and delete_sw = 'N'   
+  and susbsidy_approval_status_cd = '3047' ;
+ if (v_provguardsubsidy<>0) then 
+  v_provguardsubsidymsg:='This provider cannot be closed until the Guardianship Subsidies are end-dated.';
+ else
+  v_provguardsubsidymsg:='Guardianship Subsidies are end-dated';
+ end if;
+
+ -- Contracts   PRIVATE
+ -- # 814 - This provider organization cannot be closed until all current and future contracts have a status of Expired.
+ v_contract:=-1;
+ select count(*) into v_contract
+ from tb_provider_contracts
+ where provider_id = v_providerid
+  and delete_sw = 'N'
+  and (
+    (status_cd <> '3626' or status_cd is null or rtrim(ltrim(status_cd)) = '') 
+   ) ;
+ if (v_contract<>0) then 
+   v_contractmsg:='This provider organization cannot be closed until all current and future contracts have a status of Expired.';
+  else
+  v_contractmsg:='All current and future contracts have a status of Expired.';
+ end if;
+ -- Contract Program  PRIVATE
+ -- # 813 - This provider cannot be closed until all contracted program have expired or are revoked.
+ v_contractprograms:=-1;
+ select count(*) into v_contractprograms
+ from tb_prov_program_sites pps
+  left outer join tb_contract_program cp on pps.program_id = cp.program_id,
+  tb_provider_contracts pc
+ where pc.delete_sw = 'N' 
+  and pps.delete_sw = 'N' 
+  and cp.delete_sw = 'N'
+  and pc.contract_id = cp.contract_id 
+  and (
+    ( cp.program_status_cd <> '3626' 
+     or  cp.program_status_cd is null 
+     or rtrim(ltrim(cp.program_status_cd)) = ''
+    ) 
+   ) 
+  and ( pps.site_id = v_providerid or pc.provider_id = v_providerid ) ;
+ if (v_contractprograms<>0) then 
+   v_contractprogramsmsg:='This provider cannot be closed until all contracted program have expired or are revoked.';
+  else
+  v_contractprogramsmsg:='All contracted program have expired or are revoked.';
+ end if;
+end if;  -- end of (isPrivate=true ) 
+
+
+-- Active Placements  BOTH
+-- # 815 - This provider cannot be closed until there is an Exit Date for all placements at this provider.
+v_provplacement:=-1;
+select count(*) into v_provplacement
+from tb_placement
+where delete_sw = 'N'
+ and entry_dt is not null
+ and exit_dt is null
+ and coalesce(void_sw, 'N') <> 'Y'
+ and ( provider_organization_id = v_providerid or provider_id = v_providerid ) ;
+if (v_provplacement<>0) then 
+   v_provplacementmsg:='This provider cannot be closed until there is an Exit Date for all placements at this provider.';
+  else
+  v_provplacementmsg:='All placements should have an Exit Date.';
+ end if;
+v_provcpaplacement:=-1;
+select count(*) into v_provcpaplacement
+from tb_placement_cpa_homes pch, 
+    tb_placement pl
+where pch.placement_id = pl.placement_id 
+ and pch.delete_sw = 'N' 
+ and pl.delete_sw = 'N'
+ and coalesce(pl.void_sw, 'N') <> 'Y'
+ and pl.entry_dt is not null 
+ and pl.exit_dt is null 
+ and pch.exit_dt is null 
+ and pch.entry_dt is not null 
+ and pch.provider_id = v_providerid ;
+ if (v_provcpaplacement<>0) then 
+   v_provcpaplacementmsg:='This provider-cpa home cannot be closed until there is an Exit Date for all placements at this provider..';
+  else
+  v_provcpaplacementmsg:='All provider-cpa home should have an Exit Date for all placements.';
+ end if;
+ -- Payments   BOTH
+ -- # 828 - This provider cannot be closed.  There are payments and/or placement validations pending for this provider.
+ v_paymentheaders:=-1;
+  select count(*) into v_paymentheaders
+  from tb_payment_header ph,   
+   tb_payment_status ps
+  where ph.payment_id = ps.payment_id  
+   and ( ps.payment_status_cd not in ('1636', '1639') or
+      ps.payment_status_cd is null or
+      rtrim(ltrim(ps.payment_status_cd)) = ''
+    ) 
+   and ph.delete_sw = 'N' 
+   and ps.delete_sw = 'N' 
+   and ph.payment_type_cd <> '6' 
+   and ph.provider_id =v_providerid;
+   if (v_paymentheaders<>0) then 
+     v_paymentheadersmsg:='This provider cannot be closed.  There are payments validations pending for this provider.';
+   else
+    v_paymentheadersmsg:='No payments validations pending for this provider.';
+   end if;
+  v_placementvalidation:=-1;
+  select count(*)  into v_placementvalidation
+  from tb_placement_validation
+  where placement_id in
+   (  select placement_id
+     from tb_placement
+    where provider_id  = v_providerid
+     AND coalesce(void_sw, 'N') <> 'Y'
+     and entry_dt is not null
+     and delete_sw = 'N'
+   )
+  and delete_sw = 'N'
+  and ( validation_status_cd <> '1750' or validation_status_cd is null ) ;
+  if (v_placementvalidation<>0) then 
+   v_placementvalidationmsg:='This provider validation cannot be closed.  There are placement validations pending for this provider.';
+  else
+  v_placementvalidationmsg:='No placement validations pending for this provider.';
+  end if;
+  -- Account Receivables  BOTH
+  -- # 829 - provider cannot be closed.  Receivables exist for this provider.
+  v_acctreceivable:=-1;
+  select count(*) into v_acctreceivable
+  from tb_receivable_header rh,  
+      tb_receivable_detail rd, 
+      tb_receivable_collection_status rs
+  where rh.receivable_id = rd.receivable_id  
+   and rd.receivable_detail_id = rs.receivable_detail_id  
+   and rd.delete_sw = 'N'  
+   and rh.delete_sw = 'N'  
+   and rs.delete_sw = 'N' 
+   and rs.active_sw = 'Y' 
+   and rs.collection_status_cd = '779' 
+   and rd.receivable_balance_no > 0 
+   and rh.provider_id = v_providerid;
+  if (v_acctreceivable<>0) then 
+   v_acctreceivablemsg:='This provider cannot be closed.  Receivables exist for this provider.';
+  else
+   v_acctreceivablemsg:='Account Receivables should not exist for this provider.';
+  end if;
+
+
+-- Purchase Authorization  BOTH
+-- # 816 - This provider cannot be closed until all outstanding purchase authorizations have received payment approval.
+v_purchaseauth:=-1;
+select count(*) into v_purchaseauth
+from tb_service_log sl,   
+ tb_service_purchase_authorization sp,   
+ tb_provider_services  ps
+where sp.service_log_id = sl.service_log_id 
+ and ps.provider_service_id = sl.provider_service_id 
+ and (  sp.funding_approval_status_cd is null 
+   or sp.funding_approval_status_cd = '3045' 
+   or sp.payment_approval_status_cd is null 
+   or sp.payment_approval_status_cd = '3045' 
+  ) 
+ and coalesce(sp.sprvsr_approval_status_cd, '') <> '3281'
+ and coalesce(sp.ads_approval_status_cd, '') <> '3281' 
+ and coalesce(sp.funding_approval_status_cd, '') <> '3281' 
+ and coalesce(sp.payment_approval_status_cd, '') <> '3281' 
+ and ps.provider_id = v_providerid
+ and sl.delete_sw = 'N' 
+ and sp.delete_sw = 'N'  
+ and ps.delete_sw = 'N' 
+ -- To exclude service purchase authorizations in denied status (Vineet 01/28/2021)
+ and ( select count(1)
+   from routing ru
+         where ru.objectid = sp.authorization_id 
+   and ru.eventcode in ( 'PCAUTHR', 'PCAUTH' )
+   and ru.routingstatustypeid = '62'
+   and ru.activeflag = 1 ) = 0 
+ ;
+ 
+ 
+ if (v_purchaseauth<>0) then 
+
+  select array_to_string(array_agg(distinct sl.case_id), ',') into v_purchaseauth_caseid
+  from tb_service_log sl,   
+   tb_service_purchase_authorization sp,   
+   tb_provider_services  ps
+  where sp.service_log_id = sl.service_log_id 
+   and ps.provider_service_id = sl.provider_service_id 
+   and (  sp.funding_approval_status_cd is null 
+     or sp.funding_approval_status_cd = '3045' 
+     or sp.payment_approval_status_cd is null 
+     or sp.payment_approval_status_cd = '3045' 
+    ) 
+   and coalesce(sp.sprvsr_approval_status_cd, '') <> '3281'
+   and coalesce(sp.ads_approval_status_cd, '') <> '3281' 
+   and coalesce(sp.funding_approval_status_cd, '') <> '3281' 
+   and coalesce(sp.payment_approval_status_cd, '') <> '3281' 
+   and ps.provider_id = v_providerid
+   and sl.delete_sw = 'N' 
+   and sp.delete_sw = 'N'  
+   and ps.delete_sw = 'N' 
+   -- To exclude service purchase authorizations in denied status (Vineet 01/28/2021)
+   and ( select count(1)
+     from routing ru
+    where ru.objectid = sp.authorization_id 
+     and ru.eventcode in ( 'PCAUTHR', 'PCAUTH' )
+     and ru.routingstatustypeid = '62'
+     and ru.activeflag = 1 ) = 0 
+   ;
+   v_purchaseauthmsg:='This provider cannot be closed until all outstanding purchase authorizations ('||v_purchaseauth_caseid||') have received payment approval.';
+  else
+   v_purchaseauthmsg:='All outstanding purchase authorizations should have received payment approval.';
+ end if;
+
+-- End date all Address
+-- # 816 - This provider cannot be closed until addresses are end-dated.
+v_addressenddated:=-1;
+select count(*) into v_addressenddated
+from tb_provider_addresses tbpa
+where tbpa.parent_key_id = v_providerid AND tbpa.adr_end_dt is NULL AND delete_sw = 'N';
+
+ if (v_addressenddated<>0) then 
+   v_addressenddatedmsg:='This provider cannot be closed until all providers are end-dated.';
+  else
+   v_addressenddatedmsg:='All Provider addresses are end-dated.';
+ end if;
+
+
+-- Service Logs BOTH
+-- # 849 - This provider cannot be closed until all associated service log records have been end-dated.
+v_services:=-1;
+ select count(*) into v_services
+ from tb_service_log sl,   
+     tb_provider_services ps 
+ where ps.provider_service_id = sl.provider_service_id 
+  and sl.start_dt is not null 
+  and sl.end_dt is null
+  and ps.provider_id = v_providerid
+  and sl.delete_sw = 'N'  
+  and ps.delete_sw = 'N' ;
+ if (v_services<>0) then 
+
+  select array_to_string(array_agg(distinct sl.case_id), ',') into v_services_caseid
+  from tb_service_log sl,   
+   tb_provider_services ps 
+  where ps.provider_service_id = sl.provider_service_id 
+   and sl.start_dt is not null 
+   and sl.end_dt is null
+   and ps.provider_id = v_providerid
+   and sl.delete_sw = 'N'  
+   and ps.delete_sw = 'N' ;
+   v_servicesmsg:='This provider cannot be closed until all associated service log records ('||v_services_caseid||') have been end-dated.';
+  else
+   v_servicesmsg:='All outstanding purchase authorizations should have received payment approval.';
+ end if;
+
+
+/*return select json_agg(
+--     json_build_object('name','Home Approvals','cnt',v_provapproval ,'message',v_provapprovalmsg),
+--     'Licenses',json_build_object(v_provlicenses ,v_provlicensesmsg),
+--     'Contracts',json_build_object(v_contract ,v_contractmsg),
+--     'Programs',json_build_object(v_contractprograms ,v_contractprogramsmsg),
+--     'Placements',json_build_object(v_provplacement ,v_provplacementmsg),
+--     'CPA-Placements',json_build_object(v_provcpaplacement ,v_provcpaplacementmsg),
+--     'Guardian Subsidies',json_build_object(v_provguardsubsidy ,v_provguardsubsidymsg),
+--     json_build_object('name','Adoption Subsidies','cnt',v_adoptionsubsidy ,'message',v_adoptionsubsidymsg),
+--     json_build_object('name','Outstanding Payments','cnt',v_paymentheaders ,'message',v_paymentheadersmsg),
+--     json_build_object('name','Account Receivables','cnt',v_acctreceivable ,'message',v_acctreceivablemsg),
+--     json_build_object('name','Purchase Authorizations','cnt',v_purchaseauth ,'message',v_purchaseauthmsg),
+--     json_build_object('name','Service Logs','cnt',v_services ,'message',v_servicesmsg),
+     json_build_object('name','Placement Validations','cnt',v_placementvalidation ,'message',v_placementvalidationmsg)
+    ) as checklist  ;*/
+
+return json_build_object('home_approval',json_build_object('name','Home Approvals','cnt',v_provapproval ,'message',v_provapprovalmsg),
+     'licenses',json_build_object('name','Licenses','cnt',v_provlicenses ,'message',v_provlicensesmsg),
+     'contracts',json_build_object('name','Contracts','cnt',v_contract ,'message',v_contractmsg),
+     'programs',json_build_object('name','Programs','cnt',v_contractprograms ,'message',v_contractprogramsmsg),
+     'placements',json_build_object('name','Placements','cnt',v_provplacement ,'message',v_provplacementmsg),
+     'cpa_placements',json_build_object('name','Home Placements','cnt',v_provcpaplacement ,'message',v_provcpaplacementmsg),
+     'guardian_subsidies',json_build_object('name','Guardian Subsidies','cnt',v_provguardsubsidy ,'message',v_provguardsubsidymsg),
+     'adoption_subsidies',json_build_object('name','Adoption Subsidies','cnt',v_adoptionsubsidy ,'message',v_adoptionsubsidymsg),
+     'outstanding_payments',json_build_object('name','Outstanding Payments','cnt',v_paymentheaders ,'message',v_paymentheadersmsg),
+     'account_receivables',json_build_object('name','Account Receivables','cnt',v_acctreceivable ,'message',v_acctreceivablemsg),
+     'purchase_authorizations',json_build_object('name','Purchase Authorizations','cnt',v_purchaseauth ,'message',v_purchaseauthmsg),
+     'provider_addresses', json_build_object('name','Provider Addresses', 'cnt', v_addressenddated, 'message', v_addressenddatedmsg),
+     'service_logs',json_build_object('name','Service Logs','cnt',v_services ,'message',v_servicesmsg),
+     'placement_validations',json_build_object('name','Placement Validations','cnt',v_placementvalidation ,'message',v_placementvalidationmsg  )                                                                                                                                                                                                                      
+                     ) as chklist;          
+ --v_closurechecklist;
+ end;                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                 
+ $function$
+

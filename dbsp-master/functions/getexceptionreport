@@ -1,0 +1,120 @@
+CREATE OR REPLACE FUNCTION getexceptionreport(p_isageover21 boolean, p_isbalgreater boolean, p_balamt numeric, p_isactive boolean, p_isccu boolean, p_pagesize integer, p_pageoffset integer, nolimit boolean)
+ RETURNS TABLE(reccoount bigint, username character varying, over21 json, under21 json, totalbalance text)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+searchstringover21 character varying(1000);
+searchstringbal character varying(1000);
+searchstringactive character varying(1000);
+searchstringccu character varying(1000);
+limitstring character varying(1000);
+BEGIN
+    
+ if (p_isageover21 = true) then 
+  searchstringover21 = ' and yp.youthage >= 21 ';
+ elsif (p_isageover21 = false) then
+  searchstringover21 = ' and yp.youthage <= 21 ';
+ else 
+  searchstringover21 = '';
+ end if ;
+  
+ if (p_isbalgreater = true) then 
+  searchstringbal = ' and ((coalesce(isr.payment, 0) - coalesce(isr.waivedamount, 0) + coalesce(isr.additionalamount, 0)) - coalesce(isr.paidamount, 0)) > '||p_balamt;
+ elsif (p_isbalgreater = false) then
+  searchstringbal = ' and ((coalesce(isr.payment, 0) - coalesce(isr.waivedamount, 0) + coalesce(isr.additionalamount, 0)) - coalesce(isr.paidamount, 0)) < '||p_balamt;
+ else 
+  searchstringbal = '';
+ end if ;
+ 
+ if (p_isactive = true) then 
+  searchstringactive = ' and isrt.intakeserreqstatustypekey = ''Open''';
+ elsif (p_isactive = false) then
+  searchstringactive = ' and isrt.intakeserreqstatustypekey != ''Open''';
+ else 
+  searchstringactive = '';
+ end if ;
+ 
+ if (p_isccu = true) then 
+  searchstringccu = ' and isr.isccu = true';
+ elsif (p_isccu = false) then
+  searchstringccu = ' and isr.isccu != true';
+ else 
+  searchstringccu = '';
+ end if ;
+
+ limitstring = '';
+ if (nolimit = false) then 
+  limitstring = ' LIMIT '||p_pagesize||' OFFSET '||p_pageoffset;
+ end if ;
+ 
+     RETURN QUERY 
+  execute 'select   count(*) over() reccoount,m.username, (select json_agg(agegrp) from 
+(
+   select 
+    isr.youthpersonid ,
+    yp.firstname||'' ''||yp.lastname "offendername",
+    yp.cjamspid AssistID,
+    isr.restitutionno "accountnumber",
+    isr.payment::text "amount",
+    ((coalesce(isr.payment, 0) - coalesce(isr.waivedamount, 0) + coalesce(isr.additionalamount, 0)) - coalesce(isr.paidamount, 0))   as "balance" ,
+    isr.insertedon "entrydate",
+    irp.paymentdate "lastpay",
+    isr.ccuapprovedate "ccudate",
+    null "judgement",
+    irp.insertedby "restcoordinator",
+    yp.youthage,
+    (case when yp.youthage > 21 then ''over21'' else ''under21'' end) "agegroup"
+   from intakeservicerequest isrq 
+   join intakeserreqstatustype isrt on isrt.intakeserreqstatustypeid = isrq.intakeserreqstatustypeid and isrt.activeflag = 1
+   join intakeserreqrestitution isr on isr.intakenumber = isrq.intakenumber and isr.activeflag = 1
+   join (select p.personid,p.dob,p.firstname,p.lastname,p.cjamspid,extract(year from age(current_date,p.dob)) "youthage",activeflag from person p)yp on yp.personid=isr.youthpersonid and yp.activeflag=1
+   join (select max(paymentnumber) "paymentnumber",intakeserreqrestitutionid from intakeserreqrestitutionpayment group by intakeserreqrestitutionid) isrpl on isrpl.intakeserreqrestitutionid=isr.intakeserreqrestitutionid
+   join intakeserreqrestitutionpayment irp on  irp.paymentnumber=isrpl.paymentnumber and irp.intakeserreqrestitutionid = isrpl.intakeserreqrestitutionid
+   where irp.insertedby = rtcd.insertedby
+   and yp.youthage > 21 
+   '||searchstringccu||searchstringactive||searchstringover21||searchstringbal||'
+   )agegrp)as "over21"
+   ,
+(select json_agg(agegrp) from 
+(
+   select 
+    isr.youthpersonid ,
+    yp.firstname||'' ''||yp.lastname "offendername",
+    yp.cjamspid AssistID,
+    isr.restitutionno "accountnumber",
+    isr.payment::text "amount",
+    ((coalesce(isr.payment, 0) - coalesce(isr.waivedamount, 0) + coalesce(isr.additionalamount, 0)) - coalesce(isr.paidamount, 0))   as "balance" ,
+    isr.insertedon "entrydate",
+    irp.paymentdate "lastpay",
+    isr.ccuapprovedate "ccudate",
+    null "judgement",
+    irp.insertedby "restcoordinator",
+    yp.youthage,
+    (case when yp.youthage > 21 then ''over21'' else ''under21'' end) "agegroup"
+   from intakeservicerequest isrq 
+   join intakeserreqstatustype isrt on isrt.intakeserreqstatustypeid = isrq.intakeserreqstatustypeid and isrt.activeflag = 1
+   join intakeserreqrestitution isr on isr.intakenumber = isrq.intakenumber and isr.activeflag = 1
+   join (select p.personid,p.dob,p.firstname,p.lastname,p.cjamspid,extract(year from age(current_date,p.dob)) "youthage",activeflag from person p)yp on yp.personid=isr.youthpersonid and yp.activeflag=1
+   join (select max(paymentnumber) "paymentnumber",intakeserreqrestitutionid from intakeserreqrestitutionpayment group by intakeserreqrestitutionid) isrpl on isrpl.intakeserreqrestitutionid=isr.intakeserreqrestitutionid
+   join intakeserreqrestitutionpayment irp on  irp.paymentnumber=isrpl.paymentnumber and irp.intakeserreqrestitutionid = isrpl.intakeserreqrestitutionid
+   where irp.insertedby = rtcd.insertedby
+   and yp.youthage <= 21 
+   '||searchstringccu||searchstringactive||searchstringover21||searchstringbal||'
+   )agegrp)as "under21",
+    oq.totalbalance::text         
+  from (select insertedby from intakeserreqrestitutionpayment irrp group by insertedby) rtcd
+  join (select irp.insertedby,sum((coalesce(isr.payment, 0) - coalesce(isr.waivedamount, 0) + coalesce(isr.additionalamount, 0)) - coalesce(isr.paidamount, 0)) "totalbalance" from intakeservicerequest isrq 
+   join intakeserreqstatustype isrt on isrt.intakeserreqstatustypeid = isrq.intakeserreqstatustypeid and isrt.activeflag = 1
+   join intakeserreqrestitution isr on isr.intakenumber = isrq.intakenumber and isr.activeflag = 1
+   join (select p.personid,p.dob,p.firstname,p.lastname,p.cjamspid,extract(year from age(current_date,p.dob)) "youthage",activeflag from person p)yp on yp.personid=isr.youthpersonid and yp.activeflag=1
+   join (select max(paymentnumber) "paymentnumber",intakeserreqrestitutionid from intakeserreqrestitutionpayment group by intakeserreqrestitutionid) isrpl on isrpl.intakeserreqrestitutionid=isr.intakeserreqrestitutionid
+   join intakeserreqrestitutionpayment irp on  irp.paymentnumber=isrpl.paymentnumber and irp.intakeserreqrestitutionid = isrpl.intakeserreqrestitutionid
+   where 1=1 '||searchstringccu||searchstringactive||searchstringover21||searchstringbal||'
+   group by irp.insertedby)oq on oq.insertedby = rtcd.insertedby 
+  join muser m on m.securityusersid = rtcd.insertedby '||limitstring
+ 
+  ;
+                          
+END;
+$function$
+

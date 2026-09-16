@@ -1,0 +1,175 @@
+CREATE OR REPLACE FUNCTION prov_uir_whole_details(v_uir_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_provider_id integer;
+v_uir_uuid uuid;
+v_site_id bigint;
+v_siteinfo json;
+v_incidentinfo json;
+v_youthinfo json;
+v_incidentlist json;
+v_lawinfolist json;
+v_notificationinfolist json;
+v_notificationtablist json;
+v_fosterparentlist json;
+v_narrativeinfo json;
+v_youthinvolvedlist json;
+v_notificationlogs json;
+v_staffdetails json;
+v_supervisoryinfo json;
+v_emaillist json;
+v_emaillistrole json;
+v_emaillistqa json;
+v_witness json;
+v_gangdetails json;
+v_license character varying;
+v_assignedstaffdetails json;
+v_provemaillist1 json;
+v_provemaillist2 json;
+v_provemaillist3 json;
+begin
+ select puir.provider_id, puir.program_nm,puir.provider_uir_id into v_provider_id, v_site_id, v_uir_uuid from provider_uir puir where uir_no = v_uir_id;
+ select json_agg(si) into v_siteinfo from (select * from prov_listsiteinformation(v_provider_id, v_site_id)) si; 
+ select json_agg(ir) into v_incidentinfo from (select * from incidentreportupdate(v_provider_id,v_uir_id)) ir;
+ 
+ select json_agg(yd) into v_youthinfo from (
+    select 'DJS' as agency, yd.provider_uir_actor_id as provider_uir_actor_detail_id,  COALESCE(p.firstname, ad.first_name) as first_name,COALESCE(p.lastname,ad.last_name) as last_name,COALESCE(p.dob::date,ad.dob::date) as dob,ad.identifier_no,
+  ad.address1,ad.address2,ad.city,ad.state,ad.county,ad.zipcode,ad.gender,ad.youth_identifier,
+  ad.placing_agency, rfv.description as  placing_agency_txt, co.countyid, co.countyname, ad.admitting_charge,false as is_placed 
+  from provider_uir_youth_detail yd 
+  inner join provider_uir_actor_detail  ad on yd.provider_uir_actor_id ::uuid=ad.provider_uir_actor_detail_id
+  left join  person p on p.cjamspid::character varying=ad.identifier_no
+  left join referencevalues rfv on rfv.ref_key = ad.placing_agency and rfv.referencetypeid = 550 and  rfv.activeflag = 1
+  left join county co on co.countyid::character varying = ad.placing_agency::character varying 
+  where uir_no=v_uir_id AND active_flag = 1
+    union 
+    select 'DHS' as agency, yd.provider_uir_actor_id as provider_uir_actor_detail_id,  COALESCE(p.firstname, ad.first_name) as first_name,COALESCE(p.lastname,ad.last_name) as last_name,COALESCE(p.dob::date,ad.dob::date) as dob,ad.identifier_no,
+        ad.address1,ad.address2,ad.city,ad.state,ad.county,ad.zipcode,ad.gender,ad.youth_identifier,
+        ad.placing_agency,rfv.description as  placing_agency_txt, co.countyid, co.countyname, ad.admitting_charge,false as is_placed 
+        from provider_uir_youth_detail yd 
+        inner join provider_uir_actor_detail  ad on yd.provider_uir_actor_id ::uuid=ad.provider_uir_actor_detail_id
+        left join referencevalues rfv on rfv.ref_key = ad.placing_agency and rfv.referencetypeid = 550 and  rfv.activeflag = 1
+        left join county co on co.countyid::character varying = ad.placing_agency::character varying 
+        left join person p on p.cjamspid::character varying=ad.identifier_no
+        where uir_no=v_uir_id AND active_flag = 1 ) yd;
+
+ select json_agg(id) into v_incidentlist from (select
+  ( Select array_agg(value_text) as incidentevent from  referencevalues b join referencetype rt on rt.referencetypeid = b.referencetypeid and rt.typedescription = puid.incident_type where  b.ref_key  = any(string_to_array(puid.incident_precipitating_event, ',')::character varying[])),
+  (select distinct value_text as precipitatingevent from referencevalues b where b.ref_key = puid.precipitating_event limit 1 ),
+  (SELECT tp.agency from   provider_uir pu join tb_provider tp on pu.provider_id = tp.provider_id  where  puid.provider_uir_id = pu.provider_uir_id limit 1),
+    (select description as event from referencevalues where ref_key=puid.incident_precipitating_event and referencetypeid=64),
+    (select distinct description as location from referencevalues where ref_key=puid.incident_area and referencetypeid in (60,61)),
+    (select distinct description as incident from referencevalues where ref_key=puid.incident_precipitating_event and referencetypeid in (62)),*
+    from provider_uir_incident_detail puid 
+    where  puid.uir_no = v_uir_id)id;
+select json_agg(ld) into v_lawinfolist from (select * from provider_uir_lawenforcement_detail where uir_no = v_uir_id)ld;
+select json_agg(nd) into v_notificationinfolist from (select * from provider_uir_contact_detail where uir_no = v_uir_id)nd;
+select json_agg(nd) into v_notificationtablist from (select * from provider_uir_notification where provider_uir_id = v_uir_uuid and active_flag = 1 and  services_name not in ('Law enforcement', 'Parent/Guardian', 'Parent/Guardian (if appropriate)')) nd;
+select json_agg(fpl) into v_fosterparentlist from (select * from provider_uir_actor_detail where provider_uir_id = v_uir_uuid)fpl;
+select json_agg(puw) into v_witness from (select * from provider_uir_witness where provider_uir_id=v_uir_uuid)puw;
+select json_agg(pur) into v_gangdetails from (select gang_related_explain,gang_related_other,gang_incident_videotapped,gang_incident_videotapped_other,gang_support_evidence,
+gang_contraband_found,gang_contraband_found_other from provider_uir where provider_uir_id=v_uir_uuid)pur;
+select json_agg(sd)  into v_staffdetails from (  select distinct  PUAI.provider_uir_actor_involved_id, PUAI.provider_uir_id, PUAI.provider_staff_id, PUAI.provider_uir_actor_detail_id,
+  PUAI.role_incident, PUAI.restraint_typekey, PUAI.duration_phiscial_restraint, PUAI.duration_phiscial_restraint_other, 
+  is_intervention, is_leaving_supervision, is_prevention, is_flexcuff, is_handcuff, is_legiron,
+  PUAI.is_helmets, PUAI.is_handcuff_legiron, PUAI.is_protective_device, PUAI.duration_mechanical_restraint,
+  duration_mechanical_restraint_other, is_de_escalation, is_seen_medical, is_injury_sustained,
+  PUAI.injury_severity_rating, PUAI.is_injury_result, PUAI.is_seclusion, PUAI.duration_seclusion, 
+  PUAI.is_staff_assaulted,PUAI.is_primary_staff_involved,AD.first_name as youthfname,AD.last_name as youthlname,
+  TPS.first_nm,TPS.last_nm,TPS.behavioral_interventions_training,TPS.job_title,PUAI.mechanical_restraint_name,PUAI.mechanical_restraint_title,PUAI.mechanical_restraint_date,PUAI.mechanical_restraint_cntinfo,PUAI.mechanical_restraint_timenotif
+  ,PUAI.physical_restraint_name
+,PUAI.physical_restraint_title
+,PUAI.physical_restraint_date
+,PUAI.physical_restraint_cntinfo
+,PUAI.physical_restraint_timenotif
+
+,PUAI.seclusion_restraint_name
+,PUAI.seclusion_restraint_title
+,PUAI.seclusion_restraint_date
+,PUAI.seclusion_restraint_cntinfo
+,PUAI.seclusion_restraint_timenotif
+ from provider_uir_actor_involved PUAI
+  left join provider_uir_actor_detail AD on AD.provider_uir_actor_detail_id=PUAI.provider_uir_actor_detail_id
+  left join providerstaff TPS on TPS.provider_staff_id::CHARACTER VARYING =PUAI.provider_staff_id::CHARACTER VARYING 
+ where 
+  PUAI.provider_uir_id= v_uir_uuid
+  and PUAI.active_flag = 1
+)sd;
+select * from prov_getprovideruirdetails(v_uir_uuid) into v_narrativeinfo;
+select * from prov_getprovideractorinvolved(v_uir_uuid) into v_youthinvolvedlist;
+select * from getprovidersupervisory(v_uir_uuid) into v_supervisoryinfo;
+select * from getprovidernotifydetails(v_uir_uuid) into v_notificationlogs;
+select json_agg(pemail) into v_emaillist from (select p.firstname,up.email,up.displayname,servicecaseid from tb_placement  tp
+inner join (SELECT RANK() OVER(PARTITION BY objectid ORDER BY insertedon DESC) rno, * 
+    FROM caseassignment) ca ON ca.objectid = tp.servicecaseid AND tp.delete_sw = 'N' AND rno = 1
+left JOIN userprofile up on up.securityusersid= ca.toworkeridno and up.activeflag =1
+inner join Provider_uir_youth_detail puyd on tp.client_id=puyd.cjamspid::bigint
+inner join person p on p.cjamspid::character varying=puyd.cjamspid
+where tp.provider_id=v_provider_id and puyd.uir_no=v_uir_id) pemail;
+
+
+
+select json_agg(pemailrole) into v_emaillistrole from (
+  SELECT distinct mu.securityusersid as toworkeridno 
+  , mu.email
+  from muser mu 
+  join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+  join role r on r.id = rm.roleid and r.activeflag = 1
+  where trim(r.name) in  ('OIG Director', 'Executive') 
+  and trim(rm.teamtypekey) in  ('OLMDJS') 
+   and mu.activeflag =1
+ ) pemailrole;
+
+
+
+select json_agg(pemailrole) into v_emaillistqa from (
+  SELECT distinct mu.securityusersid as toworkeridno 
+  , mu.email
+  from muser mu 
+        join providerassignment pa on pa.toworkeridno = mu.securityusersid 
+        where pa.objectid = v_site_id and
+     pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date)
+ ) pemailrole;
+
+select json_agg(sd)  into v_assignedstaffdetails from ( select distinct tps.first_nm, tps.last_nm, tps.job_title, tps.behavioral_interventions_training from providerstaffconfig tpas join providerstaff tps 
+            on tps.provider_staff_id = tpas.provider_staff_id 
+            and tpas.delete_sw = 'N' 
+            where tpas.object_id = v_uir_id)sd;
+
+ -- select json_agg(a) into v_provemaillist1 from ( 
+    --  SELECT distinct tpu.securityusers_id as toworkeridno 
+    --  , up.email as email
+    --         from tb_provider_userconfig tpu 
+    --         inner join muser mu on mu.securityusersid = tpu.securityusers_id::character varying and mu.activeflag = 1
+    --         inner join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying and up.activeflag =1
+    --         inner join rolemapping r on r.principalid = mu.id and r.activeflag = 1 and r.roleid =2455
+    --         inner join role ro on ro.id = r.roleid and ro.activeflag = 1
+    --         where provider_id = v_provider_id and tpu.activeflag = 1 
+    -- )a;
+    select json_agg(a) into v_provemaillist2 from ( 
+        select m.email as email
+        from tb_provider t
+        cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id = v_provider_id
+    )a;
+
+    select json_agg(a) into v_provemaillist3 from ( 
+        select staff_email  as email
+        from providerstaff p 
+        where employee_type ='Program Administrator' 
+        and delete_sw = 'N' and object_id = v_provider_id
+    )a;
+   
+select license_no from tb_provider_licensing where provider_id=v_provider_id into v_license;
+return (json_build_object('siteinfo', v_siteinfo, 'incidentinfo',v_incidentinfo,'notificationtablist',v_notificationtablist,'notificationinfolist',v_notificationinfolist,'lawinfolist',v_lawinfolist,'incidentlist',v_incidentlist,'youthinfo',v_youthinfo,
+        'fosterparentlist',v_fosterparentlist,'narrativeinfo', v_narrativeinfo,'youthinvolvedlist',v_youthinvolvedlist, 'emaillistqa', v_emaillistqa
+       ,'supervisoryinfo',v_supervisoryinfo,'staffdetails',v_staffdetails,'witnessList',v_witness,'gangdetails',v_gangdetails,'notificationlogs',v_notificationlogs,'emaillist',v_emaillist,'emaillistrole',v_emaillistrole,'license',v_license,
+      'PROV_CONFIG_USERS',v_provemaillist1, 
+      'PROV_ADMIN_USERS', v_provemaillist2, 
+      'PROV_STAFF_ADMIN_USERS', v_provemaillist3, 
+       'assignedstaffs',v_assignedstaffdetails));
+end;
+$function$
+

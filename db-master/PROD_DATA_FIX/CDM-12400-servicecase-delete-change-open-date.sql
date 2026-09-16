@@ -1,0 +1,3 @@
+update servicecase set activeflag = 0, updatedon = now(), updatedby = 'CDM-12400' where servicecaseid = 'c445b5ad-ce12-43df-8e08-798eee757c42';
+update servicecase set startdate ='2021-02-19 14:04:00',insertedon = '2021-02-19 14:04:00', updatedon = now(), updatedby = 'CDM-12400' where servicecaseid = 'ac754cb5-7983-4857-ab75-fea3780c036c';
+update servicecasedisposition set statusdate = '2021-02-19 14:04:00', effectivedate= '2021-02-19 14:04:00', updatedon = now(), updatedby = 'CDM-12400'  where servicecasedispositionid = '9d29341a-4a7a-446a-bc3b-8537c9f5e046';

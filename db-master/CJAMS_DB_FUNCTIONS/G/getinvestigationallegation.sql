@@ -1,0 +1,196 @@
+DROP FUNCTION IF EXISTS  cjams.getinvestigationallegation(v_investigationid uuid);
+CREATE OR REPLACE FUNCTION cjams.getinvestigationallegation(v_investigationid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Function Note: This proc has the expunge proc. If changing to getinvestigationallegation, similar updates are also required for getinvestigationallegation
+-- Expunge Proc : cjams.getinvestigationallegation_expunge
+------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------
+-- Revision(s)
+-- 07/08/2024 - Kapila Mandhadi - CIDM-8743 - added a comments field when user changing contirbuting factor dropdown value
+------------------------------------------------------------------------
+
+DECLARE  l_investigation  json;
+DECLARE  l_count  int;
+l_serviceid  uuid;
+BEGIN
+
+    SELECT  count(1)    INTO  l_count  FROM  Investigationmaltreatment  WHERE    investigationid  =  v_investigationid;
+    SELECT  intakeserviceid    INTO  l_serviceid  FROM  investigation  WHERE  investigationid  =v_investigationid;
+
+if  (COALESCE(l_count,0)  =0)    THEN
+    SELECT  json_agg(a)  INTO  l_investigation  FROM  (
+  	    SELECT  p.personid,
+                      MAX(  p.firstname  ||  '  '||  p.lastname)  personname,
+		p.dateofdeath,p.dob,
+		      rs.description  as  relationship,  
+                      MAX(isa.intakeservicerequestactorid  ::  character  varying    )  intakeservicerequestactorid
+            FROM  intakeservicerequestactor  isa  
+            INNER  JOIN  actor  a  ON  a.actorid  =  isa.actorid  and  a.activeflag  =1
+            INNER JOIN actortype act on act.actortype = isa.intakeservicerequestpersontypekey and act.activeflag = 1 
+            INNER  JOIN  person  p  ON  p.personid  =  a.personid  
+            AND  p.activeflag  =1  
+	    LEFT  JOIN  actorrelationship  ar  on  isa.intakeservicerequestactorid  =  ar.intakeservicerequestactorid  and  ar.activeflag  =1
+	    LEFT  JOIN  relationshiptype  rs   ON  rs.relationshiptypekey  =  ar.relationshiptypekey  
+            AND  rs.activeflag  =  1  
+            WHERE  isa.intakeserviceid  =l_serviceid  AND isa.intakeservicerequestpersontypekey = 'CHILD'
+            AND  isa.activeflag  =1
+            AND  act.rolegroup = 'C'  
+            GROUP  BY  p.personid,rs.description
+    )as  a;
+  ELSE
+      SELECT  json_agg(a)  INTO  l_investigation  
+              FROM  (
+	  SELECT  isra.actorid,ima.intakeservicerequestactorid,im.maltreatmentid,im.householdkey,im.providerid,im.providername,im.providerphonenumber,
+                        im.isjurisdiction,im.countyid,p.personid,im.incidentlocationtypekey,im.isnotapplicable,im.notapplicablecomments,
+                        CASE  (im.isreported) WHEN  'true'  THEN  'reported' ELSE   'identifer' end as isreported,
+                        COALESCE(p.firstname,'')||'  '  ||COALESCE(p.lastname,'')  as  personname,p.dateofdeath,p.dob,
+                            rs.description  as  relationship,
+			
+			(SELECT  json_agg(r)FROM  (
+                                SELECT  mur.roletypekey  as  role,mur.username  
+                                FROM  maltreatmentjurisdictionuser  mur
+                                WHERE    mur.maltreatmentid  =  im.maltreatmentid  and  mur.activeflag  =  1
+                            )r)  as  roles,
+		        (SELECT  json_agg(a)  FROM(
+                                          SELECT  ia.investigationallegationid,ia.maltreatmentid,ia.allegationid,ia.sextrafficking,ia.enddate,
+                                          ia.isapproximatedate,ia.timeofincidence,ia.incidentlocationtypekey,ia.name,ia.indicators,ia.comments,
+					  ia.injurycomments,ia.incidentdate,ia.sextrafficking  ,alle.name  as  allegationname,ia.isproviderinvolved,ia.outcome,
+                    COALESCE(ia.ischildfatality ,null) ischildfatality,ia.fatalitycomments,
+					 rv.description as allegationstatusdesc,
+					 ia.investigationallegationstatus as investigationalegationstatuskey,ia.relationshiptypekey,rst.description as relationtypedesc,
+					 	  (	SELECT json_agg(auditinfo) AS auditinfo   
+					FROM (
+						select ps.oldproviderid, newproviderid, providerchange ,reasonchange , explainreason, explainreasonlist, u2.fullname as approvedby, u.fullname as requestedby, ps.updatedon
+                    	 from improviderswitchinfo ps
+                         left join userprofile u2 on u2.securityusersid = ps.insertedby
+                         left join userprofile u on u.securityusersid = ps.updatedby
+                         where ps.objectid = im.maltreatmentid
+						order by ps.insertedby desc
+				) auditinfo  
+			),					 
+					(SELECT  json_agg(ind)  FROM  (
+                                                        SELECT  iai.intakeservicerequestactorid  ,  
+                                                	  CASE  coalesce(  iai.intakeservicerequestactorid  ::  character  varying,'')    WHEN    ''  
+							  THEN  iai.othermaltreator  ELSE  (pr.lastname  ||',  '  ||  pr.firstname  )  END    Personname  ,pr.personid,
+                                                        (SELECT  
+                                                      	RS.description      FROM  intakeservicerequestactor  ISR  
+                                                                      INNER  JOIN  actorrelationship  AR  
+                                                                    ON  AR.intakeservicerequestactorid  =  ISR.intakeservicerequestactorid  
+                                                		      AND  AR.activeflag  =  1  
+                                                    			  INNER  JOIN  relationshiptype  RS  
+                                                                    ON  RS.relationshiptypekey  =  AR.relationshiptypekey  
+                                                                          AND  RS.activeflag  =  1  
+                                                          WHERE  ISR.intakeservicerequestactorid  =    iai.intakeservicerequestactorid  
+                                                          --AND  ISR.ISPRIMARY  =TRUE
+                                                          AND  ISR.intakeserviceid  =  l_serviceid  LIMIT  1)
+                                                          AS  relationship  
+						        FROM  Investigationallegationmaltreators  iai
+						        LEFT  JOIN  intakeservicerequestactor  isra  ON  isra.intakeservicerequestactorid=  iai.intakeservicerequestactorid
+                                                          AND  isra.activeflag  =1            		
+						        LEFT  JOIN  person  pr  ON  pr.personid=  isra.personid  AND  pr.activeflag  =1
+							WHERE  iai.investigationallegationid  =  ia.investigationallegationid)
+                                          ind  )::json  as  maltreators,
+							
+					(SELECT  json_agg(inj)  FROM  (
+                                                                                SELECT  iaai.injurytypekey,it.typedescription  FROM  investigationallegationinjury  IAAI
+									        JOIN  injurytype  it  on  iaai.injurytypekey  =it.injurytypekey
+									        AND  it.activeflag  =  1
+										WHERE  iaai.investigationallegationid  =  ia.investigationallegationid  AND  iaai.activeflag  =1  )  
+                                          inj  )::json  as  injurytype,		
+					(SELECT  json_agg(characters)  FROM(
+                                                                                SELECT  iamc.maltreatmentcharactersticstypekey  ,mct.typedescription
+										FROM  investigationallegationcharacterstics  iamc
+										JOIN  maltreatmentcharactersticstype  mct  on  iamc.maltreatmentcharactersticstypekey  =  mct.maltreatmentcharactersticstypekey  AND  mct.activeflag  =1  
+										WHERE  iamc.investigationallegationid  =  ia.investigationallegationid  AND  iamc.activeflag  =1  )        
+                                          characters  )::json  as  maltreatmentcharactersticstypekey,
+												
+					(SELECT  json_agg(injchar)  FROM(
+                                                                                SELECT  iaic.injurycharactersticstypekey,ict.typedescription  FROM  investigationallegationinjurycharacterstics  IAIC
+									        JOIN  injurycharactersticstype  ict
+									        ON  ict.injurycharactersticstypekey  =  iaic.injurycharactersticstypekey  AND  ict.activeflag  =1
+										WHERE  iaic.investigationallegationid  =  ia.investigationallegationid  AND  iaic.activeflag  =1  )
+                                        injchar  )::json  as  injurycharactersticstype,
+					
+					(SELECT  json_agg(providermaltreatment)  FROM(
+						SELECT  pmt.typedescription,pmt.providermaltreatmenttypekey
+						FROM  allegationprovidermaltreatment  apm
+						INNER  JOIN  providermaltreatmenttype  pmt  ON  pmt.providermaltreatmenttypekey  =  apm.providermaltreatmenttypekey  AND  pmt.activeflag  =1
+						WHERE  apm.investigationallegationid  =  ia.investigationallegationid  AND  apm.activeflag  =1  )
+                                        providermaltreatment  )::json  as  providermaltreatment,
+                                        
+                       
+                                         (SELECT  json_agg(indicator)  FROM(
+						SELECT  distinct(iai.indicatorid),ind.indicatorname
+						FROM investigationallegation IAA
+						 inner join investigationallegationindicator  iai on IAA.investigationallegationid=iai.investigationallegationid
+						INNER  JOIN  "indicator"  ind  ON  iai.indicatorid  =  ind.indicatorid  AND  iai.activeflag  =1
+						WHERE  IAA.investigationid=ia.investigationid  and iaa.maltreatmentid=im.maltreatmentid AND  IAA.activeflag  =1   )
+                                        indicator  )::json  as  indicator ,
+                            (SELECT  json_agg(indicator)  FROM(
+										select * from expungement ex where  ex.maltreatmentid = ia.maltreatmentid and 
+										    ex.activeflag  =1   )
+                                        indicator  )::json  as  expungement,ia.expungementflag,im.isnotapplicable,im.notapplicablecomments
+			FROM  investigationallegation  ia  
+        		JOIN  allegation    alle  on    alle.allegationid  =  ia.allegationid  AND  alle.activeflag  =  1
+        		left join referencevalues rv on rv.ref_key=ia.investigationallegationstatus and rv.activeflag=1
+        		left join relationshiptype rst on rst.relationshiptypekey  =  ia.relationshiptypekey and rst.activeflag=1
+			WHERE  ia.maltreatmentid  =  im.maltreatmentid
+									--AND  ia.investigationmaltreatmentactorid  =  ima.investigationmaltreatmentactorid 
+									AND  ia.activeflag  =1  )  a)  as  investigationallegation
+									FROM  Investigationmaltreatment  im  
+									LEFT  JOIN  Investigationmaltreatmentactor  ima  on  ima.maltreatmentid  =  im.maltreatmentid  AND  ima.activeflag  =1                          							          
+                                                                        LEFT  JOIN  intakeservicerequestactor  isra  on  isra.intakeservicerequestactorid  =  ima.intakeservicerequestactorid
+									LEFT  JOIN  actorrelationship  ar  on  isra.intakeservicerequestactorid  =  ar.intakeservicerequestactorid  and  ar.activeflag  =1
+									LEFT  JOIN  relationshiptype  rs  
+									ON  rs.relationshiptypekey  =  ar.relationshiptypekey  
+										AND  rs.activeflag  =  1  
+										
+                      							LEFT  JOIN  person  p  on  p.personid  =  isra.personid	
+                      						--	left join referencevalues rv on rv.ref_key=ia.investigationallegationstatus
+  									WHERE  im.investigationid  =  v_investigationid
+									AND  im.activeflag  =1    
+      		UNION  ALL
+		
+                  SELECT  isa.actorid,isa.intakeservicerequestactorid,  
+                            	  NULL  ::uuid,
+                                  null  householdkey, null providerid,null providername,null providerphonenumber, null    isjurisdiction,
+                                  null    countyid,P.personid,NULL,NULL,NULL, null isreported,
+                  		MAX(COALESCE(P.firstname,'')||'  '  ||COALESCE(P.lastname,''))  as  personname,
+				p.dateofdeath,p.dob,
+				rs.description  as  relationship,
+				null    ::  json  as  role,
+                	        null  ::  json  as  investigationallegation
+		
+		          FROM    intakeservicerequestactor  isa    
+                          INNER  JOIN  actor  a  ON  a.actorid  =  isa.actorid
+                                          AND  a.activeflag  =1
+                          INNER  JOIN  person  P  ON  P.personid  =  a.personid  
+                                          AND  P.activeflag  =1  
+                          INNER JOIN actortype act ON act.actortype = isa.intakeservicerequestpersontypekey 
+                          				  AND act.activeflag = 1 
+			  LEFT  JOIN  actorrelationship  ar  on  isa.intakeservicerequestactorid  =  ar.intakeservicerequestactorid  and  ar.activeflag  =1
+			  LEFT  JOIN  relationshiptype  rs  
+                          ON  rs.relationshiptypekey  =  ar.relationshiptypekey  
+                          AND  rs.activeflag  =  1  		  
+			  WHERE  ISA.intakeserviceid  =l_serviceid                          
+              	  	  AND  isa.activeflag    =1  AND  act.rolegroup = 'C' AND intakeservicerequestpersontypekey = 'CHILD'
+              		  AND  P.personid  NOT  IN  (
+                        		SELECT  personid  FROM    intakeservicerequestactor  insra
+					INNER  JOIN  Investigationmaltreatmentactor  ima
+					ON  insra.intakeservicerequestactorid  =  ima.intakeservicerequestactorid
+                                			INNER  JOIN    Investigationmaltreatment  im      
+                                			ON  IM.maltreatmentid  =  ima.maltreatmentid
+                                			AND  IM.investigationid  =  v_investigationid
+                        				AND  IM.activeflag  =1          )  
+                              GROUP  by      ISA.intakeservicerequestactorid,P.personid,rs.description
+		)a  ;
+END  IF;          
+RETURN  l_investigation;                
+END;
+
+
+$function$
+;

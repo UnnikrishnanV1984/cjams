@@ -1,0 +1,1 @@
+update progressnote set activeflag  = 0, updatedby = 'CDM-10294', updatedon = now() where progressnoteid = '7b121c0c-454e-46d3-986c-5ec47e5ed1be';

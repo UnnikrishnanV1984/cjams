@@ -1,0 +1,1 @@
+update intakeservreqchildremoval set exitdate = '2021-01-21 00:00:00', updatedby ='CDM-12117', updatedon = now() where intakeservreqchildremovalid = 'c9b01a3d-cffc-4b15-8413-81d1e9e0092c';

@@ -1,0 +1,116 @@
+CREATE OR REPLACE FUNCTION permanencyplanvalidation(v_servicecaseid uuid, v_intakeservicerequestactorid uuid, v_placementtype character varying)
+ RETURNS TABLE(placementid uuid, startdatetime timestamp without time zone, enddatetime timestamp with time zone, datediffe double precision, ischildincare integer, ischawardcustody integer)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+v_month int;
+v_placementid uuid;
+v_ischildincare int;
+v_current_placement record;
+v_totaldays double precision;
+v_temptotaldays double precision;
+v_startdate timestamp without time zone;
+v_enddate timestamp with time zone;
+v_ischawardcustody integer;
+
+BEGIN
+v_totaldays:=0;
+
+IF v_placementtype = 'gap' THEN v_month=15; 
+ ELSIF v_placementtype = 'gapdisclosure' THEN v_month=6;
+ ELSE v_month=22;
+END IF;
+
+IF v_placementtype = 'gapdisclosure' THEN 
+ v_ischawardcustody = 1; 
+
+ FOR v_current_placement IN SELECT * FROM placement pl
+      inner join routing r on pl.placementid  :: character varying = r.objectid and r.routingstatustypeid in (15,16) and r.activeflag=1   and r.toroleid in ('CWCW','CWSP')
+      WHERE pl.activeflag=1 AND pl.servicecaseid=v_servicecaseid and pl.placementtypekey='PRPL'
+      -- AND pl.intakeservicerequestactorid=v_intakeservicerequestactorid
+      AND pl.personid = (select personid from intakeservicerequestactor where intakeservicerequestactorid = v_intakeservicerequestactorid)
+      and  (pl.isvoided=0 or pl.isvoided is null)
+ Loop         
+  select 
+   case when  v_current_placement.enddatetime is not null then  
+      (v_current_placement.enddatetime  ::date)  -  (v_current_placement.startdatetime :: date)
+           else 
+            (now()  ::date)  - (v_current_placement.startdatetime::date)  
+         
+         end as totaldays
+              into v_temptotaldays;
+      
+            v_totaldays:=v_temptotaldays + v_totaldays;
+ END LOOP;
+ 
+ if (v_totaldays  >= v_month * 30 ) then  
+  v_ischildincare:=1;
+ else  
+  v_ischildincare:=0;
+ end if;
+
+ SELECT pl.placementid, COALESCE(pl.enddatetime::timestamp with time zone,now()::timestamp with time zone) into v_placementid,v_enddate
+  FROM placement pl
+  WHERE pl.activeflag=1 AND pl.servicecaseid=v_servicecaseid and pl.placementtypekey='PRPL'
+  -- AND pl.intakeservicerequestactorid=v_intakeservicerequestactorid 
+  AND pl.personid = (select personid from intakeservicerequestactor where intakeservicerequestactorid = v_intakeservicerequestactorid)
+  and (pl.isvoided=0 or pl.isvoided is null)
+  ORDER BY pl.enddatetime DESC LIMIT 1;
+
+ SELECT pl.startdatetime into v_startdate
+  FROM placement pl
+  WHERE pl.activeflag=1 AND pl.servicecaseid=v_servicecaseid and pl.placementtypekey='PRPL'
+  -- AND pl.intakeservicerequestactorid=v_intakeservicerequestactorid 
+  AND pl.personid = (select personid from intakeservicerequestactor where intakeservicerequestactorid = v_intakeservicerequestactorid)
+  and  (pl.isvoided=0 or pl.isvoided is null)
+  ORDER BY pl.startdatetime ASC LIMIT 1;
+
+ELSE 
+ v_ischawardcustody = 0; 
+
+ FOR v_current_placement IN SELECT * FROM placement pl
+  inner join routing r on pl.placementid  :: character varying = r.objectid and r.routingstatustypeid in (15,16) and r.activeflag=1   and r.toroleid in ('CWCW','CWSP')
+  WHERE pl.activeflag=1 AND pl.servicecaseid=v_servicecaseid and pl.placementtypekey='PRPL'
+  AND pl.intakeservicerequestactorid=v_intakeservicerequestactorid  and  (pl.isvoided=0 or pl.isvoided is null)
+ Loop         
+  select 
+   case when  v_current_placement.enddatetime is not null then  
+      (v_current_placement.enddatetime  ::date)  -  (v_current_placement.startdatetime :: date)
+           else 
+            (now()  ::date)  - (v_current_placement.startdatetime::date)  
+         
+         end as totaldays
+              into v_temptotaldays;
+      
+            v_totaldays:=v_temptotaldays + v_totaldays;
+ END LOOP;
+ 
+ if (v_totaldays  >= v_month * 30 ) then  
+  v_ischildincare:=1;
+ else  
+  v_ischildincare:=0;
+ end if;
+
+ SELECT pl.placementid, COALESCE(pl.enddatetime::timestamp with time zone,now()::timestamp with time zone) into v_placementid,v_enddate
+  FROM placement pl
+  WHERE pl.activeflag=1 AND pl.servicecaseid=v_servicecaseid and pl.placementtypekey='PRPL'
+  AND pl.intakeservicerequestactorid=v_intakeservicerequestactorid and  (pl.isvoided=0 or pl.isvoided is null)
+  ORDER BY pl.enddatetime DESC LIMIT 1;
+
+ SELECT pl.startdatetime into v_startdate
+  FROM placement pl
+  WHERE pl.activeflag=1 AND pl.servicecaseid=v_servicecaseid and pl.placementtypekey='PRPL'
+  AND pl.intakeservicerequestactorid=v_intakeservicerequestactorid and  (pl.isvoided=0 or pl.isvoided is null)
+  ORDER BY pl.startdatetime ASC LIMIT 1;
+END  IF;
+
+RETURN QUERY
+SELECT v_placementid, v_startdate, v_enddate, v_totaldays, v_ischildincare, v_ischawardcustody;
+
+END;
+
+
+$function$
+

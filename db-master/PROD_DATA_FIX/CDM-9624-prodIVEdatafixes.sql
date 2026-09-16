@@ -1,0 +1,3 @@
+update intakeservicerequestcourthearing set activeflag = 1, updatedby = 'CDM-9624',updatedon = now() where intakeservicerequestcourthearingid in ('973b60ae-f9e2-499a-a1c9-45451f7f82bd') and activeflag = 0;
+update intakeservicerequestactor set activeflag = 1, updatedby = 'CDM-9608',updatedon = now() where intakeservicerequestactorid = '9e391e72-0436-45b0-8d7f-60bfb160a061' and activeflag = 0;	
+update routing set activeflag = 0, updatedon = now(), updatedby = 'CDM-9562' where objectid = 'da577ad8-033b-4ee8-93c6-328d157fa2ae' and eventcode = 'GAAR' and routingstatustypeid = 73 and activeflag = 1;

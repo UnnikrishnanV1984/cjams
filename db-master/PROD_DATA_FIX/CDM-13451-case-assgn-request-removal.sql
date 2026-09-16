@@ -1,0 +1,1 @@
+update cjams.routing set activeflag = 0, updatedby = 'CDM-13451', updatedon = now() where routingid = '74f1879a-69e7-47dc-8d35-d425ef2bbfb1';

@@ -1,0 +1,1 @@
+alter table meetingrecording add column uploadedfile jsonb null;

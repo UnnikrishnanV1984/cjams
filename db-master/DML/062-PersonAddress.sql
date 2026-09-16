@@ -1,0 +1,1 @@
+update personaddresstype set activeflag=0 where sequencenumber=18 and personaddresstypekey='CUR';

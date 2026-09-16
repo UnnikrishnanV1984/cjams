@@ -1,0 +1,612 @@
+CREATE OR REPLACE FUNCTION cjams.sp_pp_personupdatebasicinfocwtest(v_personid uuid, persondetails json, v_intakeserviceid uuid, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+ 
+
+DECLARE 
+
+	v_person json;	
+	v_date timestamp without time zone;	
+	dadetails json;	
+	modifiedlog json;	
+	v_isnamechanged boolean;
+	v_alsoknownas json;
+	v_personrole json;
+	v_role json;
+	v_personroleid uuid;
+	v_personroletypeid uuid;
+	v_actorid uuid;
+	vm_actorid uuid;
+	v_intakeservicerequestactorid uuid;
+    v_intakenumber character varying;
+    v_racejson json;
+
+     v_racekey json;
+
+    v_racetypekey character varying;
+   
+	returnmsg character varying;
+
+
+BEGIN
+
+	v_person := persondetails;
+	v_personrole := v_person ->> 'personRole';
+	v_alsoknownas := v_person ->'alias';
+    v_intakenumber :=  v_person ->>'intakenumber';
+   v_racejson := v_person-> 'Race';
+
+	v_date := now() at time zone 'utc';
+
+SELECT
+	case
+		when (p.lastname != v_person->>'Lastname'
+		or p.firstname != v_person->>'Firstname'
+		or p.middlename != v_person->>'Middlename') then true
+		else null
+	end isnamechanged into
+		v_isnamechanged
+	from
+		person p
+	where
+		p.personid = v_personid
+		and p.activeflag = 1;
+
+select
+	json_strip_nulls(json_build_object('lastname', a.lastname, 'firstname', a.firstname , 'dob', a.dob , 'maritalstatustypekey', a.maritalstatustypekey, 'occupation', a.occupation, 'height', a.height, 'weight', a.weight, 'tattoo', a.tattoo, 'phymark', a.phymark, 'userphoto', a.userphoto))
+from
+	(
+	select
+		case
+			when p.lastname != v_person->>'Lastname' then (
+				select json_build_object('oldvalue', p.lastname, 'newvalue', v_person->>'Lastname') x)
+			else null
+		end lastname ,
+		case
+			when p.firstname != v_person->>'Firstname' then (
+				select json_build_object('oldvalue', p.firstname, 'newvalue', v_person->>'Firstname') x)
+			else null
+		end firstname ,
+		case
+			when p.dob != (v_person->>'Dob')::timestamp then (
+				select json_build_object('oldvalue', p.dob, 'newvalue', (v_person->>'Dob')::timestamp) x)
+			else null
+		end dob ,
+		case
+			when p.dateofdeath != (v_person->>'Dod')::timestamp then (
+				select json_build_object('oldvalue', p.dateofdeath, 'newvalue', (v_person->>'Dod')::timestamp) x)
+			else null
+		end dod ,
+		case
+			when p.maritalstatustypekey != v_person->>'maritalstatus' then (
+				select json_build_object('oldvalue', p.maritalstatustypekey, 'newvalue', v_person->>'maritalstatus') x)
+			else null
+		end maritalstatustypekey ,
+		case
+			when p.occupation != v_person->>'occupation' then (
+				select json_build_object('oldvalue', p.occupation, 'newvalue', v_person->>'occupation') x)
+			else null
+		end occupation ,
+		case
+			when pht.attributevalue != v_person->>'height' then (
+				select json_build_object('oldvalue', pht.attributevalue, 'newvalue', v_person->>'height') x)
+			else null
+		end height ,
+		case
+			when pwt.attributevalue != v_person->>'weight' then (
+				select json_build_object('oldvalue', pwt.attributevalue, 'newvalue', v_person->>'weight') x)
+			else null
+		end weight ,
+		case
+			when ptt.attributevalue != v_person->>'tattoo' then (
+				select json_build_object('oldvalue', ptt.attributevalue, 'newvalue', v_person->>'tattoo') x)
+			else null
+		end tattoo ,
+		case
+			when ppm.attributevalue != v_person->>'PhyMark' then (
+				select json_build_object('oldvalue', ppm.attributevalue, 'newvalue', v_person->>'PhyMark') x)
+			else null
+		end phymark ,
+		case
+			when p.userphoto != v_person->>'userphoto' then (
+				select json_build_object('oldvalue', p.userphoto, 'newvalue', v_person->>'userphoto') x)
+			else null
+		end userphoto
+	from
+		person p
+	left join personphysicalattribute pht on
+		pht.personid = p.personid
+		and pht.physicalattributetypekey = 'Ht'
+		and pht.activeflag = 1
+	left join personphysicalattribute pwt on
+		pwt.personid = p.personid
+		and pwt.physicalattributetypekey = 'Wt'
+		and pwt.activeflag = 1
+	left join personphysicalattribute ptt on
+		ptt.personid = p.personid
+		and ptt.physicalattributetypekey = 'Tattoo'
+		and ptt.activeflag = 1
+	left join personphysicalattribute ppm on
+		ppm.personid = p.personid
+		and ppm.physicalattributetypekey = 'PhyMark'
+		and ppm.activeflag = 1
+	where
+		p.personid = v_personid
+		and p.activeflag = 1 ) a into
+		modifiedlog;
+	
+	-- Inserting the old name to Alias if the name changed
+	 IF v_isnamechanged = true THEN 
+	 	INSERT INTO alias ( personid, firstname, lastname, middlename, insertedby, insertedon, activeflag, updatedby, updatedon ) 
+	 	SELECT p.personid, p.firstname, p.lastname, p.middlename, v_securityuserid, now(), 1, v_securityuserid, now()
+		FROM person p
+		WHERE p.activeflag = 1 AND p.personid = v_personid;
+	END IF;
+
+	UPDATE person
+	SET
+		userphoto = v_person->>'userphoto',	
+		
+		prefx = v_person->>'prefix',
+		firstname = v_person->>'Firstname',
+		lastname = v_person->>'Lastname',
+		middlename = v_person->>'Middlename',
+		suffix = v_person->>'nameSuffix',
+		dob = (v_person->>'Dob')::timestamp,
+		isapproxdob = case when v_person->>'isapproxdob' = 'true' THEN 1 else 0 end,
+		adoptedflag = (v_person->>'everbeenadoptedflag')::int4,
+		preadoptiondate = (v_person->>'preadptdate')::timestamp,
+		dateofdeath = (v_person->>'dateofdeath')::timestamp,
+	 	isapproxdod = case when v_person->>'isapproxdod' = 'true' THEN 1 else 0 end,
+		gendertypekey = (v_person->>'gendertypekey'),
+		
+		livingsituationkey = v_person->>'livingsituationkey', 
+		livingsituationdesc = v_person->>'livingsituationdesc',
+		stateid = v_person->>'stateid',
+		ssnno = v_person->>'SSN',
+		ssnverified = (v_person ->>'ssnverified')::bool,
+		racetypekey = v_person ->> 'Race',
+		ethnicgrouptypekey = v_person ->> 'ethnicgrouptypekey',
+		occupation = v_person->>'occupation',
+		tribalassociation = v_person ->> 'tribalassociation',
+		religiontypekey = v_person ->> 'religiontypekey',
+		
+		primarylanguageid = v_person ->> 'primarylanguage', 
+		secondarylanguageid = v_person ->> 'secondarylanguage',	
+		citizenalenageflag = (v_person ->> 'citizenalenageflag')::int4,	
+		primarycitizenshiptypekey = v_person ->> 'primarycitizenship',	 
+		seccitizenshiptypekey = v_person ->> 'secondarycitizenship',	
+		nationalitytypekey = v_person ->> 'nationality',	
+		alienstatustypekey = v_person ->> 'astatus',
+		alienregistrationtext = v_person ->> 'arnumber',
+		
+		aname = (v_person ->> 'aname')::bool, 
+		maritalstatustypekey = v_person ->> 'maritalstatustypekey',
+	
+		updatedby = v_securityuserid,
+		updatedon = now()
+	WHERE personid = v_personid;
+
+if jsonb_array_length( v_racejson::jsonb ) > 0 then
+update personracetypemap set activeflag=0, updatedon = now(), updatedby = v_securityuserid  where personid=v_personid;
+
+for v_racekey in select
+	*
+from
+	json_array_elements(v_racejson)
+		
+
+	loop
+	
+	raise notice 'v_racekey%',v_racekey;
+	  v_racetypekey:= v_racekey ->>'racetypekey';
+
+insert
+	into
+		PersonRaceTypeMap(PersonRaceTypeMapId,
+		personid,
+		RaceTypeKey,
+		updatedby,
+		updatedon,
+		insertedby,
+		insertedon,
+		activeflag,
+		effectivedate)
+	values (
+	gen_random_uuid(),  
+	v_personid,
+	v_racetypekey,
+	v_securityuserid,
+	v_date,
+	v_securityuserid,
+	v_date,
+	1,
+	v_date);
+end loop;
+
+end if;
+
+
+	IF LENGTH(LOWER( v_person ->> 'SSN' )) > 0 THEN 
+		UPDATE personidentifier
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid AND personidentifiertypekey = 'SSN';
+	
+		INSERT INTO personidentifier( personid, personidentifiertypekey, personidentifiervalue, insertedby, insertedon, 
+		activeflag, effectivedate )		
+		VALUES ( v_personid, 'SSN', v_person->>'SSN', v_securityuserid, v_date, 1, v_date );
+	END IF;
+
+	IF LENGTH(LOWER( v_person ->> 'stateid' )) > 0 THEN 
+		UPDATE personidentifier
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid AND personidentifiertypekey = 'DL';
+	
+		INSERT INTO personidentifier( personid, personidentifiertypekey, personidentifiervalue, insertedby, insertedon, 
+		activeflag, effectivedate )		
+		VALUES ( v_personid, 'DL', v_person->>'stateid', v_securityuserid, v_date, 1, v_date );
+	END IF;
+
+	IF LENGTH(LOWER( v_person ->> 'height' )) > 0 THEN 
+		UPDATE personphysicalattribute
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid AND physicalattributetypekey = 'Ht';
+	
+		INSERT INTO personphysicalattribute( personid, physicalattributetypekey, attributevalue, insertedby, insertedon, 
+		activeflag, effectivedate )		
+		VALUES ( v_personid, 'Ht', v_person->>'height', v_securityuserid, v_date, 1, v_date );
+	END IF;
+
+	IF LENGTH(LOWER( v_person ->> 'weight' )) > 0 THEN 
+		UPDATE personphysicalattribute
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid AND physicalattributetypekey = 'Wt';
+	
+		INSERT INTO personphysicalattribute( personid, physicalattributetypekey, attributevalue, insertedby, insertedon, 
+		activeflag, effectivedate )		
+		VALUES ( v_personid, 'Wt', v_person->>'weight', v_securityuserid, v_date, 1, v_date );
+	END IF;
+
+	IF LENGTH(LOWER( v_person ->> 'tattoo' )) > 0 THEN 
+		UPDATE personphysicalattribute
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid AND physicalattributetypekey = 'Tattoo';
+	
+		INSERT INTO personphysicalattribute( personid, physicalattributetypekey, attributevalue, insertedby, insertedon, 
+		activeflag, effectivedate )		
+		VALUES ( v_personid, 'Tattoo', v_person->>'tattoo', v_securityuserid, v_date, 1, v_date );
+	END IF;
+
+	IF LENGTH(LOWER( v_person ->> 'PhyMark' )) > 0 THEN 
+		UPDATE personphysicalattribute
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid AND physicalattributetypekey = 'PhyMark';
+	
+		INSERT INTO personphysicalattribute( personid, physicalattributetypekey, attributevalue, insertedby, insertedon, 
+		activeflag, effectivedate )		
+		VALUES ( v_personid, 'PhyMark', v_person->>'PhyMark', v_securityuserid, v_date, 1, v_date );
+	END IF;
+
+	-- Alias status update
+	IF LENGTH(v_alsoknownas ->>'aliasid') > 0 THEN 
+		UPDATE alias
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE aliasid = (v_alsoknownas ->>'aliasid')::uuid;
+	
+		INSERT INTO alias( aliasid, activeflag, personid, firstname, lastname, middlename, sfxname, akatypetypekey, 
+		prefixtypekey, insertedby, insertedon )		
+		VALUES (
+		gen_random_uuid(),
+		1,
+		v_personid,
+		v_alsoknownas ->> 'firstname' :: character varying,
+		v_alsoknownas ->> 'lastname' :: character varying,
+		v_alsoknownas ->> 'middlename' :: character varying,
+		v_alsoknownas ->> 'sfxname' :: character varying,
+		v_alsoknownas ->> 'akatypetypekey' :: character varying,
+		v_alsoknownas ->> 'prefixtypekey' :: character varying,
+		v_securityuserid, 
+		v_date );
+	END IF;
+
+	-- Person Role update
+--	UPDATE personrole
+--	SET activeflag = 0 
+--	WHERE personroleid = (v_person  ->> 'personroleid')::uuid;
+--
+--	UPDATE personroletype 
+--	SET activeflag = 0 
+--	WHERE personroleid = (v_person  ->> 'personroleid')::uuid;
+	
+	IF ( (v_person ->> 'personroleid')::uuid IS NOT NULL ) THEN 	
+		UPDATE personrole
+		SET 
+			activeflag = 1,
+			personid = v_personid,
+			ishouseholdmember = (v_person  ->> 'ishousehold')::int4,
+			iscollateralcontact = (v_person  ->> 'iscollateralcontact')::int4,
+			drugexposednewbornflag = (v_person  ->> 'drugexposednewbornflag')::int4,
+			drugexposedtypekey = v_person  ->> 'drugexposedkey',
+			otherdrugs = v_person  ->> 'otherdrugs',
+			safehavenbabyflag = case when v_person  ->> 'safehavenbabyflag' = 'true' THEN 1 else 0 end,
+			probationsearchconductedflag = (v_person  ->> 'probationsearchconductedflag')::int4,
+			sexoffenderregisteredflag = case when v_person  ->> 'sexoffenderregisteredflag' = 'true' THEN 1 else 0 END,
+			dangertoself = (v_person  ->> 'dangerousself')::int4,
+			dangertoselfreason = v_person  ->> 'dangerousselfreason',
+			isdangertoworker = (v_person  ->> 'Dangerousworker')::int4,	
+			dangertoworkerreason = v_person  ->> 'DangerousWorkerReason',
+			ismentalillness = (v_person  ->> 'ismentalillness')::int4,
+			mentalillnessdetail = v_person  ->> 'ismentalillnessReason',
+			ismentalimpair = (v_person  ->> 'ismentalimpair')::int4,
+			mentalimpairdetail = v_person  ->> 'ismentalimpairReason',
+			updatedby = v_securityuserid,
+			updatedon = now() 
+		WHERE personroleid = (v_person  ->> 'personroleid')::uuid;
+		v_personroleid = (v_person ->> 'personroleid')::uuid;
+	
+--		select * from insertupdatepersonrole(v_personrole, v_intakeserviceid, v_intakenumber, v_personid, v_person , v_personroleid, v_securityuserid) into
+--					returnmsg;
+		
+--		update personroletype set activeflag = 0 where personroleid = (v_person ->> 'personroleid')::uuid;
+--		update actor set activeflag=0 where personid= v_personid and (intakeserviceid = v_intakeserviceid or intakenumber = v_intakenumber);
+--	    update intakeservicerequestactor set activeflag=0 where personid = v_personid and (intakeserviceid = v_intakeserviceid or intakenumber = v_intakenumber);
+
+	 ELSE
+		
+	 	v_personroleid = gen_random_uuid();
+	 	
+	 	INSERT INTO personrole ( personroleid, activeflag, personid, ishouseholdmember, iscollateralcontact, drugexposednewbornflag, drugexposedtypekey,
+		otherdrugs, safehavenbabyflag, probationsearchconductedflag, sexoffenderregisteredflag, dangertoself, dangertoselfreason, isdangertoworker, 
+		dangertoworkerreason, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, updatedby, updatedon, intakenumber )
+
+		VALUES (
+		v_personroleid,
+		1,
+		v_personid,
+--		1,
+		(v_person  ->> 'ishousehold')::int,
+		(v_person  ->> 'iscollateralcontact')::int4,
+		(v_person  ->> 'drugexposednewbornflag')::int4,
+		v_person  ->> 'drugexposedkey',
+		v_person  ->> 'otherdrugs',
+		case when v_person  ->> 'safehavenbabyflag' = 'true' THEN 1 else 0 END,
+		(v_person  ->> 'probationsearchconductedflag')::int4,
+		case when v_person  ->> 'sexoffenderregisteredflag' = 'true' THEN 1 else 0 END,		
+		(v_person  ->> 'dangerousself')::int4,
+		v_person  ->> 'dangerousselfreason',
+		(v_person  ->> 'Dangerousworker')::int4,	
+		v_person  ->> 'DangerousWorkerReason',
+		(v_person  ->> 'ismentalillness')::int4,
+		v_person  ->> 'ismentalillnessReason',
+		(v_person  ->> 'ismentalimpair')::int4,
+		v_person  ->> 'ismentalimpairReason',
+		v_securityuserid, 
+		v_date,
+		v_intakenumber);	
+--	END IF;	
+		UPDATE person
+		SET  dangertoself=(v_person  ->> 'dangerousself')::int4,dangertoselfreason=v_person  ->> 'dangerousselfreason', updatedby=v_securityuserid, updatedon=now(), safehavenbabyflag = case when v_person  ->> 'safehavenbabyflag' = 'true' THEN 1 else 0 END
+		WHERE personid=v_personid;
+	 END IF;
+	
+		select * from insertupdatepersonrole(v_personrole, v_intakeserviceid, v_intakenumber, v_personid, v_person , v_personroleid, v_securityuserid) into
+					returnmsg;
+		
+--		v_actorid = gen_random_uuid();
+	
+--		FOR v_role IN SELECT * FROM json_array_elements(v_personrole)
+--		LOOP
+----			IF ( v_role ->> 'personroletypeid' IS NULL ) then
+--				v_personroletypeid = gen_random_uuid();
+--				v_intakeservicerequestactorid = gen_random_uuid();
+--				
+--				INSERT INTO personroletype ( personroletypeid, activeflag, personroleid, roletype, updatedby, updatedon, isprimary )
+--				VALUES (
+--				v_personroletypeid,
+--				1,
+--				v_personroleid,
+--				v_role  ->> 'roletype',
+--				v_securityuserid, 
+--				v_date,
+--				v_role  ->> 'isprimary');	
+--			
+--			
+--				if ((v_role  ->> 'isprimary') :: integer = 1)
+--				then
+--				
+--				select ac.actorid into vm_actorid from actor ac where   ac.personid = v_personid and (ac.intakeserviceid = v_intakeserviceid or ac.intakenumber= v_intakenumber) and ac.activeflag = 1;
+--				
+--				if(vm_actorid is null) then
+--				INSERT INTO actor
+--				(actorid, activeflag, personid, actortype,insertedby, insertedon, updatedby, updatedon, "timestamp", medicaideligibility, blockgranteligibility, recipientstatus, manualupdateflag, intakeserviceid, iscollateralcontact, ismentalillness,mentalillnessdetail, ismentalimpair,mentalimpairdetail, ishouseholdmember, isdangertoworker,dangertoworkerreason,  sexoffenderregisteredflag, probationsearchconductedflag, drugexposednewbornflag, otherdrugs, personroletypeid, drugexposedkey,
+--				intakenumber,servicecaseid)
+--				values (
+--				v_actorid, 1, v_personid, v_role  ->> 'roletype', v_securityuserid, now(), v_securityuserid, now(),null, true, true, true,
+--				'N'::bpchar, v_intakeserviceid, (v_person  ->> 'iscollateralcontact')::int4, (v_person  ->> 'ismentalillness')::int4,v_person  ->> 'ismentalillnessReason',
+--				(v_person  ->> 'ismentalimpair')::int4,v_person  ->> 'ismentalimpairReason',(v_person  ->> 'ishousehold')::int, (v_person  ->> 'Dangerousworker')::int4,
+--				v_person  ->> 'DangerousWorkerReason',  case when v_person  ->> 'sexoffenderregisteredflag' = 'true' THEN 1 else 0 END, (v_person  ->> 'probationsearchconductedflag')::int4, 
+--				(v_person  ->> 'drugexposednewbornflag')::int4, v_person  ->> 'otherdrugs', v_personroletypeid, v_person  ->> 'drugexposedkey',v_intakenumber,(v_person  ->> 'servicecaseid')::uuid);
+--				else 
+--				 v_actorid = vm_actorid;
+--			     update actor set servicecaseid=(v_person  ->> 'servicecaseid')::uuid WHERE actorid=v_actorid;
+--				end if;
+--				end if;
+--	
+--				INSERT INTO intakeservicerequestactor
+--				(intakeservicerequestactorid, actorid, intakeservicerequestpersontypekey, insertedon, insertedby, updatedon, updatedby, intakeserviceid, reported, isprimary, personid, rcactiveflag, aractiveflag, practiveflag, drugexposednewbornflag, sexoffenderregisteredflag, probationsearchconductedflag,intakenumber,servicecaseid)
+--				VALUES(v_intakeservicerequestactorid, v_actorid, v_role  ->> 'roletype', now(),v_securityuserid, now(), v_securityuserid, v_intakeserviceid, true, (v_role  ->> 'isprimary')::boolean, v_personid, 1, 1, 1, (v_person  ->> 'drugexposednewbornflag')::int4, case when v_person  ->> 'sexoffenderregisteredflag' = 'true' THEN 1 else 0 END, (v_person  ->> 'probationsearchconductedflag')::int4,(v_person  ->> 'intakenumber'),(v_person  ->> 'servicecaseid')::uuid);
+--			
+--				INSERT INTO actorrelationship
+--				(actorrelationshipid, relationshiptypekey, insertedby, insertedon, updatedby, updatedon, "timestamp", intakeserviceid, activeflag, intakeservicerequestactorid, effectivedate,intakenumber)
+--				VALUES(gen_random_uuid(), 'SELF', v_securityuserid, now(), v_securityuserid, now(), null,v_intakeserviceid, 1, v_intakeservicerequestactorid, now(),(v_person  ->> 'intakenumber'));
+--
+--
+--
+----			END IF;
+--	 	END LOOP;
+--	 END IF;	
+ 
+	-- Marital status update
+	IF ((v_person ->> 'maritalstatustypekey') IN ('MR', 'LP', 'LS', 'DV', 'WD')) THEN
+		UPDATE personmaritalstatus
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personmaritalstatusid = (v_person ->> 'personmaritalstatusid')::uuid;
+	
+		UPDATE personspouseaddress
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personid = v_personid;	
+	
+		IF ( v_person ->> 'personmaritalstatusid' IS NOT NULL ) THEN 
+			UPDATE personmaritalstatus
+			SET 
+				activeflag = 1,			
+				statustypekey = v_person ->> 'maritalstatustypekey',
+				marriageplace = v_person ->> 'marriageplace',
+				divorceplace = v_person ->> 'divorceplace',
+				startdate = (v_person ->> 'maritalstartdate')::timestamp,
+				enddate = (v_person ->> 'maritalenddate')::timestamp,
+				childrenno = (v_person ->> 'numberofchildren')::int,
+				informallivingcomments = v_person ->> 'maritalcomments',
+				prefixtypekey = v_person ->> 'spouseprefix',	
+				firstname = v_person ->> 'spousefirstname',
+				middlename = v_person ->> 'spousemiddlename',
+				lastname = v_person ->> 'spouselastname',
+				suffixtypekey = v_person ->> 'spousesuffix',	
+				adrhomephone = v_person ->> 'spousehomenumber',
+				adrworkphone = v_person ->> 'spouseofficenumber',
+				adrworkxtn = v_person ->> 'spouseofficeextension',
+				updatedby = v_securityuserid,
+				updatedon = now() 
+			WHERE personmaritalstatusid = (v_person  ->> 'personmaritalstatusid')::uuid;
+		
+			UPDATE personspouseaddress
+			SET 
+				activeflag = 1,				
+				adr1 = (v_person ->> 'spouseaddress1')::VARCHAR,
+				adr2 = (v_person ->> 'spouseAddress2')::VARCHAR,
+				city = v_person ->> 'spousecity',
+				county = v_person ->> 'spousecounty',
+				state = v_person ->> 'spousestate',
+				zip5no = (v_person ->> 'spousezipcode')::numeric,
+				updatedby = v_securityuserid,
+				updatedon = now() 
+			WHERE personspouseaddressid = (v_person  ->> 'personspouseaddressid')::uuid;
+		ELSE
+			INSERT INTO personmaritalstatus( personmaritalstatusid, statustypekey, marriageplace, divorceplace, startdate, 
+			enddate, childrenno, informallivingcomments, prefixtypekey, firstname, middlename, lastname, suffixtypekey, 
+			adrhomephone, adrworkphone, adrworkxtn, insertedby, insertedon,updatedon, activeflag, personid )
+			
+			VALUES ( 
+			gen_random_uuid(), 
+			v_person ->> 'statustypekey',
+			v_person ->> 'marriageplace',
+			v_person ->> 'divorceplace',
+			(v_person ->> 'maritalstartdate')::timestamp,
+			(v_person ->> 'maritalenddate')::timestamp,
+			(v_person ->> 'childrenno')::int,
+			v_person ->> 'maritalcomments',
+			v_person ->> 'spouseprefix',	
+			v_person ->> 'spousefirstname',
+			v_person ->> 'spousemiddlename',
+			v_person ->> 'spouselastname',
+			v_person ->> 'spousesuffix',	
+			v_person ->> 'spousehomenumber',
+			v_person ->> 'spouseofficenumber',
+			v_person ->> 'spouseofficeextension',
+			v_securityuserid,
+			v_date,	
+			v_date,	
+			1,
+			v_personid );
+		
+			INSERT INTO personspouseaddress( personspouseaddressid, personid, adr1, adr2, city, county, state, zip5no, insertedon, 
+			insertedby, activeflag )
+			VALUES ( 
+			gen_random_uuid(), 
+			v_personid,
+			(v_person ->> 'spouseaddress1')::VARCHAR,
+			(v_person ->> 'spouseAddress2')::VARCHAR,
+			v_person ->> 'spousecity',
+			v_person ->> 'spousecounty',
+			v_person ->> 'spousestate',
+			(v_person ->> 'spousezipcode')::numeric,
+			v_date,		
+			v_securityuserid,	
+			1 );
+		END IF;
+	ELSE
+		UPDATE personmaritalstatus
+		SET	activeflag = 0, updatedon = now(), updatedby = v_securityuserid 
+		WHERE personmaritalstatusid = (v_person ->> 'personmaritalstatusid')::uuid;	
+	
+		IF ( v_person ->> 'personmaritalstatusid' IS NOT NULL ) THEN 
+			UPDATE personmaritalstatus
+			SET 
+				activeflag = 1,			
+				statustypekey = v_person ->> 'maritalstatustypekey',
+				updatedby = v_securityuserid,
+				updatedon = now() 
+			WHERE personmaritalstatusid = (v_person  ->> 'personmaritalstatusid')::uuid;
+		ELSE
+			INSERT INTO personmaritalstatus( personmaritalstatusid, statustypekey, marriageplace, divorceplace, startdate, 
+			enddate, childrenno, informallivingcomments, prefixtypekey, firstname, middlename, lastname, suffixtypekey, 
+			adrhomephone, adrworkphone, adrworkxtn, insertedby, insertedon, activeflag, personid )
+			
+			VALUES ( 
+			gen_random_uuid(), 
+			v_person ->> 'statustypekey',
+			v_person ->> 'marriageplace',
+			v_person ->> 'divorceplace',
+			(v_person ->> 'maritalstartdate')::timestamp,
+			(v_person ->> 'maritalenddate')::timestamp,
+			(v_person ->> 'childrenno')::int,
+			v_person ->> 'maritalcomments',
+			v_person ->> 'spouseprefix',	
+			v_person ->> 'spousefirstname',
+			v_person ->> 'spousemiddlename',
+			v_person ->> 'spouselastname',
+			v_person ->> 'spousesuffix',	
+			v_person ->> 'spousehomenumber',
+			v_person ->> 'spouseofficenumber',
+			v_person ->> 'spouseofficeextension',
+			v_securityuserid,
+			v_date,	
+			1,
+			v_personid );
+		END IF;		
+	END IF;
+
+	SELECT json_agg(e)
+	FROM (
+	SELECT
+		v_person->>'Firstname' firstname ,
+		v_person->>'Lastname' lastname,
+		v_person->>'maritalstatus' maritalstatus ,
+		v_person->>'SSN' ssn,
+		v_person->>'weight' weight,
+		v_person->>'occupation' occupation)e 
+	INTO dadetails;
+
+	INSERT INTO auditlog( logtypekey, description, referenceid, servicerequestnumber, isnew, isedit, isdelete, insertedon, 
+	metadata, modifieddata, insertedby )
+	VALUES(
+	'IP',
+	'Person Edited',
+	v_personid,
+	null,
+	'false',
+	'true',
+	'false',
+	v_date,
+	dadetails::json,
+	modifiedlog::json,
+	v_securityuserid);
+
+	RETURN 'Success';
+END;
+
+ 
+
+$function$

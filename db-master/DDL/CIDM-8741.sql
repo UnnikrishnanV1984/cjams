@@ -1,0 +1,1 @@
+alter table cjams.personemployment alter column income type numeric;

@@ -1,0 +1,250 @@
+CREATE OR REPLACE FUNCTION prov_getintakesnapshotreport(v_intakenumber character varying)
+ RETURNS TABLE(totalcount bigint, intakechessieid character varying, id integer, intakenumber character varying, cpsresponse character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, narrative text, raname character varying, isreview boolean, issupervisor boolean, datesubmitted timestamp without time zone, dateclosed timestamp without time zone, remarks text, reviewstatus character varying, jsondata jsonb, approvalinfo jsonb)
+ LANGUAGE plpgsql
+AS $function$
+  
+
+DECLARE l_oldid character varying;
+DECLARE l_snapshotid bigint;
+BEGIN 
+ 
+ SELECT OLD_ID INTO l_oldid FROM intakeservicerequest D WHERE D.intakenumber = v_intakenumber AND activeflag  =1 LIMIT 1;
+ IF (COALESCE(l_oldid ,'') ='') THEN 
+  RETURN QUERY 
+    SELECT 1::BIGINT
+    , INSR.old_id as intakechessieid
+    , IDAS.id
+    , IDAS.IntakeNumber 
+    , CAST(CASE DAS.iscps WHEN true THEN 'CPS' WHEN false THEN 'Non  CPS' ELSE '' END as character varying)
+    , IDAS.DateRecieved
+    , IDAS.TimeRecieved ::timestamp without time zone
+    , IDAS.Narrative
+    , IDAS.raname as raname 
+    , FALSE isreview
+    , FALSE issupervisor 
+    , DAS.submitteddate
+    , IDAS.insertedon ::timestamp 
+    , ''::TEXT remarks
+    , cast ((SELECT CASE  WHEN r.routingstatustypeid is null THEN CASE WHEN DAS.status1 is null THEN 'Draft' END 
+           ELSE 
+           CASE WHEN r.routingstatustypeid = 1 THEN 'Review'
+           WHEN r.routingstatustypeid = 2 THEN 'Accepted' 
+           WHEN r.routingstatustypeid = 8 THEN 'Closed' 
+           END 
+        END
+      FROM    routing r 
+        LEFT JOIN intakeservicerequest isr on r.objectid = isr.intakenumber AND isr.activeflag = 1 
+      WHERE  r.objectid = das.intakenumber AND r.activeflag = 1 order by r.insertedon desc LIMIT 1 ) as character varying)
+    , (CASE  WHEN (status1 in (2,8)) THEN (select ISS.jsondata as js FROM intakesnapshot ISS WHERE ISS.IntakeNumber = v_intakenumber LIMIT 1)
+       ELSE IDAS.jsondata
+       END )::jsonb
+   , (SELECT getintakeroutingdetails as approvals FROM getintakeroutingdetails(idas.intakenumber)) :: jsonb
+ FROM ( SELECT submitteddate, DAS1.iscps , DAS1.status as status1
+     , DAS1.IntakeNumber, rts.typedescription
+   FROM IntakeDAStatus DAS1
+     LEFT JOIN routingstatustype RTs ON RTs.sequencenumber = DAS1.status AND rts.activeflag = 1 
+   WHERE DAS1.intakenumber = v_intakenumber
+   )  DAS
+   INNER JOIN  IntakeDAStaging IDAS ON IDAS.IntakeNumber = DAS.IntakeNumber
+   LEFT JOIN  intakeservicerequest INSR on INSR.intakenumber = IDAS.intakenumber AND INSR.activeflag =1
+ WHERE  IDAS.intakenumber = v_intakenumber AND  IDAS.Activeflag = 1 LIMIT 1 ; 
+
+ ELSE 
+ v_intakenumber:=l_oldid;
+ SELECT MAX(snapshot_id) INTO l_snapshotid FROM tb_ssscreening WHERE screening_id::character varying  = v_intakenumber AND delete_sw='N' ;
+ RETURN QUERY
+ SELECT  1:: bigint 
+   , s.screening_id::character varying intakechessieid
+   , s.screening_id
+   , s.screening_id::character varying IntakeNumber
+   , (CASE s.screening_type_sw WHEN 'C'  THEN 'CPS' WHEN 'N' THEN 'Non CPS' ELSE screening_type_sw END)::character varying cpsresponse
+   , s.received_dt::timestamp without time zone datereceived
+   , cast(to_timestamp(s.received_tm,'HH24:MI:SS') AS timestamp) ::timestamp without time zone timereceived
+   , sn.narrative::text narrative
+   , s.screening_nm RAName
+   , FALSE isreview
+   , FALSE issupervisor
+   , s.scn_approval_dt::timestamp without time zone datesubmitted
+   , s.scn_approval_dt::timestamp without time zone  dateclosed
+   , ''::TEXT remarks
+   , CASE s.scn_approval_status_cd WHEN '3047' THEN 'Approved' ELSE s.scn_approval_status_cd END :: CHARACTER VARYING reviewstatus
+   , json_build_object('narrative',
+        ( SELECT json_agg (t) 
+         FROM (SELECT 'Rep' as "Role", '' as "ZipCode" , '' "Lastname"
+             , s.screening_nm "Firstname", '' "Middlename"
+             , '' "PhoneNumber", '' "PhoneNumberExt", '' "ZipCode"
+             , '' "email", '' "Role" 
+             --, (SELECT value_tx FROM  tb_picklist_values WHERE trim(picklist_value_cd) = trim (s.jurisdiction_of_incident_cd) AND picklist_type_id =328 LIMIT 1) "incidentlocation"
+             , '' "organization", '' "title"
+          )as t 
+        )  ::jsonb 
+       , 'clearhistory', json_build_object(
+            'intakeserviceid',s.screening_id,
+            'startdatetime', s.hist_clearance_entered_ts, 
+            'thirdparty', false,
+            'individual',false,
+            'reason', '',
+            'comments', s.history_clearance_info,
+            'close', FALSE )  
+       ,  'General',  (SELECT row_to_json (  t)
+           FROM (Select  sn.narrative "Narrative", s.history_clearance_info AS "cpsHistoryClearance"
+               , s.screening_id intakechessieid
+               , s.received_dt as "RecivedDate", s.received_tm "Time"
+               , (SELECT value_tx FROM  tb_picklist_values WHERE trim(picklist_value_cd) = trim (s.jurisdiction_of_incident_cd) AND picklist_type_id =328 LIMIT 1) "countyid"
+               ,  s.screener_id "Author", ''  "Lastname"
+               , s.screening_nm "Firstname", false "isDisposition"
+               , (SELECT value_tx FROM  tb_picklist_values WHERE trim(picklist_value_cd) = trim (s.contact_type_cd) AND picklist_type_id =227 LIMIT 1) "Source"
+               , (SELECT value_tx FROM  tb_picklist_values WHERE trim(picklist_value_cd) = trim (s.contact_type_cd) AND picklist_type_id =227 LIMIT 1) "InputSource"
+               ,'' "Purpose", FALSE "IsAnonymousReporter" 
+               , NULL "intakeservice", s.screening_id "IntakeNumber"
+               , 'CW' "AgencyCode", FALSE  "IsUnknownReporter"
+               , FALSE "RefuseToShareZip", '' "requesteraddress1"
+               ,'' "requesteraddress2", '' "requestercity"
+               , '' "requestercounty", '' "requesterstate"
+ --                              , TRUE "Iscps", s.record_dt "CreatedDate"
+               , 'CW~true' as "Agency"
+               , (SELECT json_Agg(e) 
+                    FROM (
+                     SELECT CASE s.scn_approval_status_cd WHEN '3047' THEN 'Approved' ELSE s.scn_approval_status_cd END  status
+                       , (SELECT first_nm||COALESCE(' '||middle_nm,'')||' '||last_nm 
+                        FROM tb_ssscreening_snapshot ss
+                        INNER JOIN tb_staff st ON st.user_id = ss.update_user_id AND st.delete_sw ='N'
+                        WHERE ss.snapshot_id = s.snapshot_id AND ss.delete_sw ='N'
+                        )"name"
+                       , 'Supervisor'  "role"
+                       , v_intakenumber intakenumber
+                       , scn_approval_dt "date"
+                    )e) approvaldetails
+             )t)::jsonb
+       ,  'reviewstatus', (SELECT row_to_json (t) FROM (SELECT  ''   status,'' commenttext, 'INTR' appevent)t)
+       ,  'disposition', NULL
+       ,  'persondetails',
+        json_build_object('Person',
+         (SELECT  json_Agg(e)  FROM (
+           SELECT sp.person_id  "Pid", p.first_nm "Firstname", p.last_nm "Lastname"
+             , p.middle_nm "middlename", p.last_nm || ', ' || p.first_nm "fullname", NULL "fullAddress"
+             , p.dob_dt "dob", to_char(p.dob_dt , 'DD/MM/YYYY')     "DobFormatted" , NULL religionkey
+             , (SELECT value_tx  FROM  tb_picklist_values WHERE trim(picklist_value_cd) = trim (p.marital_status_cd) AND picklist_type_id =118 LIMIT 1) maritalstatus
+             ,  NULL race
+             , (SELECT left(value_tx,1) FROM  tb_picklist_values WHERE trim(picklist_value_cd) = trim (p.gender_cd) AND picklist_type_id =89 LIMIT 1) "gender"
+             , NULL Ethnicity, NULL userPhoto, NULL "Dangerousself"
+             , NULL "DangerousselfReason", p.suffix_cd "suffix", NULL occupation
+             , NULL stateid, p.client_id cjamspid, p.tribe_cd "tribalassociation"
+             , NULL "Role", CASE sp.household_member_sw  WHEN 'Y' THEN TRUE ELSE FALSE END "isheadofhousehold"
+             , CASE probation_search_conducted_sw WHEN 'Y' THEN TRUE ELSE FALSE END  probationsearchconductedflag
+             , CASE sex_offender_registered_sw WHEN 'Y' THEN TRUE ELSE FALSE END  sexoffenderregisteredflag
+             , CASE sex_offender_registered_sw WHEN 'Y' THEN TRUE ELSE FALSE END  sexoffenderregisteredflag
+             , CASE drug_exposed_newborn_sw WHEN 'Y' THEN TRUE ELSE FALSE END  drugexposednewbornflag
+             , CASE fetal_alcohol_spctrm_disord_sw WHEN 'Y' THEN TRUE ELSE FALSE END fetalalcoholspctrmdisordflag
+             , (SELECT json_agg(e) FROM 
+               (SELECT pa.address_id "addressid", pa.parent_key_id "personid", 1  "activeflag"
+                 , pa.adr_type_cd "addresstype", pa.adr_street_tx "address", pa.adr_zip5_no "zipcode"
+                 , pa.adr_city_nm "city", pa.adr_state_cd "state", pa.adr_country_tx "country"
+                 , pa.adr_county_cd "county", pa.adr_start_dt "effectivedate", pa.adr_end_dt "expirationdate"
+                 , pa.address_id "oldId", pa.adr_street_nm "Address2", NULL  "directions"
+                 , NULL"danger", NULL "dangerreason", pa.address_id "personaddressid"
+                 , pa.adr_type_cd "personaddresstypekey", pa.adr_street_nm "address2", pa.adr_street_tx "address1"
+                 , null "addresstypeLabel", p.ssn_no  "ssn", NULL "Personaddresstype"
+               FROM tb_ssperson_addresses pa  
+               WHERE pa.parent_key_id = p.person_id AND pa.snapshot_id = p.snapshot_id AND  pa.delete_sw='N') e
+             )addressdtl
+            , concat_ws(' ',pa.adr_street_tx, pa.adr_street_nm)  address
+            , pa.adr_city_nm city, pa.adr_state_cd "state", pa.adr_zip5_no zipcode
+            , (SELECT json_agg(e) FROM 
+              (SELECT  r.role_cd intakeservicerequestpersontypekey
+                , r.person_role_id Intakeservicerequestactorid, r.expungement_sw rcexpungementflag
+                , r.expungement_sw spexpungementflag, pv.value_tx typedescription
+              FROM tb_ssperson_roles r
+                INNER JOIN tb_picklist_values pv ON pv.picklist_type_id =184 AND trim(pv.picklist_value_cd)= trim (r.role_cd) 
+              WHERE r.screening_person_id = sp.screening_person_id AND r.snapshot_id = sp.snapshot_id AND r.delete_sw ='N'
+             )e
+             ) roles
+           FROM  tb_ssscreening_person sp
+             INNER JOIN tb_ssperson p ON p.person_id = sp.person_id AND p.delete_sw ='N'
+             LEFT JOIN ( SELECT * FROM tb_ssperson_addresses 
+                WHERE (parent_key_id,snapshot_id,address_id) IN (SELECT parent_key_id,snapshot_id, max(address_id) 
+                             FROM tb_ssperson_addresses 
+                             WHERE adr_default_sw ='Y' AND delete_sw='N' 
+                             GROUP BY parent_key_id,snapshot_id)
+                 ) pa ON pa.parent_key_id = p.person_id AND pa.snapshot_id = p.snapshot_id 
+           WHERE sp.screening_id = s.screening_id AND sp.snapshot_id = s.snapshot_id AND sp.delete_sw ='N'
+          )e
+         )
+       
+        )
+     , 'sdm', (SELECT row_to_json(e) 
+       FROM ( 
+         SELECT json_build_object(
+           'ismalpa_childtoxic',  CASE child_toxic_chemicals_sw  WHEN 'Y' THEN TRUE ELSE FALSE END, 
+           'ismalpa_nonaccident',  CASE non_accidental_sw WHEN 'Y' THEN TRUE ELSE FALSE END , 
+           'ismalpa_suspeciousdeath',  CASE suspicious_death_sw WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'ismalpa_caregiver', CASE caregiver_action_sw WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'ismalpa_injuryinconsistent',  CASE injury_inconsistent_sw WHEN 'Y' THEN TRUE ELSE FALSE END, 
+           'ismalpa_insjury', CASE injury_suspicious_sw WHEN 'Y' THEN TRUE ELSE FALSE END 
+           ) "physicalAbuse"
+           , json_build_object(
+            'ismalsa_physicalindicators',  CASE sexual_phy_beh_sus_abuse_sw  WHEN 'Y' THEN TRUE ELSE FALSE END, 
+            'ismalsa_sexualexploitation', CASE sexual_exploit_caregiver_sw  WHEN 'Y' THEN TRUE ELSE FALSE END, 
+            'ismalsa_sexualmolestation',  CASE sexual_molestation_sw  WHEN 'Y' THEN TRUE ELSE FALSE END, 
+            'ismalsa_sexualact', CASE sexual_act_siblings_sw  WHEN 'Y' THEN TRUE ELSE FALSE END 
+           ) "sexualAbuse"  
+           , json_build_object(
+            'isneggn_signsordiagnosis', CASE non_organic_failure_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneggn_inadequatefood', CASE non_organic_failure_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneggn_inadequateclothing',  CASE inadequate_clothing_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneggn_exposuretounsafe', CASE unsafe_home_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneggn_inadequatesupervision', CASE inadequate_supervision_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isnegrh_treatmenthealthrisk', CASE physical_treatment_risk_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneggn_suspiciousdeath', CASE death_neglect_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneggn_childdischarged', CASE discharged_facility_sw  WHEN 'Y' THEN TRUE ELSE FALSE END 
+            ) "generalNeglect" 
+           ,  json_build_object(
+            'isneguc_leftaloneinappropriatecare', CASE child_leftalone_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isneguc_leftunsupervised',  FALSE ,
+            'isneguc_leftalonewithoutsupport', CASE child_leftalone_long_sw  WHEN 'Y' THEN TRUE ELSE FALSE END
+            ) "unattendedChild" 
+           , json_build_object(
+           'isnegrh_sexualperpetrator', CASE sexual_perpetrator_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'isnegrh_priordeath', CASE priordeath_child_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'isnegrh_basicneedsunmet', CASE caregiver_impairment_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'isnegrh_risk_dv', CASE substantial_risk_of_harm_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'isnegrh_fatality_can', CASE child_fatality_sw  WHEN 'Y' THEN TRUE ELSE FALSE END,
+           'isnegrh_indicated_unsub', FALSE , 
+           'isnegrh_survivor', FALSE, 
+           'isnegrh_birth_match', FALSE , 
+           'isnegrh_sex_trafficking', CASE sex_trafficking_sw  WHEN 'Y' THEN TRUE ELSE FALSE END
+           ) "riskofHarm"
+           , CASE caregiver_intervene_sw WHEN 'Y' THEN TRUE ELSE FALSE END isnegfp_cargiverintervene
+           , CASE mal_neg_child_abandoned_sw WHEN 'Y' THEN TRUE ELSE FALSE END isnegab_abandoned
+           , CASE unreasonable_delay_sw WHEN 'Y' THEN TRUE ELSE FALSE END isnegmn_unreasonabledelay
+           , CASE child_impairment_sw WHEN 'Y' THEN TRUE ELSE FALSE END ismenab_psycologicalability
+           , CASE child_impairment_sw WHEN 'Y' THEN TRUE ELSE FALSE END ismenab_psycologicalability
+           , CASE child_impairment_failure_sw WHEN 'Y' THEN TRUE ELSE FALSE END menng_psycologicalability
+           ,  (CASE s.screening_type_sw WHEN 'C'  THEN 'CPS' WHEN 'N' THEN 'Non CPS' ELSE screening_type_sw END) "cpsResponseType"
+           , CASE screen_in_override_sw WHEN 'N' THEN TRUE ELSE FALSE END   "isfinalscreeninOut"
+           , CASE screen_in_override_sw WHEN 'Y' THEN TRUE ELSE FALSE END  "isfinalscreeninIn"
+           , CASE screen_in_override_sw WHEN 'Y' THEN TRUE ELSE FALSE END  "isfinalscreenin" 
+           , json_build_object(
+            'isscrnoutrecovr_otherspecify', CASE screen_out_other_sw WHEN 'Y' THEN TRUE ELSE FALSE END  ,
+            'scrnout_description', screen_out_other_tx,
+            'isscrnoutrecovr_information', CASE info_forwarded_sw WHEN 'Y' THEN TRUE ELSE FALSE END ,
+            'isscrnoutrecovr_insufficient', CASE insufficient_info_sw WHEN 'Y' THEN TRUE ELSE FALSE END ,
+            'isscrnoutrecovr_historicalinformation',  CASE historic_info_sw WHEN 'Y' THEN TRUE ELSE FALSE END) "screenOut"
+           , json_build_object(
+            'isscrninrecovr_courtorder',  CASE court_order_sw WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'isscrninrecovr_otherspecify',  CASE screen_in_other_sw WHEN 'Y' THEN TRUE ELSE FALSE END,
+            'scrnin_description', screen_in_other_tx) "screenIn" 
+
+         FROM tb_ssscreening_cps cps WHERE cps.screening_id = s.screening_id AND cps.snapshot_id = s.snapshot_id
+       )e)
+   
+   )::jsonb
+  , NULL  :: jsonb
+ FROM  tb_ssscreening s
+   INNER JOIN  tb_ssscreening_narrative sn ON sn.snapshot_id = s.snapshot_id 
+ WHERE s.screening_id::CHARACTER varying = v_intakenumber AND s.snapshot_id= l_snapshotid  LIMIT 1; 
+
+END IF;
+END;
+$function$
+

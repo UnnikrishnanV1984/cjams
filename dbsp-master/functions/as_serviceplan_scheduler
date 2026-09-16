@@ -1,0 +1,128 @@
+CREATE OR REPLACE FUNCTION as_serviceplan_scheduler()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                         
+                                                                                                                                                                       
+ DECLARE                                                                                                                                                               
+ v_intakeserviceid uuid;                                                                                                                                                                                                                                                                                                                             
+ v_asservice record;
+ v_count int;
+
+ v_cwcount int;
+ v_amactivityid uuid;
+ v_ammappingid uuid;
+v_activityid uuid;
+v_tosecurityusersid uuid;
+v_amtaskid uuid;
+v_investigationid uuid;
+v_amname    character varying;
+v_amdescription character varying;
+ v_amhelptext character varying;
+v_status character varying;
+ v_due_dt timestamp without time zone;
+ BEGIN   
+
+select am.amactivityid , am.ammappingid , am.name, am.description , am.helptext 
+ into v_amactivityid, v_ammappingid, v_amname, v_amdescription, v_amhelptext from ammapping am 
+inner join amactivity ac on ac.amactivityid = am.amactivityid where
+ac.name ='Service Plan';
+
+select amtaskid into v_amtaskid from amtask  where name='Service Plan';
+
+FOR  v_asservice IN 
+SELECT intakeserviceid, reporteddate, srt.classkey, srt.description FROM intakeservicerequest isr 
+inner join intakeservicerequesttype ist on ist.intakeservreqtypeid = isr.intakeservreqtypeid 
+join servicerequestsubtype srt on srt.servicerequestsubtypeid =isr.intakeservicerequestclassid 
+where ist.intakeservreqtypekey='Request for services' and isr.isclosecpshistory is null and 
+DATE(reporteddate) = DATE(current_date + interval '-150' day)
+
+LOOP
+    
+select count(*) INTO v_count from  serviceplanactivity where objectid :: character varying =v_asservice.intakeserviceid :: character varying and
+approvalstatus ='Approved';
+
+select Description into v_status from ServiceRequestTypeConfigDispositionCode where ServiceRequestTypeConfigIdDispostionId in (
+ select ServiceRequestTypeConfigIdDispostionId from IntakeServiceRequestDispositionCode where IntakeServiceId = v_asservice.intakeserviceid and activeflag = 1 order by insertedon desc limit 1);
+
+
+    if(v_count = 0 and v_status != 'Screen Out') then
+            select toworkeridno into v_tosecurityusersid from caseassignment c
+            INNER JOIN AreaTeamMemberServiceRequest  AS ATSR  ON  ATSR.IntakeServiceId   = c.objectid AND   ATSR.ActiveFlag = 1                                                          
+            INNER JOIN TeamMember AS TM  ON  ATSR.TeamMemberId   = TM.TeamMemberId                                                                        
+            INNER JOIN as_teammemberassignment   AS TMA  ON  TMA.TeamMemberId   = ATSR.TeamMemberId     AND TMA.ActiveFlag = 1     
+            where  tma.securityusersid = c.toworkeridno 
+            and  c.activeflag =1 and c.objectid =  v_asservice.intakeserviceid limit 1;
+
+            v_activityid := gen_random_uuid(); 
+    
+           v_due_dt = v_asservice.reporteddate + 180;
+           
+          select investigationid into v_investigationid from Investigation where intakeserviceid =v_asservice.intakeserviceid limit 1;
+          if(v_investigationid is not null) then
+            INSERT INTO activity (  activityid,
+                            description, 
+                            amactivityid, 
+                            ammappingid, 
+                            objectid, 
+                            activitytypekey, 
+                            sourcedescription, 
+                            helptext, 
+                            iseditable, 
+                            activeflag, 
+                            insertedby, 
+                            insertedon)
+                values  (   v_activityid,
+                            cast(v_asservice.description || ' - ' || v_amname as character varying),
+                            v_amactivityid,
+                            v_ammappingid,
+                            v_investigationid,
+                            'Service Plan',
+                            v_amdescription,
+                            v_amhelptext,
+                            true,
+                            1,
+                            'admin',
+                            now());
+
+                INSERT INTO activitytask(   activityid, 
+                                        duedate,
+                                        name,
+                                        description,
+                                        helptext,
+                                        amtaskid,
+                                        assignedto,
+                                        assignedon,
+                                        activitytaskstatustypekey,
+                                        activitytasktypekey,
+                                        activityprioritytypekey,
+                                        required,
+                                        iseditable,
+                                        activeflag, 
+                                        insertedby, 
+                                        insertedon)
+                        VALUES      (   v_activityid,
+                                        v_due_dt, 
+                                        v_amname,
+                                        v_amdescription,
+                                        v_amhelptext,
+                                        v_amtaskid,
+                                        v_tosecurityusersid, 
+                                        now(),
+                                        'InvOpen',
+                                        'InvGeneral',
+                                        'InvHigh',
+                                        true,
+                                        true,   
+                                        1,
+                                        'system', 
+                                        now());
+    end if;
+    end if;
+
+    END LOOP;
+                                                                                                  
+     RETURN    'SUCCESS';                                                                                                                                              
+ END;                                                                                                                                                                  
+                                                                                                                                                                       
+ $function$
+

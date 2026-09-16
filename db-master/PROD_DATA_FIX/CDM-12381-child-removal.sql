@@ -1,0 +1,1 @@
+update intakeservreqchildremoval set exitdate = '2020-12-01 12:00:00', returndate = '2020-12-01 12:00:00', returntime = '2020-12-01 12:00:00', removalexitreason = 'CORHADR', updatedon = now(), updatedby = 'CDM-12381' where intakeservreqchildremovalid = '7036e2e5-0b4f-408f-b3e1-3261ad710072';

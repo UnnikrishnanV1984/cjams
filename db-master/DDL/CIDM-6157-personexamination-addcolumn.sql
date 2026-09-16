@@ -1,0 +1,2 @@
+ALTER table personexamination add column if not exists provcaremissed character varying(500);
+comment on column cjams.personexamination.otherreason is 'to store provider/caregiver missed medical appointment';

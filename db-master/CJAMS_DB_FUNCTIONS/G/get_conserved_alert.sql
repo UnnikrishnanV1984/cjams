@@ -1,0 +1,28 @@
+--select * from tb_client_account where client_account_id = 10000044;
+DROP function if exists get_conserved_alert(character varying,bigint,bigint);
+CREATE OR REPLACE FUNCTION cjams.get_conserved_alert(v_county character varying, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint,client_account_id bigint, client_id bigint,client_name character varying, account_type_cd character varying, account_exists_sw character, bank_nm character varying, account_no_tx character varying, total_balance_no numeric, available_balance_no numeric, open_dt date, close_dt date, status_cd character varying, county_cd character varying, comm_account_id integer, case_id bigint)
+ LANGUAGE plpgsql
+AS $function$
+	
+DECLARE
+	v_pageoffset int;
+    v_pagenumber int;
+	
+BEGIN
+
+	v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+return query	
+
+SELECT count(1) over(),tc.client_account_id, tc.client_id,concat (p.firstname ,' ',p.middlename ,' ' ,p.lastname) :: character varying as pname, tc.account_type_cd, tc.account_exists_sw, tc.bank_nm, tc.account_no_tx, tc.total_balance_no, 
+tc.available_balance_no, tc.open_dt, tc.close_dt, tc.status_cd, tc.county_cd, tc.comm_account_id, tc.case_id
+FROM tb_client_account tc 
+join person p on p.cjamspid = tc.client_id 
+where tc.total_balance_no >= 1500 and  tc.county_cd = v_county 
+LIMIT pagesize OFFSET v_pageoffset;
+
+END;
+
+$function$
+;

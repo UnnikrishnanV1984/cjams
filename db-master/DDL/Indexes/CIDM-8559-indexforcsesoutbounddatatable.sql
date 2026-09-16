@@ -1,0 +1,2 @@
+create index Xie1_ivecsesoutbounddata on ivecsesoutbounddata(clientid,removalid);
+create index Xie1_ive_auto_approvals on ive_auto_approvals(eligibility_period_id);

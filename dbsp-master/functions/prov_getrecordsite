@@ -1,0 +1,86 @@
+CREATE OR REPLACE FUNCTION prov_getrecordsite(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ 
+ BEGIN
+  
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  select prs.child_id,prs.site_id,prs.monitoring_record_site_id,pr.prgram,tpa.program_type,prs.status,prs.applicant_id,
+  tbp.provider_nm,tbp.provider_first_nm,tbp.provider_last_nm,
+  prs.recordreviewdate ,up.fullname as worker_name,tpl.license_no,p.cjamspid,p.dob,p.gendertypekey,
+  (select  case when count(1) > 0 then true else false end as any_pending from prov_monitoring_record_data
+   prd where prd.monitoring_record_site_id = prs.monitoring_record_site_id and coalesce(prd.monitoring_record_value) = 'Pending'),
+  (select  case when count(1) > 0 then true else false end as any_nc from prov_monitoring_record_data prd
+   where prd.monitoring_record_site_id = prs.monitoring_record_site_id and coalesce(prd.monitoring_record_value) = 'Non-Compliance') 
+     ,case (reqobj ->> 'records_type') 
+      when 'Child' then (
+       CASE (reqobj ->> 'prgram') 
+        WHEN 'YSB' THEN (SELECT case_name FROM prov_monitoring_case_record mcr WHERE mcr.monitoring_case_record_id::character varying = prs.objectid) 
+        ELSE (select concat(p.firstname,' ',p.lastname)  from  person p where 
+        p.personid ::character varying = prs.objectid union
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+        /* select concat(p.firstname,' ',p.lastname)  from  djs_master.person p where 
+        p.personid ::character varying = prs.objectid union */
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+     select concat(p.firstname,' ',p.lastname)  from  prov.prov_adhoc_site_placements p where 
+        p.site_placement_id ::character varying = prs.objectid )
+       END) 
+   when 'Staff' then (select concat(ps.first_nm,' ',ps.last_nm)  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid limit 1)   
+   when 'Parent' then (select concat(hh.first_nm,' ',hh.last_nm)  from  tb_prov_cpa_adop_person hh where  hh.provider_cpa_adop_person_id::character varying = prs.objectid limit 1)   
+   when 'Board member' then (select concat(ps.first_nm,' ',ps.last_nm)  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid limit 1) 
+   end as objectname
+     ,case (reqobj ->> 'records_type') 
+      when 'Child' then (
+       CASE (reqobj ->> 'prgram') 
+        WHEN 'YSB' THEN (SELECT monitoring_case_record_id::character varying FROM prov_monitoring_case_record mcr WHERE mcr.monitoring_case_record_id::character varying = prs.objectid) 
+        ELSE (select p.personid::character varying  from  person p where  
+        p.personid ::character varying = prs.objectid union
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+        /* select p.personid::character varying  from  djs_master.person p where  
+        p.personid ::character varying = prs.objectid union */
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+     select concat(p.firstname,' ',p.lastname)  from  prov.prov_adhoc_site_placements p where 
+        p.site_placement_id ::character varying = prs.objectid) 
+       END) 
+   when 'Staff' then (select ps.provider_staff_id::character varying  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid limit 1)   
+   when 'Parent' then (select hh.provider_cpa_adop_person_id::character varying  from  tb_prov_cpa_adop_person hh where  hh.provider_cpa_adop_person_id::character varying = prs.objectid limit 1)   
+   when 'Board member' then (select ps.provider_staff_id::character varying  from  providerstaff ps where  ps.provider_staff_id ::character varying = prs.objectid limit 1)     
+      end as objectid,
+   case (reqobj ->> 'records_type') 
+      when 'Child' then (
+       CASE (reqobj ->> 'prgram')
+     WHEN 'YSB' THEN (SELECT case_comments FROM prov_monitoring_case_record 
+     mcr WHERE mcr.monitoring_case_record_id::character varying = prs.objectid) 
+     ELSE NULL END) ELSE NULL END as casecomments,
+   case (reqobj ->> 'records_type') 
+      when 'Child' then (
+       CASE (reqobj ->> 'prgram')
+     WHEN 'YSB' THEN (SELECT case_status FROM prov_monitoring_case_record 
+     mcr WHERE mcr.monitoring_case_record_id::character varying = prs.objectid) 
+     ELSE NULL END) ELSE NULL END as casestatus 
+  from prov_monitoring_record_site prs 
+  left join (select cjamspid,dob,gendertypekey,personid from person 
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+  /* union select cjamspid,dob,gendertypekey,personid from djs_master.person  */
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+  union select null as cjamspid,dob,gender as gendertypekey,site_placement_id as personid from prov.prov_adhoc_site_placements) p on p.personid ::character varying = prs.objectid
+  join prov_record pr on pr.record_id = prs.record_id
+  left join userprofile up on up.securityusersid = prs.update_user_id
+  left join tb_provider_licensing tpl on tpl.site_id = prs.site_id and tpl.active_sw='Y'
+  left join tb_provider_applicant tpa on tpa.applicant_id = prs.applicant_id
+  left join tb_provider tbp on tbp.provider_id = prs.site_id and tbp.delete_sw='N'
+  where prs.monitoring_id = reqobj ->> 'monitoring_id' and pr.records_type = reqobj ->> 'records_type'
+  and pr.module_name=reqobj ->> 'module_name'
+  and prs.delete_sw = 'N'
+  and (coalesce((reqobj ->> 'prgram_type'),null) is null or pr.prgram_type = (reqobj ->> 'prgram_type'))
+ order by prs.create_ts desc
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

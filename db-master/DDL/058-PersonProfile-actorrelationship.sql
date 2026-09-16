@@ -1,0 +1,1 @@
+alter table actorrelationship add column intakenumber varchar(50) null;

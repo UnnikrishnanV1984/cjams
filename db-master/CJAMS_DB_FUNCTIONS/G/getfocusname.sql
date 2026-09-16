@@ -1,0 +1,34 @@
+Drop FUNCTION IF EXISTS getfocusname(character varying, character varying);
+CREATE OR REPLACE FUNCTION cjams.getfocusname(objecttypekey character varying, objectid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+DECLARE   
+l_personname json;
+rolerec record;
+BEGIN      
+CREATE temp TABLE sp_person 
+(
+personname text
+);
+	 
+FOR rolerec IN select * from intakeservicerequestactor isra join person per on per.personid = isra.personid join actor act on act.actorid = isra.actorid and act.activeflag = 1  where  ISRA.intakeserviceid:: character varying = objectid and isra.activeflag = 1 
+loop
+	if (rolerec.intakeservicerequestpersontypekey = 'AV')
+	then
+
+		insert into sp_person 
+		SELECT   concat_ws(' ',coalesce(rolerec.firstname,null),coalesce(rolerec.middlename,null),coalesce(rolerec.lastname,null),coalesce(rolerec.suffix,null) );		
+
+	end if;
+
+END loop;
+
+SELECT json_agg(x)   INTO l_personname FROM (
+		SELECT coalesce(personname,'') as personname  from sp_person) x;
+drop TABLE sp_person; 
+ 
+RETURN l_personname;
+END;
+ $function$
+;

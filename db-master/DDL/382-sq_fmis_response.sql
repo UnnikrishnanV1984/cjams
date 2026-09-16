@@ -1,0 +1,11 @@
+-- DROP SEQUENCE cjams.sq_fmis_response;
+
+CREATE SEQUENCE cjams.sq_fmis_response
+	INCREMENT BY 1
+	MINVALUE 2000000
+	MAXVALUE 9223372036854775807
+	START 2000000
+	CACHE 1
+	NO CYCLE;
+
+-- Permissions

@@ -1,0 +1,1 @@
+ALTER TABLE adoptionagreementrate ADD COLUMN  if not exists status varchar(50) NULL ;

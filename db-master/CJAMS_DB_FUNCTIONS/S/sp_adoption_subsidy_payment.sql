@@ -1,0 +1,803 @@
+CREATE OR REPLACE FUNCTION cjams.sp_adoption_subsidy_payment()
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- generate payment header and payment detail for adoption subisdy for the
+-- previous month
+-- created by: Amit Rastogi
+-- Date : 05/21/2004
+-- Amit 08/16/2005 changed the logic to consider overwritten amount and subsidy suspension
+-- 11/28/2005 ADDED CONDITION FOR PROVIDER ID IS NOT NULL
+-- 02/03/2006 added code for adoption subsidy payment
+-- 05/30/2006 added logic to exclude the adoption subsidy for the conversion month for the county
+-- 10/26/2006 change the payment header procedure call passing prev month dates
+-- 05/03/2007 Vineet Tirodkar, To Pickup correct ADOPTION SUBSIDY AGREEMENT amount.
+-- From the correct Dates slab, which is approved and latest. Incident # 13306
+-- 05/10/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in tb_BATCH_ERROR_LOG # 14088
+-- 07/16/2007 Vineet Tirodkar - commit statement has been added inside the for loop
+-- 03/19/2008 Vineet Tirodkar - Changes for Provider Checklist (CIS-16755)
+--	      Change in Cursor cur_adoption_subs_provider to add Provider checklist table                  	
+--	      Change in Cursor cur_adoption_subs to add DOB and Age conditions
+--	      New condition if payment amount > 0 then only Insert payments detls else Delete payment header
+-- 04/15/2008 Vineet Tirodkar - Changes in LOG ERROR texts to identify exact SQLs
+--	      SQL to delete record from tb_PAYMENT_STATUS
+-- 05/29/2008 Vineet Tirodkar - Changes in logic for Provider Checklist,
+--            In case of missing information generate payment with status as ?Hold?.
+-- 05/30/2008 Vineet Tirodkar - New arguments Original Payment ID and Pay Detl ID for SP_PAYMENT_DETAIL_INSERT
+-- 08/18/2008 Vineet Tirodkar - Change in Cursor cur_adoption_subs for Age conditions (< 21). CIS-17754	
+-- 10/24/2008 Vineet Tirodkar - Delete Adoption Subsidy Payments, if Provider category is NOT '1783' - Local Department Home # 18838
+-- 11/25/2008 Rajkumar Seeni - To improve performance tb_PAYMENT_DETAIL table has been replaced with tb_PAYMENT_DETAIL_TEMP
+                             --and F_PRVPCKLST_CAT replaced with actual SQL
+-- 04/07/2009 Vineet Tirodkar - Changes for MA Only column - CIS-18489	
+-- 08/18/2009 Vineet Tirodkar - Changes to Implement Per Diem Rates for Adoption Subsidy Payments -- CIS-19002 
+-- 11/30/2009 Vineet Tirodkar - Change in logic for Age conditions, pay up to 21 Bday -- CIS-19453.
+-- 02/04/2011 Vinodh Magimaidas - PRJ-01328 Adoption Sub Suspension - Added approval_status_cd to check for suspension.
+-- 06/01/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+-- 			  Modifications to pass dummy argument  to SP_PAYMENT_DETAIL_INSERT (SP modified for Fiscal Audit Trail)
+-- 09/09/2015 Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+-- 			  Modifications to generate separate payment detail records for each Per-diem rate within the same month (BDSD Req # 84)
+-- 			  and to generate the payment excluding the suspension period (BDSD Req # 85)
+-- Vineet Tirodkar - 05/03/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+-- 07/01/2025 - Vineet Tirodkar - TO fix the delete Adoption Subsidy Payments Statement if Provider category is NOT 'Local Department Home' 
+------------------------------------------------------------------------
+
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vd_current_month_end_dt DATE;--
+
+DECLARE vdc_null_amount decimal(10,2) default NULL;--
+DECLARE vdc_payment_amount decimal(10,2) default NULL;--
+DECLARE vdc_suspension_amount decimal(10,2) default NULL;--
+
+DECLARE vs_payment_type VARCHAR(5) DEFAULT '5689';--
+DECLARE vs_payment_flag VARCHAR(1) DEFAULT 'A';--
+DECLARE vs_null_string VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_rate_type VARCHAR(5) DEFAULT '1232';  -- room and board
+DECLARE vs_payment_unit_type VARCHAR(5);--
+
+DECLARE vl_payment_header_id bigint DEFAULT 0;--
+DECLARE vl_provider_id bigint DEFAULT 0;--
+DECLARE vl_null_id bigint DEFAULT NULL;--
+DECLARE vl_service_id bigint DEFAULT 501;  -- Adoptive home with subsidy
+DECLARE vl_unit_no int DEFAULT 1;--
+DECLARE vl_rate_slab_count int DEFAULT 0;--
+DECLARE vl_ageout_unit_no int DEFAULT 0;--
+DECLARE vs_unit_type VARCHAR(5) DEFAULT '5611'; -- monthly
+DECLARE vl_adoption_id BIGINT;--
+DECLARE vl_suspension_days INTEGER;--
+DECLARE vl_payment_unit_no INTEGER; --
+
+DECLARE vl_subsidy_suspention_count bigint DEFAULT 0;--
+
+DECLARE vl_linked_pymnt_hdr_id BIGINT DEFAULT NULL;--
+DECLARE vl_reference_payment_detail_id BIGINT DEFAULT NULL;--
+
+DECLARE vl_adp_cnt BIGINT DEFAULT 0;--
+
+DECLARE VS_USER_ID VARCHAR(10) DEFAULT 'finance';--
+DECLARE VTS_PREVIOUS_RUN_TS TIMESTAMP;--
+DECLARE VTS_CURRENT_RUN_TS TIMESTAMP ;--
+DECLARE VL_ROWCOUNT INTEGER DEFAULT  0;--
+
+DECLARE vl_pay_detl_count bigint DEFAULT 0;--
+
+DECLARE vdc_per_diem_rate decimal(10,2) default NULL;--
+DECLARE vd_subsidy_start_dt DATE;--
+DECLARE vd_subsidy_end_dt DATE;--
+DECLARE vd_current_service_start_dt DATE;--
+DECLARE vd_current_service_end_dt DATE;--
+DECLARE vd_rate_start_dt DATE;--
+DECLARE vd_rate_end_dt DATE;--
+DECLARE vd_payment_start_dt DATE;--
+DECLARE vd_payment_end_dt DATE;--
+
+-- PRJ-04753
+DECLARE vs_change_type VARCHAR(5) DEFAULT NULL ;--
+
+--Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_ADOPTION_SUBSIDY_PAYMENT';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+cur_adoption_subs_provider record;
+ cur_adoption_rates record;
+ cur_adoption_subs record;
+ cur_adoption_subs_provider_refcur REFCURSOR;
+ cur_adoption_rates_refcur REFCURSOR;
+ cur_adoption_subs_refcur REFCURSOR;
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+begin
+	EXCEPTION WHEN OTHERS THEN
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+	   	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+ --   SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_ADOPTION_SUBSIDY_PAYMENT' ,
+				          NULL::bigint,
+				        NULL::bigint,
+                		NULL::character varying,
+				        NULL::INTEGER,
+						NULL::character varying,
+				        SQLSTATE::character varying,
+                		as_error::character varying,
+				        'finance'::character varying) INTO
+                		vl_ret_status;
+				
+     as_error := '';				--
+RETURN 0;
+END;-- 
+--Log error
+
+--  get the last month start date and end date
+
+SELECT (date_trunc('month', now()) - interval '1 month')::date,
+       (date_trunc('month', now())::date - 1),
+       ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt,
+        vd_current_month_end_dt;
+
+--  Initialize variables with the current timestamp
+ VTS_PREVIOUS_RUN_TS := CURRENT_TIMESTAMP;--
+ VTS_CURRENT_RUN_TS := CURRENT_TIMESTAMP;--
+
+--  get the last run timestamp
+--  if first run, i.e., no rows in log, then leave as initialized
+SELECT COUNT(*)
+	INTO VL_ROWCOUNT
+FROM tb_PAYMENT_RUNTIMES_LOG
+WHERE PAYMENT_TX   = 'AD_SUBSIDY_PAYMENT';--
+
+IF  VL_ROWCOUNT > 0 THEN
+	SELECT MAX(PAYMENT_CURRENT_RUN_TS)
+		INTO VTS_PREVIOUS_RUN_TS
+	FROM tb_PAYMENT_RUNTIMES_LOG
+		WHERE PAYMENT_TX   = 'AD_SUBSIDY_PAYMENT';--
+END IF;--
+
+---  Insert Into PAYMENT log
+INSERT INTO tb_PAYMENT_RUNTIMES_LOG   (PAYMENT_RUNTIMES_LOG_ID,
+			PAYMENT_TX,
+			PAYMENT_CURRENT_RUN_TS,
+			PAYMENT_PREVIOUS_RUN_TS,
+			PAYMENT_BATCH_NO,
+			PAYMENT_SUCCESSFUL_SW,
+			CREATE_TS,
+			CREATE_USER_ID,
+			UPDATE_TS,
+			UPDATE_USER_ID,
+			DELETE_SW,
+			PAYMENT_OTHER_TX)
+SELECT 	NEXTVAL('SQ_PAYMENT_RUNTIMES_LOG'),
+			'AD_SUBSIDY_PAYMENT',
+			VTS_CURRENT_RUN_TS,
+			VTS_PREVIOUS_RUN_TS,
+			'',
+			'',
+			CURRENT_TIMESTAMP,
+			VS_USER_ID,   							
+			CURRENT_TIMESTAMP,
+			VS_USER_ID,
+			'N',
+			'SP_ADOPTION_SUBSIDY_PAYMENT -->  PROGRAM STARTED';
+--FROM sysibm.sysdummy1 ;--
+						
+ al_sqlcode := SQLCODE;			--
+IF al_sqlcode <> 0 THEN
+	 as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM STARTED'  ;--
+	 vs_identity_column := '';--
+	 vs_identity_val := '';--
+	--SIGNAL p_sp_error  ;--
+END IF ;--
+						
+
+--FOR cur_adoption_subs_provider AS
+--cur1 CURSOR WITH HOLD FOR
+
+	OPEN cur_adoption_subs_provider_refcur FOR	
+	SELECT DISTINCT TAS.PROVIDER_ID
+	FROM tb_ADOPTION  TA,
+		 tb_ADOPTION_SUBSIDY_AGREEMENT TAS
+	WHERE TA.ADOPTION_ID = TAS.ADOPTION_ID
+		AND TA.DELETE_SW = 'N'
+		AND TAS.DELETE_SW = 'N'
+		AND TAS.PROVIDER_ID IS NOT NULL
+		AND COALESCE(TA.MA_ONLY_PAYMENT_CD, 'N' ) = 'N'
+		AND TAS.APPROVAL_STATUS_CD = '3047'
+		AND TA.SUBSIDY_START_DT <= vd_previous_month_end_dt
+		AND ( (TA.SUBSIDY_END_DT IS NULL) OR (TA.SUBSIDY_END_DT > vd_previous_month_start_dt))
+		AND (TAS.adoptionagreementrateid = (SELECT TAS1.adoptionagreementrateid
+											FROM tb_ADOPTION_SUBSIDY_AGREEMENT TAS1
+										 WHERE TAS1.ADOPTION_ID = TA.ADOPTION_ID
+											AND TAS1.APPROVAL_STATUS_CD = '3047'
+											AND TAS1.AGREEMENT_START_DT <= vd_previous_month_end_dt
+											AND TAS1.AGREEMENT_END_DT >= vd_previous_month_start_dt 
+											ORDER BY TAS1.RATE_CREATE_TS DESC limit 1
+										 )
+			);
+	-- for Unit testing
+	-- AND TA.PROVIDER_ID  IN ( 5007600, 5007412, 5007488 )   
+	-- for Unit testing
+
+--DO
+loop
+	fetch cur_adoption_subs_provider_refcur into cur_adoption_subs_provider;
+										 exit when not found;
+	-- check if payment header exist for the provider for the previous month
+	 vl_payment_header_id := 0;  -- INITIAL VALUE
+	 vl_provider_id := 0;--
+	 vl_provider_id := cur_adoption_subs_provider.PROVIDER_ID;--
+
+	SELECT PAYMENT_ID
+		INTO vl_payment_header_id
+	FROM tb_PAYMENT_HEADER
+	WHERE PROVIDER_ID = vl_provider_id
+		AND DELETE_SW = 'N'
+		AND PAYMENT_START_DT = vd_previous_month_start_dt
+		AND PAYMENT_END_DT = vd_previous_month_end_dt
+		AND PAYMENT_TYPE_CD = '5689';--
+
+	IF vl_payment_header_id IS NULL OR vl_payment_header_id = 0 THEN
+		SELECT a.al_header_id,a.al_sqlcode,a.as_error FROM SP_PAYMENT_HEADER_INSERT ( vl_provider_id:: bigint,
+												vs_payment_type:: varchar, 
+												vd_previous_month_start_dt:: date,
+												vd_previous_month_end_dt:: date) a into
+												vl_payment_header_id, 
+												al_sqlcode, 
+												as_error;--
+
+		IF al_sqlcode <> 0 THEN
+			 as_error := as_error || ' (SP-1)' ;--
+			IF as_error is NULL OR as_error = '' THEN
+				 as_error := 'SP_PAYMENT_HEADER_INSERT failed. (SP-1)'  ;--
+			END IF;--
+			--SIGNAL p_sp_error  ;--
+		END IF ;--
+	END IF;--
+
+	--FOR cur_adoption_subs AS
+       -- cur2 CURSOR WITH HOLD FOR
+	   OPEN cur_adoption_subs_refcur FOR	
+            SELECT TA.ADOPTION_ID,
+       		   TA.CLIENT_ID,
+	           TAS.PROVIDER_ID,
+       		   TA.SUBSIDY_START_DT,
+       		   (CASE WHEN f_age(person.dob::DATE,vd_previous_month_end_dt) = 21 
+					AND ( (person.dob::DATE + INTERVAL '21 year') < TA.SUBSIDY_END_DT OR TA.SUBSIDY_END_DT is NULL) THEN
+						person.dob::DATE + INTERVAL '21 year'	
+				ELSE
+						TA.SUBSIDY_END_DT
+        	    END ) AS SUBSIDY_END_DT,
+             	TAS.PAYMENT_AMOUNT_NO,
+				CAST(ROUND(( TAS.PAYMENT_AMOUNT_NO * 12 ) /365, 2) AS DECIMAL (10,2)) AS PER_DIEM_RATE
+			FROM tb_ADOPTION  TA,
+                 tb_ADOPTION_SUBSIDY_AGREEMENT TAS,
+                 person
+    	     WHERE TA.ADOPTION_ID = TAS.ADOPTION_ID
+        	   AND person.cjamspid = TA.CLIENT_ID
+       		   AND TA.DELETE_SW = 'N'
+	           AND TAS.DELETE_SW = 'N'
+       		   AND TAS.PROVIDER_ID = vl_provider_id
+       		   AND COALESCE(TA.MA_ONLY_PAYMENT_CD, 'N' ) = 'N'
+	           AND TAS.APPROVAL_STATUS_CD = '3047'
+       		   AND TA.SUBSIDY_START_DT <= vd_previous_month_end_dt
+	           AND ( (TA.SUBSIDY_END_DT IS NULL) OR  (TA.SUBSIDY_END_DT > vd_previous_month_start_dt))
+       		   AND (TAS.adoptionagreementrateid = (SELECT TAS1.adoptionagreementrateid
+													FROM tb_ADOPTION_SUBSIDY_AGREEMENT TAS1
+														WHERE TAS1.ADOPTION_ID = TA.ADOPTION_ID
+												  AND TAS1.APPROVAL_STATUS_CD = '3047'
+												  AND TAS1.AGREEMENT_START_DT <= vd_previous_month_end_dt
+												  AND TAS1.AGREEMENT_END_DT >= vd_previous_month_start_dt 
+												  ORDER BY TAS1.RATE_CREATE_TS DESC limit 1
+												)
+					)
+				AND person.dob::DATE IS NOT NULL
+				AND (  f_age(person.dob::DATE, vd_previous_month_end_dt ) < 21 
+						OR ( date_part('month',person.dob::DATE + INTERVAL '21 year') = date_part('month',vd_previous_month_end_dt)
+								AND date_part('YEAR',person.dob::DATE + INTERVAL '21 year') = date_part('YEAR',vd_previous_month_end_dt)
+								AND date_part('DAY',person.dob::DATE + INTERVAL '21 year') <> 1  
+							)
+            	    );
+	           
+	--DO
+	loop
+	fetch cur_adoption_subs_refcur into cur_adoption_subs;
+										 exit when not found;
+		-- New Logic to pay by Per Diem Rate CIS-19002 (Sept 09 Onwards) - START
+		-- SET INITIAL VALUES - START
+		 vl_adoption_id := NULL;--
+		 vdc_payment_amount := 0; --
+		 vdc_per_diem_rate := 0;--
+		 vd_subsidy_start_dt := NULL;--
+		 vd_subsidy_end_dt := NULL;--
+		 vd_current_service_start_dt := NULL;--
+		 vd_current_service_end_dt := NULL;--
+		 vd_payment_start_dt := NULL;--
+		 vd_payment_end_dt := NULL;--
+		 vl_unit_no := 0;--
+		 vs_unit_type := NULL;--
+		 vl_suspension_days := 0;--
+		-- SET INITIAL VALUES - END
+
+		 vl_adoption_id := cur_adoption_subs.ADOPTION_ID;--
+		 vdc_payment_amount := cur_adoption_subs.PAYMENT_AMOUNT_NO;--
+		 vdc_per_diem_rate := cur_adoption_subs.PER_DIEM_RATE;--
+
+		 vd_subsidy_start_dt := cur_adoption_subs.SUBSIDY_START_DT;--
+		 vd_subsidy_end_dt := cur_adoption_subs.SUBSIDY_END_DT;--
+	      
+		IF vd_previous_month_end_dt <= DATE('2009-08-31') THEN
+
+			IF vdc_payment_amount > 0 THEN
+				-- Get actual no of nights for Suspension calculation
+				SELECT a.ad_service_start_dt,
+								a.ad_service_end_dt,
+								a.al_unit_no,
+								a.as_unit_type from SP_FOSTERCARE_CALCULATION('P',
+												'R',	
+												0,
+												vd_subsidy_start_dt,
+												vd_subsidy_end_dt,
+												vd_previous_month_start_dt,
+												vd_previous_month_end_dt) a into
+												vd_payment_start_dt,
+												vd_payment_end_dt,
+												vl_unit_no,
+												vs_unit_type;--
+												
+				-- Calculate Suspension period
+				SELECT a.al_suspension_days from SP_SUSPENSION_CALCULATION ('A',
+														vl_adoption_id,
+														vd_subsidy_start_dt,
+														vd_subsidy_end_dt,
+														vd_previous_month_start_dt,
+														vd_previous_month_end_dt,
+														vd_payment_start_dt,
+														vd_payment_end_dt,
+														vl_unit_no) a into
+														vl_suspension_days 
+														;--
+
+				IF vl_suspension_days IS NULL THEN
+					 vl_suspension_days = 0;--
+				END IF;--
+				
+				-- Exclude amount for Suspension period
+				IF vl_suspension_days > 0 THEN
+					 vdc_suspension_amount := vl_suspension_days * vdc_per_diem_rate;--
+					IF vdc_suspension_amount > 0 THEN
+						 vdc_payment_amount := vdc_payment_amount - vdc_suspension_amount;--
+					END IF;--
+				END IF;		--
+			
+				 vd_current_service_start_dt := vd_previous_month_start_dt;--
+				 vd_current_service_end_dt := vd_previous_month_end_dt;--
+			
+				 vl_unit_no := 1;--
+				 vs_unit_type := '5611'; -- monthly
+				-- SET vdc_per_diem_rate = vdc_payment_amount;--
+				 vdc_per_diem_rate := cur_adoption_subs.PAYMENT_AMOUNT_NO;--
+
+				IF vdc_payment_amount > 0 THEN
+					SELECT a.al_sqlcode,
+                                   a.as_error FROM  SP_PAYMENT_DETAIL_INSERT( vl_adoption_id,
+															vl_payment_header_id,
+															vl_service_id,
+															vd_current_service_start_dt,
+															vd_current_service_end_dt,
+															vdc_payment_amount,
+															vl_unit_no,
+															vs_unit_type,
+															vdc_per_diem_rate,
+															vs_payment_flag,
+															vs_rate_type,
+															vl_linked_pymnt_hdr_id,
+															vl_reference_payment_detail_id,
+															vs_change_type) a into
+															al_sqlcode,
+															as_error;--
+
+					IF al_sqlcode <> 0 THEN
+					    as_error := as_error || ' (SP-2)' ;--
+					   IF as_error is NULL OR as_error = '' THEN
+						   as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-2)'  ;--
+					   END IF;--
+					   --SIGNAL p_sp_error  ;--
+					END IF ;--
+				END IF;	--
+			END IF;--
+		ELSE -- > DATE('2009-08-31')
+			-- Get actual service period & no of nights
+			SELECT a.ad_service_start_dt,
+								a.ad_service_end_dt,
+								a.al_unit_no,
+								a.as_unit_type from SP_FOSTERCARE_CALCULATION('P',
+												'R',	
+												0,
+												vd_subsidy_start_dt,
+												vd_subsidy_end_dt,
+												vd_previous_month_start_dt,
+												vd_previous_month_end_dt) a into 
+												vd_current_service_start_dt,
+												vd_current_service_end_dt,
+												vl_unit_no,
+												vs_unit_type;--
+		
+			--EXIT_LOOP:	
+			--FOR cur_adoption_rates AS
+			--	cur CURSOR WITH HOLD FOR
+			
+			--Get Count for Ageout Calculation
+			vl_rate_slab_count := 0;
+			raise notice 'Rate slab count %',vl_rate_slab_count;
+			SELECT COUNT(*) 
+			INTO 
+				vl_rate_slab_count 
+			FROM 
+				tb_ADOPTION_SUBSIDY_AGREEMENT TAS
+			WHERE 
+				TAS.ADOPTION_ID = vl_adoption_id
+				AND TAS.APPROVAL_STATUS_CD = '3047'
+				AND TAS.DELETE_SW = 'N'
+				AND TAS.AGREEMENT_START_DT <= vd_current_service_end_dt
+				AND TAS.AGREEMENT_END_DT >= vd_current_service_start_dt;
+			--
+						
+			 OPEN cur_adoption_rates_refcur FOR
+				SELECT TAS.PAYMENT_AMOUNT_NO,
+						CAST(ROUND(( TAS.PAYMENT_AMOUNT_NO * 12 ) /365, 2) AS DECIMAL (10,2)) AS PER_DIEM_RATE,
+						TAS.AGREEMENT_START_DT AS RATE_START_DT,
+						TAS.AGREEMENT_END_DT AS RATE_END_DT
+					FROM tb_ADOPTION_SUBSIDY_AGREEMENT TAS
+					 WHERE TAS.ADOPTION_ID = vl_adoption_id
+						AND TAS.APPROVAL_STATUS_CD = '3047'
+						AND TAS.DELETE_SW = 'N'
+						AND TAS.AGREEMENT_START_DT <= vd_current_service_end_dt
+						AND TAS.AGREEMENT_END_DT >= vd_current_service_start_dt 
+				--ORDER BY TAS.SUBSIDY_AGREEMENT_ID DESC	;
+				ORDER BY TAS.RATE_CREATE_TS DESC ;
+			--DO
+			
+			loop
+			fetch cur_adoption_rates_refcur into cur_adoption_rates;
+										 exit when not found;
+				-- INITIAL VALUES
+				 vdc_payment_amount := 0; --
+				 vdc_per_diem_rate := 0;--
+				 vd_rate_start_dt := NULL;--
+				 vd_rate_end_dt := NULL;--
+				 vd_payment_start_dt := NULL;--
+				 vd_payment_end_dt := NULL;--
+				 vl_payment_unit_no := 0;--
+				 vs_payment_unit_type := NULL;--
+				 vl_suspension_days := 0;--
+				
+				 vdc_per_diem_rate := cur_adoption_rates.PER_DIEM_RATE;--
+				 vd_rate_start_dt := cur_adoption_rates.RATE_START_DT;--
+				 vd_rate_end_dt := cur_adoption_rates.RATE_END_DT;--
+	
+				SELECT a.ad_service_start_dt,
+								a.ad_service_end_dt,
+								a.al_unit_no,
+								a.as_unit_type from  SP_FOSTERCARE_CALCULATION('P',
+													'R',	
+													0,
+													vd_rate_start_dt,
+													vd_rate_end_dt,
+													vd_current_service_start_dt,
+													vd_current_service_end_dt) a into
+													vd_payment_start_dt,
+													vd_payment_end_dt,
+													vl_payment_unit_no,
+													vs_payment_unit_type;							--
+													
+				-- Add 1 day if rate end date month/year is same as service month/year
+				IF date_part('MONTH',vd_rate_end_dt) = date_part('MONTH',vd_current_service_start_dt) 
+					AND date_part('YEAR',vd_rate_end_dt) = date_part('YEAR',vd_current_service_start_dt) THEN
+					
+					-- Verify if Adoption Subsidy end date is beyond rate end date
+					IF vd_subsidy_end_dt > vd_rate_end_dt THEN
+						 vl_payment_unit_no := vl_payment_unit_no + 1;--
+					END IF;	--
+				END IF;--
+				
+				
+				IF vl_payment_unit_no > vl_unit_no THEN		
+					 vl_payment_unit_no := vl_unit_no;--
+					
+					SELECT vd_payment_start_dt + (vl_unit_no - 1 ) DAYS
+						INTO vd_payment_end_dt;
+					--FROM SYSIBM.SYSDUMMY1;	--
+					
+				END IF;			--
+				
+				vl_unit_no := vl_unit_no - vl_payment_unit_no;--
+				vl_rate_slab_count := vl_rate_slab_count -1;
+				raise notice 'Inside rate cursor - Current Unit Count %',vl_unit_no;
+				raise notice 'Inside rate cursor - Rate slab count %',vl_rate_slab_count;
+				raise notice 'Inside rate cursor - Rate slab count %',vl_rate_slab_count;
+				--Ageout Calculation when client turns 18 or 21 on the same date as Subsidy End Date
+				IF vl_unit_no <= 0 OR vl_rate_slab_count <= 0 THEN
+					vl_ageout_unit_no := 0;
+					raise notice 'Inside rate cursor - Rate start date %',vd_current_service_start_dt;
+					raise notice 'Inside rate cursor - Adoption ID %',vl_adoption_id;
+					
+					SELECT sp_subsidy_ageout_calculation
+					INTO 
+						vl_ageout_unit_no
+					FROM
+						cjams.sp_subsidy_ageout_calculation('A', vl_adoption_id::bigint, vd_current_service_start_dt::date);
+					
+					raise notice 'Inside rate cursor - Ageout Proc return value %',vl_ageout_unit_no;
+					raise notice 'Inside rate cursor - Payment Unit No before %',vl_payment_unit_no;
+					IF vl_ageout_unit_no > 0 THEN
+						vl_payment_unit_no := vl_payment_unit_no + vl_ageout_unit_no;
+					END IF;
+					raise notice 'Inside rate cursor - Payment Unit No after %',vl_payment_unit_no;
+				END IF;
+				
+				vdc_payment_amount := vl_payment_unit_no * vdc_per_diem_rate;		     --
+				
+				IF vdc_payment_amount > 0 THEN
+					-- Calculate Suspension period
+					SELECT a.al_suspension_days from SP_SUSPENSION_CALCULATION ('A',
+															vl_adoption_id,
+															vd_subsidy_start_dt,
+															vd_subsidy_end_dt,
+															vd_rate_start_dt,
+															vd_rate_end_dt,
+															vd_payment_start_dt,
+															vd_payment_end_dt,
+															vl_payment_unit_no) a into
+															vl_suspension_days;--
+
+					IF vl_suspension_days IS NULL THEN
+						 vl_suspension_days := 0;--
+					END IF;--
+					
+					-- Exclude amount for Suspension period
+					IF vl_suspension_days > 0 THEN
+						 vdc_suspension_amount := vl_suspension_days * vdc_per_diem_rate;--
+						IF vdc_suspension_amount > 0 THEN
+							 vdc_payment_amount := vdc_payment_amount - vdc_suspension_amount;--
+						END IF;--
+					END IF;								--
+				END IF;--
+				
+				IF vdc_payment_amount > 0 THEN
+					SELECT a.al_sqlcode,
+                                   a.as_error FROM  SP_PAYMENT_DETAIL_INSERT( vl_adoption_id,
+															vl_payment_header_id,
+															vl_service_id,
+															vd_payment_start_dt,
+															vd_payment_end_dt,
+															vdc_payment_amount,
+															vl_payment_unit_no,
+															vs_payment_unit_type,
+															vdc_per_diem_rate,
+															vs_payment_flag,
+															vs_rate_type,
+															vl_linked_pymnt_hdr_id,
+															vl_reference_payment_detail_id,
+															vs_change_type) a into
+															al_sqlcode,
+															as_error;--
+
+					IF al_sqlcode <> 0 THEN
+					    as_error := as_error || ' (SP-3)' ;--
+					   IF as_error is NULL OR as_error = '' THEN
+						   as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-3)'  ;--
+					   END IF;--
+					   --SIGNAL p_sp_error  ;--
+					END IF ;--
+				END IF;--
+				
+				-- vl_unit_no := vl_unit_no - vl_payment_unit_no ;--Moving it up for ageout calculation
+				IF vl_unit_no <= 0 THEN
+					--LEAVE EXIT_LOOP;--
+					EXIT;
+				END IF;--
+			--END FOR;	--
+			END LOOP;
+			close cur_adoption_rates_refcur;
+		END IF;--
+        -- New Logic to pay by Per Diem Rate CIS-19002 (Sept 09 Onwards) - END
+	--END FOR ;--
+	END LOOP;
+	close cur_adoption_subs_refcur;
+	-- UPDATING GROSS AMOUNT
+	SELECT COUNT(*)
+		INTO vl_pay_detl_count	
+	--FROM tb_PAYMENT_DETAIL_TEMP
+	FROM tb_PAYMENT_DETAIL
+	WHERE PAYMENT_ID = vl_payment_header_id
+		AND DELETE_SW = 'N' ;--
+
+	 al_sqlcode := SQLCODE;--
+	IF al_sqlcode < 0 THEN
+		 as_error := 'Error in Selecting Payment Detls count. (SQL-1)'  ;--
+		 vs_identity_column := 'Payment ID';--
+		 vs_identity_val := (vl_payment_header_id)::character varying;--
+		--SIGNAL p_sp_error  ;--
+	END IF ;--
+	
+	IF vl_pay_detl_count > 0 THEN
+		UPDATE tb_PAYMENT_HEADER
+			SET GROSS_AMOUNT_NO = ( SELECT SUM(FINAL_AMOUNT_NO)
+										--FROM tb_PAYMENT_DETAIL_TEMP
+										FROM tb_PAYMENT_DETAIL
+									WHERE PAYMENT_ID = vl_payment_header_id
+										AND DELETE_SW = 'N' 
+								   )
+		WHERE PAYMENT_ID = vl_payment_header_id
+			AND DELETE_SW = 'N';--
+
+		 al_sqlcode := SQLCODE;--
+		IF al_sqlcode <> 0 THEN
+			 as_error := 'Error in Updating Gross Amount. (SQL-2)'  ;--
+			 vs_identity_column := 'Payment ID';--
+			 vs_identity_val := (vl_payment_header_id)::character varying;--
+			--SIGNAL p_sp_error  ;--
+		END IF ;--
+	ELSE
+		DELETE FROM tb_PAYMENT_STATUS
+		WHERE PAYMENT_ID = vl_payment_header_id;--
+
+		 al_sqlcode := SQLCODE;--
+		IF al_sqlcode <> 0 THEN
+			 as_error := 'Error in Deleting Payment Status entry without Detls. (SQL-3)'  ;--
+			 vs_identity_column := 'Payment ID';--
+			 vs_identity_val := (vl_payment_header_id)::character varying;--
+			--SIGNAL p_sp_error  ;--
+		END IF ;--
+
+		DELETE FROM tb_PAYMENT_HEADER
+		WHERE PAYMENT_ID = vl_payment_header_id ;--
+
+		 al_sqlcode := SQLCODE;--
+		IF al_sqlcode <> 0 THEN
+			 as_error := 'Error in Deleting Payment Header entry without Detls. (SQL-4)'  ;--
+			 vs_identity_column := 'Payment ID';--
+			 vs_identity_val := (vl_payment_header_id)::character varying;--
+			--SIGNAL p_sp_error  ;--
+		END IF ;--
+   	END IF;--
+	--COMMIT;	--
+--END FOR;--
+END LOOP;
+close cur_adoption_subs_provider_refcur;
+-- Delete Adoption Subsidy Payments, if Provider category is NOT '1783' - START
+SELECT COUNT(PH.PAYMENT_ID)
+	INTO vl_adp_cnt
+FROM tb_PAYMENT_HEADER  PH
+WHERE PH.PAYMENT_TYPE_CD = '5689'
+	AND COALESCE(PH.MANUAL_SW, 'N')  = 'N'
+	AND PH.DELETE_SW = 'N'
+	AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+	AND (SELECT PICKLIST_VALUE_CD
+			FROM tb_PROVIDER_PICKLIST
+		 WHERE PICKLIST_TYPE_ID = 155
+			AND PICKLIST_VALUE_CD IN ('1782','1783','1785','3049','3274','3302','3794')
+			AND PROVIDER_ID = PH.PROVIDER_ID
+			AND DELETE_SW = 'N') <> '1783' ;--
+	
+IF vl_adp_cnt > 0 THEN
+	--  PAYMENT DETAIL
+	--UPDATE tb_PAYMENT_DETAIL_TEMP
+	UPDATE tb_PAYMENT_DETAIL
+		SET DELETE_SW = 'Y'
+	--WHERE tb_PAYMENT_DETAIL_TEMP.DELETE_SW = 'N'
+	WHERE tb_PAYMENT_DETAIL.DELETE_SW = 'N'
+		--AND tb_PAYMENT_DETAIL_TEMP.PAYMENT_ID 
+		AND tb_PAYMENT_DETAIL.PAYMENT_ID 
+					in ( SELECT PH.PAYMENT_ID
+							FROM tb_PAYMENT_HEADER  PH
+						 WHERE PH.PAYMENT_TYPE_CD = '5689'
+							AND COALESCE(PH.MANUAL_SW, 'N')  = 'N'
+							AND PH.DELETE_SW = 'N'
+							AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+							AND (SELECT PICKLIST_VALUE_CD
+									FROM tb_PROVIDER_PICKLIST
+								 WHERE PICKLIST_TYPE_ID = 155
+									AND PICKLIST_VALUE_CD IN ('1782','1783','1785','3049','3274','3302','3794')
+									AND PROVIDER_ID = PH.PROVIDER_ID
+									AND DELETE_SW = 'N'
+								 ) <> '1783'
+						);--
+
+	--  PAYMENT STATUS
+	UPDATE tb_PAYMENT_STATUS
+		SET DELETE_SW = 'Y'
+	WHERE tb_PAYMENT_STATUS.DELETE_SW = 'N'
+		AND tb_PAYMENT_STATUS.PAYMENT_ID 
+			in ( SELECT PH.PAYMENT_ID
+						FROM tb_PAYMENT_HEADER  PH
+				 WHERE PH.PAYMENT_TYPE_CD = '5689'
+					AND COALESCE(PH.MANUAL_SW, 'N')  = 'N'
+					AND PH.DELETE_SW = 'N'
+					AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+					AND (SELECT PICKLIST_VALUE_CD
+							FROM tb_PROVIDER_PICKLIST
+						 WHERE PICKLIST_TYPE_ID=155
+							AND PICKLIST_VALUE_CD IN ('1782','1783','1785','3049','3274','3302','3794')
+							AND PROVIDER_ID = PH.PROVIDER_ID
+							AND DELETE_SW = 'N'
+						) <> '1783'
+				);--
+
+	--  PAYMENT HEADER
+	UPDATE tb_PAYMENT_HEADER  PH
+		SET DELETE_SW = 'Y'
+	WHERE PH.PAYMENT_TYPE_CD = '5689'
+		AND COALESCE(PH.MANUAL_SW, 'N')  = 'N'
+		AND PH.DELETE_SW = 'N'
+		AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+		AND (SELECT PICKLIST_VALUE_CD
+				FROM tb_PROVIDER_PICKLIST
+			 WHERE PICKLIST_TYPE_ID=155
+				AND PICKLIST_VALUE_CD IN ('1782','1783','1785','3049','3274','3302','3794')
+				AND PROVIDER_ID = PH.PROVIDER_ID
+				AND DELETE_SW = 'N'
+			) <> '1783' ;--
+
+END IF;--
+-- Delete Adoption Subsidy Payments, if Provider category is NOT '1783' - END
+
+---  Insert Into PAYMENT log
+INSERT INTO tb_PAYMENT_RUNTIMES_LOG   
+		(	PAYMENT_RUNTIMES_LOG_ID,
+			PAYMENT_TX,
+			PAYMENT_CURRENT_RUN_TS,
+			PAYMENT_PREVIOUS_RUN_TS,
+			PAYMENT_BATCH_NO,
+			PAYMENT_SUCCESSFUL_SW,
+			CREATE_TS,
+			CREATE_USER_ID,
+			UPDATE_TS,
+			UPDATE_USER_ID,
+			DELETE_SW,
+			PAYMENT_OTHER_TX)
+SELECT  NEXTVAL('sq_payment_runtimes_log'),
+		'AD_SUBSIDY_PAYMENT',
+		CURRENT_TIMESTAMP,
+		CURRENT_TIMESTAMP,
+		'',
+		'',
+		CURRENT_TIMESTAMP,
+		VS_USER_ID,   							
+		CURRENT_TIMESTAMP,
+		VS_USER_ID,
+		'N',
+		'SP_ADOPTION_SUBSIDY_PAYMENT -->  PROGRAM ENDED';
+--FROM sysibm.sysdummy1 ;--
+						
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0 THEN
+	 as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM ENDED';--
+	 vs_identity_column := '';--
+	 vs_identity_val := '';--
+	--SIGNAL p_sp_error;--
+END IF;--
+					
+--COMMIT;--
+RETURN 1;
+END;
+
+$function$
+;

@@ -1,0 +1,117 @@
+CREATE OR REPLACE FUNCTION sp_stipend_calculation(al_placement_id bigint, al_placement_structure_id bigint, ad_placement_start_dt date, ad_placement_end_dt date, ad_payment_start_dt date, ad_payment_end_dt date, OUT al_doc_level_id integer, OUT adc_stipend_amount_no numeric, OUT ad_service_start_dt date, OUT ad_service_end_dt date, OUT al_unit_no integer, OUT as_unit_type character varying, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vl_no_of_nights INT;--
+DECLARE vl_stipend_count INT;--
+DECLARE vd_stipend_start_dt DATE;--
+DECLARE vd_stipend_end_dt DATE;--
+
+DECLARE vl_sqlcode int default 0;--
+
+DECLARE      SQLCODE                         INTEGER         DEFAULT 0;--
+
+--
+--
+ vs_message_text VARCHAR(3000) DEFAULT '';--
+ vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_STIPEND_CALCULATION';
+ BEGIN
+--
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+--    GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;--
+    vl_sqlcode := -1 ;--
+    as_error := COALESCE(as_error ,'') || CURRENT_TIMESTAMP::text ||'::' || vs_Procedure_nm || '.' ;--
+    as_error := COALESCE(as_error ,'') || '::RO ' || 'Placement id' || ' :: ' || COALESCE(to_char(al_placement_id,'999999'),'');--
+    as_error := as_error || COALESCE(vs_message_text ,'');--
+END;--
+
+-- INITIAL VALUES
+al_doc_level_id := 0;--
+adc_stipend_amount_no := 0.00;--
+
+--  get the last month start date and end date
+vd_previous_month_start_dt := ad_payment_start_dt;--
+vd_previous_month_end_dt := ad_payment_end_dt;--
+
+SELECT STIPEND_SERVICE_ID,
+       AMOUNT,
+       START_DT,
+       END_DT
+INTO al_doc_level_id,
+     adc_stipend_amount_no,
+     vd_stipend_start_dt,
+     vd_stipend_end_dt
+  FROM tb_PLACEMENT_DOC
+WHERE DELETE_SW = 'N'
+      AND PLACEMENT_ID = al_placement_id
+      AND APPROVAL_STATUS_CD = '3047'
+      AND START_DT < vd_previous_month_end_dt
+      AND ( END_DT IS NULL OR END_DT > vd_previous_month_start_dt)
+ORDER BY PLACEMENT_DOC_ID DESC FETCH FIRST ROW ONLY ;--
+
+al_sqlcode := SQLCODE;--
+IF al_sqlcode < 0  THEN
+    as_error := 'Stipend Details: Error in getting Stipend details';--
+END IF ;--
+
+IF adc_stipend_amount_no is NULL THEN
+   adc_stipend_amount_no := 0.00;--
+END IF;--
+  
+IF al_doc_level_id is NULL OR al_doc_level_id = 0 THEN
+  -- No Information exists for Stipend
+  al_doc_level_id := 0;--
+  adc_stipend_amount_no := 0.00;--
+ELSE
+  -- Get End Date for Stipend  
+  IF vd_stipend_end_dt is NULL OR vd_stipend_end_dt = DATE('1900-01-01') THEN
+     -- No Nothing 
+  ELSE
+     IF vd_stipend_end_dt <= vd_previous_month_end_dt THEN
+      ad_placement_end_dt := vd_stipend_end_dt;--
+     END IF;--
+  END IF;--
+  
+  -- Get Start Date for Stipend 
+  IF vd_stipend_start_dt > vd_previous_month_start_dt THEN
+     ad_placement_start_dt := vd_stipend_start_dt; --
+  END IF;--
+
+  -- Calculate numbers of nights
+  IF ad_placement_end_dt IS NULL OR ad_placement_end_dt >= vd_previous_month_end_dt THEN
+     ad_service_end_dt :=  vd_previous_month_end_dt;--
+  ELSE
+     ad_service_end_dt := ad_placement_end_dt;--
+  END IF;--
+
+  IF ad_placement_start_dt <= vd_previous_month_start_dt THEN  -- child is staying in this placment before the previous month
+     ad_service_start_dt :=  vd_previous_month_start_dt;--
+  ELSE
+     ad_service_start_dt := ad_placement_start_dt;--
+  END IF;--
+
+  vl_no_of_nights := DAY(ad_service_end_dt) - DAY(ad_service_start_dt);--
+  al_unit_no := vl_no_of_nights;--
+  IF ad_service_start_dt = vd_previous_month_end_dt AND (ad_placement_end_dt IS NULL
+        OR ad_placement_end_dt > vd_previous_month_end_dt) THEN
+     al_unit_no := 1;--
+  ELSEIF ad_service_end_dt = vd_previous_month_end_dt and (ad_service_end_dt <> ad_placement_end_dt or ad_placement_end_dt IS NULL ) THEN
+     al_unit_no := al_unit_no + 1;--
+  END IF;--
+  as_unit_type := '5610'; --nightly
+
+END IF;--
+
+al_sqlcode := vl_sqlcode;--
+
+END;
+
+$function$
+

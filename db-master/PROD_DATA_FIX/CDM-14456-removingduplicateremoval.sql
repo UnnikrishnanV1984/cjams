@@ -1,0 +1,1 @@
+update intakeservreqchildremoval set activeflag = 0, updatedon = now(), updatedby = 'CDM-14456' where removalid in ('252065','251227');

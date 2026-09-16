@@ -1,0 +1,36 @@
+CREATE OR REPLACE FUNCTION cjams.updateservicessearch()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+ v_providerid character varying;
+ v_serviceid int;
+ v_count int;
+ 
+   
+
+BEGIN 
+
+select tva.providerid,tas.service_id into v_providerid,v_serviceid from tb_vendor_applicant_services  tas
+inner join tb_vendor_applicant tva on tva.vendorapplicantid=tas.vendorapplicantid and tva.delete_sw='N'
+where tas.startdate::date = now()::date and tas.delete_sw='N' and tva.providerid is not null;
+v_count := null;
+select count(*) into v_count  from tb_provider_services where provider_id = (v_providerid)::int and delete_sw='N' and service_id=v_serviceid;
+raise notice 'v_count%',v_count;
+if(v_count=0) then 
+INSERT INTO cjams.tb_provider_services
+(  service_id, start_dt, end_dt, paid_cd
+, create_ts, create_user_id, update_ts, update_user_id, delete_sw,provider_id)
+(select  tas.service_id, tas.startdate, tas.enddate,ts.paid_non_paid_cd, tas.create_ts, tas.create_user_id, tas.update_ts,
+tas.update_user_id, tas.delete_sw,tva.providerid::int from tb_vendor_applicant_services  tas
+inner join tb_vendor_applicant tva on tva.vendorapplicantid=tas.vendorapplicantid and tva.delete_sw='N'
+inner join tb_services ts on ts.service_id=tas.service_id and ts.delete_sw='N'
+where tas.startdate::date = now()::date and tas.delete_sw='N' and tva.providerid is not null);
+end if;
+return 'Success';
+
+END;
+
+$function$

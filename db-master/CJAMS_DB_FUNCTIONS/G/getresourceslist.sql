@@ -1,0 +1,30 @@
+
+DROP FUNCTION IF EXISTS cjams.getresourceslist(v_id uuid, v_parentid uuid, v_resourcetype integer, v_page integer, v_limit integer);
+
+CREATE OR REPLACE FUNCTION cjams.getresourceslist(v_id uuid, v_parentid uuid, v_resourcetype integer, v_page integer, v_limit integer)
+ RETURNS TABLE(totalcount bigint, id uuid, parentid uuid, name character varying, resourcetype integer, resourceid character varying, tooltip text, description character varying, parentkey character varying, modulekey character varying, resourcetypedesc character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_offset integer;
+
+BEGIN
+v_offset := (v_page - 1) * v_limit;
+		
+RETURN query
+
+SELECT 
+	COUNT(1) OVER(),rs.id,rs.parentid,rs.resourcename,rs.resourcetype,rs.resourceid,rs.tooltip,rs.description,rs.parentkey,rs.modulekey,rt.description 
+FROM resource rs
+INNER JOIN referencevalues rt ON rt.ref_key = rs.resourcetype ::character varying AND rt.referencetypeid = 344 AND rt.activeflag=1
+WHERE rs.activeflag = 1  
+AND	CASE WHEN v_id IS NOT NULL AND v_parentid IS NOT NULL THEN (rs.id=v_id OR rs.parentid=v_parentid ) ELSE true END
+AND	CASE WHEN v_resourcetype IS NOT NULL THEN rs.resourcetype=v_resourcetype ELSE true END
+AND	CASE WHEN (v_parentid IS NULL AND v_resourcetype IS NULL AND v_id IS NULL) THEN rs.parentid IS NULL AND rs.resourcetype NOT IN (2) ELSE true END
+LIMIT v_limit OFFSET v_offset;
+ 
+END;
+
+$function$
+;

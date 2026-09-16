@@ -1,0 +1,160 @@
+CREATE OR REPLACE FUNCTION sp_rs_fiscal_cat_cd(al_client_id bigint, al_payment_detail_id bigint, as_elig_sw character, ad_start_dt date, ad_end_dt date, OUT as_fiscalcat character varying, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Vineet Tirodkar 
+-- 05/26/2009
+-- To Get Fiscal Category Code for the Payment Stamping / Re-Stamping based on current Eligibility Status
+-- Vinodh Magimaidas - 09/23/2010 - PRJ-00917 fiscal category code calculation as in payment_detail_insert
+------------------------------------------------------------------------
+
+DECLARE vs_elig_type_cd    VARCHAR(5) DEFAULT '2931';--
+DECLARE vl_placement_structure_id  BIGINT DEFAULT 0;--
+DECLARE vl_age_of_client    INT DEFAULT 0;--
+DECLARE SQLCODE      INT DEFAULT 0;--
+-- PRJ-00917
+DECLARE vl_placement_id    BIGINT DEFAULT 0; --
+DECLARE vl_org_id      BIGINT DEFAULT 0;--
+DECLARE vl_provider_id     BIGINT DEFAULT 0;--
+DECLARE vl_program_id     BIGINT DEFAULT 0; --
+DECLARE vs_lic_agency     VARCHAR(5);--
+DECLARE vs_lic_agency_cd    VARCHAR(5);--
+-- PRJ-00917 END
+Begin
+SELECT FINAL_SERVICE_ID, PLACEMENT_ID  --PRJ-00917
+  INTO vl_placement_structure_id, vl_placement_id --PRJ-00917
+  FROM TB_PAYMENT_DETAIL
+ WHERE DELETE_SW = 'N'
+   AND PAYMENT_DETAIL_ID = al_payment_detail_id ;   --
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode < 0  THEN
+    as_error := 'Error in getting Final Service ID for Payment Detail ID: ' || TO_CHAR(al_payment_detail_id);--
+END IF ;--
+
+--PRJ-00917  -- following are extract from sp_payment_detail_insert 
+IF vl_placement_structure_id = 503 THEN -- guardianship SUBSIDY 
+  vs_elig_type_cd := '2935';--
+ELSEIF vl_placement_structure_id = 501 THEN -- ADOPTION SUBSIDY
+  vs_elig_type_cd := '2934';--
+ELSE
+ SELECT P.PROVIDER_ORGANIZATION_ID
+   , P.PROVIDER_ID
+   , P.CONTRACT_PROGRAM_ID
+      INTO vl_org_id
+   , vl_provider_id
+   , vl_program_id  
+      FROM TB_PLACEMENT P
+     WHERE P.PLACEMENT_ID = vl_placement_id;--
+  
+ --IF vl_org_id IS NULL OR vl_org_id = 0 THEN -- PUBLIC PROVIDER
+ --END IF;--
+  
+ IF vl_program_id is NULL THEN
+     vl_program_id := 0;--
+ END IF;--
+  
+ IF vl_program_id > 0  AND ad_start_dt > DATE('2010-01-31') THEN
+  SELECT LTRIM(RTRIM(LICENSING_AGENCY_CD))
+    INTO vs_lic_agency_cd
+    FROM TB_PROVIDER_LICENSING
+   WHERE SITE_ID = vl_provider_id
+     AND PROVIDER_ID = vl_org_id
+     AND LICENSE_ISSUE_DT <= ad_start_dt
+     AND LICENSE_EXPIRY_DT >= ad_end_dt
+     AND DELETE_SW = 'N'
+   ORDER BY LICENSE_APPLICATION_ID DESC
+   FETCH FIRST ROW ONLY ;--
+
+  IF vs_lic_agency_cd is NULL THEN
+    vs_lic_agency_cd := '';--
+  ELSEIF vs_lic_agency_cd = '8147' THEN  -- OOS
+    vs_lic_agency := 'OOS' ; --
+  END IF;--
+ END IF;--
+END IF ;--
+
+-- get the fiscal category code
+
+-- Get Client's Age
+ vl_age_of_client := 0; -- INITIAL VALUE
+
+/*SELECT F_AGE(DOB_DT, ad_end_dt)
+  INTO vl_age_of_client
+  FROM TB_CLIENT
+ WHERE CLIENT_ID = al_client_id
+   AND DELETE_SW = 'N';--*/
+SELECT F_AGE(DOB::date, ad_end_dt)
+  INTO vl_age_of_client
+  FROM person
+ WHERE cjamspid = al_client_id
+   AND activeflag = 1;
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode < 0  THEN
+    as_error := 'Error in Clients Age as of: ' || TO_CHAR(ad_end_dt);--
+END IF ;--
+
+IF vl_age_of_client IS NULL THEN
+    vl_age_of_client := 0; --
+END IF;--
+
+-- CIS-19489
+IF vl_placement_structure_id = 1 AND vl_age_of_client >= 16 AND vl_age_of_client <= 18 THEN
+ IF ad_end_dt <= DATE('2010-01-31') THEN
+  IF as_elig_sw = 'Y' THEN -- IV-E Eligible Client
+    as_fiscalCat := '5117';--
+  ELSE -- Not IV-E Eligible Client
+    as_fiscalCat := '5118';--
+  END IF;--
+ ELSE
+  IF vs_lic_agency = 'OOS' AND as_elig_sw = 'Y' THEN -- IV-E Eligible Client
+    as_fiscalCat := '2178'; -- Out of State Group Care
+  ELSEIF vs_lic_agency = 'OOS' THEN
+    as_fiscalCat := '7178'; -- Out of State Group Care
+  ELSEIF as_elig_sw = 'Y' THEN  -- IV-E Eligible Client
+    as_fiscalCat := '2177'; -- In State Group Care
+  ELSE -- Not IV-E Eligible Client
+    as_fiscalCat := '7177'; -- In State Group Care
+  END IF;--
+ END IF;--
+ELSEIF vl_placement_structure_id = 1 AND vl_age_of_client > 18 AND vl_age_of_client <= 21 then
+ IF ad_end_dt <= DATE('2010-01-31') THEN
+   as_fiscalCat := '5119'; --
+ ELSE
+  IF vs_lic_agency = 'OOS' THEN
+    as_fiscalCat := '7178'; -- Out of State Group Care
+  ELSE
+    as_fiscalCat := '7177'; -- In State Group Care 
+  END IF;--
+ END IF;--
+ELSEIF vl_placement_structure_id <> 13 AND vs_lic_agency = 'OOS' AND ad_start_dt > DATE('2010-01-31') THEN
+ IF as_elig_sw = 'Y' THEN 
+   as_fiscalCat := '2178'; -- Out of State Group Care
+ ELSE 
+   as_fiscalCat := '7178'; -- Out of State Group Care
+ END IF ;--
+ELSE
+ IF as_elig_sw = 'Y' THEN 
+   vs_elig_type_cd := '3951';--
+ ELSE 
+   vs_elig_type_cd := '3952';--
+ END IF ;--
+
+ SELECT FISCAL_CATEGORY_CD
+   INTO as_fiscalCat 
+   FROM TB_PLACEMENT_STRU_CATEGORY_LINK, TB_FISCAL_CATEGORY_MASTER
+  WHERE TB_PLACEMENT_STRU_CATEGORY_LINK.SERVICE_ID = vl_placement_structure_id 
+    AND TB_PLACEMENT_STRU_CATEGORY_LINK.FISCAL_CATEGORY_ID = TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_ID 
+    AND TB_FISCAL_CATEGORY_MASTER.ELIGIBILITY_CD = vs_elig_type_cd
+    AND TB_PLACEMENT_STRU_CATEGORY_LINK.DELETE_SW = 'N' 
+    AND TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N' ;--
+END IF ;--
+--fiscal category code check end
+
+END ;
+
+$function$
+

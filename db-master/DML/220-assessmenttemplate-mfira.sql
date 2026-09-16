@@ -1,0 +1,1 @@
+update assessmenttemplate set name='marylandFamilyInitialRiskAssessment' where assessmenttemplateid='ba9b5838-e8ab-434b-9871-3611e86c314d' and activeflag=1;

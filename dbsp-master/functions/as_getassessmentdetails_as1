@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION as_getassessmentdetails_as1(objectsid character varying, lassessmenttemplateid uuid, iscaseworker boolean, v_roletypecode character varying DEFAULT ''::character varying, v_persontypekey character varying DEFAULT NULL::character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+declare l_assment json;
+
+v_intakenumber character varying default null;
+v_objectid  character varying;
+
+begin
+ 
+ 
+ 
+    select json_agg(astmp) into l_assment from (select AST.assessmentTextPositionTypeKey,AST.assessmentscoresetupid,  
+          AST.assessmenttemplateid,AST.calculationmethod,AST.datamappingenabled,AST.description,
+    AST.effectivedate,AST.enableassessmentscore,AST.expirationdate,
+    AST.external_templateid,AST.helptext,AST.instructions,AST.isvisible,AST.name,
+    AST.scoringname,AST.titleheadertext,AST.version,
+          a.submissionid,a.submissiondata,coalesce(A.score,0) score ,
+          A.assessmentstatustypekey,A.assessmentid ,
+     a.updatedon    updateddate,
+   CASE coalesce(A.ismigrated,0)  WHEN 1 THEN  'Migrated' ELSE coalesce(up.lastname,'')||', ' ||coalesce(up.firstname,'') END  as username,
+    a.insertedon as createddate,AC.comments,
+     coalesce(A.ismigrated,0)   ismigration,
+     A.assessmentsubmissiontypekey
+         
+  FROM assessment A inner join  assessmenttemplate AST
+        ON AST.assessmenttemplateid = A.assessmenttemplateid
+        AND A.activeflag =1 
+  AND A.assessmenttemplateid =lassessmenttemplateid
+  LEFT join assessmentcomments AC on AC.assessmentid = A.assessmentid
+                                          and ac.activeflag =1
+     LEFT join userprofile up on up.securityusersid = a.insertedby
+     /*
+        WHERE 
+        case when v_roletypecode = 'ASIW' then A.intakenumber =v_intakenumber  
+      when v_roletypecode = 'ASCW' then
+      ( A.objectid :: varchar =v_objectid 
+      OR A.intakenumber =v_intakenumber)
+      end 
+   AND lower(A.assessmentstatustypekey) Not in ( CASE coalesce(v_roletypecode,'')  WHEN '' then 'inprocess' else '' end)
+    and (case when v_persontypekey is not null then a.persontypekey = v_persontypekey else true end)
+    */
+       WHERE coalesce(A.intakenumber ,'')= CASE iscaseworker  WHEN false THEN objectsid ELSE coalesce(A.intakenumber ,'') end 
+   AND COALESCE(A.objectid :: character varying,'') = case iscaseworker  
+        WHEN true THEN objectsid 
+        ELSE coalesce(A.objectid :: character varying,'')
+              END 
+   AND lower(A.assessmentstatustypekey) Not in ( CASE coalesce(v_roletypecode,'')  WHEN '' then 'inprocess' else '' end)
+    and (case when v_persontypekey is not null then a.persontypekey = v_persontypekey else true end)
+        ORDER by a.insertedon desc ) as astmp;
+        
+return l_assment;        
+end;
+
+$function$
+

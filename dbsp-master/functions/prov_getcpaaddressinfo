@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION prov_getcpaaddressinfo(cpa_siteid bigint, v_providerid bigint, applicant_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$         
+         
+declare
+
+v_siteid bigint;      
+v_listdata json;
+ 
+BEGIN
+ v_siteid := cpa_siteid;
+
+ raise notice '%',lower(applicant_name);
+
+select json_agg(x) into v_listdata from (
+select coalesce(adr_line1,'')||','||coalesce(adr_line2,'')||','||coalesce(adr_city,'')||','||
+coalesce(adr_state,'')||','||coalesce(adr_county,'')||','||coalesce(adr_zip,'') address, 
+
+addr.provider_id,addr.cpa_siteid,adr_type,adr_line1,
+adr_line2,adr_state,adr_city,adr_county,adr_zip,tpa.adr_start_dt as adr_start_date,tpa.adr_end_dt as adr_end_date,
+
+concat_ws( ',' , coalesce(tpa.adr_street_nm,''),coalesce(tpa.adr_street_tx,'') ,coalesce(tpa.adr_city_nm,'') 
+ ,(select coalesce(countyname,'') from county where statecountycode = tpa.adr_county_cd ), 
+(select coalesce(value_text) from referencevalues where  ref_key= tpa.adr_state_cd  and referencetypeid = 211),
+ coalesce(tpa.adr_zip5_no:: character varying,'') ) as formatted_address,
+ 
+cpa_initial_date,cpa_certificate_type,cpa_homeins_date,cpa_fireins_date,isinspection_home_family_record,
+isinspection_fire_family_record,ismeets_comar_requiremnt,status,suspensionstartdate,suspension_letter_sent_date,suspensionenddate,tp.provider_id as cpa_provider_id,tp.provider_status_cd,
+suspensioncomments,addr.provider_cpa_address_id,dateappeal_meeting,appeal_provider_decision,isrevocationremidied,emergencySuspend,cert_upload_url,cpa_recert_date,
+datenotificationdelivered,dateyouthremoved,nochildaddcpa,provider_last_nm || ' ,' || provider_first_nm  applicantname,
+provider_first_nm||' '||provider_last_nm as applicant_person_name,
+(select count(*) noofpersons from tb_prov_cpa_homes x
+ where provider_cpa_address_id=addr.provider_cpa_address_id ) noofpersons
+from tb_provider tp 
+left join tb_provider_addresses tpa on tpa.parent_key_id = tp.provider_id and tpa.delete_sw='N' and tpa.adr_type_cd=3357 and tpa.adr_default_sw = 'Y'
+left join tb_provider_picklist pp on pp.provider_id = tp.provider_id
+left join tb_prov_cpa_address addr on tp.provider_id = addr.cpa_provider_id
+where (v_siteid is null or addr.cpa_siteid=v_siteid) 
+ and tp.affiliate_provider_id=v_providerid 
+ and (tp.provider_category_cd=1782 or (pp.picklist_value_cd = 1782 and pp.picklist_type_id=155))
+ and (applicant_name is null or LOWER(provider_last_nm) like '%'||lower(applicant_name)||'%' or lower(provider_first_nm) like '%'||lower(applicant_name)||'%')
+
+ order by LOWER(trim(tp.provider_first_nm)),lower(trim(tp.provider_last_nm)),lower(trim(tp.provider_middle_nm)) asc nulls last
+)x;
+
+return v_listdata;
+END; 
+
+$function$
+

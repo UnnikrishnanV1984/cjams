@@ -1,0 +1,1 @@
+update cjams.snapshothist set approvaldate= updatedon where id='fcf464a8-e8e2-43fd-8e9b-68efd376ff4b';

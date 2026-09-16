@@ -1,0 +1,58 @@
+DROP FUNCTION IF EXISTS cjams.get_placement_details(json);
+
+CREATE OR REPLACE FUNCTION cjams.get_placement_details(request json)
+ RETURNS TABLE(totalcount bigint, alternateid integer,
+ altproviderid integer, contractprogramid integer, program_nm character varying,
+ startdatetime date,service_id integer,enddatetime date,cjamspid bigint,dob date,
+ client_nm character varying,
+ ratestructureid integer,service_nm character varying,servicecasenumber bigint,
+ servicecaseid character varying,
+ county character varying
+ )
+ LANGUAGE plpgsql
+AS $function$ declare v_pageSize int;
+
+v_pageNumber int;
+v_pageNum int;
+v_pageOffset int;
+v_provider_id int;
+
+v_ayear character varying(30);
+
+begin
+v_pageNumber := request ->> 'pagenumber' ;
+v_pageNum := v_pageNumber - 1;
+v_pageSize := request ->> 'pagesize' ;
+v_pageOffset = v_pageNum * v_pageSize;
+v_provider_id := request ->> 'providerid';
+
+return QUERY select
+	count(1) over(),
+	pl.alternateid,
+    pl.altproviderid,   
+    pl.contractprogramid,
+    coalesce(cp.program_nm, 'NA')::character varying as program_nm,
+    pl.startdatetime::date,
+    pl.service_id,
+    pl.enddatetime::date,    
+    pr.cjamspid,
+    pr.dob::date,
+    concat(pr.firstname,' ',pr.lastname) :: character varying as client_nm, 
+    pl.comarrate_id,
+    coalesce(ser.service_nm,'NA')::character varying as service_nm,
+    sc.servicecasenumber::bigint,    
+    pl.servicecaseid ::character varying,
+    cjams.F_PRIM_COUNTY(sc.servicecasenumber::bigint,'NULL') as county
+   -- ''::character varying as county  
+   FROM placement pl
+     JOIN servicecase sc ON sc.servicecaseid = pl.servicecaseid AND sc.activeflag = 1
+     JOIN person pr ON pr.personid = pl.personid AND pr.activeflag = 1
+     left join tb_contract_program cp on cp.program_id = pl.contractprogramid
+     left join tb_services ser on ser.service_id = pl.comarrate_id
+  WHERE pl.activeflag = 1 and (pl.enddatetime::date >= current_date  or pl.enddatetime is null) 
+  and pl.altproviderid = v_provider_id
+limit v_pageSize offset v_pageOffset;
+
+end;
+
+$function$

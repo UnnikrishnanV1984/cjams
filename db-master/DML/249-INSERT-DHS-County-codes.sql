@@ -1,0 +1,12 @@
+INSERT INTO cjams.county
+(countyid, activeflag, countyname, regionid, statecountycode, fipscode, oldcountyid, insertedby, insertedon, updatedby, updatedon, expirationdate, effectivedate, "timestamp", longitude, latitude, state, apsregion, ltcregion, zipcode, city, locationcode, old_id, countycode, golivedate)
+VALUES('42c183e0-1af2-4369-8e07-bdea100eed54', 1, 'CRBC', '51193b3c-b58d-de11-8864-006073ea33a2', '9115', 0, NULL, 'admin2', '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'CRBC', NULL) ON CONFLICT DO NOTHING;
+INSERT INTO cjams.county
+(countyid, activeflag, countyname, regionid, statecountycode, fipscode, oldcountyid, insertedby, insertedon, updatedby, updatedon, expirationdate, effectivedate, "timestamp", longitude, latitude, state, apsregion, ltcregion, zipcode, city, locationcode, old_id, countycode, golivedate)
+VALUES('295abd73-0175-4869-adea-e99bcae8c92f', 1, 'DHR', '51193b3c-b58d-de11-8864-006073ea33a2', '3824', 0, NULL, 'admin2', '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'DHR', NULL)ON CONFLICT DO NOTHING;
+INSERT INTO cjams.county
+(countyid, activeflag, countyname, regionid, statecountycode, fipscode, oldcountyid, insertedby, insertedon, updatedby, updatedon, expirationdate, effectivedate, "timestamp", longitude, latitude, state, apsregion, ltcregion, zipcode, city, locationcode, old_id, countycode, golivedate)
+VALUES('dc13bb97-8b5c-4344-a437-f51816fbef62', 1, 'OTHS', '51193b3c-b58d-de11-8864-006073ea33a2', '3826', 0, NULL, 'admin2', '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'OTHS', NULL)ON CONFLICT DO NOTHING;
+INSERT INTO cjams.county
+(countyid, activeflag, countyname, regionid, statecountycode, fipscode, oldcountyid, insertedby, insertedon, updatedby, updatedon, expirationdate, effectivedate, "timestamp", longitude, latitude, state, apsregion, ltcregion, zipcode, city, locationcode, old_id, countycode, golivedate)
+VALUES('51f1c280-1c0a-4921-923c-f66c556ef4fe', 1, 'Out of State', '51193b3c-b58d-de11-8864-006073ea33a2', '3826', 0, NULL, 'admin2', '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, '2019-10-04 04:12:25.279', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'OOS', NULL)ON CONFLICT DO NOTHING;

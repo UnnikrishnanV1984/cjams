@@ -1,0 +1,97 @@
+CREATE OR REPLACE FUNCTION sp_gap_worksheet_guardian_info(vd_providerapprovalid integer)
+ RETURNS TABLE(primaryguardianinfo json, secondaryguardianinfo json, householdmeminfo json)
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE 
+  vs_Procedure_nm           VARCHAR(100) DEFAULT 'sp_gap_worksheet_guardian_info'; 
+  vn_ive_primary_guardian         JSON;
+  vn_ive_secondary_guardian        JSON;
+  vn_ive_household_mem         JSON;
+  vd_full_apprvl_id          int;
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_guardian_info ( 
+  primaryguardianinfo          JSON,
+  secondaryguardianinfo         JSON,
+  householdmeminfo          JSON
+ ); 
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+-- Primary Guardian Info
+ SELECT json_agg(json_build_object(                                                                                                                     
+         'approvalid', tpap.provider_approval_id ,                                                                                                       
+         'persontypecode', tpap.person_type_cd,                                                                                                    
+         'persontype', (SELECT pv.VALUE_TX FROM tb_picklist_values pv WHERE tpap.person_type_cd = pv.PICKLIST_VALUE_CD AND pv.PICKLIST_TYPE_ID = 371),                                                                                                    
+         'name', COALESCE(tpap.first_nm,' ') || ' '||COALESCE(tpap.middle_nm,' ')||' '||COALESCE(tpap.last_nm,' '),   
+   'dob',  tpap.dob_dt,                                                                                            
+         'statebackgrounddate', tpap.state_complete_dt,                                                                                            
+         'federalbackgrounddate', tpap.federal_complete_dt,                                                                                                      
+         'childabusemaltdatacheck', tpap.cps_dt                                                                                                                    
+ ))                                                                                                                                                     
+         INTO vn_ive_primary_guardian  
+ FROM 
+  tb_prov_approval_person tpap 
+ WHERE tpap.provider_approval_id = vd_providerapprovalid and tpap.DELETE_SW = 'N' and tpap.person_type_cd in ('3610');
+  -- join tb_provider_approval tpa on tpa.provider_approval_id = tpap.provider_approval_id
+ -- WHERE tpa.provider_id = vn_grd_id and tpap.DELETE_SW = 'N' and tpap.person_type_cd in ('3610') and tpa.ha_approval_dt < vd_ltst_fc_plcmt_st_dt_with_grd::date ORDER BY tpa.ha_approval_dt DESC LIMIT 1; 
+
+-- Household members Info
+
+ SELECT json_agg(json_build_object(                                                                                                                     
+         'approvalid', tpap.provider_approval_id ,                                                                                                       
+         'persontypecode', tpap.person_type_cd,                                                                                                    
+         'persontype', (SELECT pv.VALUE_TX FROM tb_picklist_values pv WHERE tpap.person_type_cd = pv.PICKLIST_VALUE_CD AND pv.PICKLIST_TYPE_ID = 371),                                                                                                    
+         'name', COALESCE(tpap.first_nm,' ') || ' '||COALESCE(tpap.middle_nm,' ')||' '||COALESCE(tpap.last_nm,' '),   
+   'dob',  tpap.dob_dt,                                                                                            
+         'statebackgrounddate', TPAP2.state_complete_dt,                                                                                            
+         'federalbackgrounddate', TPAP2.federal_complete_dt,                                                                                                      
+         'childabusemaltdatacheck', TPAP2.cps_dt                                                                                                                    
+ ))                                                                                                                                                     
+         INTO vn_ive_household_mem  
+ FROM 
+  tb_prov_approval_person tpap 
+  left join (select min(tpap2.approval_person_id) as approval_person_id, tpap2.dob_dt, tpap2.ssn_no, tpap2.first_nm, tpap2.last_nm
+    from tb_provider_approval tpa
+    join tb_provider_approval tpa1 on tpa.provider_id = tpa1.provider_id
+    join tb_prov_approval_person tpap2 on tpap2.provider_approval_id = tpa1.provider_approval_id
+    where tpa.provider_approval_id = vd_providerapprovalid and tpa.approval_status_cd = '3579' and tpap2.DELETE_SW = 'N' 
+      and tpap2.person_type_cd in ('3612', '3613') and (tpa1.ha_approval_dt > (tpap2.dob_dt + interval '18 years'))
+    group by tpap2.dob_dt, tpap2.ssn_no, tpap2.first_nm, tpap2.last_nm 
+   ) AS TPAP1 on TPAP1.first_nm = tpap.first_nm and TPAP1.last_nm = tpap.last_nm and TPAP1.dob_dt = tpap.dob_dt   
+  left join tb_prov_approval_person TPAP2 on  TPAP2.approval_person_id = TPAP1.approval_person_id  
+ WHERE tpap.provider_approval_id = vd_providerapprovalid and tpap.DELETE_SW = 'N' and tpap.person_type_cd in ('3612', '3613');
+   
+-- Secondary Guardian Info
+ SELECT json_agg(json_build_object(                                                                                                                     
+         'approvalid', tpap.provider_approval_id ,                                                                                                       
+         'persontypecode', tpap.person_type_cd,                                                                                                    
+         'persontype', (SELECT pv.VALUE_TX FROM tb_picklist_values pv WHERE tpap.person_type_cd = pv.PICKLIST_VALUE_CD AND pv.PICKLIST_TYPE_ID = 371),                                                                                                    
+         'name', COALESCE(tpap.first_nm,' ') || ' '||COALESCE(tpap.middle_nm,' ')||' '||COALESCE(tpap.last_nm,' '),   
+   'dob',  tpap.dob_dt,                                                                                            
+         'statebackgrounddate', tpap.state_complete_dt,                                                                                            
+         'federalbackgrounddate', tpap.federal_complete_dt,                                                                                                      
+         'childabusemaltdatacheck', tpap.cps_dt                                                                                                                    
+ ))                                                                                                                                                     
+         INTO vn_ive_secondary_guardian     
+ FROM 
+  tb_prov_approval_person tpap 
+ WHERE tpap.provider_approval_id = vd_providerapprovalid and tpap.DELETE_SW = 'N' and tpap.person_type_cd in ('3611');
+
+ --  join tb_provider_approval tpa on tpa.provider_approval_id = tpap.provider_approval_id
+ -- WHERE tpa.provider_id = vn_grd_id and tpap.DELETE_SW = 'N' and tpap.person_type_cd in ('3611') and tpa.ha_approval_dt < vd_ltst_fc_plcmt_st_dt_with_grd::date ORDER BY tpa.ha_approval_dt DESC LIMIT 1;
+ 
+INSERT INTO Temp_worksheet_guardian_info
+SELECT 
+  vn_ive_primary_guardian,
+  vn_ive_secondary_guardian,
+  vn_ive_household_mem;  
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_guardian_info;
+              
+DROP TABLE Temp_worksheet_guardian_info;
+
+   END
+    $function$
+

@@ -1,0 +1,2 @@
+update tb_client_eligibility set delete_sw = 'Y' where client_id = 4154837 and removal_id = 250318;
+update intakeservreqchildremoval set parent2comments = 'Father not involved.' , parent1id = 2923247 where removalid = 197386;

@@ -1,0 +1,22 @@
+ CREATE OR REPLACE FUNCTION public.getapplicationdecisions(eventcd character varying, objid character varying)                                                                             
+  RETURNS TABLE(fromuser character varying, fromroleid character varying, objectid character varying, isreviewrequest boolean, remarks text, status text)                                  
+  LANGUAGE plpgsql                                                                                                                                                                         
+ AS $function$                                                                                                                                                                             
+                                                                                                                                                                                           
+ declare                                                                                                                                                                                   
+                                                                                                                                                                                           
+ v_eventcode character varying;                                                                                                                                                            
+ v_objectid character varying;                                                                                                                                                             
+                                                                                                                                                                                           
+ begin                                                                                                                                                                                     
+         v_eventcode:= eventcd;                                                                                                                                                            
+         v_objectid:= objid;                                                                                                                                                               
+                                                                                                                                                                                           
+         RETURN QUERY SELECT cast(upf.firstname || ' ' || upf.lastname as character varying), ptr.fromroleid, ptr.objectid, ptr.isreviewrequest::bool, ptr.remarks::text, ptr.status::text 
+         FROM tb_provider_decision ptr join userprofile upf on upf.securityusersid = ptr.fromsecurityusersid                                                                               
+         where ptr.eventcode=v_eventcode and ptr.objectid=v_objectid                                                                                                                       
+         order by ptr.insertedon desc;                                                                                                                                                     
+ end;                                                                                                                                                                                      
+                                                                                                                                                                                           
+ $function$                                                                                                                                                                                
+

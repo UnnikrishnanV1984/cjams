@@ -1,0 +1,794 @@
+CREATE OR REPLACE FUNCTION as_sp_foster_care_private_final()
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Amit Rastogi
+-- Date Created :04/06/2004
+-- ADDED CONDITION FOR PROVIDER_ID IS NOT NULL
+-- incident 5265
+-- ADDED LOGIC TO CREATE PAYMENT HEADER ONLY IF NO HEADER EXIST
+-- INITIALIZING VALUES FOR MONTHLY AND PERDIEM RATES
+-- 01/12/2006 added logic if placement information changed from the draft run
+-- 01/18/2006 age logic calculation change
+-- 02/08/2006 exclude Residential Treatment Centers
+-- 05/04/2006 change calculation of age of the client. Instead of age based on the current date changed to
+-- calculate age based on the placement payment month #6962
+-- included conversion_sw to exclude the split converted placement.  #7521
+-- Mohan - added error log to the procedure
+-- 10/12/2006 added two parameter to SP_FOSTERCARE_CALCULATION for payment calculation
+-- 10/26/2006 change the payment header procedure call passing prev month dates
+-- 03/20/2007 incident 7263 added new procedure to update reason code
+-- 05/09/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in tb_BATCH_ERROR_LOG # 14088
+-- 07/10/2007 Vineet Tirodkar - New Procedure SP_RECEIVABLE_OFFSET_PROVIDERS 
+-- 07/10/2007 Vineet Tirodkar - commit statement has been added inside the for loop
+-- 03/18/2008 Vineet Tirodkar - Changes for Provider Checklist (CIS-16755)
+--       Change in Cursor cur_final_header to add Provider checklist table                   
+--       Change in Cursor cur_final_detail to add DOB and Age conditions  
+-- 03/27/2008 Vineet Tirodkar - Always recalculate payment amount even if nothing changed from draft and final run. 
+-- 04/15/2008 Vineet Tirodkar - Changes in LOG ERROR texts to identify exact SQLs
+--           Resetting variables as NULL before each run in a loop for ROOM AND BOARD 
+-- 04/21/2008 Vineet Tirodkar - TO EXCLUDE SAME ENTRY DT and EXIT DT PLACEMENT 
+-- 05/29/2008 Vineet Tirodkar - Changes in logic for Provider Checklist, 
+--            In case of missing information generate payment with status as Hold.
+-- 05/30/2008 Vineet Tirodkar - New arguments Original Payment ID and Pay Detl ID for SP_PAYMENT_DETAIL_INSERT
+-- 06/02/2008 Vineet Tirodkar - New Logic to update payment with status as Hold
+--            In case of missing info and Payment Type 'Final'.
+-- 08/18/2008 Vineet Tirodkar - Change in Cursor cur_final_detail for Age conditions (< 21). CIS-17754
+-- 10/24/2008 Vineet Tirodkar - Check if there is any payment header created without detail; then delete Payment Status and Payment Header record. # 18838
+-- 03/18/2009 Vineet Tirodkar - Change in Placement Cursor for Age conditions. 
+--            CHESSIE will pay to all clients up to DOB for the clients turning 21 in that service month  - CIS-18524 
+-- 08/13/2009 Vineet Tirodkar - Changes to Implement Per Diem Rates for Private Provider Payments -- CIS-19002
+-- 06/01/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+--      Modifications to pass dummy argument  to SP_PAYMENT_DETAIL_INSERT (SP modified for Fiscal Audit Trail)
+------------------------------------------------------------------------
+
+DECLARE vl_pay_header_id BIGINT DEFAULT 0;--
+DECLARE vl_pay_detail_id BIGINT DEFAULT 0;--
+DECLARE vl_provider_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_to_provider_id BIGINT DEFAULT 0;--
+DECLARE vl_contract_program_id BIGINT DEFAULT 0;--
+DECLARE vl_placement_id BIGINT DEFAULT 0;--
+DECLARE vl_placement_structure_id BIGINT DEFAULT 0;--
+
+DECLARE vl_linked_pymnt_hdr_id BIGINT DEFAULT NULL;--
+DECLARE vl_reference_payment_detail_id BIGINT DEFAULT NULL;--
+
+DECLARE vl_draft_service_id INT DEFAULT 0;--
+DECLARE vl_unit_no INT DEFAULT 0;--
+DECLARE vl_age_of_child INT DEFAULT 0;--
+DECLARE vs_validation_status VARCHAR(5);--
+
+DECLARE vdc_monthly_rate decimal(10,2);--
+DECLARE vdc_perdiem_rate decimal(10,2);--
+DECLARE vdc_gross_amount decimal(10,2);--
+DECLARE vdc_total_draft_amount decimal(10,2);--
+DECLARE vs_private_sw CHAR(1) DEFAULT 'P';--
+
+DECLARE vs_unit_type VARCHAR(5);--
+DECLARE vs_payment_status VARCHAR(5);--
+DECLARE vs_payment_type VARCHAR(5) DEFAULT '6';--
+DECLARE vs_rate_type_cd CHAR(1) DEFAULT 'P';--
+DECLARE vs_rate_type VARCHAR(5) DEFAULT '1232';   -- room and board
+DECLARE vs_draft_final_type CHAR(1) DEFAULT 'F';--
+DECLARE vs_update_status_flag CHAR(1) DEFAULT  'N';--
+DECLARE vs_withhold_payment CHAR(1) DEFAULT  'N';--
+
+DECLARE vd_draft_service_start_dt DATE;--
+DECLARE vd_draft_service_end_dt DATE;--
+DECLARE vd_current_service_start_dt DATE;--
+DECLARE vd_current_service_end_dt DATE;--
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vd_current_month_end_dt DATE;--
+DECLARE vd_current_placment_start_dt DATE;--
+DECLARE vd_current_placment_end_dt DATE;--
+
+-- PRJ-04753
+DECLARE vs_change_type VARCHAR(5) DEFAULT NULL ;--
+
+DECLARE vl_checklist_cnt INT DEFAULT 0;--
+DECLARE vl_payment_detail_count BIGINT DEFAULT 0;--
+
+ --Mohan
+ DECLARE  VS_RESULT            CHAR(1);--
+ DECLARE  VS_USER_ID           VARCHAR(10)     DEFAULT  'finance';--
+ DECLARE  VTS_PREVIOUS_RUN_TS  TIMESTAMP;--
+ DECLARE  VTS_CURRENT_RUN_TS    TIMESTAMP ;--
+ DECLARE  VL_ROWCOUNT           INTEGER DEFAULT  0;--
+ DECLARE  VL_SQLCODE            INTEGER DEFAULT 0;--
+ DECLARE  VS_MESSAGE            VARCHAR(150);--
+ --Mohan
+
+DECLARE  vl_offset_provider_id BIGINT;--
+DECLARE  vdc_offset_amount DECIMAL(10,2) ;--
+
+--Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_FOSTER_CARE_PRIVATE_FINAL';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION;
+cur_final_header record;
+ cur_final_detail record;
+ cur_final_header_refcur REFCURSOR;
+ cur_final_detail_refcur REFCURSOR;
+ 
+BEGIN
+   begin
+ EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+ -- SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+  /*  SELECT  SP_BATCH_ERROR_LOG ( 'SP_FOSTER_CARE_PRIVATE_FINAL' ,
+           NULL,
+           NULL,
+           NULL,
+           NULL,
+           as_error,
+           'finance',
+           vl_ret_status );--*/
+    select SP_BATCH_ERROR_LOG ( 'SP_FOSTER_CARE_PRIVATE_FINAL'::character varying ,
+            NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+       as_error := '';--
+      
+
+     RETURN 0;
+ end;
+--Log Error
+
+-- Get the last month start date and end date
+
+SELECT (date_trunc('month', now()) - interval '1 month')::date,
+       (date_trunc('month', now())::date - 1),
+       ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt,
+        vd_current_month_end_dt;
+
+RAISE NOTICE '%  previous_month_start_dt', vd_previous_month_start_dt;
+RAISE NOTICE '% previous_month_end_dt', vd_previous_month_end_dt;
+RAISE NOTICE '% current_month_end_dt', vd_current_month_end_dt;
+--  Initialize variables with the current timestamp
+ VTS_PREVIOUS_RUN_TS := CURRENT_TIMESTAMP;--
+ VTS_CURRENT_RUN_TS := CURRENT_TIMESTAMP;--
+
+--  get the last run timestamp
+--  if first run, i.e., no rows in log, then leave as initialized
+
+SELECT COUNT(*)
+ INTO VL_ROWCOUNT
+FROM tb_PAYMENT_RUNTIMES_LOG
+WHERE PAYMENT_TX   = 'FC_PRIVATE_FINAL';--
+
+IF  VL_ROWCOUNT > 0 THEN
+ SELECT MAX(TO_TIMESTAMP(PAYMENT_CURRENT_RUN_TS,'YYYY-MM-DD-HH24.MI.SS'))
+  INTO VTS_PREVIOUS_RUN_TS
+ FROM tb_PAYMENT_RUNTIMES_LOG
+ WHERE PAYMENT_TX   = 'FC_PRIVATE_FINAL';--
+END IF;--
+
+---  Insert Into PAYMENT log
+INSERT INTO tb_PAYMENT_RUNTIMES_LOG   
+  ( PAYMENT_RUNTIMES_LOG_ID,
+   PAYMENT_TX,
+   PAYMENT_CURRENT_RUN_TS,
+   PAYMENT_PREVIOUS_RUN_TS,
+   PAYMENT_BATCH_NO,
+   PAYMENT_SUCCESSFUL_SW,
+   CREATE_TS,
+   CREATE_USER_ID,
+   UPDATE_TS,
+   UPDATE_USER_ID,
+   DELETE_SW,
+   PAYMENT_OTHER_TX)
+ SELECT  NEXTVAL('sq_payment_runtimes_log'),
+   'FC_PRIVATE_FINAL',
+   VTS_CURRENT_RUN_TS,
+   VTS_PREVIOUS_RUN_TS,
+   '',
+   '',
+   CURRENT_TIMESTAMP,
+   VS_USER_ID,          
+   CURRENT_TIMESTAMP,
+   VS_USER_ID,
+   'N',
+   'SP_FOSTER_CARE_PRIVATE_FINAL -->  PROGRAM STARTED';
+ --FROM sysibm.sysdummy1 ;--
+      
+ al_sqlcode := SQLCODE;   --
+IF al_sqlcode <> 0 THEN
+  as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM STARTED'  ;--
+  vs_identity_column := '';--
+  vs_identity_val := '';--
+ --SIGNAL p_sp_error  ;--
+END IF ;--
+     
+
+-- check for placement record for private provider for the previous month
+-- and placement structure other than Kinship care
+
+-- checking for new record entered after draft batch is run to create header record
+OPEN cur_final_header_refcur FOR 
+--FOR cur_final_header AS
+--cur1 CURSOR WITH HOLD FOR
+   SELECT DISTINCT PL.PROVIDER_ID,PR.PAY_TO_AFFILIATE_CD,PL.PROVIDER_ORGANIZATION_ID,
+               F_ENAME('2953', PR.PROVIDER_ID) AS PROVIDER_NAME
+        FROM tb_PLACEMENT PL,
+             tb_PROVIDER  PR
+     WHERE PL.PROVIDER_ID = PR.PROVIDER_ID
+      AND PL.PROVIDER_ORGANIZATION_ID  IS NOT NULL
+      AND PL.CONTRACT_PROGRAM_ID IS NOT NULL
+      AND PL.PROVIDER_ID IS NOT NULL
+      AND PL.ENTRY_DT  IS NOT NULL
+      AND PL.PLACEMENT_STRUCTURE_ID <> 8
+      AND PL.PLACEMENT_STRUCTURE_ID <> 76
+      AND PL.ENTRY_DT <= vd_previous_month_end_dt
+      AND PL.APPROVAL_STATUS_CD = '3047'
+      AND ((PL.VOID_SW IS NULL) OR (PL.VOID_SW = 'N'))
+      AND ( (PL.EXIT_DT  IS NULL) OR  (PL.EXIT_DT > vd_previous_month_start_dt))
+      AND ( PL.EXIT_DT IS NULL OR PL.ENTRY_DT <> PL.EXIT_DT )
+      AND PL.DELETE_SW = 'N'
+      AND PR.DELETE_SW = 'N'
+      AND PL.CONVERSION_SW IS NULL; 
+
+--DO
+loop
+ fetch cur_final_header_refcur into cur_final_header;
+           exit when not found;
+-- generating payment header id and insert into payment header with payment type
+-- Maintenance and manual sw to No
+
+    IF cur_final_header.PAY_TO_AFFILIATE_CD = '3366' THEN -- same as provider
+         vl_payment_to_provider_id := cur_final_header.PROVIDER_ID;--
+    ELSEIF cur_final_header.PAY_TO_AFFILIATE_CD = '3367' THEN -- a different address
+         vl_payment_to_provider_id := cur_final_header.PROVIDER_ID;--
+    ELSEIF cur_final_header.PAY_TO_AFFILIATE_CD = '3368' THEN -- send payment to affiliate org
+         vl_payment_to_provider_id := cur_final_header.PROVIDER_ORGANIZATION_ID;--
+    ELSE -- Case Null or Any other vlaue than above
+         vl_payment_to_provider_id := cur_final_header.PROVIDER_ID;--
+    END IF;--
+
+     vl_provider_id := cur_final_header.PROVIDER_ID;--
+
+     vl_pay_header_id := 0;  -- INITIAL VALUE
+ -- Check if payment header record is created for the previous month for this provider
+ SELECT PAYMENT_ID
+  INTO vl_pay_header_id
+ FROM tb_PAYMENT_HEADER
+ WHERE PROVIDER_ID = vl_payment_to_provider_id 
+  AND DELETE_SW = 'N' 
+  AND PAYMENT_START_DT = vd_previous_month_start_dt 
+  AND PAYMENT_END_DT = vd_previous_month_end_dt 
+  AND PAYMENT_TYPE_CD = '6';--
+
+ IF vl_pay_header_id IS NULL OR vl_pay_header_id = 0 THEN
+  SELECT a.al_header_id,a.al_sqlcode,a.as_error from SP_PAYMENT_HEADER_INSERT ( vl_payment_to_provider_id,
+            vs_payment_type,
+            vd_previous_month_start_dt,
+            vd_previous_month_end_dt) a INTO
+            vl_pay_header_id, 
+            al_sqlcode, 
+            as_error ;--
+
+  IF al_sqlcode <> 0 THEN
+    as_error := as_error || ' (SP-1)' ;--
+   IF as_error is NULL OR as_error = '' THEN
+     as_error := 'SP_PAYMENT_HEADER_INSERT failed. (SP-1)'  ;--
+   END IF;--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+    END IF;--
+ 
+OPEN cur_final_detail_refcur FOR
+    --FOR cur_final_detail AS
+ --cur2 CURSOR WITH HOLD FOR
+        SELECT P.PLACEMENT_ID,
+               P.ENTRY_DT,
+               (CASE WHEN as_f_age(C.dob::DATE,vd_previous_month_end_dt) = 21 AND ( (C.dob::DATE + INTERVAL '21 year') < P.EXIT_DT OR P.EXIT_DT is NULL) THEN
+     C.dob::DATE + INTERVAL '21 year' 
+    ELSE
+     P.EXIT_DT
+                END ) AS EXIT_DT,
+               P.PLACEMENT_STRUCTURE_ID,
+               P.CLIENT_ID,
+               --C.COUNTY_CD,
+               P.CONTRACT_PROGRAM_ID,
+               (CASE WHEN as_f_age(C.dob::DATE,vd_previous_month_end_dt) = 21 THEN
+     20
+    ELSE
+     as_f_age(C.dob::DATE,vd_previous_month_end_dt)
+                END ) AS AGE_NO,
+               --C.APPROXIMATE_AGE_NO,
+               P.PLACEMENT_CHANGE_DT,
+               P.PAYMENT_HEADER_ID
+        FROM tb_PLACEMENT P,
+             person C
+        WHERE P.PROVIDER_ID = cur_final_header.PROVIDER_ID
+         AND P.CLIENT_ID = C.cjamspid
+         AND P.PROVIDER_ORGANIZATION_ID  IS NOT NULL
+         AND P.CONTRACT_PROGRAM_ID IS NOT NULL
+         AND P.PLACEMENT_STRUCTURE_ID IS NOT NULL
+         AND P.PLACEMENT_STRUCTURE_ID <> 8
+         AND P.PLACEMENT_STRUCTURE_ID <> 76
+         AND P.APPROVAL_STATUS_CD = '3047'
+         AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))
+         AND P.ENTRY_DT <= vd_previous_month_end_dt
+         AND ( (P.EXIT_DT  IS NULL) OR  (P.EXIT_DT > vd_previous_month_start_dt))
+         AND ( P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT )
+         AND P.DELETE_SW = 'N'
+         AND P.CONVERSION_SW IS NULL
+         AND C.dob::DATE IS NOT NULL
+         /*AND (  as_f_age(C.DOB_DT, vd_previous_month_end_dt ) < 21 
+               OR ( month(C.DOB_DT + INTERVAL '21 year') = month(vd_previous_month_end_dt)
+                    AND YEAR(C.DOB_DT + INTERVAL '21 year') = YEAR(vd_previous_month_end_dt)
+                    AND DAY(C.DOB_DT + INTERVAL '21 year') <> 1  
+                 )
+                  );*/
+   AND ( as_f_age(C.dob::DATE, vd_previous_month_end_dt ) < 21
+    OR ( date_part('month',C.dob::DATE + INTERVAL '21 year') = date_part('month',vd_previous_month_end_dt)--month(PV.VALIDATION_END_DT)   
+          AND date_part('YEAR',C.dob::DATE + INTERVAL '21 year') = date_part('YEAR',vd_previous_month_end_dt)
+        AND date_part('DAY',C.dob::DATE + INTERVAL '21 year') <> 1
+            )
+            );
+         
+         --AND as_f_age(C.DOB_DT,vd_previous_month_end_dt) < 21
+
+   -- DO
+   loop
+ fetch cur_final_detail_refcur into cur_final_detail;
+           exit when not found;
+         vl_placement_id := cur_final_detail.PLACEMENT_ID;--
+         vl_placement_structure_id := cur_final_detail.PLACEMENT_STRUCTURE_ID;--
+         vl_contract_program_id := cur_final_detail.CONTRACT_PROGRAM_ID;--
+         vd_current_placment_start_dt := cur_final_detail.ENTRY_DT;--
+         vd_current_placment_end_dt := cur_final_detail.EXIT_DT;--
+         RAISE notice '% >>>>>>>>before tb_PLACEMENT_VALIDATION>>>> vl_placement_id',vl_placement_id;
+        -- CHECK VALIDATION RECORD
+         vs_validation_status := NULL;--
+
+        SELECT VALIDATION_STATUS_CD
+            INTO vs_validation_status
+        FROM tb_PLACEMENT_VALIDATION
+        WHERE PLACEMENT_ID = vl_placement_id AND
+            DELETE_SW = 'N' AND
+            VALIDATION_START_DT = vd_previous_month_start_dt AND
+            VALIDATION_END_DT = vd_previous_month_end_dt AND
+            PLACEMENT_VALIDATION_ID = (SELECT MAX(PLACEMENT_VALIDATION_ID)
+                                      FROM tb_PLACEMENT_VALIDATION
+                                      WHERE PLACEMENT_ID = vl_placement_id AND
+                                            DELETE_SW = 'N' AND
+                                            VALIDATION_START_DT = vd_previous_month_start_dt AND
+                                            VALIDATION_END_DT = vd_previous_month_end_dt) ;--
+ -- vs_validation_status :='1750'; --temporarily added the validation code. need to do the validation module also. //here
+        IF vs_validation_status = '1750'  THEN  -- PLACEMENT VALIDATED
+    vs_update_status_flag := 'Y';--
+
+   --Mohan
+   --  Adoption  Subsidy Check
+   SELECT  SP_ADOPTION_SUBSIDY_CHECK(cur_final_detail.CLIENT_ID,
+             cur_final_detail.ENTRY_DT) INTO
+             VS_RESULT;--
+   IF UPPER(VS_RESULT)  = 'N'  THEN
+    -- Checking what is the service start and end date for this placement
+    SELECT a.ad_service_start_dt,a.ad_service_end_dt,a.al_unit_no,a.as_unit_type FROM SP_FOSTERCARE_CALCULATION('P',
+                'R',
+                vl_placement_structure_id,
+                vd_current_placment_start_dt,
+                vd_current_placment_end_dt,
+                vd_previous_month_start_dt,
+                vd_previous_month_end_dt) a INTO
+                vd_current_service_start_dt,
+                vd_current_service_end_dt,
+                vl_unit_no,
+                vs_unit_type;--
+
+     vd_draft_service_start_dt := NULL;--
+     vd_draft_service_end_dt := NULL;--
+     vl_draft_service_id := NULL;--
+
+    -- CHECKING IF ROOM AND BOARD PAYMENT_DRAFT_EXIST
+     vd_draft_service_start_dt := NULL;   -- INITIAL VALUE
+     vd_draft_service_end_dt := NULL;   -- INITIAL VALUE
+     vl_draft_service_id := NULL;   -- INITIAL VALUE
+    
+    SELECT DRAFT_SERVICE_START_DT, 
+      DRAFT_SERVICE_END_DT, 
+      DRAFT_SERVICE_ID
+     INTO vd_draft_service_start_dt, 
+     vd_draft_service_end_dt,
+     vl_draft_service_id
+      FROM tb_PAYMENT_DETAIL
+    WHERE PAYMENT_ID = vl_pay_header_id 
+       AND DELETE_SW = 'N' 
+       AND PLACEMENT_ID = vl_placement_id 
+       AND DRAFT_RATE_TYPE_CD = vs_rate_type;--
+          
+    -- AND DRAFT_RATE_TYPE_CD = '1232';--
+    
+    
+    -- This code was moved out of following IF....ELSE...END IF on 03/27/2008 CIS-16755
+    -- Always recalculate payment amount even if nothing changed from draft and final run. - START 
+     vs_rate_type_cd := 'P';--
+     vdc_gross_amount := 0.00;  -- INITIAL VALUE
+     vdc_perdiem_rate := 0.00;  -- INITIAL VALUE
+    IF cur_final_detail.AGE_NO IS NULL THEN
+        vl_age_of_child := cur_final_detail.APPROXIMATE_AGE_NO;--
+    ELSE
+        vl_age_of_child := cur_final_detail.AGE_NO;--
+    END IF;--
+
+    SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_contract_program_id,
+             vl_age_of_child,
+             vd_current_service_start_dt,
+             vd_current_service_end_dt,
+             vs_rate_type_cd) a INTO
+             vdc_monthly_rate,
+             vdc_perdiem_rate, 
+             al_sqlcode, 
+             as_error;--
+
+    IF al_sqlcode <> 0 THEN
+      as_error := as_error || ' (SP-2)' ;--
+     IF as_error is NULL OR as_error = '' THEN
+       as_error := 'SP_GET_PLACEMENT_RATE failed. (SP-2)'  ;--
+     END IF;--
+     --SIGNAL p_sp_error  ;--
+    END IF ;--
+
+    IF vl_unit_no = 1 and vs_unit_type = '5611' THEN  -- monthly rate
+      vdc_gross_amount := vdc_monthly_rate;--
+      vdc_perdiem_rate := vdc_monthly_rate;      -- incident 5265
+      vs_unit_type := '5611';--
+    ELSE
+      vs_unit_type := '5610';  -- nightly rate
+      vdc_gross_amount := vdc_perdiem_rate * vl_unit_no;--
+      vdc_perdiem_rate := vdc_perdiem_rate;--
+    END IF;--
+       RAISE NOTICE 'SP_PAYMENT_DETAIL_INSERT started';
+    RAISE NOTICE '%  vl_placement_id', vl_placement_id;
+    RAISE NOTICE '%  vl_pay_header_id', vl_pay_header_id;
+    RAISE NOTICE '%  vl_placement_structure_id', vl_placement_structure_id;
+    RAISE NOTICE '%  vd_current_service_start_dt', vd_current_service_start_dt;
+     RAISE NOTICE '%  vd_current_service_end_dt', vd_current_service_end_dt;
+      RAISE NOTICE '%  vdc_gross_amount', vdc_gross_amount;
+    RAISE NOTICE '%  vl_unit_no', vl_unit_no;
+     RAISE NOTICE '%  vs_unit_type', vs_unit_type;
+      RAISE NOTICE '%  vdc_perdiem_rate', vdc_perdiem_rate;
+       RAISE NOTICE '%  vs_draft_final_type', vs_draft_final_type;
+     RAISE NOTICE '%  vs_rate_type', vs_rate_type;
+      RAISE NOTICE '%  vl_linked_pymnt_hdr_id', vl_linked_pymnt_hdr_id;
+       RAISE NOTICE '%  vl_reference_payment_detail_id', vl_reference_payment_detail_id;
+       RAISE NOTICE '%  vs_change_type', vs_change_type;
+    SELECT a.al_sqlcode,a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+             vl_pay_header_id, 
+             vl_placement_structure_id, 
+             vd_current_service_start_dt,
+             vd_current_service_end_dt, 
+             vdc_gross_amount, 
+             vl_unit_no,
+             vs_unit_type,  
+             vdc_perdiem_rate,  
+             vs_draft_final_type, 
+             vs_rate_type,
+             vl_linked_pymnt_hdr_id,
+             vl_reference_payment_detail_id,
+             vs_change_type) a INTO
+             al_sqlcode, 
+             as_error;--
+ RAISE NOTICE '%  as_error', as_error;
+    IF al_sqlcode <> 0 THEN
+      as_error := as_error || ' (SP-3)' ;--
+     IF as_error is NULL OR as_error = '' THEN
+       as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-3)'  ;--
+     END IF;--
+     --SIGNAL p_sp_error  ;--
+    END IF ;--
+    -- This code was moved out of following IF....ELSE...END IF on 03/27/2008 CIS-16755
+    --Always recalculate payment amount even if nothing changed from draft and final run. - END 
+
+    -- NOTHING CHANGED FROM DRAFT AND FINAL RUN UPDATE THE FINAL WITH DRAFT
+    IF vd_draft_service_start_dt = vd_current_service_start_dt
+        AND vd_draft_service_end_dt = vd_current_service_end_dt
+        AND vl_draft_service_id = vl_placement_structure_id THEN  -- NOTHING CHANGED
+
+     -- 03/27/2008 CIS-16755
+     -- DO NOTHING
+
+        -- UPDATE THE FINAL VALUE WITH DRAFT
+     --                          UPDATE
+     --                            tb_PAYMENT_DETAIL
+     --                            SET FINAL_SERVICE_ID = DRAFT_SERVICE_ID,
+     --                            FINAL_SERVICE_START_DT = DRAFT_SERVICE_START_DT,
+     --                            FINAL_SERVICE_END_DT = DRAFT_SERVICE_END_DT,
+     --                            FINAL_UNITS_NO = DRAFT_UNITS_NO,
+     --                            FINAL_AMOUNT_NO = DRAFT_AMOUNT_NO,
+     --                            FINAL_RATE_TYPE_CD = DRAFT_RATE_TYPE_CD,
+     --                            FINAL_UNIT_RATE_AMT = DRAFT_UNIT_RATE_AMT,
+     --                            FINAL_UNIT_TYPE = DRAFT_UNIT_TYPE,
+     --                            FINAL_FISCAL_CATEGORY_CD = DRAFT_FISCAL_CATEGORY_CD,
+     --                            UPDATE_TS = CURRENT TIMESTAMP
+     --                            WHERE PLACEMENT_ID =  vl_placement_id AND
+     --                            PAYMENT_ID = vl_pay_header_id AND
+     --                            DELETE_SW = 'N';--
+     --
+     --                          SET al_sqlcode = SQLCODE;--
+     --       IF al_sqlcode <> 0 THEN
+     --        SET as_error = 'Error in Updating tb_PAYMENT_DETAIL'  ;--
+     --        SET vs_identity_column = 'Placement ID';--
+     --        SET vs_identity_val = CHAR(vl_placement_id);--
+     --        SIGNAL p_sp_error  ;--
+     --       END IF ;--
+
+    ELSE  -- NO DRAFT EXIST OR DRAFT HAVE BEEN CHANGED AND PLACEMENT IS VALIDATED NEEDS TO RECALCULATE FINAL PAYMENT
+      vs_update_status_flag := 'Y';--
+
+     -- The above code was moved out from here on 03/27/2008 CIS-16755
+
+     UPDATE tb_PAYMENT_DETAIL
+      SET CHANGE_REASON_CD = '3035'
+     WHERE PAYMENT_ID = vl_pay_header_id
+      AND PLACEMENT_ID = vl_placement_id;--
+     --Commented bcz of placement view
+     --UPDATE tb_PLACEMENT
+     -- SET PAYMENT_HEADER_ID = vl_pay_header_id
+     --WHERE (PLACEMENT_ID = vl_placement_id);--
+     
+     UPDATE placement
+       SET paymentheaderid = vl_pay_header_id     
+       WHERE (alternateid = vl_placement_id);--
+     
+      al_sqlcode := SQLCODE;--
+     IF al_sqlcode <> 0 THEN
+       as_error := 'Error in Updating tb_PLACEMENT. (SQL-1)'  ;--
+       vs_identity_column := 'Placement ID';--
+       vs_identity_val := TO_CHAR(vl_placement_id);--
+      --SIGNAL p_sp_error  ;--
+     END IF ;--
+    END IF;--
+         ELSE
+    SELECT a.vl_output_sqlcode,a.vs_message from SP_PAYMENT_EXECEPTION ('FC_PRIVATE_FINAL',
+          cur_final_detail.CLIENT_ID,
+          'Client is receiving Adoption Subsidy' || '' || TO_CHAR(cur_final_detail.CLIENT_ID) ) INTO
+          VL_SQLCODE,
+          VS_MESSAGE;--
+
+    IF VL_SQLCODE <> 0 THEN
+      vs_Procedure_nm  :=  'SP_PAYMENT_EXECEPTION'; --
+      vs_identity_column := 'Client ID';--
+      vs_identity_val := TO_CHAR(cur_final_detail.CLIENT_ID);--
+      as_error := VS_MESSAGE || ' (SP-4)' ;--
+     IF as_error is NULL OR as_error = '' THEN
+       as_error := 'Client is receiving Adoption Subsidy: SP_PAYMENT_EXECEPTION failed. (SP-4)'  ;--
+     END IF;--
+     --SIGNAL p_sp_error  ;--
+    END IF ;--
+         END IF; --  Adoption  Subsidy Check
+        ELSE   -- placement not validated
+  RAISE notice 'payment not validated>>>>>> else part ';
+   UPDATE tb_PAYMENT_DETAIL
+    SET CHANGE_REASON_CD = '3037'
+   WHERE PAYMENT_ID = vl_pay_header_id
+    AND PLACEMENT_ID = vl_placement_id;--
+
+    al_sqlcode := SQLCODE;--
+   IF al_sqlcode <> 0 THEN
+     as_error := 'Error in Updating tb_PAYMENT_DETAIL - Change Reason CD. (SQL-2)'  ;--
+     vs_identity_column := 'Placement ID';--
+     vs_identity_val := TO_CHAR(vl_placement_id);--
+    --SIGNAL p_sp_error  ;--
+   END IF ;--
+        END IF;  -- NO VALIDATION RECORD FOUND
+ --END FOR;    -- FINAL DETAIL
+ END LOOP;
+ close cur_final_detail_refcur;
+ 
+ -- logic end here
+ 
+ -- check if any final record is created and provider does not have withhold sw then set payment status to approved else set the
+ -- payment status to hold
+ IF  vs_update_status_flag = 'Y' THEN
+ RAISE NOTICE '% vs_update_status_flag>>>>>>>',vs_update_status_flag;
+   vs_update_status_flag := 'N';   -- RESET THE FLAG FOR THE NEXT PROVIDER
+  SELECT WITHHOLD_PAYMENT_SW
+   INTO vs_withhold_payment
+  FROM tb_PROVIDER
+  WHERE PROVIDER_ID = vl_payment_to_provider_id
+   AND DELETE_SW = 'N';--
+
+    
+  -- 06/02/2008 New Logic for missing info (Provider Checklist) - START
+   vl_checklist_cnt := 0 ; -- INITIAL VALUE
+
+  SELECT COUNT(*)
+   INTO vl_checklist_cnt
+  FROM tb_PROVIDER_DETAILS_CHECKLIST
+  WHERE PROVIDER_ID = vl_payment_to_provider_id
+   AND DELETE_SW = 'N'
+   AND PROVIDER_CATEGORY_SW = 'Y'
+   AND TAX_ID_TYPE_SW = 'Y'
+   AND TAX_ID_SW = 'Y'
+   AND MAIL_CODE_SW = 'Y'
+   AND INDICATOR_1099_SW = 'Y'
+   AND SEND_PAYMENT_TO_SW = 'Y'
+   AND LOCAL_DEPARTMENT_SW = 'Y'
+   AND RESOURCE_WORKER_SW = 'Y'
+   AND LOCN_ADR_SW = 'Y'
+   AND PAY_ADR_SW  = 'Y' ;--
+ RAISE NOTICE '% vl_checklist_cnt>>>>>>>',vl_checklist_cnt;
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0  THEN
+    as_error := 'Payment Header: Error in selecting record from tb_PROVIDER_DETAILS_CHECKLIST (SQL-2A)';--
+    vs_identity_column := 'Provider ID';--
+    vs_identity_val := TO_CHAR(vl_payment_to_provider_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ; --
+
+  IF vl_checklist_cnt is NULL THEN
+    vl_checklist_cnt := 0;--
+  END IF;--
+  -- 06/02/2008 New Logic for missing info (Provider Checklist) - END
+    
+  IF vs_withhold_payment = 'Y' OR vl_checklist_cnt = 0 THEN
+    vs_payment_status := '1635'; -- Hold
+  ELSE
+    vs_payment_status := '1634'; -- Approved
+  END IF;--
+
+  UPDATE tb_PAYMENT_STATUS
+   SET PAYMENT_STATUS_CD = vs_payment_status,
+    PAYMENT_STATUS_DT = CURRENT_DATE
+  WHERE PAYMENT_ID = vl_pay_header_id
+     AND DELETE_SW = 'N';--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+    as_error := 'Error in Updating tb_PAYMENT_STATUS. (SQL-3)'  ;--
+    vs_identity_column := 'Payment ID';--
+    vs_identity_val := TO_CHAR(vl_pay_header_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+
+  -- getting the sum of all the payment needed
+  SELECT SUM(FINAL_AMOUNT_NO)
+   INTO vdc_total_draft_amount
+  FROM tb_PAYMENT_DETAIL
+  WHERE PAYMENT_ID = vl_pay_header_id 
+   AND DELETE_SW = 'N' ;--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode < 0 THEN
+    as_error := 'Error in getting Total Draft Amount. (SQL-4)'  ;--
+    vs_identity_column := 'Payment ID';--
+    vs_identity_val := TO_CHAR(vl_pay_header_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+  -- updating header table
+
+  -- Commented and taken out of Loop with new procedure SP_RECEIVABLE_OFFSET_PROVIDERS 
+   -- check any offset amount for this provider
+  -- SET vl_offset_provider_id = NULL;--
+  -- SELECT PROVIDER_ID
+  -- INTO vl_offset_provider_id FROM tb_PAYMENT_HEADER WHERE PAYMENT_ID =  vl_pay_header_id;--
+
+  -- call  SP_PAYMENT_OFFSET (vl_offset_provider_id, vdc_offset_amount );--
+  -- if vdc_total_draft_amount <> 0 and vdc_offset_amount <> 0 THEN
+  --  if vdc_total_draft_amount <= vdc_offset_amount  then
+  --      set vdc_offset_amount = vdc_total_draft_amount;--
+  --  end if;--
+  --  CALL  SP_RECEIVABLE_OFFSET_AMOUNT ( vdc_offset_amount,vl_offset_provider_id, vl_pay_header_id, vl_sqlcode);--
+  --  IF vl_sqlcode <> 0 THEN
+  --      SET vs_Procedure_nm  =  'SP_RECEIVABLE_OFFSET_AMOUNT'; --
+  --      SET vs_identity_column = 'Provider ID/ Payment ID';--
+  --      SET vs_identity_val = CHAR(vl_offset_provider_id) || '/ ' || CHAR(vl_pay_header_id) ;--
+  --      SET as_error = as_error  ;--
+  --      IF as_error is NULL OR as_error = '' THEN
+  --         SET as_error = 'SP_RECEIVABLE_OFFSET_AMOUNT failed'  ;--
+  --      END IF;--
+  --      SIGNAL p_sp_error  ;--
+  --  END IF ;--
+  -- else
+  --  set vdc_offset_amount = null;--
+  -- end if;--
+
+  UPDATE tb_PAYMENT_HEADER
+  SET GROSS_AMOUNT_NO = vdc_total_draft_amount,
+   PAYMENT_DT = current_date
+  WHERE ( PAYMENT_ID = vl_pay_header_id );--
+
+  -- offset_amount_no = vdc_offset_amount
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+    as_error := 'Error in Updating tb_PAYMENT_HEADER. (SQL-5)'  ;--
+    vs_identity_column := 'Payment ID';--
+    vs_identity_val := TO_CHAR(vl_pay_header_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+     
+     -- CHECK IF THERE IS ANY PAYMENT HEADER CREATED WITHOUT DETAIL THEN DELETE
+  SELECT COUNT(*)
+   INTO vl_payment_detail_count
+  FROM tb_PAYMENT_DETAIL
+  WHERE PAYMENT_ID = vl_pay_header_id;--
+ 
+  IF vl_payment_detail_count = 0  THEN
+   DELETE FROM tb_PAYMENT_STATUS WHERE PAYMENT_ID = vl_pay_header_id;--
+   DELETE FROM tb_PAYMENT_HEADER WHERE PAYMENT_ID = vl_pay_header_id;--
+  END IF;--
+ END IF;--
+ --COMMIT;--
+--END FOR; -- FINAL HEADER
+END LOOP;
+ close cur_final_header_refcur;
+ 
+
+--SELECT SP_RECEIVABLE_OFFSET_PROVIDERS (vd_previous_month_start_dt,vd_previous_month_end_dt);--
+--SELECT SP_UPDATE_PAYMENT_REASONS (vs_private_sw);--
+PERFORM  SP_RECEIVABLE_OFFSET_PROVIDERS (vd_previous_month_start_dt,vd_previous_month_end_dt);--
+PERFORM  SP_UPDATE_PAYMENT_REASONS (vs_private_sw);--
+
+---  Insert Into PAYMENT log
+INSERT INTO tb_PAYMENT_RUNTIMES_LOG   
+  ( PAYMENT_RUNTIMES_LOG_ID,
+   PAYMENT_TX,
+   PAYMENT_CURRENT_RUN_TS,
+   PAYMENT_PREVIOUS_RUN_TS,
+   PAYMENT_BATCH_NO,
+   PAYMENT_SUCCESSFUL_SW,
+   CREATE_TS,
+   CREATE_USER_ID,
+   UPDATE_TS,
+   UPDATE_USER_ID,
+   DELETE_SW,
+   PAYMENT_OTHER_TX)
+ SELECT NEXTVAL('sq_payment_runtimes_log'),
+   'FC_PRIVATE_FINAL',
+   CURRENT_TIMESTAMP,
+   CURRENT_TIMESTAMP,
+   '',
+   '',
+   CURRENT_TIMESTAMP,
+   VS_USER_ID,          
+   CURRENT_TIMESTAMP,
+   VS_USER_ID,
+   'N',
+   'SP_FOSTER_CARE_PRIVATE_FINAL -->  PROGRAM ENDED';
+ --FROM sysibm.sysdummy1 ;--
+        
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0 THEN
+  as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM ENDED'  ;--
+  vs_identity_column := '';--
+  vs_identity_val := '';--
+ --SIGNAL p_sp_error  ;--
+END IF ;--
+--COMMIT;--
+RETURN 1;
+END;
+
+$function$
+

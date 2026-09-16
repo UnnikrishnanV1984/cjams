@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION as_getservicecasefimdetails(l_servicecaseid uuid, l_page integer, l_limit integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_fimdetails json;
+_offset  integer;
+
+BEGIN 
+
+_offset := (l_page - 1) * l_limit;  
+
+SELECT json_agg(fim) INTO v_fimdetails FROM 
+ (SELECT 
+  MR.servicecaseid, 
+  MR.meetingdate, 
+  MR.meetingtypekey, 
+  MR.persontype, 
+  MR.personname, 
+  MR.meetingdescription, 
+  MR.meetingcomments, 
+  MR.isfollowupmeeting, 
+  MR.parentmeetingid, 
+  MR.iscompleted, 
+  (SELECT json_agg(actor) FROM 
+   (SELECT 
+    mra.meetingrecordingid, 
+    mra.personid,
+    p.firstname,
+    p.lastname,
+    isra.actorid,
+    at.actortype,
+    at.typedescription 
+    FROM meetingrecordingactor mra 
+    INNER JOIN person p ON p.personid = mra.personid AND p.activeflag=1
+    INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = mra.intakeservicerequestactorid AND isra.activeflag=1
+    INNER JOIN actortype at ON at.actortype = isra.intakeservicerequestpersontypekey AND at.activeflag=1
+    WHERE mra.meetingrecordingid = MR.meetingrecordingid AND mra.activeflag = 1)actor
+  ) :: json AS recordingactor, 
+  (SELECT json_agg(participant) FROM 
+   (SELECT 
+    participanttype, 
+    participantkey, 
+    participantroledesc, 
+    firstname, 
+    lastname, 
+    emailid, 
+    personid, 
+    isinvited, 
+    isattended, 
+    isaccpted 
+   FROM meetingparticipants WHERE meetingrecordingid = MR.meetingrecordingid AND activeflag = 1)participant
+  ) :: json AS participants, 
+  (SELECT json_agg(fimtype) FROM 
+   (SELECT 
+    familymeetingtypekey, 
+    familymeetingsubtypekey 
+   FROM meetingfimdetails WHERE meetingrecordingid = MR.meetingrecordingid AND activeflag = 1)fimtype
+  ) :: json AS fimdetails 
+FROM meetingrecording MR 
+WHERE MR.servicecaseid = l_servicecaseid 
+     OR MR.intakeserviceid IN (SELECT intakeserviceid FROM intakeservicerequest WHERE servicecaseid = l_servicecaseid AND activeflag =1 )
+LIMIT l_limit OFFSET _offset) fim;
+
+RETURN v_fimdetails;
+END
+
+$function$
+

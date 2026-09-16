@@ -1,0 +1,63 @@
+CREATE OR REPLACE FUNCTION as_sendnotificationforforwardpetition()
+ RETURNS TABLE(intakenumber character varying, usertype text, assignedbyusers jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+begin
+return query
+
+(select distinct  INP.intakenumber,'assignedfrom' as usertype,(select json_agg(x) from (select INPC.updatedby::character varying as securityusersid,c.countyname,INPC.updatedon::date,(select now()::date - INPC.updatedon ::date) as daysdifference 
+,(select json_agg(x) from (select c.countyname from county c join intakedastatus insd on insd.saocountyid=c.countyid::character varying where insd.intakenumber=INP.intakenumber)as x )as county   
+,(select json_agg(x) from (select p.lastname ||' '|| p.firstname  as youthname from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+   join person p on ACC.personid=p.personid 
+   where INTSR.intakenumber=INP.intakenumber)as x )as person
+from intakeservreqevalpetitionconfig  INPC 
+  join intakeservicerequestpetition INPI on INPI.intakeservicerequestpetitionid=INPC.intakeservicerequestpetitionid and INPI.activeflag=1
+  join muser mu on mu.securityusersid=INPC.updatedby 
+  join as_teammemberassignment tma on tma.securityusersid=mu.securityusersid and tma.activeflag=1
+  join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag=1
+  join team t on t.teamid=tm.teamid and t.activeflag=1 
+  join county c on c.countyid=t.countyid::uuid 
+  where INPI.intakenumber=INP.intakenumber and INPC.activeflag=1 order by INPC.updatedon desc limit 1) as x)::jsonb as assignedbyusers
+  from intakeservicerequestpetition INP  where  INP.petitionstatustypekey='PEFW'
+    -- and (select now()::date - INP.updatedon ::date) >= 30
+       and (select count(1) from intakeservicerequestpetition INNP 
+       where INNP.intakenumber=INP.intakenumber and INNP.petitionstatustypekey!='PEFW')=0)
+      
+      union all 
+(select distinct  INP.intakenumber,'assignedto' as usertype,(select json_agg(x) from (select mu.securityusersid::character varying,c.countyname,INPC.updatedon::date,(select now()::date - INPC.updatedon ::date) as daysdifference 
+  ,(select json_agg(x) from (select c.countyname from  intakeservicerequestpetition INPI --join  on INPI.intakeservicerequestpetitionid=INPC.intakeservicerequestpetitionid and INPI.activeflag=1
+  join muser mu on mu.securityusersid=INPI.updatedby 
+  join as_teammemberassignment tma on tma.securityusersid=mu.securityusersid and tma.activeflag=1
+  join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag=1
+  join team t on t.teamid=tm.teamid and t.activeflag=1 
+  join county c on c.countyid=t.countyid::uuid limit 1 )as x )as county ,
+  (select json_agg(x) from (select p.firstname ||' '|| p.lastname as youthname from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+   join person p on ACC.personid=p.personid 
+   where INTSR.intakenumber=INP.intakenumber)as x )as person
+from intakeservreqevalpetitionconfig  INPC 
+  join intakeservicerequestpetition INPI on INPI.intakeservicerequestpetitionid=INPC.intakeservicerequestpetitionid and INPI.activeflag=1
+  join intakedastatus inds on inds.intakenumber=INPI.intakenumber and inds.activeflag=1
+  join county c on c.countyid=inds.saocountyid::uuid
+  join team t on t.countyid=c.countyid :: character varying and t.activeflag=1 
+   join teammember tm on tm.teamid=t.teamid and tm.activeflag=1
+         join as_teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1
+         join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+         join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1
+  join role r on r.id = rm.roleid :: int  and r.roletypekey='JSCLW'
+  
+  where INPI.intakenumber=INP.intakenumber and INPC.activeflag=1 order by INPC.updatedon desc limit 1) as x)::jsonb as assignedbyusers
+  from intakeservicerequestpetition INP  where  INP.petitionstatustypekey='PEFW'
+    -- and (select now()::date - INP.updatedon ::date) >= 30
+       and (select count(1) from intakeservicerequestpetition INNP 
+       where INNP.intakenumber=INP.intakenumber and INNP.petitionstatustypekey!='PEFW')=0);
+      
+    
+END; 
+
+$function$
+

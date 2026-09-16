@@ -1,0 +1,829 @@
+CREATE OR REPLACE FUNCTION sp_guardianship_subsidy_payment()
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+ 
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- generate payment header and payment detail for guardianship subisdy for the
+-- previous month
+-- created by: Amit Rastogi
+-- Date : 12/04/2006
+-- 12/11/2006 PAYMENT DETAIL INSERT CHANGS
+-- 01/24/2007 initializing the value
+-- 05/10/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in tb_BATCH_ERROR_LOG # 14088
+-- 07/16/2007 Vineet Tirodkar - commit statement has been added inside the for loop
+-- 03/19/2008 Vineet Tirodkar - Changes for Provider Checklist (CIS-16755)
+--       Change in Cursor cur_guard_subs_provider to add Provider checklist table                   
+--       Change in Cursor cur_guard_subs to add DOB and Age conditions
+--            New condition if payment amount > 0 then only Insert payments detls else Delete payment header
+-- 04/15/2008 Vineet Tirodkar - Changes in LOG ERROR texts to identify exact SQLs
+--       SQL to delete record from tb_PAYMENT_STATUS
+-- 05/29/2008 Vineet Tirodkar - Changes in logic for Provider Checklist,
+--            In case of missing information generate payment with status as ?Hold?.
+-- 05/30/2008 Vineet Tirodkar - New arguments Original Payment ID and Pay Detl ID for SP_PAYMENT_DETAIL_INSERT
+-- 08/18/2008 Vineet Tirodkar - Change in Cursor cur_guard_subs for Age conditions (< 21). CIS-17754 
+-- 11/25/2008 Rajkumar Seeni - To improve performance tb_PAYMENT_DETAIL table has been replaced with tb_PAYMENT_DETAIL_TEMP
+-- 08/18/2009 Vineet Tirodkar - Changes to Implement Per Diem Rates for Guardianship subsidy payments -- CIS-19002
+-- 09/01/2009 Vineet Tirodkar - To pass Per Diem Rate as Monthly rate for payments prior to Sept 09
+-- 11/30/2009 Vineet Tirodkar - Change in logic for Age conditions, pay up to 21 Bday -- CIS-19453.
+-- 08/01/2011 Sarma & Raghu   - Revamped the logic as per the requirements in PRJ-01874 GAP Project
+-- 09/06/2011 Sarma & Raghu   - Corrected the logic in the second cursor
+-- 09/09/2011 Sarma & Raghu   - Removed the logic involving the rate Override, as it doesn't really impact.
+-- 09/16/2011 Sarma           - Corrected the logic related to the number of days and suspensions
+-- 09/18/2011 Sarma           - Modified the # of Days Logic.
+-- 09/20/2011 Sarma           - Considering Start Date for the system generated suspensions.
+-- 10/06/2011 Sarma           - Considered the Approval Status of 3046 for Gap Rate End Date
+-- 10/06/2011 Sarma           - Added Distinct around the second cursor.
+-- 10/11/2011 Sarma     - Moved the TCA amount logic to the end.
+-- 01/18/2012 Sarma & Raghu   - PRJ-02233_Changed the first cursor logic to pull on the latest providers associated with a client.
+-- 02/10/2012 Sarma & Raghu   - PRJ-02233_Added Override_sw to the Approval Status conditions.
+-- 06/01/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+--      Modifications to pass dummy argument  to SP_PAYMENT_DETAIL_INSERT (SP modified for Fiscal Audit Trail)
+-- 09/11/2015 Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+--      Modifications to fix an existing GAP Payment issue due to multiple rates & suspension within same service period (BDSD Req # 86) 
+------------------------------------------------------------------------
+
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vd_current_month_end_dt DATE;--
+
+DECLARE vdc_null_amount decimal(10,2) default NULL;--
+DECLARE vdc_payment_amount decimal(10,2) default NULL;--
+DECLARE vdc_payment_amt1 decimal(10,2) default NULL;--
+DECLARE vdc_payment_amt2 decimal(10,2) default NULL;--
+DECLARE vdc_monthly_rate decimal(10,2) default NULL;--
+DECLARE vdc_per_diem_rate decimal(10,2) default NULL;--
+DECLARE vdc_suspension_amount decimal(10,2) default NULL;--
+
+DECLARE vdc_tca_amount decimal(10,2) default NULL; -- TCA amount
+DECLARE vs_payment_type VARCHAR(5) DEFAULT '7'; -- Subsidize Guardianship
+DECLARE vs_payment_flag VARCHAR(1) DEFAULT 'G';--
+DECLARE vs_null_string VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_rate_type VARCHAR(5) DEFAULT '1232'; -- room and board
+DECLARE vs_payment_unit_type VARCHAR(5);--
+
+DECLARE vs_rate_type_cd CHAR(1) DEFAULT 'R'; -- room and board
+DECLARE vl_guardian_subsidy_id BIGINT;--
+DECLARE vl_client_id BIGINT;--
+DECLARE vl_payment_header_id bigint DEFAULT 0;--
+DECLARE vl_provider_id bigint DEFAULT 0;--
+DECLARE vl_null_id bigint DEFAULT NULL;--
+DECLARE vl_service_id bigint DEFAULT 503; -- subsidize guardianship
+DECLARE vl_unit_no int DEFAULT 1;--
+DECLARE vl_rate_slab_count int DEFAULT 0;--
+DECLARE vl_ageout_unit_no int DEFAULT 0;--
+DECLARE vs_unit_type VARCHAR(5) DEFAULT '5611'; -- monthly
+DECLARE vl_age_of_child INT ;--
+DECLARE vl_suspension_days INTEGER;--
+DECLARE vl_payment_unit_no INTEGER; --
+
+DECLARE vl_subsidy_suspention_count bigint DEFAULT 0;--
+DECLARE vl_suspension_start_dt DATE; -- PRJ-01874 GAP
+DECLARE vl_suspension_end_dt DATE;   --PRJ-01874 GAP
+DECLARE vd_payment_start_dt DATE;--
+DECLARE vd_payment_end_dt DATE;--
+DECLARE vl_pay_detl_count bigint DEFAULT 0;--
+
+DECLARE vl_linked_pymnt_hdr_id BIGINT DEFAULT NULL;--
+DECLARE vl_reference_payment_detail_id BIGINT DEFAULT NULL;--
+
+DECLARE  VS_USER_ID           VARCHAR(10)     DEFAULT  'finance';--
+DECLARE  VTS_PREVIOUS_RUN_TS  TIMESTAMP;--
+DECLARE  VTS_CURRENT_RUN_TS    TIMESTAMP ;--
+DECLARE  VL_ROWCOUNT           INTEGER DEFAULT  0;--
+
+DECLARE vd_subsidy_start_dt DATE;--
+DECLARE vd_subsidy_end_dt DATE;--
+DECLARE vd_rate_start_dt DATE; -- PRJ-01874 GAP
+DECLARE vd_rate_end_dt DATE;   -- PRJ-01874 GAP
+DECLARE vd_current_service_start_dt DATE;--
+DECLARE vd_current_service_end_dt DATE;--
+DECLARE vd_noofDays bigint DEFAULT 0; -- PRJ-01874 GAP.
+
+-- PRJ-04753
+DECLARE vs_change_type VARCHAR(5) DEFAULT NULL ;--
+
+--Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_GUARDIANSHIP_SUBSIDY_PAYMENT';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+cur_guard_subs_provider record;
+ cur_guard_subs record;
+  cur_gap_rates record;
+ cur_guard_subs_provider_refcur REFCURSOR;
+ cur_guard_subs_refcur REFCURSOR;
+  cur_gap_rates_refcur REFCURSOR;
+ 
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+begin
+ EXCEPTION WHEN OTHERS THEN
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+ -- SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_GUARDIANSHIP_SUBSIDY_PAYMENT' ,
+            NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+    
+     as_error := '';    --
+--END;--
+  RETURN 0;
+END;-- 
+--Log error
+
+--  get the last month start date and end date
+
+SELECT (date_trunc('month', now()) - interval '1 month')::date,
+       (date_trunc('month', now())::date - 1),
+       ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt,
+        vd_current_month_end_dt;
+--  Initialize variables with the current timestamp
+ VTS_PREVIOUS_RUN_TS := CURRENT_TIMESTAMP;--
+ VTS_CURRENT_RUN_TS := CURRENT_TIMESTAMP;--
+
+--  get the last run timestamp
+--  if first run, i.e., no rows in log, then leave as initialized
+
+SELECT COUNT(*)
+ INTO VL_ROWCOUNT
+FROM tb_PAYMENT_RUNTIMES_LOG
+WHERE PAYMENT_TX   = 'GS_SUBSIDY_PAYMENT';--
+
+IF  VL_ROWCOUNT > 0 THEN
+ SELECT MAX(PAYMENT_CURRENT_RUN_TS)
+  INTO VTS_PREVIOUS_RUN_TS
+ FROM tb_PAYMENT_RUNTIMES_LOG
+ WHERE PAYMENT_TX   = 'GS_SUBSIDY_PAYMENT';--
+END IF;--
+
+---  Insert Into PAYMENT log
+INSERT INTO tb_PAYMENT_RUNTIMES_LOG   
+ ( PAYMENT_RUNTIMES_LOG_ID,
+  PAYMENT_TX,
+  PAYMENT_CURRENT_RUN_TS,
+  PAYMENT_PREVIOUS_RUN_TS,
+  PAYMENT_BATCH_NO,
+  PAYMENT_SUCCESSFUL_SW,
+  CREATE_TS,
+  CREATE_USER_ID,
+  UPDATE_TS,
+  UPDATE_USER_ID,
+  DELETE_SW,
+  PAYMENT_OTHER_TX)
+SELECT NEXTVAL ('SQ_PAYMENT_RUNTIMES_LOG'),
+  'GS_SUBSIDY_PAYMENT',
+  VTS_CURRENT_RUN_TS,
+  VTS_PREVIOUS_RUN_TS,
+  '',
+  '',
+  CURRENT_TIMESTAMP,
+  VS_USER_ID,          
+  CURRENT_TIMESTAMP,
+  VS_USER_ID,
+  'N',
+  'SP_GUARDIANSHIP_SUBSIDY_PAYMENT -->  PROGRAM STARTED';
+--FROM sysibm.sysdummy1 ;--
+      
+ al_sqlcode := SQLCODE;   --
+IF al_sqlcode <> 0 THEN
+  as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM STARTED'  ;--
+  vs_identity_column := '';--
+  vs_identity_val := '';--
+ --SIGNAL p_sp_error  ;--
+END IF ;--
+      
+-- PRJ-05327 - New code - START
+--FOR cur_guard_subs_provider AS
+-- cur1 CURSOR WITH HOLD FOR
+OPEN cur_guard_subs_provider_refcur FOR
+ SELECT DISTINCT TGS.PROVIDER_ID
+  FROM tb_GUARDIAN_SUBSIDY TGS,
+    tb_GAP_RATES TGR 
+ WHERE TGS.GUARDIAN_SUBSIDY_ID = TGR.ASSISTANCE_ID
+  AND TGS.DELETE_SW = 'N'
+  AND TGR.DELETE_SW = 'N'
+  AND TGR.APPROVAL_STATUS_CD  = '3047'
+  AND TGR.RATE_START_DT <= vd_previous_month_end_dt
+  AND TGS.GUARDIAN_SUBSIDY_ID IN ( SELECT MAX(A.GUARDIAN_SUBSIDY_ID) 
+           FROM tb_GUARDIAN_SUBSIDY A
+          WHERE A.CLIENT_ID = TGS.CLIENT_ID
+           AND A.DELETE_SW = 'N'
+           AND A.SUSBSIDY_APPROVAL_STATUS_CD = '3047'
+           AND A.SUBSIDY_END_DT > vd_previous_month_start_dt
+           AND A.PROVIDER_ID IS NOT NULL
+            )
+  AND (CASE WHEN TGR.OVERRIDE_STATUS_CD IN ('3045','3046') 
+    AND TGR.RATE_OVERRIDE_SW = 'Y' THEN 
+     TGR.RATE2_END_DT 
+    ELSE 
+     TGR.RATE_END_DT 
+    END) > vd_previous_month_start_dt;
+--DO 
+loop
+ fetch cur_guard_subs_provider_refcur into cur_guard_subs_provider;
+           exit when not found;
+
+ -- check if payment header exist for the provider for the previous month
+  vl_payment_header_id := 0;  -- INITIAL VALUE
+  vl_provider_id := 0;--
+  vl_provider_id := cur_guard_subs_provider.PROVIDER_ID;--
+--RAISE NOTICE '% before insert into payment header>>>vl_provider_id',vl_provider_id;
+ SELECT PAYMENT_ID
+  INTO vl_payment_header_id
+ FROM tb_PAYMENT_HEADER
+ WHERE PROVIDER_ID = vl_provider_id 
+  AND DELETE_SW = 'N' 
+  AND PAYMENT_START_DT = vd_previous_month_start_dt 
+  AND PAYMENT_END_DT = vd_previous_month_end_dt 
+  AND PAYMENT_TYPE_CD = '7';--
+  
+ IF vl_payment_header_id IS NULL OR vl_payment_header_id = 0 THEN
+  SELECT a.al_header_id,a.al_sqlcode,a.as_error FROM  SP_PAYMENT_HEADER_INSERT ( vl_provider_id:: bigint,
+            vs_payment_type:: varchar, 
+            vd_previous_month_start_dt:: date,
+            vd_previous_month_end_dt:: date) a INTO
+            vl_payment_header_id, 
+            al_sqlcode, 
+            as_error ;--
+
+  IF al_sqlcode <> 0 THEN
+    as_error := as_error || ' (SP-1)' ;--
+   IF as_error is NULL OR as_error = '' THEN
+     as_error := 'SP_PAYMENT_HEADER_INSERT failed. (SP-1)'  ;--
+   END IF;--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+ END IF;  --
+ 
+ --FOR cur_guard_subs AS
+      --  cur2 CURSOR WITH HOLD FOR
+   OPEN cur_guard_subs_refcur FOR
+  SELECT GS.GUARDIAN_SUBSIDY_ID,
+   GS.CLIENT_ID,
+   GS.SUBSIDY_START_DT,
+   (CASE WHEN f_age(C.dob::DATE,vd_previous_month_end_dt ) = 21 AND ((C.dob::DATE + interval '21 year') < GS.SUBSIDY_END_DT ) THEN
+    C.dob::DATE + interval '21 year'
+   ELSE
+    GS.SUBSIDY_END_DT
+   END ) AS SUBSIDY_END_DT,
+   COALESCE(GS.TCA_AMOUNT,0.00) as TCA_AMT,
+   COALESCE(GR.PAYMENT_AMT,0) AS PAYMENT_AMT,
+   (CASE WHEN  f_age(C.dob::DATE, vd_previous_month_end_dt  ) = 21 THEN
+    20
+   ELSE
+     f_age(C.dob::DATE, vd_previous_month_end_dt)
+   END ) AS AGE_NO
+  FROM tb_GUARDIAN_SUBSIDY GS,
+   person C, 
+   tb_GAP_RATES GR
+  WHERE GS.CLIENT_ID = C.cjamspid
+   AND GS.GUARDIAN_SUBSIDY_ID = GR.ASSISTANCE_ID
+   AND GS.DELETE_SW = 'N'
+   AND C.activeflag = 1
+   AND GR.DELETE_SW = 'N'
+   AND GS.PROVIDER_ID = vl_provider_id
+   AND GS.SUSBSIDY_APPROVAL_STATUS_CD = '3047'
+   AND GS.SUBSIDY_START_DT <= vd_previous_month_end_dt
+   AND ((GS.SUBSIDY_END_DT IS NULL) OR  (GS.SUBSIDY_END_DT > vd_previous_month_start_dt ))
+   AND GR.GAP_RATE_ID = ( SELECT  MAX(GR1.GAP_RATE_ID)
+          FROM tb_GAP_RATES GR1
+           WHERE GR1.ASSISTANCE_ID = GS.GUARDIAN_SUBSIDY_ID
+         AND GR1.APPROVAL_STATUS_CD  = '3047'
+         AND GR1.RATE_START_DT <= vd_previous_month_end_dt
+         AND (CASE WHEN GR1.OVERRIDE_STATUS_CD IN ('3045','3046')   
+           AND GR1.RATE_OVERRIDE_SW = 'Y' THEN 
+            GR1.RATE2_END_DT 
+           ELSE  
+            GR1.RATE_END_DT 
+           END) >= vd_previous_month_start_dt
+          )
+   AND C.dob::DATE IS NOT NULL
+   AND (  f_age(C.dob::DATE, vd_previous_month_end_dt  ) < 21
+     OR ( date_part('month',C.dob::DATE +interval '21 year') = date_part('month',vd_previous_month_end_dt )
+       AND date_part('YEAR',C.dob::DATE + interval '21 year') = date_part('YEAR',vd_previous_month_end_dt )
+       AND date_part('DAY',C.dob::DATE + interval '21 year') <> 1
+      )
+    );
+ 
+ --DO
+ loop
+ fetch cur_guard_subs_refcur into cur_guard_subs;
+           exit when not found;
+
+  -- New Logic to pay by Per Diem Rate CIS-19002 (Sept 09 Onwards) - START
+  -- SET INITIAL VALUES - START 
+   vl_guardian_subsidy_id := NULL;--
+   vl_client_id := NULL;--
+   vd_subsidy_start_dt := NULL;--
+   vd_subsidy_end_dt := NULL;--
+  
+   vdc_tca_amount := 0.00;--
+   vdc_payment_amount := 0.00;--
+   vl_age_of_child := 0;--
+  
+   vd_current_service_start_dt := NULL;--
+   vd_current_service_end_dt := NULL;--
+   vd_payment_start_dt := NULL;--
+   vd_payment_end_dt := NULL;--
+   vl_unit_no := 0;--
+   vs_unit_type := NULL;--
+   vl_suspension_days := 0;--
+  -- SET INITIAL VALUES - END
+  
+   vl_guardian_subsidy_id := cur_guard_subs.GUARDIAN_SUBSIDY_ID;--
+   vl_client_id = cur_guard_subs.CLIENT_ID;--
+   vd_subsidy_start_dt := cur_guard_subs.SUBSIDY_START_DT;--
+   vd_subsidy_end_dt := cur_guard_subs.SUBSIDY_END_DT;--
+  
+   vdc_tca_amount := cur_guard_subs.TCA_AMT;--
+   vdc_payment_amount := cur_guard_subs.PAYMENT_AMT;--
+   vl_age_of_child := cur_guard_subs.AGE_NO;--
+--RAISE NOTICE '% Details: vl_guardian_subsidy_id',vl_guardian_subsidy_id;
+--RAISE NOTICE '% Details: vl_client_id',vl_client_id;
+--RAISE NOTICE '% Details: vdc_payment_amount',vdc_payment_amount;
+--RAISE NOTICE '% Details: vl_age_of_child',vl_age_of_child;
+
+  IF vd_previous_month_end_dt <= DATE('2009-08-31') THEN
+   IF vdc_payment_amount > 0 THEN
+    -- Get actual no of nights for Suspension calculation
+    SELECT a.ad_service_start_dt,
+        a.ad_service_end_dt,
+        a.al_unit_no,
+        a.as_unit_type from SP_FOSTERCARE_CALCULATION('P',
+            'R', 
+            0,
+            vd_subsidy_start_dt,
+            vd_subsidy_end_dt,
+            vd_previous_month_start_dt,
+            vd_previous_month_end_dt) a INTO
+            vd_payment_start_dt,
+            vd_payment_end_dt,
+            vl_unit_no,
+            vs_unit_type;--
+            
+    -- Calculate Suspension period
+    SELECT a.al_suspension_days from SP_SUSPENSION_CALCULATION ('G',
+              vl_guardian_subsidy_id,
+              vd_subsidy_start_dt,
+              vd_subsidy_end_dt,
+              vd_previous_month_start_dt,
+              vd_previous_month_end_dt,
+              vd_payment_start_dt,
+              vd_payment_end_dt,
+              vl_unit_no) a INTO
+              vl_suspension_days;--
+
+    IF vl_suspension_days IS NULL THEN
+      vl_suspension_days := 0;--
+    END IF;--
+    
+    -- Exclude amount for Suspension period
+    IF vl_suspension_days > 0 THEN
+      vdc_suspension_amount := vl_suspension_days * vdc_per_diem_rate;--
+     IF vdc_suspension_amount > 0 THEN
+       vdc_payment_amount := vdc_payment_amount - vdc_suspension_amount;--
+     END IF;--
+    END IF;  --
+   
+     vd_current_service_start_dt := vd_previous_month_start_dt;--
+     vd_current_service_end_dt := vd_previous_month_end_dt;--
+   
+     vl_unit_no := 1;--
+     vs_unit_type := '5611'; -- monthly
+    -- SET vdc_per_diem_rate = vdc_payment_amount;--
+     vdc_per_diem_rate := cur_guard_subs.PAYMENT_AMT;--
+    
+    -- Check for TCA amount - START 
+    IF vdc_payment_amount > 0 AND vdc_tca_amount > 0 THEN
+     IF MONTH(vd_current_service_start_dt) = MONTH(vd_subsidy_start_dt) THEN
+      IF YEAR(vd_current_service_start_dt) = YEAR(vd_subsidy_start_dt) THEN
+       IF vdc_tca_amount >= vdc_payment_amount THEN
+         vdc_payment_amount := 0.00;--
+       ELSE
+         vdc_payment_amount := vdc_payment_amount - vdc_tca_amount;--
+       END IF;--
+      END IF;--
+     END IF;--
+    END IF; --
+    -- Check for TCA amount - END
+    RAISE NOTICE '% vdc_payment_amount before SP_PAYMENT_DETAIL_INSERT>>>',vdc_payment_amount;
+    IF vdc_payment_amount > 0 THEN
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT >>>vl_guardian_subsidy_id',vl_guardian_subsidy_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_payment_header_id',vl_payment_header_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vd_current_service_start_dt',vd_current_service_start_dt;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vd_current_service_end_dt',vd_current_service_end_dt;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vdc_payment_amount',vdc_payment_amount;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_unit_no',vl_unit_no;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_unit_type',vs_unit_type;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vdc_per_diem_rate',vdc_per_diem_rate;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_payment_flag',vs_payment_flag;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_rate_type',vs_rate_type;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_linked_pymnt_hdr_id',vl_linked_pymnt_hdr_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_reference_payment_detail_id',vl_reference_payment_detail_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_change_type',vs_change_type;
+
+     SELECT a.al_sqlcode,
+                                   a.as_error FROM  SP_PAYMENT_DETAIL_INSERT( vl_guardian_subsidy_id,
+               vl_payment_header_id,
+               vl_service_id,
+               vd_current_service_start_dt,
+               vd_current_service_end_dt,
+               vdc_payment_amount,
+               vl_unit_no,
+               vs_unit_type,
+               vdc_per_diem_rate,
+               vs_payment_flag,
+               vs_rate_type,
+               vl_linked_pymnt_hdr_id,
+               vl_reference_payment_detail_id,
+               vs_change_type) a INTO
+               al_sqlcode,
+               as_error;--
+
+    RAISE NOTICE '%  SP_PAYMENT_DETAIL_INSERT>>>output>>>al_sqlcode',al_sqlcode;
+    RAISE NOTICE '%  SP_PAYMENT_DETAIL_INSERT>>>output>>>as_error',as_error;
+
+     IF al_sqlcode <> 0 THEN
+         as_error := as_error || ' (SP-2)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-2)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+     END IF ;--
+    END IF; --
+   END IF;--
+  ELSE -- > DATE('2009-08-31')
+   -- Get actual service period & no of nights
+   SELECT a.ad_service_start_dt,
+        a.ad_service_end_dt,
+        a.al_unit_no,
+        a.as_unit_type from SP_FOSTERCARE_CALCULATION('P',
+            'R', 
+            0,
+            vd_subsidy_start_dt,
+            vd_subsidy_end_dt,
+            vd_previous_month_start_dt,
+            vd_previous_month_end_dt) a INTO
+            vd_current_service_start_dt,
+            vd_current_service_end_dt,
+            vl_unit_no,
+            vs_unit_type;--
+   --EXIT_LOOP:
+  raise notice 'before cur_gap_rates_refcur';
+  
+   --Get Count for Ageout Calculation
+   vl_rate_slab_count := 0;
+   
+   SELECT COUNT(*) 
+   INTO 
+    vl_rate_slab_count 
+   FROM 
+    tb_GAP_RATES GR
+   WHERE 
+    GR.ASSISTANCE_ID = vl_guardian_subsidy_id
+    AND GR.APPROVAL_STATUS_CD  = '3047'
+    AND GR.RATE_START_DT <= vd_previous_month_end_dt
+    AND (CASE WHEN GR.OVERRIDE_STATUS_CD IN ('3045','3046')   
+      AND GR.RATE_OVERRIDE_SW = 'Y' 
+     THEN 
+      GR.RATE2_END_DT 
+     ELSE  
+      GR.RATE_END_DT 
+     END) >= vd_previous_month_start_dt;
+   --
+     
+-- <<EXIT_LOOP>>
+   OPEN cur_gap_rates_refcur FOR  
+   --FOR cur_gap_rates AS
+   -- cur CURSOR WITH HOLD FOR
+    SELECT GR.PAYMENT_AMT,
+     CAST(ROUND(( GR.PAYMENT_AMT * 12) /365, 2) AS DECIMAL (10,2)) AS PER_DIEM_RATE,
+     GR.RATE_START_DT,
+     GR.RATE_END_DT
+    FROM tb_GAP_RATES GR
+    WHERE GR.ASSISTANCE_ID = vl_guardian_subsidy_id
+     AND GR.APPROVAL_STATUS_CD  = '3047'
+     AND GR.RATE_START_DT <= vd_previous_month_end_dt
+     AND (CASE WHEN GR.OVERRIDE_STATUS_CD IN ('3045','3046')   
+        AND GR.RATE_OVERRIDE_SW = 'Y' THEN 
+       GR.RATE2_END_DT 
+       ELSE  
+       GR.RATE_END_DT 
+       END) >= vd_previous_month_start_dt
+    ORDER BY GR.GAP_RATE_ID DESC ;
+   --DO
+   loop
+ fetch cur_gap_rates_refcur into cur_gap_rates;
+ exit when not found;
+ raise notice 'cur_gap_rates_refcur started';
+    -- INITIAL VALUES
+     vdc_payment_amount := 0; --
+     vdc_per_diem_rate := 0;--
+     vd_rate_start_dt := NULL;--
+     vd_rate_end_dt := NULL;--
+     vd_payment_start_dt := NULL;--
+     vd_payment_end_dt := NULL;    --
+     vl_payment_unit_no := 0;--
+     vs_payment_unit_type := NULL;--
+     vl_suspension_days := 0;--
+    
+     vdc_per_diem_rate := cur_gap_rates.PER_DIEM_RATE;--
+     vd_rate_start_dt := cur_gap_rates.RATE_START_DT;--
+     vd_rate_end_dt := cur_gap_rates.RATE_END_DT;--
+  --  raise notice '%  cur_gap_rates_refcur started>>>vdc_per_diem_rate',vdc_per_diem_rate; 
+  ------  raise notice '%  cur_gap_rates_refcur started>>>vd_rate_start_dt',vd_rate_start_dt; 
+  --  raise notice '%  cur_gap_rates_refcur started>>>vd_rate_end_dt',vd_rate_end_dt; 
+
+    SELECT a.ad_service_start_dt,
+        a.ad_service_end_dt,
+        a.al_unit_no,
+        a.as_unit_type from SP_FOSTERCARE_CALCULATION('P',
+             'R', 
+             0,
+             vd_rate_start_dt,
+             vd_rate_end_dt,
+             vd_current_service_start_dt,
+             vd_current_service_end_dt) a INTO
+             vd_payment_start_dt,
+             vd_payment_end_dt,
+             vl_payment_unit_no,
+             vs_payment_unit_type;   --
+             
+  --  raise notice '%  SP_FOSTERCARE_CALCULATION output>>>vd_payment_start_dt',vd_payment_start_dt; 
+  --  raise notice '%  SP_FOSTERCARE_CALCULATION output>>>vd_payment_end_dt',vd_payment_end_dt; 
+  --  raise notice '%  SP_FOSTERCARE_CALCULATION output>>>vl_payment_unit_no',vl_payment_unit_no; 
+  --  raise notice '%  SP_FOSTERCARE_CALCULATION output>>>vs_payment_unit_type',vs_payment_unit_type; 
+
+    -- Add 1 day if rate end date month/year is same as service month/year
+    IF date_part('month',vd_rate_end_dt) = date_part('month',vd_current_service_start_dt) 
+     AND date_part('YEAR',vd_rate_end_dt) = date_part('YEAR',vd_current_service_start_dt) THEN
+     
+     -- Verify if GAP end date is beyond rate end date
+     IF vd_subsidy_end_dt > vd_rate_end_dt THEN
+       vl_payment_unit_no := vl_payment_unit_no + 1;--
+     END IF; --
+    END IF;  --
+
+    IF vl_payment_unit_no > vl_unit_no THEN  
+      vl_payment_unit_no := vl_unit_no;--
+     
+     SELECT vd_payment_start_dt + (vl_unit_no - 1 ) DAYS
+      INTO vd_payment_end_dt;
+     --FROM SYSIBM.SYSDUMMY1; --
+     
+    END IF;  --
+    
+    vl_unit_no := vl_unit_no - vl_payment_unit_no ;
+    vl_rate_slab_count := vl_rate_slab_count -1;
+  
+    --Ageout Calculation when client turns 18 or 21 on the same date as Subsidy End Date
+    IF vl_unit_no <= 0 OR vl_rate_slab_count <= 0 THEN
+     vl_ageout_unit_no := 0;
+     raise notice 'Inside rate cursor - Rate start date %',vd_current_service_start_dt;
+     raise notice 'Inside rate cursor - GAP ID %',vl_guardian_subsidy_id;
+     
+     SELECT sp_subsidy_ageout_calculation
+     INTO 
+      vl_ageout_unit_no
+     FROM
+      sp_subsidy_ageout_calculation('G', vl_guardian_subsidy_id::bigint, vd_current_service_start_dt::date);
+     
+     IF vl_ageout_unit_no > 0 THEN
+      vl_payment_unit_no := vl_payment_unit_no + vl_ageout_unit_no;
+     END IF;
+      
+    END IF;
+    
+     vdc_payment_amount := vl_payment_unit_no * vdc_per_diem_rate;
+    raise notice '% vl_payment_unit_no * vdc_per_diem_rate >>>vdc_payment_amount',vdc_payment_amount; 
+
+    IF vdc_payment_amount > 0 THEN
+     -- Calculate Suspension period
+     SELECT a.al_suspension_days from SP_SUSPENSION_CALCULATION ('G',
+               vl_guardian_subsidy_id,
+               vd_subsidy_start_dt,
+               vd_subsidy_end_dt,
+               vd_rate_start_dt,
+               vd_rate_end_dt,
+               vd_payment_start_dt,
+               vd_payment_end_dt,
+               vl_payment_unit_no) a into
+               vl_suspension_days;--
+
+     IF vl_suspension_days IS NULL THEN
+       vl_suspension_days := 0;--
+     END IF;--
+     
+     -- Exclude amount for Suspension period
+     IF vl_suspension_days > 0 THEN
+       vdc_suspension_amount := vl_suspension_days * vdc_per_diem_rate;--
+      IF vdc_suspension_amount > 0 THEN
+        vdc_payment_amount := vdc_payment_amount - vdc_suspension_amount;--
+      END IF;--
+     END IF;        --
+    END IF;--
+   raise notice '% before:  Check for TCA amount - START >>>vdc_payment_amount',vdc_payment_amount; 
+
+    -- Check for TCA amount - START 
+    IF vdc_payment_amount > 0 AND vdc_tca_amount > 0 THEN
+     IF date_part('MONTH',vd_current_service_start_dt) = date_part('MONTH',vd_subsidy_start_dt) THEN
+      IF date_part('YEAR',vd_current_service_start_dt) = date_part('YEAR',vd_subsidy_start_dt) THEN
+       IF vdc_tca_amount >= vdc_payment_amount THEN
+         vdc_tca_amount := vdc_tca_amount - vdc_payment_amount;--
+         vdc_payment_amount := 0.00;--
+       ELSE
+         vdc_payment_amount := vdc_payment_amount - vdc_tca_amount;--
+         vdc_tca_amount := 0.00;--
+       END IF;--
+      END IF;--
+     END IF;--
+    END IF; --
+    -- Check for TCA amount - END
+    RAISE NOTICE '% cursor rate: vdc_payment_amount before SP_PAYMENT_DETAIL_INSERT>>>',vdc_payment_amount;
+    IF vdc_payment_amount > 0 THEN
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT >>>vl_guardian_subsidy_id',vl_guardian_subsidy_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_payment_header_id',vl_payment_header_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vd_current_service_start_dt',vd_current_service_start_dt;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vd_current_service_end_dt',vd_current_service_end_dt;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vdc_payment_amount',vdc_payment_amount;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_unit_no',vl_unit_no;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_unit_type',vs_unit_type;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vdc_per_diem_rate',vdc_per_diem_rate;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_payment_flag',vs_payment_flag;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_rate_type',vs_rate_type;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_linked_pymnt_hdr_id',vl_linked_pymnt_hdr_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vl_reference_payment_detail_id',vl_reference_payment_detail_id;
+    RAISE NOTICE '% vdc_payment_amount>>>> SP_PAYMENT_DETAIL_INSERT>>>vs_change_type',vs_change_type;
+     SELECT a.al_sqlcode,
+                                   a.as_error FROM SP_PAYMENT_DETAIL_INSERT( vl_guardian_subsidy_id,
+               vl_payment_header_id,
+               vl_service_id,
+               vd_payment_start_dt,
+               vd_payment_end_dt,
+               vdc_payment_amount,
+               vl_payment_unit_no,
+               vs_payment_unit_type,
+               vdc_per_diem_rate,
+               vs_payment_flag,
+               vs_rate_type,
+               vl_linked_pymnt_hdr_id,
+               vl_reference_payment_detail_id,
+               vs_change_type) a into
+               al_sqlcode,
+               as_error;--
+    
+    RAISE NOTICE '%  SP_PAYMENT_DETAIL_INSERT>>>output>>>al_sqlcode',al_sqlcode;
+    RAISE NOTICE '%  SP_PAYMENT_DETAIL_INSERT>>>output>>>as_error',as_error;
+
+     IF al_sqlcode <> 0 THEN
+         as_error := as_error || ' (SP-3)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-3)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+     END IF ;--
+    END IF;--
+    
+    --vl_unit_no := vl_unit_no - vl_payment_unit_no ;--
+     raise notice '% cur_gap_rates_refcur started--vl_unit_no',vl_unit_no;
+
+    IF vl_unit_no <= 0 THEN
+     --LEAVE EXIT_LOOP;--
+     --EXIT;
+    END IF;--
+   --END FOR; --
+   END LOOP;
+   close cur_gap_rates_refcur;
+  END IF;--
+ --END FOR; -- cur_guard_subs - END
+ END LOOP;
+ close cur_guard_subs_refcur;
+ -- UPDATING GROSS AMOUNT
+ SELECT COUNT(*)
+  INTO vl_pay_detl_count 
+ --FROM tb_PAYMENT_DETAIL_TEMP
+ FROM tb_PAYMENT_DETAIL
+ WHERE PAYMENT_ID = vl_payment_header_id
+  AND DELETE_SW = 'N' ;--
+
+  al_sqlcode := SQLCODE;--
+ IF al_sqlcode < 0 THEN
+   as_error := 'Error in Selecting Payment Detls count. (SQL-1)'  ;--
+   vs_identity_column := 'Payment ID';--
+   vs_identity_val := TO_CHAR(vl_payment_header_id);--
+  --SIGNAL p_sp_error  ;--
+ END IF ;--
+
+ IF vl_pay_detl_count > 0 THEN
+  UPDATE tb_PAYMENT_HEADER
+   SET GROSS_AMOUNT_NO = ( SELECT SUM(FINAL_AMOUNT_NO)
+          --FROM tb_PAYMENT_DETAIL_TEMP
+          FROM tb_PAYMENT_DETAIL
+         WHERE PAYMENT_ID = vl_payment_header_id
+          AND DELETE_SW = 'N' )
+  WHERE PAYMENT_ID = vl_payment_header_id
+   AND DELETE_SW = 'N';--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+    as_error := 'Error in Updating Gross Amount. (SQL-2)'  ;--
+    vs_identity_column := 'Payment ID';--
+    vs_identity_val := TO_CHAR(vl_payment_header_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+ ELSE
+  DELETE FROM tb_PAYMENT_STATUS
+  WHERE PAYMENT_ID = vl_payment_header_id;--
+ 
+   al_sqlcode = SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+    as_error := 'Error in Deleting Payment Status entry without Detls. (SQL-3)'  ;--
+    vs_identity_column := 'Payment ID';--
+    vs_identity_val := TO_CHAR(vl_payment_header_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+  
+  DELETE FROM tb_PAYMENT_HEADER
+  WHERE PAYMENT_ID = vl_payment_header_id ;--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+    as_error = 'Error in Deleting Payment Header entry without Detls. (SQL-4)'  ;--
+    vs_identity_column := 'Payment ID';--
+    vs_identity_val := TO_CHAR(vl_payment_header_id);--
+   --SIGNAL p_sp_error  ;--
+  END IF ;--
+ END IF;--
+ --COMMIT;--
+--END FOR ; -- cur_guard_subs_provider - END
+END LOOP;
+close cur_guard_subs_provider_refcur;
+-- PRJ-05327 - New code - END      
+
+---  Insert Into PAYMENT log
+INSERT INTO tb_PAYMENT_RUNTIMES_LOG   
+ ( PAYMENT_RUNTIMES_LOG_ID,
+  PAYMENT_TX,
+  PAYMENT_CURRENT_RUN_TS,
+  PAYMENT_PREVIOUS_RUN_TS,
+  PAYMENT_BATCH_NO,
+  PAYMENT_SUCCESSFUL_SW,
+  CREATE_TS,
+  CREATE_USER_ID,
+  UPDATE_TS,
+  UPDATE_USER_ID,
+  DELETE_SW,
+  PAYMENT_OTHER_TX)
+SELECT NEXTVAL ('SQ_PAYMENT_RUNTIMES_LOG'),
+  'GS_SUBSIDY_PAYMENT',
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP,
+  '',
+  '',
+  CURRENT_TIMESTAMP,
+  VS_USER_ID,          
+  CURRENT_TIMESTAMP,
+  VS_USER_ID,
+  'N',
+  'SP_GUARDIANSHIP_SUBSIDY_PAYMENT -->  PROGRAM ENDED';
+--FROM sysibm.sysdummy1 ;--
+      
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0 THEN
+  as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM ENDED'  ;--
+  vs_identity_column := '';--
+  vs_identity_val := '';--
+ --SIGNAL p_sp_error  ;--
+END IF ;--
+      
+--COMMIT;--
+return 1;
+END 
+;
+
+$function$
+

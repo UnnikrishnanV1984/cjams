@@ -1,0 +1,1 @@
+ALTER TABLE defecttracking.supportlog ADD jirarequestsent text NULL;

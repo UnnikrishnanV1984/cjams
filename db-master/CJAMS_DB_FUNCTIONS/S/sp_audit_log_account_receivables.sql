@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION cjams.sp_audit_log_account_receivables(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, receivable_detail_id bigint, receivable_ts date, client_nm character varying, start_dt date, end_dt date, amount_no numeric, receivable_balance_no numeric, receivable_status character varying, provider_id bigint, provider_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+	al_event_id bigint;
+	as_event_type_cd character varying;
+	v_pagenumber int;
+	v_pageoffset int;
+
+BEGIN 
+al_event_id := searchobj ->> 'event_id';
+as_event_type_cd := searchobj ->> 'event_type_cd';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+	return query
+SELECT  COUNT(1) OVER() totalcount, 
+	        RD.RECEIVABLE_DETAIL_ID::bigint,
+			RD.RECEIVABLE_TS::date,
+			F_ENAME('2955',PD.CLIENT_ID) AS CLIENT_NM,
+			RD.START_DT::date,
+			RD.END_DT::date, 
+			RD.AMOUNT_NO,
+			RD.RECEIVABLE_BALANCE_NO,
+			F_PDESC(RD.RECEIVABLE_STATUS_CD,7) AS RECEIVABLE_STATUS,
+			RH.PROVIDER_ID::bigint,
+			F_ENAME('2953',RH.PROVIDER_ID) AS PROVIDER_NM
+   FROM TB_FISCAL_AUDIT_TRAIL FA,
+			TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK FL,
+			TB_RECEIVABLE_DETAIL RD,
+			TB_PAYMENT_DETAIL PD,
+			TB_RECEIVABLE_HEADER RH
+WHERE FA.FISCAL_AUDIT_TRAIL_ID = FL.FISCAL_AUDIT_TRAIL_ID
+		AND RD.RECEIVABLE_DETAIL_ID = FL.ENTITY_ID
+		AND RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID
+		AND RD.RECEIVABLE_ID = RH.RECEIVABLE_ID
+		AND FA.EVENT_ID = al_event_id
+		AND FA.EVENT_TYPE_CD = as_event_type_cd
+		AND FL.ENTITY_TYPE_CD = '1007'
+		AND FA.DELETE_SW = 'N'
+		AND FL.DELETE_SW = 'N'
+		AND RD.DELETE_SW = 'N'
+		AND PD.DELETE_SW = 'N'
+		AND RH.DELETE_SW = 'N'
+ORDER BY RD.RECEIVABLE_DETAIL_ID
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+$function$
+;

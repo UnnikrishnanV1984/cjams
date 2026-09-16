@@ -1,0 +1,2 @@
+create index Xie1_tb_PLACEMENT_VALIDATION on tb_PLACEMENT_VALIDATION(update_user_id,validation_status_cd);
+

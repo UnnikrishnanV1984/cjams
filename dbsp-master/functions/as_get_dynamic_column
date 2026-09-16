@@ -1,0 +1,88 @@
+CREATE OR REPLACE FUNCTION as_get_dynamic_column()
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+declare
+   i text;
+   str text;
+   v_col_rest text;
+   v_re text;
+   v_sch_tab text;
+   v_count integer;
+   v_dup_cnt integer;
+   v_table_name text;
+   v_cnt integer;
+begin
+ /*Fetch schema and table name*/
+ for v_sch_tab in (select table_schema||'.'||table_name  as tb_name
+       from tb_get_tb_size_details 
+        where table_name not in (select tc.table_name as table_name
+            from information_schema.table_constraints tc
+              join information_schema.key_column_usage kc 
+                 on kc.table_name = tc.table_name 
+                 and kc.table_schema = tc.table_schema 
+                 and kc.constraint_name = tc.constraint_name
+            where  tc.constraint_type = 'PRIMARY KEY'
+                and kc.ordinal_position is not null
+                and tc.constraint_schema not like '%sys'
+            order by tc.table_schema,
+                      tc.table_name,
+                      kc.position_in_unique_constraint)
+             and table_name not like '%-%' 
+             and table_name not like '%$%'            
+            )
+  
+  loop    
+     str := '';
+     /*pass table schema and table to for loop and get the column name*/
+     for i in (SELECT attname  AS col
+        FROM   pg_attribute
+        WHERE  attrelid = v_sch_tab::regclass  -- table name, optionally schema-qualified
+        AND    attnum > 0
+        AND    NOT attisdropped
+        ORDER  BY attnum) -- table name, optionally schema-qualified
+     loop
+      if i not like '%?column?%' then
+       str :=  str || ',' || i;
+      end if;
+     END LOOP; 
+     /* REMOVE ',' before th output */ 
+     select substring(str,2) into  v_col_rest;
+   
+     /* EXTRACT TABLE NAME ,*/ 
+     select substring(v_sch_tab,(position('.' in v_sch_tab)+1)) into v_table_name;
+     --raise notice '--v_table_name%',v_table_name;
+     
+     /* get the count from the table ,*/ 
+     EXECUTE 'select coalesce(count(*),0)cnt from ' || v_sch_tab 
+     INTO v_cnt;
+     --raise notice '%',v_cnt;    
+     /* count of table must be > than 0 ,*/ 
+     
+   if v_cnt > 1  then
+   
+      begin       
+       /* get the duplicate record count from the table ,*/ 
+       EXECUTE 'select sum(cnt) from (select count(*)cnt from ' || v_sch_tab || ' group by ' || v_col_rest || ' having count(*)>1) a'
+       INTO v_dup_cnt;
+       --raise notice '%',v_dup_cnt;          
+     
+      /* update the duplicate count */ 
+       update tb_get_tb_size_details 
+        set tb_dup_rows_cnt = v_dup_cnt
+        where table_name  = v_table_name ;
+      
+      /* Handle other exceptiong */       
+       exception 
+         when others then  
+         v_re:='FAILED';
+       --return v_re;
+      end;      
+   end if; 
+  
+  end loop;
+  v_re:='SUCCESS';
+  return v_re;
+end;
+$function$
+

@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION as_documenttemplaterolewiselistwithfilter(v_roletypekey character varying, v_intakenumber character varying, v_intakeserviceid uuid, v_restitutionno bigint, v_persontypekey character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(title character varying, inputfields text, headertemplatehtml character varying, isheaderrequired boolean, youthbasedocument boolean, documenttemplatekey character varying, "generatedBy" character varying, "generatedDateTime" timestamp without time zone, documentpath character varying, beforesubmit boolean)
+ LANGUAGE plpgsql
+ ROWS 10000
+AS $function$ 
+declare v_beforesubmit boolean;
+
+v_res_type character varying;
+v_res_status character varying;
+v_res_cls character varying;
+
+
+
+begin
+ select isr.restitutiontype , isr.status into v_res_type, v_res_status
+from intakeserreqrestitution isr where isr.activeflag=1 and isr.intakenumber= v_intakenumber and isr.restitutionno = v_restitutionno;
+if v_res_status = 'Closed' then 
+   v_res_cls := 'Closed' ;
+  else
+    v_res_cls := null;
+  end if;
+select
+ (count(intakenumber) = 0) into
+  v_beforesubmit
+ from
+  intakeservicerequest
+ where
+  intakenumber = v_intakenumber;
+
+return QUERY (
+ select distinct DT.documentname,
+ (
+  select string_agg(inputfield, ',')
+ from
+  documenttemplateinputfieldsconfig DTIFC
+ where
+  DTIFC.roletypekey = v_roletypekey
+  and DTIFC.documenttemplatekey = DTRTC.documenttemplatekey
+ group by
+  DTIFC.documenttemplatekey) as inputfields,
+ DT.headertemplatehtml,
+ DT.isheaderrequired,
+ DT.youthbasedocument,
+ DTRTC.documenttemplatekey,
+ (
+  select UP.fullname
+ from
+  evaluationdocument as ED
+ join userprofile UP on
+  UP.securityusersid = ED.insertedby
+  and UP.activeflag = 1
+ where
+  ED.documenttemplatekey = DT.documenttemplatekey
+  and ED.activeflag = 1 and
+  (case when v_persontypekey is not null then ED.persontypekey = v_persontypekey else true end) 
+  and (ED.intakenumber = v_intakenumber
+  or ED.intakeserviceid = v_intakeserviceid)
+ order by
+  versionno desc
+ limit 1) as generatename,
+ (
+  select EDOC.insertedon
+ from
+  evaluationdocument as EDOC
+ where
+  EDOC.documenttemplatekey = DT.documenttemplatekey
+  and EDOC.activeflag = 1 and
+    (case when v_persontypekey is not null then EDOC.persontypekey = v_persontypekey else true end) 
+  and (EDOC.intakenumber = v_intakenumber
+  or EDOC.intakeserviceid = v_intakeserviceid)
+ order by
+  versionno desc
+ limit 1) as generatedate,
+ (
+  select EDOCP.documentpath
+ from
+  evaluationdocument as EDOCP
+ where
+  EDOCP.documenttemplatekey = DT.documenttemplatekey
+  and EDOCP.activeflag = 1 and
+  (case when v_persontypekey is not null then EDOCP.persontypekey = v_persontypekey else true end) 
+  and (EDOCP.intakenumber = v_intakenumber
+  or EDOCP.intakeserviceid = v_intakeserviceid)
+ order by
+  versionno desc
+ limit 1) as documentpath,
+ v_beforesubmit as beforesubmit
+from
+ documenttemplate as DT
+join documenttemplateroletypeconfig as DTRTC on
+ DTRTC.documenttemplatekey = DT.documenttemplatekey
+ and DTRTC.activeflag = 1
+ join intakedocclassification DTC on 
+  DTC.documenttemplatekey = DT.documenttemplatekey 
+  left join (select distinct e.documenttemplatekey,e.persontypekey from evaluationdocument e 
+  where 
+  (case when v_intakenumber is not null then e.intakenumber = v_intakenumber else true end)
+   and (case when v_intakeserviceid is not null then e.intakeserviceid = v_intakeserviceid else true end)) ed on ed.documenttemplatekey = dt.documenttemplatekey
+where
+    --DTC.roletype_key = v_roletypekey and
+   
+    ((DTC.restitution_status = v_res_status) or (DTC.restitution_status is null and DTRTC.roletypekey !='JSRTC')) and
+    ( DTC.restitution_type in('Both' , v_res_type,v_res_cls ) or DTC.restitution_type is null) and
+ DTRTC.roletypekey = v_roletypekey
+ and DT.activeflag = 1
+ and DTC.activeflag = 1
+ and (v_intakeserviceid is not null
+ or v_beforesubmit = false
+ or DTRTC.beforesubmit = true)
+ and (case when v_persontypekey is not null then ed.persontypekey = v_persontypekey else true end)) order by DT.documentname;
+end;
+
+$function$
+

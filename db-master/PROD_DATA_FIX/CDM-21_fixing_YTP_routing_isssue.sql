@@ -1,0 +1,1 @@
+update routing set activeflag = 0 where objectid = '6d96f95a-22ab-4dae-8a48-89b91cfd5d94' and tosecurityusersid = 'f2599061-b9c9-455f-a9c8-c7bc31e9ef22';

@@ -1,0 +1,1 @@
+create index Xie2_usernotification on cjams.usernotification(substring(objectid FROM '[0-9]+'));

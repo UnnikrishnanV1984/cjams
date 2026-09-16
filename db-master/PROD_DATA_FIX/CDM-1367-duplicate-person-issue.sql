@@ -1,0 +1,1 @@
+update cjams.intakeservicerequestactor set activeflag = 0 , updatedby = 'CDM-1367', updatedon = now() where personid = '99de5fac-246f-4a30-9e28-0313131bc5be' and servicecaseid = '2fdc2f46-b235-44fa-b14f-f396948becf5';

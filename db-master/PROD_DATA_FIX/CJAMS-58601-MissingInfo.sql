@@ -1,0 +1,20 @@
+
+/*
+Issue Description: When you download the intake report it is missing the first half of the narrative that you see under the summary tab. The associated intake number I241013190954 is also missing the first half of the narrative. 
+Category/Module: Bug
+Root cause: data glitch caused intakedastaging to not be updated when narrative was updated.
+Fix provided: DB queries  update intakedastaging table.
+Data/Code fix ticket#: CJAMS-58601
+Regression Impacts: N/A
+Is Code fix Required?: Nos
+Code fix ticket#: N/A           
+Reason why no related code fix: data Error
+Status of the code fix if already submitted and expected prod fix date: data fix done, raising the PR
+Backup before update/ delete:Query:
+*/
+
+
+update intakedastaging
+set jsondata = jsonb_set(jsondata, '{General, Narrative}', '"<p>Grace &amp; Great (1 yr old twins) </p><p><br></p><p>Rs is calling to report concerns for 1 year old twins Great and Grace. Rs reports after multiple attempts to&nbsp;reach mother via phone and email, no successful contact was made. Rs went to the home unannounced on 12/11 and met with mother and children. Rs observed the children to be on their high chair “reportedly eating breakfast at 11am”. While mother and Rs sat in the living. Room. Mother reported that Grace had been coughing for a week but was “getting better”. Mother asked Rs several times during the meeting to be her bridesmaid in her wedding with father of the twins who resides in Cameroon. Mother reported that she needs 12 white females to be in her wedding. After several times of Rs repeating that was not allowed, mother finally stopped asking. Rs reports that she went into the kitchen and observed roaches (dead and alive) in the sink with cloudy water. Rs did not note if there was any food visible. </p><p><br></p><p>Rs reported that both children were quiet not making eye contact. Rs reported that Graces’s hands were “very hot compared to her brothers”. Grace was making no eye contact and not moving much. Mother took Grace off the highchair and attempted to stand her up and child would not stand. Mother sat the child down on the floor and the child fell to her side. Rs asked for a thermometer to check the child’s temp. Mother said she did not have one. Rs asked what mother would do in an emergency. Mother said, “we would not have an emergency because we have Jesus” and then later said if there was an emergency she would use neighbors phone or rental office phone to call 911. Mother reported that Grace was dehydrated and not eating much. Mother said the PCP is an hour away and she does not have a car. </p><p><br></p><p>Rs assisted mother in calling 911. Mother did not know how to communicate the concerns and Rs had to take over with 911 operator. Mother was concerned about taking the children a bath, spraying perfume on them and changing their cloths prior to EMS arrival. </p><p><br></p><p>Both children and mother were taken to Holy Cross SS. Rs reports that she initially became involved due to PCP referral because the children were delayed in walking and speech. Mother reported that “Great would walk to Jesus and walk to his father when he comes from Cameron and something about walking to a white limo with Jesus”.&nbsp;</p><p>___________________________________________________________________________</p><p><br></p><p>Screener Cheryl H. Spencer took call at 2:24 pm from RS 2</p><p><br></p><p>Grace came to the hospital with flu like symptoms and has been dehydrated for a week. RS reports the twin was at Children''s for RSV last week. RS2 reports that child is stable. Mother reported that the baby was sick and did not want to take in food. Mother is in a ball gown walking around the hospital without shoes. She keeps saying \"Merry Christmas.\" Mother was asked who she lives with and she told RS2 she lives with 20,000 people spiritually and physically. Mother states she is non-denominational Christian and was quoting Bible verses.</p><p><br></p><p>Family is Black and speaks English. She is from Cameroon.</p>"', true),
+                 updatedby = 'CJAMS-58601', updatedon = now()
+where intakenumber  = 'I241013190954' and activeflag = 1;

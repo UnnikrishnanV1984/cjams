@@ -1,0 +1,2 @@
+update tb_payment_detail set county_cd='1427', update_ts=now(), update_user_id = 'CDM-1198' where payment_id=2905786 and payment_detail_id='3990136';
+update tb_afs_interfaces_iss set ldss_nm='01', update_ts=now(), update_user_id = 'CDM-1198' where payment_id=2905786;

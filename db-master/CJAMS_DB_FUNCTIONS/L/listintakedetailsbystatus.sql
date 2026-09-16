@@ -1,0 +1,136 @@
+ 
+DROP function if exists listintakedetailsbystatus(character varying,int,bigint,bigint,character varying,boolean,character varying,character varying,character varying) ;
+CREATE OR REPLACE FUNCTION cjams.listintakedetailsbystatus(v_UserSID character varying, v_status int, pagenumber bigint, pagesize bigint, intakeno character varying, bpreintake boolean, sortcolumn character varying, sortorder character varying,v_disposition character varying)
+ RETURNS TABLE(totalcount bigint, intakechessieid character varying, id integer, intakenumber character varying, cpsresponse character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, narrative text, raname character varying, entityname character varying, cruworkername character varying, isreview boolean, issupervisor boolean, datesubmitted timestamp without time zone, dateclosed timestamp without time zone, remarks text, reviewstatus character varying, disposition character varying, intakestatus character varying, timeleft character varying, jsondata jsonb, updateddate timestamp without time zone, agencycode character varying, canreopen integer, ispreintake boolean, clwstatus character varying, sdm json, isprior integer, headofhousehlod json, legalguardian json, youthname character varying, victimname character varying, djsyouthname character varying, youthfirstname character varying, youthlastname character varying, youth_suffix character varying, youthcjamspid bigint)
+ LANGUAGE plpgsql
+ AS $function$
+ DECLARE v_pageoffset int;
+		 v_pagenumber int;
+		 l_disposition character varying;
+ BEGIN 
+ 	v_pagenumber := pagenumber-1;
+	v_pageoffset = v_pagenumber * pagesize;
+	IF (v_disposition = 'intakescreenin') THEN
+		l_disposition:='SCREENIN';
+	ELSIF (v_disposition = 'intakescreenout' ) THEN
+ 		l_disposition:='SCREENOUT';
+	else 
+		l_disposition:= v_disposition;
+	END IF;
+	raise notice 'l_disposition%',l_disposition; 
+ RETURN query
+SELECT
+	  count(1) over()::bigint
+	, IDAS.old_id as intakechessieid 
+	, 1
+	, IDAS.IntakeNumber 
+	, CAST(CASE ITDS.iscps WHEN true THEN 'CPS' WHEN false THEN 'Non  CPS' ELSE '' END  AS character varying)
+	, IDAS.reporteddate
+	, (to_char( IDAS.reportedtime::timestamp without time zone, 'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone
+	, IDAS.Narrative
+ 	, COALESCE(IDAS.title, '') :: character varying RAName
+	, CAST('' as character varying) EntityName
+	, CAST(up.firstname || ' ' || up.lastname as character varying) 
+	, COALESCE(r.isreviewrequest, false)
+	, COALESCE(rt.isupervisor, false)
+	, r.insertedon
+	, r.updatedon 
+	, r.remarks
+	, CAST(case ITDS.status WHEN 0 THEN 'Draft' ELSE  rts.typedescription END  as character varying)  
+	, CAST('' as character varying) dispositiondescription
+	, CAST('' as character varying) statusdescription
+	, CAST( case r.insertedon WHEN null THEN '' else case WHEN age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' THEN cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) end end as character varying)
+	, json_build_object('General',json_build_object(
+								 'Narrative',IDAS.narrative
+								 ,'Purpose',IDAS.intakeservreqtypeid ))::jsonb 
+	, IDAS.updatedon 
+	, ITDS.teamtypekey 
+	, 0
+	, ITDS.ispreintake
+	, ''::character varying  as clwstatus
+	, NULL  ::json
+	, 0 isprior
+	, (SELECT json_agg(x) as headofhousehlod FROM ( 
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname
+		FROM  intakeservicerequestactor ISRA  
+		INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 
+		INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 
+		WHERE    ISRA.activeflag =1  
+		AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true
+		AND ISRA.intakenumber = IDAS.IntakeNumber
+		ORDER BY 1 ) as x):: json
+	, ( SELECT getcasepersonname FROM  getcasepersonname ('servicerequest',IDAS.intakeserviceid:: character varying))
+	, ''::CHARACTER VARYING as youthname
+	, ''::CHARACTER VARYING as  victimname
+	, ''::CHARACTER VARYING as DJSyouthname
+	, ''::CHARACTER VARYING as youthfirstname
+	, ''::CHARACTER VARYING as youthlastname
+	, ''::CHARACTER VARYING asyouth_suffix
+	, NULL::bigint as cjamspid
+FROM 	intakeservicerequest IDAS
+		INNER JOIN 	intakeDAStatus ITDS ON 	ITDS.intakenumber = IDAS.intakenumber AND ITDS.activeflag =1  and ITDS.teamtypekey = 'CW'
+		LEFT JOIN 	routing r ON r.objectid = IDAS.intakenumber AND r.activeflag = 1 and r.eventcode in ('INTR','KINR')
+		LEFT JOIN 	routingstatustype RTs ON  RTs.sequencenumber = r.routingstatustypeid AND rts.activeflag = 1
+		LEFT JOIN	teammemberroletype rt ON rt.roletypekey = r.toroleid AND rt.activeflag = 1
+		INNER JOIN  userprofile up ON up.securityusersid = ITDS.intakeuser	
+		LEFT JOIN 	intakereqforservconfig irsc ON irsc.intakenumber = IDAS.intakenumber
+		--LEFT JOIN 	intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = IDAS.intakeserreqstatustypeid and ISRST.activeflag = 1 
+		/*LEFT JOIN  (SELECT DISTINCT isdm.intakeserviceid, 
+							CASE WHEN isdm.screeninoverrideflag = 1 THEN 'SCREENIN'
+								 WHEN inv.old_id  IS NOT NULL THEN 'SCREENIN'
+								 WHEN (isdm.noscreeninoverridesflag = 1 OR isdm.isfinalscreenin = false OR isdm.newnoncpsrefflag = 1) THEN 'SCREENOUT'
+								 ELSE 'SCREENOUT'
+							END   AS SCREEN_IN_OUT
+					FROM intakeservicerequestsdm isdm  
+						 LEFT JOIN investigation inv ON inv.intakeserviceid = isdm.intakeserviceid AND inv.activeflag =1
+					WHERE isdm.activeflag = 1
+				   ) sdm ON sdm.intakeserviceid  = IDAS.intakeserviceid  */
+ 		LEFT JOIN  (SELECT distinct isdc.intakeserviceid , srcd.dispositioncode,isdc.intakeserreqstatustypeid
+					FROM 	intakeservicerequestdispositioncode isdc 
+							INNER JOIN servicerequesttypeconfigdispositioncode srcd ON  srcd.servicerequesttypeconfigiddispostionid = isdc.servicerequesttypeconfigiddispostionid and srcd.activeflag = 1  
+					WHERE	 isdc.activeflag = 1 --srcd.dispositioncode in ('Scrnin','Ovrscrnin')  AND
+					) isd ON isd.intakeserviceid  = IDAS.intakeserviceid
+		LEFT JOIN 	intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = isd.intakeserreqstatustypeid and ISRST.activeflag = 1 
+ WHERE 	IDAS.IntakeNumber like intakeno || '%'
+		AND ITDS.intakenumber NOT IN (SELECT ids.intakenumber FROM intakedastaging ids WHERE activeflag =1)
+		AND CASE v_status WHEN 8 THEN ITDS.status  IN (2,8) WHEN 1 THEN ITDS.status  IN (1,0) ELSE ITDS.status = v_status END
+		AND  v_UserSID IN (r.tosecurityusersid,COALESCE(ITDS.intakeuser,r.fromsecurityusersid ))
+		AND IDAS.Activeflag = 1 
+		AND CASE COALESCE(lower(l_disposition),'') WHEN '' THEN FALSE  
+											WHEN 'screenin'  THEN ITDS.status = 2  
+											ELSE ITDS.status = 8 END
+order by
+	(
+	case
+		sortorder
+		when 'asc' then
+		case
+			sortcolumn
+			when 'receiveddate' then cast( IDAS.insertedon as character varying)
+			when 'updateddate' then cast( IDAS.insertedon as character varying)
+			when 'datesubmitted' then cast( IDAS.insertedon as character varying)
+			when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)
+			else IDAS.intakenumber
+		end
+		-- else cast( IDAS.intakenumber as character varying)
+	end) ASC NULLS LAST,
+	(
+	case
+		sortorder
+		when 'desc' then
+		case
+			sortcolumn
+			when 'receiveddate' then cast( IDAS.insertedon as character varying)
+			when 'updateddate' then cast( IDAS.updatedon as character varying)
+			when 'datesubmitted' then cast( IDAS.insertedon as character varying)
+			when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)
+			else IDAS.intakenumber
+		end
+		-- else cast( IDAS.intakenumber as character varying)
+	end ) DESC NULLS LAST
+LIMIT pagesize offset v_pageoffset ;	
+ 
+END  	
+$function$
+
+

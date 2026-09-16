@@ -1,0 +1,1 @@
+ALTER TABLE cjams.personeducation ALTER COLUMN schoolschedule TYPE character varying;

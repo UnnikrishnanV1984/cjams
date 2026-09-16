@@ -1,0 +1,100 @@
+CREATE OR REPLACE FUNCTION getreviewdetails1(v_eventcode character varying, v_securityuserid character varying, pagno integer, pagesize integer)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, intakeservreqtypekey character varying, classkey character varying, reporteddate timestamp without time zone, clientname character varying, asssignedon timestamp without time zone, assingeduser character varying, remarks text, typename character varying, appevent character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+Begin
+return query
+ SELECT COUNT(1) OVER(),
+ ISR.intakeserviceid,
+ cast( ISR.servicerequestnumber ||
+ case
+  coalesce( isr.actiontype,
+  '' )
+  when '' then ''
+  else ' (' || coalesce( isr.actiontype,
+  '' ) || ')'
+ end as character varying ),
+ isr.intakenumber,
+ (
+ select
+  itsrt.intakeservreqtypekey
+ from
+  intakeservicerequesttype as itsrt
+ where
+  itsrt.intakeservreqtypeid = ISR.intakeservreqtypeid
+  and itsrt.activeflag = 1
+ limit 1 ),
+ (
+ select
+  srst.classkey
+ from
+  servicerequestsubtype as srst
+ where
+  srst.servicerequestsubtypeid = ISR.intakeservicerequestclassid
+  and srst.activeflag = 1
+ limit 1 ),
+ ISR.reporteddate :: timestamp,
+ ISRA.clientname,
+ A.updatedon :: timestamp,
+ cast( up.lastname || ', ' || up.firstname as character varying ) assingeduser, 
+ coalesce( r.remarks,
+ '' ) ::text,
+ (AMT.titleheadertext ||'(' || A.submissionid ||')' ) ::character varying , 
+ 'ASST' :: character varying
+from
+ intakeservicerequest as ISR
+join (
+ select
+  ISRA.intakeserviceid,
+  ( max( ISRA.personid::character varying ))::uuid personid,
+  cast( ( trim( PN.lastname )|| ', ' || trim( PN.firstname )) as character varying ) clientname
+ from
+  intakeservicerequestactor as ISRA
+ join actor as AR on
+  AR.actorid = ISRA.actorid
+ join person as PN on
+  PN.personid = AR.personid
+ where
+  ISRA.intakeservicerequestpersontypekey in ( 'RA',
+  'RC',
+  'CLI' )
+ group by
+  ISRA.intakeserviceid,
+  clientname ) ISRA on
+ ISRA.intakeserviceid = ISR.intakeserviceid
+inner join assessment A on
+ A.objectid = ISR.intakeserviceid
+ and A.activeflag = 1
+inner join assessmenttemplate AMT on
+ A.assessmenttemplateid = AMT.assessmenttemplateid
+ and AMT.activeflag = 1
+join (
+ select
+  distinct objectid ,
+  cast( r.insertedon as date ) assignedon,
+  r.remarks,
+  r.fromsecurityusersid
+ from
+  ROUTING R
+ where
+  routingstatustypeid = 1
+  and R.eventcode = 'ASST'
+  and r.tosecurityusersid=v_securityuserid
+  and R.activeflag = 1 ) R on
+ r.objectid = A.assessmentid::character varying
+inner join userprofile up on
+ up.securityusersid = r.fromsecurityusersid
+ -- ISR.routedusersid
+ and up.activeflag = 1
+inner join intakeserreqstatustype irst on
+ irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid
+ and irst.activeflag = 1
+ and lower( irst.Intakeserreqstatustypekey ) not in ( 'closed' );
+
+End;
+
+
+$function$
+

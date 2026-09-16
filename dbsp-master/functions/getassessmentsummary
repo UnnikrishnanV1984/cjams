@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION getassessmentsummary(investigationid uuid)
+ RETURNS TABLE(totalcount bigint, opencount bigint, inprogresscount bigint, completedcount bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE _intakeservreqtypeid uuid;
+DECLARE _intakeservicerequestclassid uuid;
+DECLARE _agencycode character varying;
+DECLARE targetid uuid; 
+ 
+BEGIN
+
+SELECT intakeservreqtypeid, intakeservicerequestclassid,teamtypekey into _intakeservreqtypeid, _intakeservicerequestclassid,_agencycode 
+FROM intakeservicerequest where intakeserviceid=investigationid;
+
+/*SELECT assessmenttemplatetargetid into targetid from assessmenttemplatetarget where lower(target )='investigation' and activeflag =1;
+*/
+RETURN QUERY  
+ 
+select  cast( sum(opncount+ inpcount + subcount) as bigint) as totalcount ,
+cast( sum(opncount) as bigint)as opencount, cast( sum(inpcount) as bigint)as inprogresscount,
+cast( sum(subcount) as bigint) as completedcount from (
+select case lower(ast.assessmentstatustypekey) when 'new' then  coalesce (a.cnt,0) else 0 end opncount,
+case lower(ast.assessmentstatustypekey) when 'inprocess' then  coalesce (a.cnt,0) else 0 end inpcount,
+case lower(ast.assessmentstatustypekey) when 'submitted' then  coalesce (a.cnt,0) else 0 end subcount 
+ from assessmentstatustype ast left join (
+select count(1) cnt,
+case lower( coalesce ( a.assessmentstatustypekey ,'')) when '' then 'new' else a.assessmentstatustypekey end assessmentstatustypekey
+  
+from  assessmenttemplate at inner join  assessmenttemplatecategoryfiltermap  atcm on at.assessmenttemplateid =atcm.assessmenttemplateid    
+and atcm.activeflag =1 
+         INNER JOIN AssessmentTemplateTarget ATT 
+    ON ATT.AssessmentTemplateTargetid = atcm.AssessmentTemplateTargetid
+    AND lower(ATT.target ) IN ('investigation','intake')
+    and ATT.activeflag =1
+ left join (
+ select  
+  at.assessmenttemplateid  ,a.assessmentstatustypekey
+  from assessment a
+  inner join assessmenttemplate at on at.assessmenttemplateid = a.assessmenttemplateid  
+  where  objectid =investigationid   and a.activeflag=1) a on a.assessmenttemplateid =at.assessmenttemplateid
+   where 
+ teamtypekey =_agencycode 
+ -- intakeservicerequesttypeid= _intakeservreqtypeid
+ -- and intakeservicerequestsubtypeid  = _intakeservicerequestclassid 
+      /*and      assessmenttemplatetargetid = targetid */
+    and at.activeflag =1   and at.external_templateid  is not null
+    group by   a.assessmentstatustypekey ) a on 
+    lower(a.assessmentstatustypekey) = lower(ast.assessmentstatustypekey)) a;
+END;
+
+$function$
+

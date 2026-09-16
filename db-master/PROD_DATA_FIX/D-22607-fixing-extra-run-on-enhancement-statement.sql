@@ -1,0 +1,1 @@
+DELETE FROM cjams.relationshiptypeagency WHERE relationshiptypeagencyid='67079dd2-6a77-4e4a-94c1-94ae16b365ef'

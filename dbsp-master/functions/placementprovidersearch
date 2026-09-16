@@ -1,0 +1,90 @@
+CREATE OR REPLACE FUNCTION placementprovidersearch(searchobj json)
+ RETURNS TABLE(totalcount bigint, providerid uuid, providercategorytypekey character varying, providername character varying, prefix character varying, firstname character varying, middlename character varying, lastname character varying, provideraddresstypekey character varying, buildingno character varying, addressline1 character varying, addressline2 character varying, city character varying, county character varying, state character varying, provideraddressid uuid, zipcode integer, latitude character varying, longitude character varying, providercontracttypekey character varying, providercontracttypename character varying, rate numeric, displayname character varying, age integer, gender character varying, race character varying, bedsapproved integer, bedsvacant integer)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+    v_lvService    VARCHAR(50);
+    v_lvServiceType  VARCHAR(50);                              
+    v_lvServiceSubType VARCHAR(50);                         
+    v_lvPaymentType VARCHAR(50);      
+    v_lvChildCharacter json;
+    v_liZipCode   INT;       
+    v_liCounty uuid;
+ v_lvProvider VARCHAR(50);
+    v_liPageNumber  INT;                              
+    v_liPageSize   INT;
+ v_liCount   INT;                              
+    v_lvSortCol   VARCHAR(50);                              
+    v_lvSortDir   VARCHAR(10); 
+    v_pagenumber int;
+ v_pageoffset int;  
+BEGIN 
+ 
+v_lvServiceType := searchobj ->> 'servicetype';
+v_lvService := searchobj ->> 'service'; 
+v_lvServiceSubType := searchobj ->> 'servicesubtype';   
+v_lvPaymentType := searchobj ->> 'paymenttype'; 
+v_liZipCode := searchobj ->> 'zipcode';
+v_liCounty := searchobj ->> 'county';
+v_lvProvider := searchobj ->> 'provider';
+v_lvChildCharacter := searchobj ->> 'childcharacteristic';
+
+v_liPageNumber := searchobj ->> 'pagenumber';
+v_liPageSize := searchobj ->> 'pagesize'; 
+
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+RAISE NOTICE 'Calling v_lvChildCharacter(%)', v_lvChildCharacter;
+
+return query
+ 
+select distinct count(1) OVER() totalcount, p.providerid, p.providercategorytypekey, p.providername, 
+p.prefix, p.firstname, p.middlename, p.lastname,
+paddr.provideraddresstypekey, paddr.buildingno, paddr.addressline1, paddr.addressline2,
+paddr.city, coun.countyname as county, paddr.state, paddr.provideraddressid, coun.zipcode, 
+paddr.latitude, paddr.longitude,
+pconttype.providercontracttypekey, pconttype.providercontracttypename,
+pcontrate.rate,( p.firstname || ' '||p.lastname):: character varying  as displayname,
+p.age, gen.typedescription as gender, race.typedescription as race,
+COALESCE(p.bedsapproved, 0) as bedsapproved, COALESCE(p.bedsvacant, 0) as bedsvacant
+from provider p 
+left join provideraddress paddr on p.providerid = paddr.providerid
+left join providercontactinfo pcinfo on p.providerid = pcinfo.providerid and pcinfo.activeflag = 1
+left join providercontactinfotype pcinfotype on pcinfo.providercontactinfotypekey = pcinfotype.providercontactinfotypekey and pcinfotype.activeflag = 1
+left join providercontract pcont on p.providerid = pcont.providerid and pcont.activeflag = 1
+left join providercontracttype pconttype on pcont.contracttypekey = pconttype.providercontracttypekey and pconttype.activeflag = 1
+left join providercontractrate pcontrate on pcontrate.providercontractid = pcont.providercontractid and pcontrate.activeflag = 1
+left join providerservice pserv on p.providerid = pserv.providerid and pserv.activeflag = 1
+left join service s on s.serviceid = pserv.serviceid and s.activeflag = 1
+left join servicetype stype on s.servicetypekey = stype.servicetypekey and stype.activeflag = 1
+left join servicesubtype ssubtype on s.serviceid = ssubtype.serviceid and ssubtype.activeflag = 1
+left join county coun on paddr.countyid = coun.countyid and coun.activeflag = 1
+left join providerchildcharacteristic pcc on p.providerid = pcc.providerid and pcc.activeflag = 1
+left join racetype race on p.racetypekey = race.racetypekey
+left join gendertype gen on p.gendertypekey = gen.gendertypekey
+where p.activeflag = 1 
+and (v_lvServiceType is null or stype.servicetypekey ILIKE v_lvServiceType || '%')
+and (v_lvService is null or s.servicename ILIKE v_lvService || '%')
+and (v_lvServiceSubType is null or ssubtype.servicesubtypekey ILIKE v_lvServiceSubType || '%')
+and (v_lvPaymentType is null or pconttype.providercontracttypekey ILIKE v_lvPaymentType || '%')
+and (v_liZipCode is null or coun.zipcode = v_liZipCode)
+and (v_liCounty is null or coun.countyid = v_liCounty)
+and (coalesce(lower(p.providername) ,'') like coalesce(lower(v_lvProvider) ,'')||'%')
+and (v_lvChildCharacter is null or pcc.childcharacteristictypekey in (select * from json_array_elements_text(v_lvChildCharacter)))
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+end;
+
+$function$
+

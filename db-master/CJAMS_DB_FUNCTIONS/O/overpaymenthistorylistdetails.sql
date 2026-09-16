@@ -1,0 +1,250 @@
+CREATE OR REPLACE FUNCTION cjams.overpaymenthistorylistdetails(v_providerid integer, v_lipagesize integer, v_lipagenumber integer)
+ RETURNS TABLE(totalcount bigint, manual_sw character, payment_id integer, payment_detail_id integer, client_id bigint, clientname text, payment_amount_no numeric, final_amount_no numeric, draft_amount_no numeric, payment_dt date, receivable_id integer, receivable_detail_id integer, collection_status_cd character varying, collection_status character varying, statustype character varying, write_off_status character varying, approval_status character varying, amount_no numeric, receivable_balance_no numeric, collected_amount numeric, county_cd character varying, county_id character varying, approval_status_cd text, offsetreceiptdetails json)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 06/09/2021 Vineet Tirodkar - Modifications to fix multiple collection status issue(CDM-13148)
+------------------------------------------------------------------------------------------------------------	
+DECLARE 
+	v_pagenumber int;
+	v_pageoffset int;
+
+BEGIN 
+
+	IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+		v_liPageSize := 10;
+	END IF;
+
+	IF COALESCE(v_liPageNumber, 0) < 1 THEN
+		v_liPageNumber := 1;	
+	end if;
+
+	v_pagenumber := v_liPageNumber - 1;
+	v_pageoffset := v_pagenumber * v_liPageSize;
+
+	drop table if exists temp_payment_detail_op;
+	drop table if exists temp_payment_header_op;
+	drop table if exists temp_receivable_collection_status_op;
+    
+	CREATE TEMP TABLE temp_payment_header_op AS
+	SELECT ph.gross_amount_no,ph.payment_id,ph.authorization_id,ph.store_receipt_id,ph.payment_dt
+		,ph.payment_method_cd, PH.PAYMENT_TYPE_CD, PH.MANUAL_SW, PH.DELETE_SW,ph.provider_id
+	FROM tb_payment_header ph 
+	where ph.provider_id =  v_providerid
+		and ph.delete_sw = 'N';
+
+	create temp table temp_payment_detail_op as 
+	select pd.payment_id,PD.PAYMENT_DETAIL_ID ,pd.placement_id,pd.client_id,pd.case_id ,pd.final_fiscal_category_cd
+		,pd.final_amount_no,pd.final_service_end_dt,pd.final_service_start_dt,pd.draft_fiscal_category_cd,
+		pd.draft_amount_no,pd.draft_service_end_dt,pd.draft_service_start_dt,pd.payment_amount_no
+	FROM tb_payment_detail pd 
+		join tb_receivable_detail rd on pd.payment_detail_id=rd.payment_detail_id 
+			and rd.delete_sw = 'N'
+		join temp_payment_header_op tph on tph.payment_id = pd.payment_id
+	where pd.delete_sw = 'N';
+
+	create temp table temp_receivable_collection_status_op as
+	select rcs.collection_status_cd, rcs.collection_status_dt, 
+		rcs.receivable_detail_id, rcs.update_user_id, rcs.delete_sw, rcs.update_ts, rcs.active_sw 
+    from tb_receivable_collection_status rcs
+		join tb_receivable_detail rd on rcs.receivable_detail_id = rd.receivable_detail_id
+			and rd.delete_sw = 'N'
+		join temp_payment_detail_op pd on pd.payment_detail_id=rd.payment_detail_id 
+		join temp_payment_header_op tph on tph.payment_id = pd.payment_id 
+    where rcs.delete_sw = 'N'
+		/*	
+		and (case when (select count(*)
+							from tb_receivable_collection_status rc1
+						where rc1.receivable_detail_id = rcs.receivable_detail_id 
+							and rc1.delete_sw  = 'N'
+							and rc1.active_sw  = 'Y'
+						) > 0 then
+				rcs.active_sw  = 'Y'
+			else
+				true
+			end )
+		*/
+	;
+
+	return query
+	select count(1) over() as totalcount , * from 
+		(select trd.manual_sw,tph.payment_id,tpd.payment_detail_id,tpd.client_id,
+			concat_ws(' ',p.firstname,p.middlename,p.lastname,p.suffix) as clientname,
+			tpd.payment_amount_no,tpd.final_amount_no,tpd.draft_amount_no,tph.payment_dt,
+			trd.receivable_id,
+			trd.receivable_detail_id,
+			-- trcs.collection_status_cd as collection_status_cd,  
+			(case when trcs.collection_status_cd  is null then
+				(select rc.collection_status_cd 
+					from tb_receivable_collection_status rc
+				where rc.receivable_detail_id  = trd.receivable_detail_id
+					and rc.delete_sw  = 'N'
+				order by 1 desc 
+				limit 1 
+				)
+			else
+				trcs.collection_status_cd 
+			end) as collection_status_cd,  
+			(case when trcs.collection_status_cd  is null then
+				(select value_tx 
+					from tb_picklist_values 
+				 where PICKLIST_type_id = 52 
+					AND delete_sw = 'N' 
+					AND active_sw = 'Y' 
+					AND TRIM(PICKLIST_VALUE_CD)=
+					(select TRIM(rc.collection_status_cd) 
+						from tb_receivable_collection_status rc
+					where rc.receivable_detail_id  = trd.receivable_detail_id
+						and rc.delete_sw  = 'N'
+					order by 1 desc 
+					limit 1 
+					)
+				) 
+			else
+				(select value_tx 
+					from tb_picklist_values 
+				 where PICKLIST_type_id = 52 
+					AND delete_sw = 'N' 
+					AND active_sw = 'Y' 
+					AND TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd)
+				) 
+			end) as collection_status,  
+			-- (select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd)) as collection_status,  
+			(select value_tx from tb_picklist_values where PICKLIST_type_id=7 AND delete_sw='N'  
+				AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trd.receivable_status_cd)) AS  statustype,  
+			(select value_tx from tb_picklist_values where PICKLIST_type_id=279 AND delete_sw='N'  
+				AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trd.write_off_approval_status)) AS  write_off_status,  
+			(select value_tx from tb_picklist_values where PICKLIST_type_id=279 AND delete_sw='N'  
+				AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trd.approval_status_cd)) AS  approval_status  
+			,trd.amount_no,
+			-- CASE WHEN trcs.collection_status_cd = '775' THEN 0.00 ELSE trd.receivable_balance_no END,
+			(case when 
+				(case when trcs.collection_status_cd  is null then
+					(select rc.collection_status_cd 
+						from tb_receivable_collection_status rc
+					where rc.receivable_detail_id  = trd.receivable_detail_id
+						and rc.delete_sw  = 'N'
+					order by 1 desc 
+					limit 1 
+					)
+				else
+					trcs.collection_status_cd 
+				end) = '775' THEN 
+					0.00 
+			else 
+				trd.receivable_balance_no 
+			end) as receivable_balance_no,
+			((select sum(trl.collected_amount_no) 
+				from tb_receivable_liquidation trl 
+				where trl.receivable_detail_id=trd.receivable_detail_id 
+					and trl.isreversal is not true) - 
+				coalesce((select sum(trl.collected_amount_no) 
+			  from tb_receivable_liquidation trl 
+				where trl.receivable_detail_id=trd.receivable_detail_id  
+				and trl.isreversal is true),0)
+			) as collected_amount, 
+			(select value_tx from tb_picklist_values 
+				where PICKLIST_type_id=328 AND delete_sw='N' AND active_sw='Y' 
+				AND TRIM(PICKLIST_VALUE_CD)=TRIM(tb.county_cd)) as county_cd,
+			tb.county_cd as county_id,
+			TRIM(trd.approval_status_cd) as approval_status_cd,
+			((select json_agg(receipt) from 
+				(select receipts.* from
+				(
+				(select 
+					-- (select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N'
+					-- AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd)) 
+					'Offset':: character varying as type,tro.offset_id as receipt_id,
+					tro.offset_dt as receipt_dt,null::character varying as receipttype,tro.offset_amount_no 
+					as payment_amount_no,(select r.remarks from routing r where r.objectid=trl.receipt_id::character varying and r.activeflag=1 and r.eventcode='RVRSL' limit 1) as receipt_status,
+					trl.collected_amount_no,tro.payment_id::character varying as
+					referencenumber,trhh.receivable_id,trdd.receivable_detail_id,null::character varying  
+					as notes_tx,tro.create_ts as enteredat,up.fullname as  enteredby,null::character varying as
+					payment_method_cd,null::character varying as payment_type_cd,null::character varying as payee_cd,trdd.isreversal,trl.reversal_reason_tx,trdd.reversal_amount_no 
+				from temp_payment_header_op tphh
+					join temp_payment_detail_op tpdd on tpdd.payment_id= tphh.payment_id
+					join tb_receivable_detail trdd on trdd.payment_detail_id = tpdd.payment_detail_id
+						and trdd.delete_sw = 'N'
+					join tb_receivable_header trhh on trdd.receivable_id = trhh.receivable_id
+						and trhh.delete_sw = 'N'
+					join tb_RECEIVABLE_LIQUIDATION trl on trl.receivable_detail_id = trdd.receivable_detail_id
+						and trl.delete_sw = 'N'
+					join tb_RECEIVABLE_OFFSET tro on tro.offset_id = trl.offset_id
+						and tro.delete_sw = 'N'
+					--join temp_receivable_collection_status_op trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+					left join userprofile up on up.securityusersid = tro.create_user_id
+				where
+					( tpdd.payment_detail_id = tpd.payment_detail_id)
+					--	tpd.payment_detail_id=v_paymentdetailid
+					and tphh.provider_id=v_providerid
+					--and trcs.collection_status_cd='779'
+				order by tro.offset_id desc
+				)
+
+				union all
+
+				(select
+					--	(select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N'
+					-- AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd))
+					'Recovery':: character varying as type,tpr.receipt_id,tpr.receipt_dt,
+					(select value_tx from tb_picklist_values where PICKLIST_type_id=5 AND delete_sw='N'
+						AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(tpr.payment_method_cd)) as receipttype,
+					tpr.payment_amount_no,
+					(select r.remarks from routing r where r.objectid=trl.receipt_id::character varying 
+						and r.activeflag=1  and r.eventcode='RVRSL' limit 1) as receipt_status,
+					trl.collected_amount_no,tpr.payment_no_tx as referencenumber,trdd.receivable_id,trdd.receivable_detail_id,
+					tpr.notes_tx,tpr.create_ts as enteredat,up.fullname as enteredby,tpr.payment_method_cd,tpr.payment_type_cd,
+					tpr.payee_cd,trdd.isreversal,trl.reversal_reason_tx as reversal_reason_tx,trdd.reversal_amount_no as  reversal_amount_no
+				from temp_payment_detail_op tpdd
+					join temp_payment_header_op tphh on tpdd.payment_id= tphh.payment_id
+					join tb_receivable_detail trdd on trdd.payment_detail_id = tpdd.payment_detail_id
+						and trdd.delete_sw = 'N'
+					join tb_RECEIVABLE_LIQUIDATION trl on trd.receivable_detail_id = trl.receivable_detail_id
+						and trl.delete_sw = 'N'
+					join tb_payment_receipt tpr on tpr.receipt_id = trl.receipt_id
+						and tpr.delete_sw = 'N'
+					--join temp_receivable_collection_status_op trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+					left join userprofile up on up.securityusersid = tpr.create_user_id
+				where (tpdd.payment_detail_id = tpd.payment_detail_id)
+					and tph.provider_id=v_providerid
+					--and trcs.collection_status_cd='780'
+				order by tpr.receipt_id desc
+				)
+				)
+				as receipts
+				group by receipts.type,receipts.receipt_id,receipts.receipt_dt,receipts.receipttype,
+					receipts.payment_amount_no,receipts.collected_amount_no,receipts.referencenumber,receipts.receivable_id,receipts.receivable_detail_id
+					,receipts.notes_tx,receipts.enteredat,receipts.enteredby,receipts.payment_method_cd,receipts.payment_type_cd,receipts.payee_cd,receipts.isreversal,
+					receipts.reversal_reason_tx,receipts.reversal_amount_no,receipts.receipt_status
+				order by receipts.receipt_id desc
+				) receipt
+				--group by receipt.type,receipt.receipt_id,receipt.receipt_dt,receipt.receipttype,
+				--receipt.payment_amount_no,receipt.collected_amount_no,receipt.referencenumber,receipt.receivable_id,receipt.receivable_detail_id
+				--,receipt.notes_tx,receipt.enteredat,receipt.enteredby,receipt.payment_method_cd,receipt.payment_type_cd,receipt.payee_cd
+				) 
+			) as offsetreceidetails
+		from temp_payment_header_op tph 
+			join temp_payment_detail_op tpd on tpd.payment_id = tph.payment_id 
+			join tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id 
+				and trd.delete_sw = 'N'
+			left join temp_receivable_collection_status_op trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+				and trcs.active_sw = 'Y'
+			join tb_provider tb on tph.provider_id = tb.provider_id left join person p on p.cjamspid = tpd.client_id 
+		where tph.provider_id=v_providerid 
+		group by trcs.collection_status_dt,trd.manual_sw,tph.payment_id,tpd.payment_detail_id,tpd.client_id,p.firstname,p.middlename,p.lastname,p.suffix,
+		  tpd.payment_amount_no,tpd.final_amount_no,tpd.draft_amount_no,tph.payment_dt,trd.receivable_id,trd.receivable_detail_id
+		  ,trcs.collection_status_cd,tb.county_cd,tph.provider_id
+		  ,trcs.update_ts
+		) as t 
+		order by  t.receivable_detail_id desc 
+		LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+	drop table if exists temp_payment_detail_op;
+	drop table if exists temp_payment_header_op;
+	drop table if exists temp_receivable_collection_status_op;
+
+END;
+
+$function$
+;

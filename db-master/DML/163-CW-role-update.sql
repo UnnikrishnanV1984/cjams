@@ -1,0 +1,1 @@
+update referencevalues set activeflag = 0  where referencetypeid = 165 and ref_key = 'AP';

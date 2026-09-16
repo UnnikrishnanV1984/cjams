@@ -1,0 +1,93 @@
+CREATE OR REPLACE FUNCTION listintakesupdadetails(securityusersid character varying, v_status character varying, pagenumber bigint, pagesize bigint, intakeno character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, intakenumber character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, submitteddate timestamp without time zone, intakestatus character varying, youthname character varying, youthcjamspid bigint)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+   v_pageoffset   INT;
+
+   v_pagenumber   INT;
+   v_UserSID      CHARACTER VARYING;
+BEGIN
+   v_UserSID := securityusersid;
+
+   v_pagenumber := pagenumber - 1;
+
+   v_pageoffset = v_pagenumber * pagesize;
+
+
+   RETURN QUERY
+        SELECT count (1) OVER (),
+               IDAS.intakenumber,
+               IDAS.DateRecieved,
+               IDAS.TimeRecieved::TIMESTAMP WITHOUT TIME ZONE,
+               (SELECT isr.insertedon
+                 FROM intakeservicerequest isr
+                WHERE     isr.activeflag = 1
+                      AND isr.intakenumber = IDAS.intakenumber
+                LIMIT 1),
+               IDAS.status,
+               (SELECT cast (
+                          initcap (
+                                trim (coalesce (PN.lastname, ''))
+                             || ' '
+                             || trim (coalesce (PN.suffix, ''))
+                             || ', '
+                             || trim (coalesce (PN.firstname, '')))
+                             AS CHARACTER VARYING)
+                 FROM Person AS PN
+                WHERE PN.personid = IDAS.focuspersonid)
+                  AS youthname,
+               (SELECT PN.cjamspid
+                  FROM Person AS PN
+                 WHERE PN.personid = IDAS.focuspersonid)
+                  AS cjamspid
+          FROM IntakeDAStaging IDAS
+               INNER JOIN IntakeDAStatus IDS
+                  ON     IDAS.intakenumber = IDS.intakenumber
+                     AND IDAS.activeflag = 1
+                     AND IDS.activeflag = 1 AND IDS.teamtypekey = 'CW'
+         WHERE     IDAS.intakenumber LIKE intakeno || '%'
+               AND IDAS.teamtypekey = 'CW'
+               AND IDAS.intakeuser = v_UserSID
+               AND IDAS.insertedby = v_UserSID
+               AND CASE
+                      WHEN LOWER (v_status) = 'pending'
+                      THEN
+                         IDAS.status = v_status
+                      WHEN lower (v_status) = 'approved'
+                      THEN
+                         IDAS.status IN ('Complete', 'Closed')
+                   END
+      ORDER BY (CASE sortorder
+                   WHEN 'asc'
+                   THEN
+                      CASE sortcolumn
+                         WHEN 'receiveddate'
+                         THEN
+                            CAST (IDAS.TimeRecieved AS CHARACTER VARYING)
+                         WHEN 'updateddate'
+                         THEN
+                            CAST (IDAS.updatedon AS CHARACTER VARYING)
+                         ELSE
+                            IDAS.intakenumber
+                      END
+                END) ASC,
+               (CASE sortorder
+                   WHEN 'desc'
+                   THEN
+                      CASE sortcolumn
+                         WHEN 'receiveddate'
+                         THEN
+                            CAST (IDAS.TimeRecieved AS CHARACTER VARYING)
+                         WHEN 'updateddate'
+                         THEN
+                            CAST (IDAS.updatedon AS CHARACTER VARYING)
+                         ELSE
+                            IDAS.intakenumber
+                      END
+                END) DESC
+         LIMIT pagesize
+        OFFSET v_pageoffset;
+END;
+$function$
+

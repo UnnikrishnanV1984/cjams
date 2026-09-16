@@ -1,0 +1,53 @@
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+--10/14/2025 - Sandeep Kiran Anugolu - Adding coulmn to save data for fostercare to guardianship checklist values (CIDM-10838)
+------------------------------------------------------------------------------------------------------------
+ALTER TABLE cjams.youthtransitionplan ADD COLUMN IF NOT EXISTS newfcgschecklistjson jsonb NULL;;
+comment on column cjams.youthtransitionplan.newfcgschecklistjson is 'Save data for ytp fostercare to gaurdianship checklist';
+------------------------------------------------------------------------------------------------------------
+-- Details:
+-- The 'newfcgschecklistjson' column captures all form field data related to the
+-- ytp-fc-gs tab within the Youth Transition Plan (YTP) module.
+-- 
+-- This JSON object will have following keys, corresponding to form fields:
+-- 
+-- isTransitionpast18th
+-- restictiveAlternative
+-- willRemaintill21
+-- needTransition
+-- ddaServices 
+-- isDdaServices
+-- enrollmentDate
+-- narrative
+-- comments
+-- ssi
+-- ssienrollmentDate
+-- ssinarrative
+-- ableAcc
+-- ableAccEstablishDate
+-- ableAccNarrative
+-- ableEligibility
+-- ableEligInstitution
+-- ableAccEligNarrative
+-- ddaReceivingJurisdiction
+-- ddaJurisdicationComments
+-- isDdaReceiving
+-- oasNarrative
+-- isAddressTbd
+-- placementName
+-- willGuardianProvideCare
+-- petitionFillingDate
+-- transistionMeeting
+-- typeOfPlacement
+-- guardian
+-- personid
+--
+
+--
+-- The youthtransitionplan table already follows a JSON-based pattern for all forms data, 
+-- as seen in other columns such as:
+--   • new_health_json
+--   • new_placement_json etc
+-- 
+-- To maintain consistency, this new checklist data is also stored as JSONB.
+------------------------------------------------------------------------------------------------------------

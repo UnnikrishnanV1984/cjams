@@ -1,0 +1,48 @@
+CREATE OR REPLACE FUNCTION updatecomplaintbysustain(u_courthearingid uuid, evaluationconfigid uuid, adjudicationdecision character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ i_evaluationconfigcount bigint;
+ v_intakeservicerequestevaluationconfigid uuid;
+ closecount bigint;
+begin
+ 
+ select count(1) into i_evaluationconfigcount from intakeservicerequestevaluation INE 
+join intakeservicerequestevaluationconfig INEC on INEC.intakeservicerequestevaluationid=INE.intakeservicerequestevaluationid and INEC.activeflag=1
+join courtactionallegationconfig INEAC on INEAC.intakeservicerequestevaluationconfigid=INEC.intakeservicerequestevaluationconfigid and INEAC.activeflag=1
+where INEAC.intakeservicerequestevaluationconfigid=evaluationconfigid and INEAC.adjudicateddecisiontypekey='S' and INEAC.activeflag=1;
+
+   IF (i_evaluationconfigcount > 0) 
+   THEN
+   update intakeservicerequestpetition set petitionstatustypekey='SCH' where intakeservicerequestpetitionid in (select intakeservicerequestpetitionid from Intakeservreqpetitionhearingconfig where intakeservicerequestcourthearingid=u_courthearingid );
+ 
+   update intakeservicerequestevaluation set complaintstatustypekey = 'CAS' where intakeservicerequestevaluationid in (select intakeservicerequestevaluationid from intakeservreqevalpetitionconfig where intakeservicerequestpetitionid in ( 
+      select intakeservicerequestpetitionid from Intakeservreqpetitionhearingconfig where intakeservicerequestcourthearingid=u_courthearingid));
+    
+  -- update  intakeservicerequestcourthearing set courthearingstatustypekey='Completed' where intakeservicerequestcourthearingid= u_courthearingid;
+
+   END IF;
+        
+ if(adjudicationdecision = 'S')
+ then
+ update intakeservicerequestevaluationconfig set allegationstatustypekey='CAS' where intakeservicerequestevaluationconfigid=evaluationconfigid and activeflag=1;
+ end if;
+ 
+ select  count(1) into closecount from intakeservicerequestevaluation where intakenumber in 
+ (select intakenumber from Intakeservreqpetitionhearingconfig where intakeservicerequestcourthearingid=u_courthearingid)
+ and  complaintstatustypekey !='CHC';
+
+ if(closecount =0)
+ then
+ update folderassignment set status='Closed',closedate=now(),activeflag=0 where objectid=(select intakenumber from Intakeservreqpetitionhearingconfig where intakeservicerequestcourthearingid=u_courthearingid)
+ and foldertypekey='LegalAction' and status='Active';
+ end if;
+RETURN  'success';
+
+END;
+
+
+$function$
+

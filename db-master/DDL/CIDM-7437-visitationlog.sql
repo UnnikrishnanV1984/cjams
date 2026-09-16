@@ -1,0 +1,1 @@
+ALTER TABLE cjams.visitationlog ALTER COLUMN caseid TYPE varchar(50) USING caseid::varchar;

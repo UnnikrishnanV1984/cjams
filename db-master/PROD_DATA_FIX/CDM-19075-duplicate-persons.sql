@@ -1,0 +1,16 @@
+/*
+ Issue Description:CDM-19075
+ Category/ Module:Duplicate customers need to be deleted
+ Root cause:Duplicate customers need to be deleted
+ Pull request# N/A
+ Reason why no related code fix: N/A
+ Status of the code fix if already submitted and expected prod fix date: N/A
+*/
+update intakeservicerequestactor set activeflag='0',updatedby='CDM-19075',updatedon=now()  where personid in('4901d6e9-6adf-4512-a7e5-06f8ba663a97','fbe28dde-9516-4ca9-8521-8072d5c6150e','88a6dd1c-ce1a-4db7-96fd-09967fb57e7c','478515b1-6bec-43d5-8f8a-b9ed43d1cec2','d7052abb-55df-4fe4-992a-fbc7910f5345','182a8d5d-520a-4ae4-a5e2-c6ada675296b',
+'ae4ce3fd-9f4c-4708-9c0e-414092b1b672') and intakeserviceid='87a01c3d-36bb-4f7c-841b-f03b5bdd4d4e' and intakeservicerequestactorid in('1ae2f996-3f89-4bc8-9026-6ee9f57cfbe7','800a044c-fe51-4c9e-b8fd-adda1a1ad082','48216883-5566-44bf-a60b-8698f5410ab0','5548aa11-2613-4669-a726-e72319be7516','0ebb2a96-1a8e-446f-a676-65a411994c60','9fe27fcd-8c3a-4843-a645-74325cbabdf0','250aa2ed-0b29-41b3-8968-3d8a429b728c');
+update personrole set activeflag='0',updatedby='CDM-19075',updatedon=now() where personid in('4901d6e9-6adf-4512-a7e5-06f8ba663a97','fbe28dde-9516-4ca9-8521-8072d5c6150e','88a6dd1c-ce1a-4db7-96fd-09967fb57e7c','478515b1-6bec-43d5-8f8a-b9ed43d1cec2','d7052abb-55df-4fe4-992a-fbc7910f5345','182a8d5d-520a-4ae4-a5e2-c6ada675296b','ae4ce3fd-9f4c-4708-9c0e-414092b1b672') and intakeserviceid='87a01c3d-36bb-4f7c-841b-f03b5bdd4d4e'
+and personroleid in('d39f1ee5-a465-48b1-974c-d023b02e992e','e546fa9a-8588-46f2-a02b-ef14934d2379','fb254f16-3de1-4a84-8f12-6b0f6f159f58','f08a681b-8f3a-4b78-a36a-8edcb32f21bd','d818e0d9-5f28-4ffb-90de-32a33732e033','29a30840-c8f1-4cac-b84c-4ba1c6c40a8e','224d337f-36db-45df-8e89-23e05b33252b');
+update actor set activeflag='0',updatedby='CDM-19075',updatedon=now()  where personid in('4901d6e9-6adf-4512-a7e5-06f8ba663a97','fbe28dde-9516-4ca9-8521-8072d5c6150e','88a6dd1c-ce1a-4db7-96fd-09967fb57e7c','478515b1-6bec-43d5-8f8a-b9ed43d1cec2','d7052abb-55df-4fe4-992a-fbc7910f5345','182a8d5d-520a-4ae4-a5e2-c6ada675296b','ae4ce3fd-9f4c-4708-9c0e-414092b1b672') and intakeserviceid='87a01c3d-36bb-4f7c-841b-f03b5bdd4d4e'
+and actorid in('e700f0f4-70ba-482a-a44d-f735ce94055c','b50c7478-32f7-4c4a-83ba-df9f77b49da4','7974fc09-5282-4acd-bbc0-fce134da0632','be7277c8-15b4-4322-afa5-2c760bc76385','0e5949bd-b9ae-401d-a19e-d6fa6fee3cf5','03e7b687-82ee-4b9f-a189-ddeed9cab71b','258c575d-d74b-4b87-93c8-2f40f1c78528');
+update actorrelationship set activeflag='0',updatedby='CDM-19075',updatedon=now() where intakeservicerequestactorid in('5548aa11-2613-4669-a726-e72319be7516','250aa2ed-0b29-41b3-8968-3d8a429b728c','0ebb2a96-1a8e-446f-a676-65a411994c60','9fe27fcd-8c3a-4843-a645-74325cbabdf0','48216883-5566-44bf-a60b-8698f5410ab0','1ae2f996-3f89-4bc8-9026-6ee9f57cfbe7','800a044c-fe51-4c9e-b8fd-adda1a1ad082')
+and actorrelationshipid in('667dfff3-fef3-47d3-8331-85c536423594','6aea7df3-5f10-4a3a-855c-545e0b05a61b','d9fbfef8-1309-483b-8211-799a441e1cc4','d4aec655-71fc-4442-8d2a-ed4d92e31892','6607bcf7-bd16-451a-a73e-0db79dfe5af1','687e5059-4d73-4aee-9b5d-676394dd202c','9a8f82ac-1766-4b2a-97e0-7350326f0303');

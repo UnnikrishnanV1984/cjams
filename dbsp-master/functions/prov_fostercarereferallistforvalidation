@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION prov_fostercarereferallistforvalidation(securityusersid character varying, v_lipagenumber bigint, v_lipagesize bigint, sortorder character varying, sortcolumn character varying, v_validation character varying DEFAULT NULL::character varying, v_client_id bigint DEFAULT NULL::bigint, v_roletype character varying DEFAULT 'CWCW'::character varying, v_caseworkerid character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, placement_validation_id integer, placement_id integer, placement_entry_dt date, placement_exit_dt date, validation_status_cd text, comment_tx character varying, delete_sw character, validation_start_dt date, validation_end_dt date, case_id bigint, client_id bigint, client_first_nm character varying, client_last_nm character varying, provider_organization_id integer, provider_id integer, provider_nm character varying, placement_structure_nm character varying, rate_structure_nm character varying, contract_program_nm character varying, entry_dt date, exit_dt date, validation_month character varying, address character varying, provider_type_cd character varying, servicecaseid uuid, intakeserviceid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+ v_pageNum int;
+ v_pageOffset int;
+
+BEGIN 
+ v_pageNum := v_lipagenumber - 1;
+ v_pageOffset = v_pageNum  * v_lipagesize; 
+
+if (v_caseworkerid is not null) then securityusersid := v_caseworkerid;
+end if;
+if (v_caseworkerid is not null) then v_roletype := 'CWCW';
+end if;
+
+return query
+
+select COUNT(1) OVER() totalcount
+ ,PLVL.placement_validation_id
+ ,PLVL.placement_id
+ ,PLVL.placement_entry_dt
+ ,PLVL.placement_exit_dt
+ ,case when (PLVL.validation_status_cd in ('1750')) then 'Approved'  when (PLVL.validation_status_cd is null or PLVL.validation_status_cd not in ('1750')) then 'Pending' end as validation_status_cd
+ ,PLVL.comment_tx 
+ ,PLVL.delete_sw
+ ,case when to_char(PLVL.placement_entry_dt, 'Mon-YY') = to_char( PLVL.validation_start_dt, 'Mon-YY')
+ then PLVL.placement_entry_dt else PLVL.validation_start_dt end as validation_start_dt
+ ,case when to_char(PLVL.placement_exit_dt, 'Mon-YY') = to_char( PLVL.validation_end_dt, 'Mon-YY')
+ then PLVL.placement_exit_dt else PLVL.validation_end_dt end as validation_end_dt
+ ,PL.case_id
+ ,PL.client_id 
+ ,client.firstname AS client_first_nm
+ ,client.lastname AS client_last_nm 
+ ,PL.provider_organization_id
+ ,PL.provider_id
+ ,CASE WHEN (prov.provider_nm = null OR prov.provider_nm='') 
+ THEN CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) ELSE prov.provider_nm END AS provider_nm
+ ,(select service_nm from tb_services tbs where tbs.service_id=PL.placement_structure_id and tbs.delete_sw='N' order by tbs.create_ts desc limit 1) as placement_structure_nm
+ ,(select service_nm from tb_services tbs1 where tbs1.service_id=PL.rate_structure_id and tbs1.delete_sw='N' order by tbs1.create_ts desc limit 1) as rate_structure_nm
+ ,(select TBCP.program_nm from tb_provider_contracts as TBPC 
+ INNER JOIN tb_contract_program as TBCP ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = PL.contract_program_id and TBCP.delete_sw = 'N' where prov.affiliate_provider_id= TBPC.provider_id and TBPC.delete_sw = 'N' limit 1) as contract_program_nm 
+ ,PL.entry_dt::DATE
+ ,PL.exit_dt::DATE
+ , concat(Trim(to_char(to_timestamp ((date_part('MONTH',PLVL.validation_start_dt))::text, 'MM'), 'Month')::character varying)
+ ,'-',date_part('year', PLVL.validation_start_dt):: character varying ):: character varying
+ as validation_month
+ , (select provider_adr as paymentaddress from get_provider_address(prov.provider_id,trim('{3356,3357}') :: character varying)) as address
+ ,prov.provider_type_cd,
+ sc.servicecaseid ,sc.servicecaseid
+FROM tb_PLACEMENT_VALIDATION PLVL 
+INNER JOIN tb_PLACEMENT PL ON PLVL.placement_id=PL.placement_id and PL.delete_sw = 'N' and PL.provider_id is not null
+INNER JOIN person as client ON PL.client_id = client.cjamspid and client.activeflag=1
+INNER JOIN tb_provider as prov ON PL.provider_id = prov.provider_id and prov.delete_sw = 'N'
+LEFT JOIN servicecase sc on sc.servicecasenumber = PL.case_id :: character varying 
+WHERE
+PLVL.delete_sw = 'N' AND 
+securityusersid =
+(  case when v_roletype='CWCW' then (select ca.toworkeridno FROM caseassignment ca where ca.objectid = sc.servicecaseid
+ AND LOWER(ca.responsibilitytypekey) in ('family','child') AND ca.enddate IS NULL AND ca.activeflag= 1 limit 1) :: character varying  
+ when  v_roletype='CWSP'  then (select rr.fromsecurityusersid from routing rr where rr.fromroleid = 'CWSP' and 
+ rr.eventcode = 'SRVC' and rr.activeflag = 1 and rr.objectid = sc.servicecaseid :: character varying 
+ order by rr.insertedon desc limit 1) :: character varying end 
+)  and
+case v_validation when 'Approved' then  PLVL.validation_status_cd in ('1750') 
+when 'Pending' then  (PLVL.validation_status_cd not in ('1750') or PLVL.validation_status_cd is null) 
+else (PLVL.validation_status_cd is null or PLVL.validation_status_cd in ('1750')) end
+and (v_client_id:: character varying is null or PL.client_id = v_client_id)
+order by ( 
+  CASE sortorder
+   WHEN 'asc'
+   THEN
+    CASE sortcolumn
+    -- WHEN 'validation_id' THEN  cast(PLVL.placement_validation_id  as character varying)
+     WHEN 'client_id' THEN  cast(PL.client_id  as character varying)
+     WHEN 'clientname' THEN  cast(client.firstname  as character varying)
+     WHEN 'case_id' THEN  cast(PL.case_id  as character varying)
+     WHEN 'provider_nm' THEN  cast(prov.provider_nm  as character varying)
+     WHEN 'placement_structure_nm' THEN  cast(placement_structure_nm  as character varying)
+     WHEN 'validation_start_dt' THEN  cast(PLVL.validation_start_dt  as character varying)
+     WHEN 'validation_end_dt' THEN  cast(PLVL.validation_end_dt  as character varying)
+     WHEN 'address' THEN  cast(address  as character varying)
+     WHEN 'contract_program_nm' THEN  cast(contract_program_nm  as character varying)
+   ELSE
+                  cast(PLVL.placement_validation_id  as character varying)
+            END
+  END) ASC NULLS LAST,
+   (CASE sortorder
+   WHEN 'desc'
+   THEN
+    CASE sortcolumn
+    -- WHEN 'validation_id' THEN  cast(PLVL.placement_validation_id  as character varying)
+     WHEN 'client_id' THEN  cast(PL.client_id  as character varying)
+     WHEN 'clientname' THEN  cast(client.firstname  as character varying)
+     WHEN 'case_id' THEN  cast(PL.case_id  as character varying)
+     WHEN 'provider_nm' THEN  cast(prov.provider_nm  as character varying)
+     WHEN 'placement_structure_nm' THEN  cast(placement_structure_nm  as character varying)
+     WHEN 'validation_start_dt' THEN  cast(PLVL.validation_start_dt  as character varying)
+     WHEN 'validation_end_dt' THEN  cast(PLVL.validation_end_dt  as character varying)
+     WHEN 'address' THEN  cast(address  as character varying)
+     WHEN 'contract_program_nm' THEN  cast(contract_program_nm  as character varying)
+   ELSE
+                  cast(PLVL.placement_validation_id  as character varying)
+             END
+   END) DESC NULLS LAST
+LIMIT v_lipagesize OFFSET v_pageOffset;
+
+END;
+
+$function$
+

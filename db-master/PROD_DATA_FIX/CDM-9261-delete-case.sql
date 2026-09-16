@@ -1,0 +1,1 @@
+update servicecase set activeflag = 0, updatedby = 'CDM-9261', updatedon = now() where servicecasenumber = '3300265';

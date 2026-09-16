@@ -1,0 +1,801 @@
+CREATE OR REPLACE FUNCTION cjams.sp_fmis_vendor_interface_ins(vl_provider_id bigint, vs_payment_type_cd character varying, OUT vs_message character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar	
+-- Date Created :07/16/2020
+-- PROCEDURE SP_FMIS_VENDOR_INTERFACE:  Generate TB_FMIS_VENDOR_INTERFACE from Provider Record
+-- Revision(s)
+-- 10/06/2020 - Vineet Tirodkar - Changes to look for provider_nm first and then provider_first_nm and provider_last_nm (CDM-5126)
+-- 09/21/2022 Vineet Tirodkar - Type casting fixes for Aurora DB migration 
+-- 05/18/2023 Vineet Tirodkar - To remove extra space between the first and last name 
+--				and extra space between address line 1 field, between the house # and the street name (CDM-31206)
+------------------------------------------------------------------------
+-- Declare variables
+DECLARE SQLCODE 				INTEGER 	DEFAULT 0;
+DECLARE SQLSTATE 				CHAR(5) 	DEFAULT '00000';
+DECLARE VS_OUTPUT_STATE 		CHAR(5) 	DEFAULT '00000';
+DECLARE VL_OUTPUT_SQLCODE 		INTEGER 	DEFAULT 0;
+DECLARE VS_USER_ID              VARCHAR(10) DEFAULT 'interface';
+DECLARE vts_previous_run_ts 	TIMESTAMP;
+DECLARE vts_current_run_ts 		TIMESTAMP ;
+DECLARE VL_ROWCOUNT 			INTEGER 	DEFAULT 0;
+DECLARE VL_INTERFACE_ROWCOUNT 	INTEGER 	DEFAULT 0;
+DECLARE ls_Provider_type 		CHAR(4) 	DEFAULT '0000';
+DECLARE li_provider_id 			BIGINT 	DEFAULT 0;
+DECLARE li_tax_id_no   			BIGINT 		DEFAULT 0 ;
+DECLARE li_FMIS_VENDOR_record_ID 	BIGINT 		DEFAULT 0;
+DECLARE ls_zip4_no  			CHAR(4);
+DECLARE ls_provider_nm 			CHAR(50);
+DECLARE li_provider_type  		INTEGER 	DEFAULT 0 ;
+DECLARE ls_MAIL_CODE_TX  		CHAR(3) ;
+DECLARE ls_prov_tax_type_cd 	CHAR(4);
+DECLARE li_affiliate_provider_id 	INTEGER 	DEFAULT 0;
+DECLARE li_temp_provider_id 	  	INTEGER 	DEFAULT 0;
+DECLARE ls_adr_type_cd  			CHAR(5);
+DECLARE ls_Adr_format_cd 			CHAR(5);
+DECLARE li_Adr_street_no  			INTEGER 	DEFAULT 0;
+DECLARE li_Adr_Box_no     			INTEGER 	DEFAULT 0;
+DECLARE ls_Adr_pre_dir_cd 			CHAR(5);
+DECLARE ls_Adr_street_nm   			CHAR(50) ;
+DECLARE ls_Adr_street_suffix_cd 	CHAR(5);
+DECLARE ls_Adr_post_dir_cd 			CHAR(5);
+DECLARE ls_Adr_unit_type_cd 		CHAR(5);
+DECLARE ls_Adr_unit_no_tx   		CHAR(5);
+DECLARE ls_Adr_city_nm      		CHAR(50);
+DECLARE ls_adr_state_cd  			CHAR(5)         DEFAULT ' ';
+DECLARE ls_Adr_foreign_tx 			VARCHAR(500);
+DECLARE ls_Adr_foreign_state_tx 	CHAR(50);
+DECLARE ls_Adr_country_tx 			CHAR(50);
+DECLARE li_Adr_zip5_no 				INTEGER ;
+DECLARE li_Adr_zip4_no 				INTEGER;
+DECLARE ls_address_1  				CHAR(50);
+DECLARE ls_address_2  				CHAR(50);
+DECLARE ls_INDICATOR_1099_SW 		CHAR(1);
+DECLARE ls_Provider_last_nm  		VARCHAR(20);
+DECLARE ls_Provider_first_nm  		VARCHAR(20);
+DECLARE ls_Provider_middle_nm  		VARCHAR(20);
+DECLARE ls_Provider_suffix  		VARCHAR(10); 
+DECLARE ls_Person_nm  				VARCHAR(100);
+DECLARE ls_org_nm  					VARCHAR(100);
+DECLARE ls_vendor_nm  				VARCHAR(100);
+DECLARE li_vendor_ln_1 				INTEGER;
+DECLARE li_vendor_ln_2  			INTEGER;
+DECLARE li_count 					INTEGER 	DEFAULT 0;
+DECLARE ls_Adr_zip5_no   			VARCHAR(5);
+DECLARE ls_Adr_zip4_no   			VARCHAR(4);
+DECLARE ls_pay_to_affiliate_cd  	VARCHAR(4);
+DECLARE ls_alternate_adr_type_cd 	VARCHAR(4);
+DECLARE li_Changed_provider_id  	INTEGER 	DEFAULT 0;
+DECLARE li_Changed_Parent_key_ID 	INTEGER 	DEFAULT 0;
+DECLARE li_Changed_address_key_ID 	INTEGER 	DEFAULT 0;
+DECLARE ls_Adr_street_no  			VARCHAR(10) ;                
+DECLARE ls_Adr_Box_no     			VARCHAR(5) ;
+DECLARE li_cnt 						INTEGER  	DEFAULT 0;
+DECLARE ls_payment_type_cd   		VARCHAR(5);
+DECLARE ls_SUCCESSFUL_SW   			VARCHAR(1)  	DEFAULT 'N';
+DECLARE ls_interface_tx  			VARCHAR(25);
+DECLARE li_city_ln  				INTEGER;
+DECLARE li_payment_type_cnt 		INTEGER 	DEFAULT 0;
+DECLARE li_fmis_Count 				INTEGER 	DEFAULT 0;
+DECLARE li_temp_cnt  				INTEGER 	DEFAULT 0;
+DECLARE li_provider_cnt 			INTEGER  	DEFAULT 0;
+DECLARE ls_alternate_vendor_id  	VARCHAR(15);
+DECLARE li_alternate_vendor_id 		BIGINT 		DEFAULT 0;
+DECLARE li_temp_fmis_count  		BIGINT 		DEFAULT 0;
+DECLARE VL_INTERFACES_ERROR_LOG_ID 	INTEGER 	DEFAULT 0;
+DECLARE VS_TAX_ID_NO                VARCHAR(10);
+DECLARE VL_LENGTH                   INTEGER         DEFAULT 0;
+DECLARE VS_ALT_VENDOR_NM            VARCHAR(100);
+-- 09/19/06  #10004
+DECLARE VS_COUNTY_NM 				VARCHAR(50) DEFAULT  '' ;
+DECLARE VS_EXCEP_MESSAGE1 			VARCHAR(150)DEFAULT  '' ;
+DECLARE VS_PROV_COUNTY    			VARCHAR(5); 
+DECLARE vl_edit_result  			INTEGER DEFAULT 1;
+	
+BEGIN
+	
+	li_provider_id := VL_PROVIDER_ID; 
+	
+	SELECT substr(TB_PROVIDER.PROVIDER_NM,1,50) as PROVIDER_NM,
+		TB_PROVIDER.Provider_last_nm,
+		TB_PROVIDER.Provider_First_nm,
+		TB_PROVIDER.Provider_middle_nm,
+		f_plvalue(TB_PROVIDER.Provider_suffix_cd,214) 
+	INTO ls_provider_nm,
+		ls_Provider_last_nm,
+		ls_Provider_first_nm,
+		ls_Provider_middle_nm,
+		ls_Provider_suffix 
+	FROM TB_PROVIDER
+	WHERE TB_PROVIDER.provider_id  = li_provider_id
+		AND TB_PROVIDER.Delete_sw  = 'N' ;
+	
+	SELECT COALESCE(TB_PROVIDER.TAX_ID_NO,
+						(	SELECT TAX_ID_NO 
+								FROM tb_provider
+							WHERE provider_id = 
+								(	SELECT affiliate_provider_id
+										FROM tb_provider 
+									WHERE provider_id = li_provider_id 
+								)
+						)
+					) as TAX_ID_NO,
+			TB_PROVIDER.MAIL_CODE_TX,
+			COALESCE(TB_PROVIDER.prov_tax_type_cd,
+						(	SELECT TB_PROVIDER.prov_tax_type_cd 
+								FROM tb_provider
+							WHERE provider_id = 
+								(	SELECT affiliate_provider_id
+                                        FROM tb_provider 
+									WHERE provider_id = li_provider_id
+								)
+						)
+					)  as prov_tax_type_cd,
+			TB_PROVIDER.INDICATOR_1099_SW,
+			TB_PROVIDER.pay_to_affiliate_cd
+	INTO li_tax_id_no,
+		ls_MAIL_CODE_TX,
+		ls_prov_tax_type_cd,
+		ls_INDICATOR_1099_SW,
+		ls_pay_to_affiliate_cd
+	FROM TB_PROVIDER
+	WHERE TB_PROVIDER.provider_id = li_provider_id
+		AND TB_PROVIDER.Delete_sw = 'N';
+	
+	IF SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+		VS_MESSAGE := 'SELECT  FAILED for Provider Details'  ;
+		-- GOTO ERROR_SECTION ;
+		INSERT INTO interfaceserrorlog 
+			(	interfaceid,
+				currentruntimestamp,
+				batchnumber,
+				errorlineno,
+				errordescription,
+				errorsqlcode,
+				old_id,
+				county_cd,
+				insertedon
+			)
+		VALUES 								
+			(	'FMIS_VENDOR_INS',
+				CURRENT_TIMESTAMP,
+				'000',
+				0,
+				VS_MESSAGE,
+				VL_OUTPUT_SQLCODE,
+				vl_provider_id::character varying,
+				VS_PROV_COUNTY,
+				CURRENT_DATE
+			);	
+	END IF;
+	
+	VS_COUNTY_NM := '';
+	VS_PROV_COUNTY := '';
+	
+	SELECT COUNTY_CD 
+		INTO VS_PROV_COUNTY  
+	FROM TB_PROVIDER 
+	WHERE PROVIDER_ID = LI_PROVIDER_ID 
+		AND DELETE_SW = 'N';
+	
+	IF LTRIM(RTRIM(VS_PROV_COUNTY)) = '1451' THEN 
+		VS_COUNTY_NM := 'DHR';
+	ELSE
+		select substr(coalesce(countyname, ''),1, 50) 
+			INTO VS_COUNTY_NM 
+		from county	
+		where btrim(statecountycode) = VS_PROV_COUNTY ;
+	END IF; 
+
+    SELECT pay_to_affiliate_cd 
+		INTO ls_pay_to_affiliate_cd 
+	FROM TB_PROVIDER 
+	WHERE Provider_id = li_provider_id ;
+	
+	CASE WHEN ls_pay_to_affiliate_cd IN ('3366')  THEN    --  For LDSS
+		ls_alternate_adr_type_cd := '3357';
+		li_temp_provider_id :=  li_provider_id;
+		--  Nothing Doing
+    WHEN ls_pay_to_affiliate_cd IN ('3367' ) THEN  --  For Private Department
+		ls_alternate_adr_type_cd := '3356';
+		li_temp_provider_id := li_provider_id;
+	WHEN ls_pay_to_affiliate_cd IN ('3368' ) THEN
+		SELECT DISTINCT TB_PROVIDER.Affiliate_Provider_ID
+            INTO li_affiliate_provider_id 
+		FROM TB_PROVIDER
+        WHERE TB_PROVIDER.provider_id = li_provider_id 
+			AND TB_PROVIDER.Delete_sw  = 'N' ;
+			
+		IF li_affiliate_provider_id > 0 THEN
+			Select pay_to_affiliate_cd 
+				INTO ls_pay_to_affiliate_cd
+            FROM TB_PROVIDER
+            WHERE Affiliate_Provider_ID = li_affiliate_provider_id
+				AND provider_id = li_provider_id 
+				and delete_sw  = 'N';	
+				
+			IF SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+				VS_MESSAGE := 'SELECT Affiliate Provider Id  FAILED for Private Department'  ;
+				-- GOTO ERROR_SECTION ;
+				INSERT INTO interfaceserrorlog 
+					(	interfaceid,
+						currentruntimestamp,
+						batchnumber,
+						errorlineno,
+						errordescription,
+						errorsqlcode,
+						old_id,
+						county_cd,
+						insertedon
+					)
+				VALUES 								
+					(	'FMIS_VENDOR_INS',
+						CURRENT_TIMESTAMP,
+						'000',
+						0,
+						VS_MESSAGE,
+						VL_OUTPUT_SQLCODE,
+						vl_provider_id::character varying,
+						VS_PROV_COUNTY,
+						CURRENT_DATE
+					);	
+			END IF;
+				
+            CASE WHEN ls_pay_to_affiliate_cd IN ('3366')  THEN    --  For LDSS
+				ls_alternate_adr_type_cd := '3357';
+				li_temp_provider_id := li_provider_id;
+			WHEN ls_pay_to_affiliate_cd IN ('3367' ) THEN  --  For Private Department
+				ls_alternate_adr_type_cd := '3356'     ;	
+				li_temp_provider_id := li_provider_id;
+			WHEN ls_pay_to_affiliate_cd   in ('3368')  THEN
+                SELECT pay_to_affiliate_cd 
+					INTO ls_pay_to_affiliate_cd
+                FROM TB_PROVIDER
+                WHERE provider_id = li_affiliate_provider_id 
+					AND delete_sw  = 'N';	
+						
+                CASE WHEN ls_pay_to_affiliate_cd in ('3366') THEN    --  For LDSS
+					ls_alternate_adr_type_cd := '3357';
+					li_temp_provider_id := li_affiliate_provider_id;
+				WHEN ls_pay_to_affiliate_cd   IN  ('3367' ) THEN  --  For Private Department
+					ls_alternate_adr_type_cd := '3356'     ;
+					li_temp_provider_id := li_affiliate_provider_id;
+				ELSE
+					ls_alternate_adr_type_cd := lpad('', 4, ' '); -- Space(4);
+				END CASE;
+            ELSE
+				ls_alternate_adr_type_cd := lpad('', 4, ' '); -- Space(4);
+			END CASE;
+		END IF;	
+	ELSE
+		ls_alternate_adr_type_cd := lpad('', 4, ' '); -- Space(4);
+	END CASE;
+	
+	SELECT Adr_type_cd,
+		Adr_format_cd,
+		Adr_street_tx,
+		Adr_Box_no,
+		Adr_pre_dir_cd,
+		Adr_street_nm,
+		Adr_street_suffix_cd,
+		Adr_post_dir_cd,
+		Adr_unit_type_cd,
+		Adr_unit_no_tx,
+		Adr_city_nm,
+		Adr_state_cd,
+		Adr_foreign_tx,
+		Adr_foreign_state_tx,
+		Adr_country_tx,
+		Adr_zip5_no,
+		Adr_zip4_no
+	INTO ls_Adr_type_cd,
+		ls_Adr_format_cd,
+		ls_Adr_street_no,
+		li_Adr_Box_no,
+		ls_Adr_pre_dir_cd,
+		ls_Adr_street_nm,
+		ls_Adr_street_suffix_cd,
+		ls_Adr_post_dir_cd,
+		ls_Adr_unit_type_cd,
+		ls_Adr_unit_no_tx,
+		ls_Adr_city_nm,
+		ls_Adr_state_cd,
+		ls_Adr_foreign_tx,
+		ls_Adr_foreign_state_tx,
+		ls_Adr_country_tx,
+		li_Adr_zip5_no,
+		li_Adr_zip4_no
+	FROM TB_PROVIDER_ADDRESSES
+	WHERE TB_PROVIDER_ADDRESSES.parent_key_id::bigint  =  li_temp_provider_id::bigint
+		AND TB_PROVIDER_ADDRESSES.ADR_TYPE_CD = ls_alternate_adr_type_cd
+		AND TB_PROVIDER_ADDRESSES.ADR_DEFAULT_SW = 'Y'
+		AND TB_PROVIDER_ADDRESSES.Delete_sw = 'N';
+	
+	IF SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+		VS_MESSAGE := 'SELECT  FAILED for Provider Address'  ;
+		-- GOTO ERROR_SECTION ;
+		INSERT INTO interfaceserrorlog 
+			(	interfaceid,
+				currentruntimestamp,
+				batchnumber,
+				errorlineno,
+				errordescription,
+				errorsqlcode,
+				old_id,
+				county_cd,
+				insertedon
+			)
+		VALUES 								
+			(	'FMIS_VENDOR_INS',
+				CURRENT_TIMESTAMP,
+				'000',
+				0,
+				VS_MESSAGE,
+				VL_OUTPUT_SQLCODE,
+				vl_provider_id::character varying,
+				VS_PROV_COUNTY,
+				CURRENT_DATE
+			);	
+	END IF;
+
+	VS_TAX_ID_NO := li_tax_id_no::character varying;
+	VL_LENGTH := LENGTH(RTRIM(VS_TAX_ID_NO));
+	-- RAISE NOTICE 'VS_TAX_ID_NO  before%', VS_TAX_ID_NO;		
+	IF VL_LENGTH < 9  THEN
+		VL_LENGTH := 9 - VL_LENGTH ;
+		--	WHILE VL_LENGTH > 0 DO
+		loop EXIT WHEN VL_LENGTH <= 0::bigint ;
+			VS_TAX_ID_NO := '0' || VS_TAX_ID_NO;
+			VL_LENGTH := VL_LENGTH - 1;
+		END loop;
+		-- END WHILE;
+	END IF;
+	-- RAISE NOTICE 'VS_TAX_ID_NO  after%', VS_TAX_ID_NO;		
+	
+	-- Based on the Address Format Get the values
+	CASE WHEN ls_Adr_format_cd  = 'S' THEN
+		ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_street_no)),'') || ' ' ||
+			(case when ls_Adr_pre_dir_cd is not null then
+				COALESCE(F_PDESC(ls_Adr_pre_dir_cd,69),'') || ' ' 
+			 else
+				''
+			 end) || 
+			COALESCE(RTRIM(LTRIM(ls_Adr_street_nm)),'') || ' '||
+			(case when ls_Adr_street_suffix_cd is not null then
+				COALESCE(F_PDESC(ls_Adr_street_suffix_cd,212),'') || ' '
+			else
+				''
+			end) ||	
+			COALESCE(F_PDESC(ls_Adr_post_dir_cd,69) ,'');
+		ls_address_1 := COALESCE(Substr(RTRIM(LTRIM(ls_address_1)),1,50),lpad('', 50, ' ')); -- Space(50)
+    WHEN ls_Adr_format_cd  = 'R' THEN   
+		ls_address_1 := 'Rural Rte ' || COALESCE(RTRIM(LTRIM(ls_Adr_street_no)),'') ||','|| ' '||
+			'Box # ' || COALESCE(RTRIM(LTRIM(li_Adr_Box_no::character varying)),'') ;
+		ls_address_1 := COALESCE(Substr(RTRIM(LTRIM(ls_address_1)),1,50),lpad('', 50, ' ')); -- Space(50)
+    WHEN ls_Adr_format_cd  = 'P' THEN
+		ls_address_1 :=  'P.O. Box ' || COALESCE(li_Adr_Box_no::character varying,'');
+		ls_address_1 := COALESCE(Substr(RTRIM(LTRIM(ls_address_1)),1,50),lpad('', 50, ' ')); -- Space(50)
+	WHEN ls_Adr_format_cd  = 'F' THEN
+		ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_foreign_tx)),'');
+		ls_address_1 := COALESCE(Substr(RTRIM(LTRIM(ls_address_1)),1,50),lpad('', 50, ' ')); -- Space(50)               
+		ls_Adr_state_cd := COALESCE(Substr(RTRIM(LTRIM(ls_Adr_foreign_state_tx)),1,2),lpad('', 50, ' ')) ; -- Space(2)
+	ELSE
+		ls_address_1 := lpad('', 50, ' '); -- Space(50);
+	END CASE;
+	                           		
+	-- Get For the Address Line 2
+	ls_address_2 :=  COALESCE(F_PDESC(ls_Adr_unit_type_cd,250), '') || ' '|| COALESCE(ls_Adr_unit_no_tx,'');
+	ls_address_2 :=  COALESCE(Substr(RTRIM(LTRIM(ls_address_2)),1,50),lpad('', 50, ' ')); -- Space(50)
+	ls_Adr_city_nm :=  COALESCE(Substr(RTRIM(LTRIM(ls_Adr_city_nm)),1,20),lpad('', 20, ' ')) ; -- Space(20)
+	
+	-- Check  Whether Tax Type is SSN or FEIN
+	IF ls_prov_tax_type_cd = '2517'  THEN
+		ls_prov_tax_type_cd := 'F'  ;
+	ELSEIF  ls_prov_tax_type_cd = '2518'  THEN
+		ls_prov_tax_type_cd := 'S' ;
+	END IF ;
+
+	ls_provider_last_nm := RTRIM(LTRIM(ls_provider_last_nm));
+	ls_provider_first_nm := RTRIM(LTRIM(ls_provider_first_nm));
+	ls_provider_middle_nm := RTRIM(LTRIM(ls_provider_middle_nm));
+	ls_provider_suffix := RTRIM(LTRIM(ls_provider_suffix)); 
+	
+	CASE WHEN length(ls_provider_last_nm) = 0  THEN
+		ls_provider_last_nm := '';
+	ELSE
+		ls_provider_last_nm := COALESCE(ls_provider_last_nm,'');
+	END CASE;
+	
+	IF ls_provider_last_nm <> ''  THEN
+		ls_provider_last_nm := ''|| ls_provider_last_nm;
+	END IF;
+	
+	CASE WHEN length(ls_provider_first_nm) = 0  THEN
+		ls_provider_first_nm := '';
+	ELSE
+		ls_provider_first_nm := COALESCE(ls_provider_first_nm,'');
+	END CASE;
+	
+	IF ls_provider_first_nm  <> ''  THEN
+		ls_provider_first_nm := ls_provider_first_nm;
+	END IF;
+	
+	
+	CASE WHEN length(ls_provider_middle_nm) = 0  THEN
+		ls_provider_middle_nm := '';
+	ELSE
+		ls_provider_middle_nm := COALESCE(ls_provider_middle_nm,'');
+	END CASE;
+
+	IF ls_provider_middle_nm  <> ''  THEN
+		ls_provider_middle_nm :=  '' || ls_provider_middle_nm;
+	END IF;
+	
+	--Incident 11109 Samir 03/01/2007. Add suffix to the provider name.Begin.
+	CASE WHEN length(ls_provider_suffix) = 0  THEN
+		ls_provider_suffix := '';
+	ELSE
+		ls_provider_suffix := COALESCE(ls_provider_suffix,'');
+	END CASE;
+		
+		
+	IF ls_provider_suffix  <> ''  THEN
+		ls_provider_suffix :=  '' || ls_provider_suffix;
+	END IF;
+
+	CASE WHEN length(ls_provider_nm) = 0  THEN
+		ls_provider_nm := '';
+	ELSE
+		ls_provider_nm := COALESCE(ls_provider_nm,'');
+	END CASE;
+	
+	IF ls_provider_middle_nm  <> '' THEN
+		ls_person_nm := ls_provider_first_nm || ' ' || ls_provider_middle_nm || ' ' || ls_provider_last_nm ;
+	ELSE
+		ls_person_nm := ls_provider_first_nm || ' ' || ls_provider_last_nm ;
+	END IF;
+	
+	VS_ALT_VENDOR_NM :=  ls_provider_last_nm || ',' || ' ' || ls_provider_first_nm ||' ' || ls_provider_middle_nm ;
+	
+	IF length(ltrim(rtrim(ls_provider_suffix)))  > 0 THEN
+		ls_person_nm := ls_person_nm || ' ' ||ls_provider_suffix ;
+		VS_ALT_VENDOR_NM :=  VS_ALT_VENDOR_NM || ' ' ||ls_provider_suffix ;
+	END IF	;
+	
+	ls_org_nm := COALESCE(RTRIM(LTRIM(ls_provider_nm)),'');
+	
+	CASE WHEN length(ltrim(rtrim(ls_person_nm))) = 0  THEN  
+		ls_person_nm := '';
+	ELSE
+		ls_person_nm := COALESCE(ls_person_nm,'');
+	END CASE;
+	
+	CASE WHEN length(ltrim(rtrim(ls_org_nm))) = 0  THEN 
+		ls_org_nm := '';
+	ELSE
+		ls_org_nm := COALESCE(ls_org_nm,'');
+	END CASE;
+	
+	CASE WHEN length(ls_MAIL_CODE_TX) = 0  THEN
+		ls_MAIL_CODE_TX := ' ';
+	ELSE
+		ls_MAIL_CODE_TX := COALESCE(ls_MAIL_CODE_TX,' ');
+	END CASE;
+	
+	-- CDM-5126
+	IF ls_org_nm <> '' THEN
+		ls_vendor_nm := ls_org_nm;
+		VS_ALT_VENDOR_NM := ls_org_nm;
+	ELSEIF ls_person_nm <>  '' THEN
+		ls_vendor_nm := ls_person_nm;
+	END IF;
+	
+	li_vendor_ln_1 :=  Length(ls_vendor_nm);
+	li_vendor_ln_2 :=  Length(ls_vendor_nm);
+	
+	IF li_vendor_ln_1 > 50  OR li_vendor_ln_1 = 50 THEN
+		li_vendor_ln_1 := 50;
+	END IF;
+	
+	IF  li_vendor_ln_2 > 25  OR li_vendor_ln_2 = 25  THEN
+		li_vendor_ln_2 := 25;
+	END IF;
+	
+	li_city_ln := Length(ls_Adr_city_nm);
+	IF  li_city_ln > 20  OR li_city_ln = 20 THEN
+		li_city_ln := 20;
+	END IF;
+	
+	IF li_Adr_zip5_no  > 0 THEN
+		ls_Adr_zip5_no := li_Adr_zip5_no::character varying;
+		VL_LENGTH = LENGTH(RTRIM(ls_Adr_zip5_no));
+		IF  VL_LENGTH < 5  THEN
+			VL_LENGTH := 5 -  VL_LENGTH ;
+			-- WHILE VL_LENGTH  > 0  DO
+			loop EXIT WHEN VL_LENGTH <= 0::bigint ;
+				ls_Adr_zip5_no :=  '0' ||   ls_Adr_zip5_no;
+				VL_LENGTH  := VL_LENGTH - 1;
+			END loop;
+			-- END WHILE;
+		END IF;
+	ELSE
+		ls_Adr_zip5_no := lpad('', 5, ' '); -- Space(5)
+	END IF;
+	
+	IF li_Adr_zip4_no > 0 THEN
+		ls_Adr_zip4_no := li_Adr_zip4_no::character varying;
+		VL_LENGTH := LENGTH(RTRIM(ls_Adr_zip4_no));
+		IF  VL_LENGTH < 4  THEN
+			VL_LENGTH := 4 -  VL_LENGTH ;
+			-- WHILE VL_LENGTH > 0  DO
+			loop EXIT WHEN VL_LENGTH <= 0::bigint ;
+				ls_Adr_zip4_no :=  '0' ||   ls_Adr_zip4_no;
+				VL_LENGTH := VL_LENGTH - 1;
+			END loop;
+			-- END WHILE;
+		END IF;
+	ELSE
+		ls_Adr_zip4_no := lpad('', 4, ' '); -- Space(4)
+	END IF;
+	
+	VS_EXCEP_MESSAGE1 := '';
+	IF VS_COUNTY_NM <> '' or  VS_COUNTY_NM IS NOT NULL THEN
+		VS_EXCEP_MESSAGE1 := 'County Name: ' || LTRIM(RTRIM(VS_COUNTY_NM)) || '; ';
+	END IF;
+
+	IF LS_VENDOR_NM <> '' OR LS_VENDOR_NM IS NOT NULL THEN
+		VS_EXCEP_MESSAGE1 := VS_EXCEP_MESSAGE1 ||'Provider Name: ' || LTRIM(RTRIM(LS_VENDOR_NM)) || '; ';
+	END IF;
+
+	VS_EXCEP_MESSAGE1 := substr((VS_EXCEP_MESSAGE1),1,length(VS_EXCEP_MESSAGE1)-2) ||' - ' ;
+	VS_MESSAGE := VS_EXCEP_MESSAGE1 || VS_MESSAGE  ; 
+	
+	--  Get the Next Value from the Sequence
+	SELECT NEXTVAL('sq_fmis_vendor_interface') 
+		INTO li_FMIS_VENDOR_record_ID ;
+	
+	IF SQLCODE <> 0 AND (VS_OUTPUT_STATE <> '00000')  THEN
+		VS_MESSAGE := 'SELECT FAILED for FMIS Sequence Number'  ;
+		-- GOTO ERROR_SECTION ;
+		INSERT INTO interfaceserrorlog 
+			(	interfaceid,
+				currentruntimestamp,
+				batchnumber,
+				errorlineno,
+				errordescription,
+				errorsqlcode,
+				old_id,
+				county_cd,
+				insertedon
+			)
+		VALUES 								
+			(	'FMIS_VENDOR_INS',
+				CURRENT_TIMESTAMP,
+				'000',
+				0,
+				VS_MESSAGE,
+				VL_OUTPUT_SQLCODE,
+				vl_provider_id::varchar,
+				VS_PROV_COUNTY,
+				CURRENT_DATE
+			);	
+	END IF;
+		
+	ls_Adr_state_cd := COALESCE(ls_Adr_state_cd,lpad('', 2, ' ')); -- SPACE(2)
+	VS_MESSAGE :=  NULL;
+			
+	VS_TAX_ID_NO := COALESCE(VS_TAX_ID_NO,'000000000');
+	ls_vendor_nm := COALESCE(ls_vendor_nm,lpad('', 50, ' ')); -- SPACE(50)
+	ls_INDICATOR_1099_SW := COALESCE(ls_INDICATOR_1099_SW,lpad('', 1, ' ')); --  SPACE(1)
+	ls_prov_tax_type_cd := COALESCE(ls_prov_tax_type_cd,lpad('', 1, ' ')); -- SPACE(1)
+			
+	vl_edit_result := 1;
+	SELECT SP_FINANCIAL_EDITS(li_provider_id,'Interface','N')
+		INTO vl_edit_result; 
+	
+	RAISE NOTICE 'vl_edit_result  %', vl_edit_result;
+	
+	IF vl_edit_result > 0 THEN  -- Procedure ran Successfully
+		vs_message := '';
+		vl_output_sqlcode := 0;
+
+        INSERT INTO TB_FMIS_VENDOR_INTERFACE
+			(	FMIS_VENDOR_record_ID,
+				Vendor_ID,
+				ADR_Line_1,
+				ADR_line_2,
+				ADR_line_3,
+				ADR_line_4,
+				ADR_City_NM,
+				ADR_State_CD,
+				ADR_zip5_no,
+				ADR_zip4_no,
+				Contact_TX,
+				CTI_PHONE_AREA_TX,
+				CTI_PHONE_EXCHANGE_TX,
+				CTI_PHONE_SEQUENCE_TX,
+				CTI_PHONE_EXTENSION_TX,
+				Payment_distribution_type_cd,
+				Ownership_cd,
+				Hold_reason_cd,
+				ADR_COUntry_cd,
+				Vendor_NM,
+				Alternate_vendor_nm_1,
+				Alternate_vendor_nm_2,
+				Alternate_vendor_nm_3,
+				Alternate_vendor_nm_4,
+				Tax_License_no,
+				Tax_Rate,
+				Region_cd,
+				CTI_FAX_AREA_TX,
+				CTI_FAX_EXCHANGE_TX,
+				CTI_FAX_SEQUENCE_TX,
+				Alternate_Vendor_ID,
+				vendor_status_1_cd,
+				vendor_status_2_cd,
+				vendor_status_3_cd,
+				vendor_status_4_cd,
+				vendor_status_5_cd,
+				delete_Ind,
+				Ind_1099_Ind,
+				Vendor_type_cd,
+				Tax_OffSet_Exempt_Ind,
+				W2_request_dt,
+				BU_WH_Effective_Dt,
+				Batch_Agency_cd,
+				Mail_CD,
+				Bank_ABA_Transit_Cd,
+				Bank_Acct_No,
+				Bank_Acct_type_cd,
+				Bank_direct_deposit_dt,
+				User_Operator_id,
+				Update_reason_cd,
+				FEIN_SSN_sw,
+				Error_msg_1_tx,
+				Error_msg_2_tx,
+				Error_msg_3_tx,
+				Error_msg_4_tx,
+				Error_msg_5_tx,
+				Error_msg_6_tx,
+				Filler_1_tx,
+				CREATE_TS,
+				CREATE_USER_ID,
+				UPDATE_TS,
+				UPDATE_USER_ID,
+				DELETE_SW,
+				payment_type_cd
+			)
+		VALUES   
+			(	li_FMIS_VENDOR_record_ID ,
+				'W' || VS_TAX_ID_NO,
+				ls_address_1,
+				ls_address_2,
+				lpad('', 50, ' '), --Space(50),
+				lpad('', 50, ' '), -- Space(50),
+				coalesce(Substr((RTRIM(LTRIM(ls_Adr_city_nm))),1,li_city_ln),lpad('', 25, ' ')), -- Space(25)
+				ls_Adr_state_cd,
+				coalesce(RTRIM(LTRIM(ls_Adr_zip5_no)),lpad('', 5, ' ')), -- Space(5)
+				coalesce(RTRIM(LTRIM(ls_Adr_zip4_no)),lpad('', 4, ' ')), -- Space(4)
+				lpad('', 40, ' '), -- Space(40),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 4, ' '), -- Space(4),
+				lpad('', 4, ' '), -- Space(4),
+				F_picklist_ctxt('7802',1550),
+				F_picklist_ctxt('7709',1550),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 20, ' '), -- Space(20),
+				coalesce(Substr((RTRIM(LTRIM(ls_vendor_nm))),1,li_vendor_ln_1),lpad('', 50, ' ')), -- Space(50)
+				coalesce(Substr((RTRIM(LTRIM(ls_vendor_nm))),1,li_vendor_ln_2),lpad('', 25, ' ')), -- Space(25)
+				'CH' || LTRIM(RTRIM(li_provider_id::character varying)),
+				lpad('', 25, ' '), -- Space(25),
+				lpad('', 25, ' '), -- Space(25),
+				lpad('', 9, ' '), -- Space(9),
+				lpad('', 5, ' '), -- Space(5),
+				lpad('', 2, ' '), -- Space(2),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 4, ' '), -- Space(4),
+				lpad('', 11, ' '), -- SPACE(11),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 3, ' '), -- Space(3),
+				lpad('', 1, ' '), -- Space(1),
+				ls_INDICATOR_1099_SW,
+				F_picklist_ctxt('7710',1550),
+				'Y',
+				current_Timestamp,
+				current_timestamp,
+				F_picklist_ctxt('7729',1550),
+				ls_MAIL_CODE_TX,
+				lpad('', 9, ' '), -- Space(9),
+				lpad('', 17, ' '), -- Space(17),
+				lpad('', 2, ' '), -- Space(2),
+				current_timestamp,
+				F_picklist_ctxt('7730',1550),
+				F_picklist_ctxt('7731',1550)  ,
+				ls_prov_tax_type_cd,
+				lpad('', 20, ' '), -- Space(20),
+				lpad('', 20, ' '), -- Space(20),
+				lpad('', 20, ' '), -- Space(20),
+				lpad('', 20, ' '), -- Space(20),
+				lpad('', 20, ' '), -- Space(20),
+				lpad('', 20, ' '), -- Space(20),
+				lpad('', 282, ' '), -- Space(282),
+				current_timestamp,
+				VS_USER_ID,   							
+				current_timestamp,
+				VS_USER_ID,
+				'N',
+				VS_payment_type_cd
+			)    ;
+						
+		ls_Adr_state_cd := lpad('', 2, ' '); -- SPACE(2);
+		
+		IF VL_OUTPUT_SQLCODE <> 0 THEN			
+			VS_MESSAGE := 'Failed to Insert Into TB_FMIS_VENDOR_INTERFACE  -->'  ||  li_provider_id::character varying;
+			INSERT INTO interfaceserrorlog 
+				(	interfaceid,
+					currentruntimestamp,
+					batchnumber,
+					errorlineno,
+					errordescription,
+					errorsqlcode,
+					old_id,
+					county_cd,
+					insertedon
+				)
+			VALUES 								
+				(	'FMIS_VENDOR_INS',
+					CURRENT_TIMESTAMP,
+					'000',
+					0,
+					VS_MESSAGE,
+					VL_OUTPUT_SQLCODE,
+					vl_provider_id::character varying,
+					VS_PROV_COUNTY,
+					CURRENT_DATE
+				);	
+		END IF;
+	ELSE
+		-- Financial Edits did not pass
+		VS_MESSAGE := 'Financial Edits did not pass; Provider’s required Info is missing.';
+		INSERT INTO interfaceserrorlog 
+			(	interfaceid,
+				currentruntimestamp,
+				batchnumber,
+				errorlineno,
+				errordescription,
+				errorsqlcode,
+				old_id,
+				county_cd,
+				insertedon
+			)
+		VALUES 								
+			(	'FMIS_VENDOR_INS',
+				CURRENT_TIMESTAMP,
+				'000',
+				0,
+				VS_MESSAGE,
+				VL_OUTPUT_SQLCODE,
+				vl_provider_id::character varying,
+				VS_PROV_COUNTY,
+				CURRENT_DATE
+			);	
+	END IF; -- If vl_output_sqlcode > 0
+	
+	IF VS_MESSAGE is null or Btrim(VS_MESSAGE) = '' THEN
+		VS_MESSAGE := 'Success';
+	END IF;	
+	
+	RETURN;
+END; 
+
+$function$
+;

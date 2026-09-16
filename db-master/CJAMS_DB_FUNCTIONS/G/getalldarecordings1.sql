@@ -1,0 +1,1154 @@
+CREATE OR REPLACE FUNCTION cjams.getalldarecordings1 (IN searchjson json)
+   RETURNS TABLE (progressnoteid uuid,
+                  progressnotetypeid uuid,
+                  progressnotesubtypeid uuid,
+                  progressnotereasontypekey CHARACTER VARYING,
+                  description CHARACTER VARYING,
+                  traveltime CHARACTER VARYING,
+                  totaltime CHARACTER VARYING,
+                  progressnotepurposetypekey TEXT,
+                  author CHARACTER VARYING,
+                  recordingtype CHARACTER VARYING,
+                  locationname CHARACTER VARYING,
+                  recordingsubtype TEXT,
+                  progressnotereasontypedescription CHARACTER VARYING,
+                  title CHARACTER VARYING,
+                  team CHARACTER VARYING,
+                  draft BOOLEAN,
+                  attemptind BOOLEAN,
+                  contactdate TIMESTAMP WITHOUT TIME ZONE,
+                  contactname CHARACTER VARYING,
+                  progressroletype jsonb,
+                  contactparticipant jsonb,
+                  progressnotecontacttrialvisit jsonb,
+                  iseditable BOOLEAN,
+                  contactphone CHARACTER VARYING,
+                  contactemail CHARACTER VARYING,
+                  archivedon TIMESTAMP WITHOUT TIME ZONE,
+                  archivedby CHARACTER VARYING,
+                  detail TEXT,
+                  recordingdate TIMESTAMP WITHOUT TIME ZONE,
+                  insertedby CHARACTER VARYING,
+                  documentpropertiesid uuid,
+                  doctitle CHARACTER VARYING,
+                  docdescription CHARACTER VARYING,
+                  filename CHARACTER VARYING,
+                  mime CHARACTER VARYING,
+                  s3bucketpathname CHARACTER VARYING,
+                  starttime TIMESTAMP WITHOUT TIME ZONE,
+                  endtime TIMESTAMP WITHOUT TIME ZONE,
+                  stafftype CHARACTER VARYING,
+                  instantresults INTEGER,
+                  contactstatus BOOLEAN,
+                  drugscreen BOOLEAN,
+                  progressnotepurposetype CHARACTER VARYING,
+                  progressnotereason jsonb)
+   LANGUAGE 'plpgsql'
+   VOLATILE
+   NOT LEAKPROOF
+   SECURITY INVOKER
+   PARALLEL UNSAFE
+   ROWS 1000
+AS
+$$
+
+
+-- SET NOCOUNT ON added to prevent extra result sets from
+-- interfering with SELECT statements.
+--SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+DECLARE
+   v_GroupId               CHAR (36);
+   v_IntakeServiceID       uuid;
+   v_Intakenumber          CHARACTER VARYING (50);
+   v_RecordingStatusType   CHARACTER VARYING (50);
+   v_DateFrom              TIMESTAMP;
+   v_DateTo                TIMESTAMP;
+   v_Draft                 BOOLEAN;
+   v_ContactFrom           TIMESTAMP;
+   v_ContactTo             TIMESTAMP;
+   v_GroupActiveFlag       INT;
+   v_GroupExpirationDate   TIMESTAMP;
+   v_liPageNumber          INT;
+   v_liPageSize            INT;
+   v_pageoffset            INT;
+   v_pagenumber            INT;
+   v_Intakenumberflag      CHARACTER VARYING (1);
+BEGIN
+   CREATE TEMP TABLE searchParms_getallrecordings
+   (
+      parmKeyword    VARCHAR (50),
+      parmValue      VARCHAR (1000)
+   );
+
+   INSERT INTO searchParms_getallrecordings (parmKeyword, parmValue)
+        VALUES ('Draft', searchjson ->> 'draft'),
+               ('ServiceRequestId', searchjson ->> 'servicerequestid'),
+               ('DateFrom', searchjson ->> 'datefrom'),
+               ('DateTo', searchjson ->> 'dateto'),
+               ('contactDateFrom', searchjson ->> 'contactdatefrom'),
+               ('contactDateTo', searchjson ->> 'contactdateto');
+
+   -- Populate the variables from the temp table.
+
+   v_liPageNumber := searchjson ->> 'pagenumber';
+   v_liPageSize := searchjson ->> 'pagesize';
+   v_Draft := searchjson ->> 'draft';
+   --v_IntakeServiceID     := searchjson ->>'servicerequestid';
+   v_Intakenumber := searchjson ->> 'servicerequestid';
+   v_DateFrom := searchjson ->> 'datefrom';
+   v_DateTo := searchjson ->> 'dateto';
+   v_ContactFrom := searchjson ->> 'contactdatefrom';
+   v_ContactTo := searchjson ->> 'contactdateto';
+   v_RecordingStatusType := searchjson ->> 'type';
+
+   v_pagenumber := v_liPageNumber - 1;
+   v_pageoffset = v_pagenumber * v_liPageSize;
+
+   SELECT substring (v_Intakenumber, 1, 1)
+     INTO v_Intakenumberflag;
+
+   IF v_Intakenumberflag = 'I'
+   THEN
+      v_Intakenumber = v_Intakenumber;
+   ELSEIF v_Intakenumberflag IS NULL
+   THEN
+      v_Intakenumber = v_Intakenumber;
+   ELSEIF v_Intakenumberflag = ''
+   THEN
+      v_Intakenumber = v_Intakenumber;
+   ELSE
+      v_IntakeServiceID = v_Intakenumber;
+   END IF;
+
+   CREATE TEMP TABLE RecordingGroup_getallrecordings
+   (
+      GroupId           CHAR (36),
+      ExpirationDate    TIMESTAMP (3)
+   );
+
+   INSERT INTO RecordingGroup_getallrecordings
+      SELECT INSRG.GroupId, INSRG.ExpirationDate
+        FROM IntakeServiceRequestGroupDetails INSRG
+       WHERE INSRG.IntakeServiceId = v_IntakeServiceID;
+
+   RETURN QUERY
+      SELECT DISTINCT
+             PN.ProgressNoteId,
+             PN.progressnotetypeid,
+             PN.progressnotesubtypeid,
+             PN.Progressnotereasontypekey,
+             PN.traveltime,
+             PN.totaltime,
+             PN.progressnotepurposetypekey,
+             PN.description,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   'System'
+                ELSE
+                   COALESCE (UP.DisplayName, '')
+             END
+                AS Author,
+             PNT.ProgressNoteClassificationTypeKey
+                AS RecordingType,
+             PN.locationname,
+             COALESCE (
+                (SELECT pns.description
+                  FROM progressnotesubtype pns
+                 WHERE pns.progressnotesubtypeid =
+                       PN.progressnotesubtypeid),
+                '')
+                AS RecordingSubType,
+             COALESCE (
+                (SELECT pnrt.typedescription
+                  FROM progressnotereasontype pnrt
+                 WHERE pnrt.progressnotereasontypekey =
+                       PN.progressnotereasontypekey),
+                '')
+                AS Progressnotereasontypedescription,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   ''
+                ELSE
+                   COALESCE (TM.RoleTypeKey, '')
+             END
+                AS Title,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   ''
+                ELSE
+                   COALESCE (TE.TeamName, '')
+             END
+                AS Team,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   0::BOOLEAN
+                ELSE
+                   COALESCE (PN.SaveMode, 0::BOOLEAN)
+             END
+                AS Draft,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   NULL
+                ELSE
+                   PN.AttemptIndicator
+             END
+                AS AttemptInd,
+             CAST (
+                COALESCE (PN.ContactDate, PN.insertedon)
+                   AS TIMESTAMP (3))
+                AS ContactDate,
+             COALESCE (PN.ContactName, '')
+                AS ContactName,
+             (SELECT json_agg (roletype)
+              FROM (SELECT prt.contactroletypekey,
+                           prt.progressnoteroletypeid
+                      FROM progressnoteroletype prt
+                     WHERE     prt.progressnoteid =
+                               PN.progressnoteid
+                           AND prt.activeflag = 1) roletype)::jsonb
+                AS progressroletype,
+             (SELECT Json_agg (actor)
+              FROM (SELECT cp.contactparticipantid,
+                           cp.participanttypekey,
+                           cp.intakeservicerequestactorid,
+                           cp.address1,
+                           cp.address2,
+                           cp.city,
+                           cp.state,
+                           cp.zipcode,
+                           cp.email,
+                           cp.phonenumber,
+                           isra.personid,
+                           CASE
+                              WHEN p.firstname IS NULL THEN cp.firstname
+                              ELSE COALESCE (p.firstname, '')
+                           END AS firstname,
+                           CASE
+                              WHEN p.lastname IS NULL THEN cp.lastname
+                              ELSE COALESCE (p.lastname, '')
+                           END AS lastname,
+                           isra.actorid,
+                           at.actortype,
+                           at.typedescription
+                      FROM contactparticipant cp
+                           LEFT JOIN intakeservicerequestactor isra
+                              ON isra.intakeservicerequestactorid =
+                                 cp.intakeservicerequestactorid
+                           LEFT JOIN person p ON p.personid = isra.personid
+                           LEFT JOIN actortype at
+                              ON at.actortype =
+                                 isra.intakeservicerequestpersontypekey
+                     WHERE     cp.progressnoteid = PN.progressnoteid
+                           AND cp.activeflag = 1) actor)::jsonb
+                AS contactparticipant,
+             (SELECT Json_agg (contacttrialvisit)
+              FROM (SELECT ctv.contacttrialvisitid,
+                           ctv.progressnoteid,
+                           ctv.issuedesc,
+                           ctv.safetydesc,
+                           ctv.services_childdesc,
+                           ctv.services_parentdesc,
+                           ctv.permanencystepdesc,
+                           ctv.placementdesc,
+                           ctv.educationdesc,
+                           ctv.healthdesc,
+                           ctv.socialareadesc,
+                           ctv.financialliteracydesc,
+                           ctv.familyplanningdesc,
+                           ctv.skillissuedesc,
+                           ctv.transitionplandesc
+                      FROM contacttrialvisit ctv
+                     WHERE     ctv.progressnoteid = PN.progressnoteid
+                           AND ctv.activeflag = 1) contacttrialvisit)::jsonb
+                AS progressnotecontacttrialvisit,
+             ((extract (
+                  DAY FROM   now () AT TIME ZONE 'utc'
+                           - PN.insertedon AT TIME ZONE 'utc'))) <=
+             7
+                AS iseditable,
+             COALESCE (PN.ContactPhone, '')
+                AS ContactPhone,
+             COALESCE (PN.ContactEmail, '')
+                AS ContactEmail,
+             COALESCE (PN.ArchivedOn, NULL)
+                AS ArchivedOn,
+             COALESCE (PN.ArchivedBy, '')
+                AS ArchivedBy,
+             (SELECT string_agg (COALESCE (A.Description, '' || 'rn'), '|')
+              FROM (  SELECT UPF.DisplayName, PND.insertedon, pnd.Description
+                        FROM ProgressNoteDetail pnd
+                             JOIN UserProfile UPF
+                                ON PND.insertedby = UPF.SecurityUsersId
+                       WHERE     pnd.ProgressNoteId = PN.ProgressNoteId
+                             AND pnd.activeflag = 1
+                    ORDER BY PND.insertedon) AS A)
+                AS Detail,
+             CAST (COALESCE (PN.insertedon, PN.insertedon) AS TIMESTAMP (3))
+                AS RecordingDate,
+             PN.insertedby
+                AS Insertedby,
+             DP.DocumentPropertiesId,
+             DP.title
+                AS doctitle,
+             DP.description
+                AS docdescription,
+             DP.filename,
+             DP.mime,
+             DP.s3bucketpathname,
+             PN.starttime
+                AS StartTime,
+             PN.endtime
+                AS EndTime,
+             PN.stafftypekey
+                AS StaffType,
+             PN.instantresults
+                AS InstantResults,
+             PN.contactstatus
+                AS ContactStatus,
+             PN.drugscreen
+                AS DrugScreen,
+             COALESCE (PNPT.description, '')
+                AS ProgressNotePurposeType,
+             (SELECT Json_agg (progressnotereasons)
+              FROM (SELECT prtc.progressnotereasontypeconfigid,
+                           prtc.progressnoteid,
+                           prtc.personid,
+                           prtc.name,
+                           prtc.primaryphoneno,
+                           prtc.email,
+                           prtc.relationship,
+                           p.firstname || ' ' || p.lastname AS personname
+                      FROM progressnotereasontypeconfig prtc
+                           LEFT JOIN person p ON p.personid = prtc.personid
+                     WHERE     prtc.progressnoteid = PN.progressnoteid
+                           AND prtc.activeflag = 1) progressnotereasons)::jsonb
+                AS progressnotereason
+        FROM IntakeServiceRequest AS ISR
+             JOIN ProgressNote AS PN
+                ON CAST (ISR.IntakeServiceId AS VARCHAR (50)) =
+                   PN.EntityTypeId
+             LEFT OUTER JOIN DocumentProperties DP
+                ON DP.DocumentPropertiesId = PN.DocumentPropertiesId
+             JOIN ProgressNoteDetail AS PND
+                ON     PN.ProgressNoteId = PND.ProgressNoteId
+                   AND PND.ActiveFlag = 1
+             JOIN ProgressNoteType AS PNT
+                ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId
+             JOIN UserProfile up ON pn.insertedby = up.SecurityUsersId
+             LEFT JOIN AreaTeamMemberServiceRequest atmsr
+                ON     isr.IntakeServiceId = atmsr.IntakeServiceId
+                   AND atmsr.ActiveFlag = 1
+             LEFT JOIN TeamMember tm ON atmsr.TeamMemberId = tm.TeamMemberId
+             LEFT JOIN Team te ON tm.TeamId = te.TeamId
+             LEFT JOIN Progressnoteroletype AS PNRT
+                ON     PN.ProgressNoteId = PNRT.ProgressNoteId
+                   AND PNRT.ActiveFlag = 1
+             LEFT JOIN progressnotepurposetype AS PNPT
+                ON     PNPT.progressnotepurposetypekey =
+                       PN.progressnotepurposetypekey
+                   AND PNRT.ActiveFlag = 1
+       WHERE     (   ISR.IntakeServiceId = v_IntakeServiceID
+                  OR ISR.servicerequestnumber = v_Intakenumber)
+             AND lower (PNT.ProgressNoteClassificationTypeKey) = 'user'
+             AND PNT.parentid IS NULL
+             AND (   v_DateFrom IS NULL
+                  OR (CAST (PN.insertedon AS DATE) BETWEEN CAST (
+                                                              v_DateFrom
+                                                                 AS DATE)
+                                                       AND CAST (
+                                                              v_DateTo
+                                                                 AS DATE)))
+             AND (   v_ContactFrom IS NULL
+                  OR (CAST (PN.ContactDate AS DATE) BETWEEN CAST (
+                                                               v_ContactFrom
+                                                                  AS DATE)
+                                                        AND CAST (
+                                                               v_ContactTo
+                                                                  AS DATE)))
+             AND (v_Draft IS NULL OR PN.SaveMode = v_Draft)
+             AND (   lower (v_RecordingStatusType) IS NULL
+                  OR lower (
+                        COALESCE (PNT.ProgressNoteClassificationTypeKey,
+                                  'User')) =
+                     lower (v_RecordingStatusType))
+             AND (   ATMSR.IntakeServiceId IS NULL
+                  OR TO_CHAR (PN.insertedon, 'dd-mm-yyyy') BETWEEN TO_CHAR (
+                                                                      ATMSR.EffectiveDate,
+                                                                      'dd-mm-yyyy')
+                                                               AND coalesce (
+                                                                      TO_CHAR (
+                                                                         ATMSR.ExpirationDate,
+                                                                         'dd-mm-yyyy'),
+                                                                      cast (
+                                                                           NOW ()::DATE
+                                                                         + INTEGER '1'
+                                                                            AS TEXT)))
+      UNION
+      SELECT DISTINCT
+             PN.ProgressNoteId,
+             PN.progressnotetypeid,
+             PN.progressnotesubtypeid,
+             PN.Progressnotereasontypekey,
+             PN.traveltime,
+             PN.totaltime,
+             PN.progressnotepurposetypekey,
+             PN.description,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   'System'
+                ELSE
+                   COALESCE (UP.DisplayName, '')          --  need UserProfile
+             END
+                AS Author,
+             PNT.ProgressNoteClassificationTypeKey
+                AS RecordingType,
+             PN.locationname,
+             COALESCE (
+                (SELECT pns.description
+                  FROM progressnotesubtype pns
+                 WHERE pns.progressnotesubtypeid =
+                       PN.progressnotesubtypeid),
+                '')
+                AS RecordingSubType,
+             COALESCE (
+                (SELECT pnrt.typedescription
+                  FROM progressnotereasontype pnrt
+                 WHERE pnrt.progressnotereasontypekey =
+                       PN.progressnotereasontypekey),
+                '')
+                AS Progressnotereasontypedescription,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   ''
+                ELSE
+                   COALESCE (TM.RoleTypeKey, '')           --  need TeamMember
+             END
+                AS Title,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   ''
+                ELSE
+                   COALESCE (TE.TeamName, '')                    --  need Team
+             END
+                AS Team,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   0::BOOLEAN
+                ELSE
+                   COALESCE (PN.SaveMode, 0::BOOLEAN)
+             END
+                AS Draft,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   NULL
+                ELSE
+                   PN.AttemptIndicator
+             END
+                AS AttemptInd,
+             CAST (
+                COALESCE (PN.ContactDate, PN.insertedon)
+                   AS TIMESTAMP (3))
+                AS ContactDate,
+             COALESCE (PN.ContactName, '')
+                AS ContactName,
+             (SELECT json_agg (roletype)
+              FROM (SELECT prt.contactroletypekey,
+                           prt.progressnoteroletypeid
+                      FROM progressnoteroletype prt
+                     WHERE     prt.progressnoteid =
+                               PN.progressnoteid
+                           AND prt.activeflag = 1) roletype)::jsonb
+                AS progressroletype,
+             (SELECT Json_agg (actor)
+              FROM (SELECT cp.contactparticipantid,
+                           cp.participanttypekey,
+                           cp.intakeservicerequestactorid,
+                           cp.address1,
+                           cp.address2,
+                           cp.city,
+                           cp.state,
+                           cp.zipcode,
+                           cp.email,
+                           cp.phonenumber,
+                           isra.personid,
+                           CASE
+                              WHEN p.firstname IS NULL THEN cp.firstname
+                              ELSE COALESCE (p.firstname, '')
+                           END AS firstname,
+                           CASE
+                              WHEN p.lastname IS NULL THEN cp.lastname
+                              ELSE COALESCE (p.lastname, '')
+                           END AS lastname,
+                           isra.actorid,
+                           at.actortype,
+                           at.typedescription
+                      FROM contactparticipant cp
+                           LEFT JOIN intakeservicerequestactor isra
+                              ON isra.intakeservicerequestactorid =
+                                 cp.intakeservicerequestactorid
+                           LEFT JOIN person p ON p.personid = isra.personid
+                           LEFT JOIN actortype at
+                              ON at.actortype =
+                                 isra.intakeservicerequestpersontypekey
+                     WHERE     cp.progressnoteid = PN.progressnoteid
+                           AND cp.activeflag = 1) actor)::jsonb
+                AS contactparticipant,
+             (SELECT Json_agg (contacttrialvisit)
+              FROM (SELECT ctv.contacttrialvisitid,
+                           ctv.progressnoteid,
+                           ctv.issuedesc,
+                           ctv.safetydesc,
+                           ctv.services_childdesc,
+                           ctv.services_parentdesc,
+                           ctv.permanencystepdesc,
+                           ctv.placementdesc,
+                           ctv.educationdesc,
+                           ctv.healthdesc,
+                           ctv.socialareadesc,
+                           ctv.financialliteracydesc,
+                           ctv.familyplanningdesc,
+                           ctv.skillissuedesc,
+                           ctv.transitionplandesc
+                      FROM contacttrialvisit ctv
+                     WHERE     ctv.progressnoteid = PN.progressnoteid
+                           AND ctv.activeflag = 1) contacttrialvisit)::jsonb
+                AS progressnotecontacttrialvisit,
+             ((extract (
+                  DAY FROM   now () AT TIME ZONE 'utc'
+                           - PN.insertedon AT TIME ZONE 'utc'))) <=
+             7
+                AS iseditable,
+             COALESCE (PN.ContactPhone, '')
+                AS ContactPhone,
+             COALESCE (PN.ContactEmail, '')
+                AS ContactEmail,
+             COALESCE (PN.ArchivedOn, NULL)
+                AS ArchivedOn,
+             COALESCE (PN.ArchivedBy, '')
+                AS ArchivedBy,
+             (SELECT string_agg (COALESCE (A.Description, '' || 'rn'), '|')
+              FROM (  SELECT UPF.DisplayName, PND.insertedon, pnd.Description
+                        FROM ProgressNoteDetail pnd
+                             JOIN UserProfile UPF
+                                ON PND.insertedby = UPF.SecurityUsersId
+                       WHERE     pnd.ProgressNoteId = PN.ProgressNoteId
+                             AND pnd.activeflag = 1
+                    ORDER BY PND.insertedon) AS A)
+                AS Detail,
+             CAST (COALESCE (PN.insertedon, PN.insertedon) AS TIMESTAMP (3))
+                AS RecordingDate,
+             PN.insertedby
+                AS Insertedby,
+             DP.DocumentPropertiesId,
+             DP.title
+                AS doctitle,
+             DP.description
+                AS docdescription,
+             DP.filename,
+             DP.mime,
+             DP.s3bucketpathname,
+             PN.starttime
+                AS StartTime,
+             PN.endtime
+                AS EndTime,
+             PN.stafftypekey
+                AS StaffType,
+             PN.instantresults
+                AS InstantResults,
+             PN.contactstatus
+                AS ContactStatus,
+             PN.drugscreen
+                AS DrugScreen,
+             COALESCE (PNPT.description, '')
+                AS ProgressNotePurposeType,
+             (SELECT Json_agg (progressnotereasons)
+              FROM (SELECT prtc.progressnotereasontypeconfigid,
+                           prtc.progressnoteid,
+                           prtc.personid,
+                           prtc.name,
+                           prtc.primaryphoneno,
+                           prtc.email,
+                           prtc.relationship,
+                           p.firstname || ' ' || p.lastname AS personname
+                      FROM progressnotereasontypeconfig prtc
+                           LEFT JOIN person p ON p.personid = prtc.personid
+                     WHERE     prtc.progressnoteid = PN.progressnoteid
+                           AND prtc.activeflag = 1) progressnotereasons)::jsonb
+                AS progressnotereason
+        FROM IntakeServiceRequest AS ISR
+             JOIN ProgressNote AS PN
+                ON     CAST (ISR.IntakeServiceId AS VARCHAR (50)) =
+                       PN.EntityTypeId
+                   AND pn.ArchivedOn IS NULL                            --****
+             --  join ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId
+             LEFT OUTER JOIN DocumentProperties DP
+                ON DP.DocumentPropertiesId = PN.DocumentPropertiesId
+             JOIN ProgressNoteType AS PNT
+                ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId
+             JOIN UserProfile up ON pn.insertedby = up.SecurityUsersId
+             LEFT JOIN AreaTeamMemberServiceRequest atmsr
+                ON     isr.IntakeServiceId = atmsr.IntakeServiceId
+                   AND atmsr.ActiveFlag = 1
+             LEFT JOIN TeamMember tm ON atmsr.TeamMemberId = tm.TeamMemberId
+             LEFT JOIN Team te ON tm.TeamId = te.TeamId
+             LEFT JOIN Progressnoteroletype AS PNRT
+                ON     PN.ProgressNoteId = PNRT.ProgressNoteId
+                   AND PNRT.ActiveFlag = 1
+             LEFT JOIN progressnotepurposetype AS PNPT
+                ON     PNPT.progressnotepurposetypekey =
+                       PN.progressnotepurposetypekey
+                   AND PNRT.ActiveFlag = 1
+       WHERE     (   ISR.IntakeServiceId = v_IntakeServiceID
+                  OR ISR.servicerequestnumber = v_Intakenumber)
+             AND lower (PNT.ProgressNoteClassificationTypeKey) = 'user'
+             AND PNT.parentid IS NULL
+             AND (   v_DateFrom IS NULL
+                  OR (CAST (PN.insertedon AS DATE) BETWEEN CAST (
+                                                              v_DateFrom
+                                                                 AS DATE)
+                                                       AND CAST (
+                                                              v_DateTo
+                                                                 AS DATE)))
+             AND (   v_ContactFrom IS NULL
+                  OR (CAST (PN.ContactDate AS DATE) BETWEEN CAST (
+                                                               v_ContactFrom
+                                                                  AS DATE)
+                                                        AND CAST (
+                                                               v_ContactTo
+                                                                  AS DATE)))
+             AND (v_Draft IS NULL OR PN.SaveMode = v_Draft)
+             AND (   lower (v_RecordingStatusType) IS NULL
+                  OR lower (
+                        COALESCE (PNT.ProgressNoteClassificationTypeKey,
+                                  'User')) =
+                     lower (v_RecordingStatusType))
+             AND pn.ProgressNoteId NOT IN
+                    (SELECT pn.ProgressNoteId
+                      FROM IntakeServiceRequest AS ISR
+                           JOIN ProgressNote AS PN
+                              ON CAST (ISR.IntakeServiceId AS VARCHAR (50)) =
+                                 PN.EntityTypeId
+                           JOIN ProgressNoteDetail AS PND
+                              ON PN.ProgressNoteId = PND.ProgressNoteId
+                           JOIN ProgressNoteType AS PNT
+                              ON PN.ProgressNoteTypeId =
+                                 PNT.ProgressNoteTypeId
+                           JOIN AreaTeamMemberServiceRequest atmsr
+                              ON     isr.IntakeServiceId =
+                                     atmsr.IntakeServiceId
+                                 AND atmsr.ActiveFlag = 1
+                     WHERE     (   isr.IntakeServiceId = v_IntakeServiceID
+                                OR isr.servicerequestnumber = v_Intakenumber)
+                           AND (   ATMSR.IntakeServiceId IS NULL
+                                OR TO_CHAR (PN.insertedon, 'dd-mm-yyyy') BETWEEN TO_CHAR (
+                                                                                    ATMSR.EffectiveDate,
+                                                                                    'dd-mm-yyyy')
+                                                                             AND coalesce (
+                                                                                    TO_CHAR (
+                                                                                       ATMSR.ExpirationDate,
+                                                                                       'dd-mm-yyyy'),
+                                                                                    cast (
+                                                                                         NOW ()::DATE
+                                                                                       + INTEGER '1'
+                                                                                          AS TEXT))))
+      UNION
+      SELECT DISTINCT
+             PN.ProgressNoteId,
+             PN.progressnotetypeid,
+             PN.progressnotesubtypeid,
+             PN.Progressnotereasontypekey,
+             PN.traveltime,
+             PN.totaltime,
+             PN.progressnotepurposetypekey,
+             PN.description,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   'System'
+                ELSE
+                   COALESCE (
+                      (SELECT up.DisplayName
+                        FROM AreaTeamMemberServiceRequest atmsr
+                             JOIN TeamMember tm
+                                ON atmsr.TeamMemberId =
+                                   tm.TeamMemberId
+                             JOIN Team te ON tm.TeamId = te.TeamId
+                             JOIN UserProfile up
+                                ON PN.insertedby = up.SecurityUsersId
+                       WHERE v_IntakeServiceID =
+                             atmsr.IntakeServiceId
+                       LIMIT 1),
+                      '')                                 --  need UserProfile
+             END
+                AS Author,
+             COALESCE (PNT.progressnotetypekey, '')
+                AS RecordingType,
+             PN.locationname,
+             COALESCE (
+                (SELECT pns.description
+                   FROM progressnotesubtype pns
+                  WHERE pns.progressnotesubtypeid = PN.progressnotesubtypeid),
+                '')
+                AS RecordingSubType,
+             COALESCE (
+                (SELECT pnrt.typedescription
+                  FROM progressnotereasontype pnrt
+                 WHERE pnrt.progressnotereasontypekey =
+                       PN.progressnotereasontypekey),
+                '')
+                AS Progressnotereasontypedescription,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')
+                THEN
+                   ''
+                ELSE
+                   COALESCE (
+                      (SELECT tm.RoleTypeKey
+                        FROM AreaTeamMemberServiceRequest atmsr
+                             JOIN TeamMember tm
+                                ON atmsr.TeamMemberId = tm.TeamMemberId
+                             JOIN Team te ON tm.TeamId = te.TeamId
+                             JOIN UserProfile up
+                                ON PN.insertedby = up.SecurityUsersId
+                       WHERE v_IntakeServiceID = atmsr.IntakeServiceId
+                       LIMIT 1),
+                      '')                                  --  need TeamMember
+             END
+                AS Title,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')
+                THEN
+                   ''
+                ELSE
+                   COALESCE (
+                      (SELECT te.TeamName
+                        FROM AreaTeamMemberServiceRequest atmsr
+                             JOIN TeamMember tm
+                                ON atmsr.TeamMemberId = tm.TeamMemberId
+                             JOIN Team te ON tm.TeamId = te.TeamId
+                             JOIN UserProfile up
+                                ON PN.insertedby = up.SecurityUsersId
+                       WHERE v_IntakeServiceID = atmsr.IntakeServiceId
+                       LIMIT 1),
+                      '')                                        --  need Team
+             END
+                AS Team,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')
+                THEN
+                   0::BOOLEAN
+                ELSE
+                   COALESCE (PN.SaveMode, 0::BOOLEAN)
+             END
+                AS Draft,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey = 'System')
+                THEN
+                   NULL
+                ELSE
+                   PN.AttemptIndicator
+             END
+                AS AttemptInd,
+             CAST (COALESCE (PN.ContactDate, PN.insertedon) AS TIMESTAMP (3))
+                AS ContactDate,
+             COALESCE (PN.ContactName, '')
+                AS ContactName,
+             (SELECT json_agg (roletype)
+              FROM (SELECT prt.contactroletypekey, prt.progressnoteroletypeid
+                      FROM progressnoteroletype prt
+                     WHERE     prt.progressnoteid = PN.progressnoteid
+                           AND prt.activeflag = 1) roletype)::jsonb
+                AS progressroletype,
+             (SELECT Json_agg (actor)
+              FROM (SELECT cp.contactparticipantid,
+                           cp.participanttypekey,
+                           cp.intakeservicerequestactorid,
+                           cp.address1,
+                           cp.address2,
+                           cp.city,
+                           cp.state,
+                           cp.zipcode,
+                           cp.email,
+                           cp.phonenumber,
+                           isra.personid,
+                           CASE
+                              WHEN p.firstname IS NULL THEN cp.firstname
+                              ELSE COALESCE (p.firstname, '')
+                           END AS firstname,
+                           CASE
+                              WHEN p.lastname IS NULL THEN cp.lastname
+                              ELSE COALESCE (p.lastname, '')
+                           END AS lastname,
+                           isra.actorid,
+                           at.actortype,
+                           at.typedescription
+                      FROM contactparticipant cp
+                           LEFT JOIN intakeservicerequestactor isra
+                              ON isra.intakeservicerequestactorid =
+                                 cp.intakeservicerequestactorid
+                           LEFT JOIN person p ON p.personid = isra.personid
+                           LEFT JOIN actortype at
+                              ON at.actortype =
+                                 isra.intakeservicerequestpersontypekey
+                     WHERE     cp.progressnoteid = PN.progressnoteid
+                           AND cp.activeflag = 1) actor)::jsonb
+                AS contactparticipant,
+             (SELECT Json_agg (contacttrialvisit)
+              FROM (SELECT ctv.contacttrialvisitid,
+                           ctv.progressnoteid,
+                           ctv.issuedesc,
+                           ctv.safetydesc,
+                           ctv.services_childdesc,
+                           ctv.services_parentdesc,
+                           ctv.permanencystepdesc,
+                           ctv.placementdesc,
+                           ctv.educationdesc,
+                           ctv.healthdesc,
+                           ctv.socialareadesc,
+                           ctv.financialliteracydesc,
+                           ctv.familyplanningdesc,
+                           ctv.skillissuedesc,
+                           ctv.transitionplandesc
+                      FROM contacttrialvisit ctv
+                     WHERE     ctv.progressnoteid = PN.progressnoteid
+                           AND ctv.activeflag = 1) contacttrialvisit)::jsonb
+                AS progressnotecontacttrialvisit,
+             ((extract (
+                  DAY FROM   now () AT TIME ZONE 'utc'
+                           - PN.insertedon AT TIME ZONE 'utc'))) <=
+             7
+                AS iseditable,
+             COALESCE (PN.ContactPhone, '')
+                AS ContactPhone,
+             COALESCE (PN.ContactEmail, '')
+                AS ContactEmail,
+             COALESCE (PN.ArchivedOn, NULL)
+                AS ArchivedOn,
+             COALESCE (PN.ArchivedBy, '')
+                AS ArchivedBy,
+             (SELECT string_agg (COALESCE (A.Description, '' || 'rn'), '|')
+              FROM (SELECT pnd.Description
+                        FROM ProgressNoteDetail pnd
+                             JOIN UserProfile UPF
+                                ON PND.insertedby = UPF.SecurityUsersId
+                       WHERE     pnd.ProgressNoteId = PN.ProgressNoteId
+                             AND pnd.activeflag = 1
+                    ORDER BY PND.insertedon) AS A)
+                AS Detail,
+             CAST (COALESCE (PN.insertedon, PN.insertedon) AS TIMESTAMP (3))
+                AS RecordingDate,
+             PN.insertedby
+                AS Insertedby,
+             DP.DocumentPropertiesId,
+             DP.title
+                AS doctitle,
+             DP.description
+                AS docdescription,
+             DP.filename,
+             DP.mime,
+             DP.s3bucketpathname,
+             PN.starttime
+                AS StartTime,
+             PN.endtime
+                AS EndTime,
+             PN.stafftypekey
+                AS StaffType,
+             PN.instantresults
+                AS InstantResults,
+             PN.contactstatus
+                AS ContactStatus,
+             PN.drugscreen
+                AS DrugScreen,
+             COALESCE (PNPT.description, '')
+                AS ProgressNotePurposeType,
+             (SELECT Json_agg (progressnotereasons)
+              FROM (SELECT prtc.progressnotereasontypeconfigid,
+                           prtc.progressnoteid,
+                           prtc.personid,
+                           prtc.name,
+                           prtc.primaryphoneno,
+                           prtc.email,
+                           prtc.relationship,
+                           p.firstname || ' ' || p.lastname AS personname
+                      FROM progressnotereasontypeconfig prtc
+                           LEFT JOIN person p ON p.personid = prtc.personid
+                     WHERE     prtc.progressnoteid = PN.progressnoteid
+                           AND prtc.activeflag = 1) progressnotereasons)::jsonb
+                AS progressnotereason
+        FROM ProgressNote AS PN
+             -- join ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId
+             LEFT OUTER JOIN DocumentProperties DP
+                ON DP.DocumentPropertiesId = PN.DocumentPropertiesId
+             JOIN ProgressNoteType AS PNT
+                ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId
+             JOIN RecordingGroup_getallrecordings RG
+                ON PN.EntityTypeId = CAST (RG.GroupId AS VARCHAR (50))
+             LEFT JOIN Progressnoteroletype AS PNRT
+                ON     PN.ProgressNoteId = PNRT.ProgressNoteId
+                   AND PNRT.ActiveFlag = 1
+             LEFT JOIN progressnotepurposetype AS PNPT
+                ON     PNPT.progressnotepurposetypekey =
+                       PN.progressnotepurposetypekey
+                   AND PNRT.ActiveFlag = 1
+       WHERE     PN.ArchivedOn IS NULL                                  --****
+             AND lower (PNT.ProgressNoteClassificationTypeKey) = 'user'
+             AND PNT.parentid IS NULL
+             AND (   RG.ExpirationDate IS NULL
+                  OR PN.insertedon <= RG.ExpirationDate)
+             AND (   v_DateFrom IS NULL
+                  OR (CAST (PN.insertedon AS DATE) BETWEEN CAST (
+                                                              v_DateFrom
+                                                                 AS DATE)
+                                                       AND CAST (
+                                                              v_DateTo
+                                                                 AS DATE)))
+             AND (   v_ContactFrom IS NULL
+                  OR (CAST (PN.ContactDate AS DATE) BETWEEN CAST (
+                                                               v_ContactFrom
+                                                                  AS DATE)
+                                                        AND CAST (
+                                                               v_ContactTo
+                                                                  AS DATE)))
+             AND (v_Draft IS NULL OR PN.SaveMode = v_Draft)
+             AND (   lower (v_RecordingStatusType) IS NULL
+                  OR lower (
+                        COALESCE (PNT.ProgressNoteClassificationTypeKey,
+                                  'User')) =
+                     lower (v_RecordingStatusType))
+      UNION
+      SELECT DISTINCT
+             PN.ProgressNoteId,
+             PN.progressnotetypeid,
+             PN.progressnotesubtypeid,
+             PN.Progressnotereasontypekey,
+             PN.traveltime,
+             PN.totaltime,
+             PN.progressnotepurposetypekey,
+             PN.description,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   'System'
+                ELSE
+                   COALESCE (UP.DisplayName, '')
+             END
+                AS Author,
+             COALESCE (PNT.description, '')
+                AS RecordingType,
+             PN.locationname,
+             COALESCE (
+                (SELECT pns.description
+                  FROM progressnotesubtype pns
+                 WHERE pns.progressnotesubtypeid =
+                       PN.progressnotesubtypeid),
+                '')
+                AS RecordingSubType,
+             COALESCE (
+                (SELECT pnrt.typedescription
+                  FROM progressnotereasontype pnrt
+                 WHERE pnrt.progressnotereasontypekey =
+                       PN.progressnotereasontypekey),
+                '')
+                AS Progressnotereasontypedescription,
+             ''
+                AS Title,
+             ''
+                AS Team,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   0::BOOLEAN
+                ELSE
+                   COALESCE (PN.SaveMode, 0::BOOLEAN)
+             END
+                AS Draft,
+             CASE
+                WHEN (PNT.ProgressNoteClassificationTypeKey =
+                      'System')
+                THEN
+                   NULL
+                ELSE
+                   PN.AttemptIndicator
+             END
+                AS AttemptInd,
+             CAST (
+                COALESCE (PN.ContactDate, PN.insertedon)
+                   AS TIMESTAMP (3))
+                AS ContactDate,
+             COALESCE (PN.ContactName, '')
+                AS ContactName,
+             (SELECT json_agg (roletype)
+              FROM (SELECT prt.contactroletypekey,
+                           prt.progressnoteroletypeid
+                      FROM progressnoteroletype prt
+                     WHERE     prt.progressnoteid =
+                               PN.progressnoteid
+                           AND prt.activeflag = 1) roletype)::jsonb
+                AS progressroletype,
+             (SELECT Json_agg (actor)
+              FROM (SELECT cp.contactparticipantid,
+                           cp.participanttypekey,
+                           cp.intakeservicerequestactorid,
+                           cp.address1,
+                           cp.address2,
+                           cp.city,
+                           cp.state,
+                           cp.zipcode,
+                           cp.email,
+                           cp.phonenumber,
+                           isra.personid,
+                           CASE
+                              WHEN p.firstname IS NULL THEN cp.firstname
+                              ELSE COALESCE (p.firstname, '')
+                           END AS firstname,
+                           CASE
+                              WHEN p.lastname IS NULL THEN cp.lastname
+                              ELSE COALESCE (p.lastname, '')
+                           END AS lastname,
+                           isra.actorid,
+                           at.actortype,
+                           at.typedescription
+                      FROM contactparticipant cp
+                           LEFT JOIN intakeservicerequestactor isra
+                              ON isra.intakeservicerequestactorid =
+                                 cp.intakeservicerequestactorid
+                           LEFT JOIN person p ON p.personid = isra.personid
+                           LEFT JOIN actortype at
+                              ON at.actortype =
+                                 isra.intakeservicerequestpersontypekey
+                     WHERE     cp.progressnoteid = PN.progressnoteid
+                           AND cp.activeflag = 1) actor)::jsonb
+                AS contactparticipant,
+             (SELECT Json_agg (contacttrialvisit)
+              FROM (SELECT ctv.contacttrialvisitid,
+                           ctv.progressnoteid,
+                           ctv.issuedesc,
+                           ctv.safetydesc,
+                           ctv.services_childdesc,
+                           ctv.services_parentdesc,
+                           ctv.permanencystepdesc,
+                           ctv.placementdesc,
+                           ctv.educationdesc,
+                           ctv.healthdesc,
+                           ctv.socialareadesc,
+                           ctv.financialliteracydesc,
+                           ctv.familyplanningdesc,
+                           ctv.skillissuedesc,
+                           ctv.transitionplandesc
+                      FROM contacttrialvisit ctv
+                     WHERE     ctv.progressnoteid = PN.progressnoteid
+                           AND ctv.activeflag = 1) contacttrialvisit)::jsonb
+                AS progressnotecontacttrialvisit,
+             ((extract (
+                  DAY FROM   now () AT TIME ZONE 'utc'
+                           - PN.insertedon AT TIME ZONE 'utc'))) <=
+             7
+                AS iseditable,
+             COALESCE (PN.ContactPhone, '')
+                AS ContactPhone,
+             COALESCE (PN.ContactEmail, '')
+                AS ContactEmail,
+             COALESCE (PN.ArchivedOn, NULL)
+                AS ArchivedOn,
+             COALESCE (PN.ArchivedBy, '')
+                AS ArchivedBy,
+             (SELECT string_agg (COALESCE (A.Description, '' || 'rn'), '|')
+              FROM (  SELECT UPF.DisplayName, PND.insertedon, pnd.Description
+                        FROM ProgressNoteDetail pnd
+                             JOIN UserProfile UPF
+                                ON PND.insertedby = UPF.SecurityUsersId
+                       WHERE     pnd.ProgressNoteId = PN.ProgressNoteId
+                             AND pnd.activeflag = 1
+                    ORDER BY PND.insertedon) AS A)
+                AS Detail,
+             CAST (COALESCE (PN.insertedon, PN.insertedon) AS TIMESTAMP (3))
+                AS RecordingDate,
+             PN.insertedby
+                AS Insertedby,
+             DP.DocumentPropertiesId,
+             DP.title
+                AS doctitle,
+             DP.description
+                AS docdescription,
+             DP.filename,
+             DP.mime,
+             DP.s3bucketpathname,
+             PN.starttime
+                AS StartTime,
+             PN.endtime
+                AS EndTime,
+             PN.stafftypekey
+                AS StaffType,
+             PN.instantresults
+                AS InstantResults,
+             PN.contactstatus
+                AS ContactStatus,
+             PN.drugscreen
+                AS DrugScreen,
+             COALESCE (PNPT.description, '')
+                AS ProgressNotePurposeType,
+             (SELECT Json_agg (progressnotereasons)
+              FROM (SELECT prtc.progressnotereasontypeconfigid,
+                           prtc.progressnoteid,
+                           prtc.personid,
+                           prtc.name,
+                           prtc.primaryphoneno,
+                           prtc.email,
+                           prtc.relationship,
+                           p.firstname || ' ' || p.lastname AS personname
+                      FROM progressnotereasontypeconfig prtc
+                           LEFT JOIN person p ON p.personid = prtc.personid
+                     WHERE     prtc.progressnoteid = PN.progressnoteid
+                           AND prtc.activeflag = 1) progressnotereasons)::jsonb
+                AS progressnotereason
+        FROM ProgressNote pn
+             LEFT OUTER JOIN DocumentProperties DP
+                ON DP.DocumentPropertiesId = PN.DocumentPropertiesId
+             JOIN ProgressNoteDetail AS PND
+                ON     PN.ProgressNoteId = PND.ProgressNoteId
+                   AND PND.ActiveFlag = 1
+             JOIN ProgressNoteType AS PNT
+                ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId
+             JOIN UserProfile up ON pn.insertedby = up.SecurityUsersId
+             LEFT JOIN Progressnoteroletype AS PNRT
+                ON     PN.ProgressNoteId = PNRT.ProgressNoteId
+                   AND PNRT.ActiveFlag = 1
+             LEFT JOIN progressnotepurposetype AS PNPT
+                ON     PNPT.progressnotepurposetypekey =
+                       PN.progressnotepurposetypekey
+                   AND PNRT.ActiveFlag = 1
+       WHERE     (PN.EntityTypeId = v_Intakenumber)
+             AND lower (PNT.ProgressNoteClassificationTypeKey) = 'user'
+      ORDER BY RecordingDate DESC
+         LIMIT v_liPageSize
+        OFFSET v_pageoffset;
+
+   DROP TABLE searchParms_getallrecordings;
+
+   DROP TABLE RecordingGroup_getallrecordings;
+END;
+$$

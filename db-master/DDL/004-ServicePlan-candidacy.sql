@@ -1,0 +1,1 @@
+ALTER TABLE cjams.serviceplan ADD column if not exists serviceplancandidacy jsonb NULL;

@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION geteducationplacements(i_personeducationid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+    
+    v_personeducationid uuid;
+    v_personid uuid;
+    v_educationstartdate date;
+    v_educationenddate date;
+    v_result json;
+
+BEGIN
+    
+    v_personeducationid := i_personeducationid :: uuid;
+
+select personid :: uuid, startdate :: date, enddate :: date
+into v_personid
+, v_educationstartdate, v_educationenddate from personeducation pe where pe.personeducationid = v_personeducationid;
+
+SELECT json_agg(pi)
+into v_result
+FROM
+    (
+            select p.placementid,
+            'Living Arrangement: ' ||
+(select value_text
+            from referencevalues rv
+            where rv.referencetypeid = 76
+                and rv.ref_key = la.livingarrangementtypekey
+) as placement_type
+, 0 as provider_id
+, ' ' as provider_name
+, p.startdatetime as entry_date
+, p.enddatetime as exit_date
+        from placement p,
+            livingarrangement la
+        where p.placementid = la.placementid
+            and p.personid = v_personid
+            and p.activeflag = 1
+            and la.activeflag = 1
+            and p.altproviderid is null
+            and (p.isvoided is null or p.isvoided = 0)
+            and (p.startdatetime::date <= coalesce (v_educationenddate, current_date ) -- "School End Date"
+            or p.startdatetime::date >= v_educationstartdate)
+            and ( p.enddatetime::date is null or p.enddatetime::date >= v_educationstartdate ) -- "School Start Date"
+            and (select count(*)
+            from routing rt
+            where rt.objectid::character varying = p.placementid::character varying
+                and rt.eventcode = 'PLTR'
+                and rt.activeflag = 1
+                and rt.routingstatustypeid  = '16'
+) > 0
+    union all
+        select p.placementid, 'Provider Placement' as placement_type
+, p.altproviderid as provider_id
+, f_ename('2953', p.altproviderid::bigint) as provider_name
+, p.startdatetime as entry_date
+, p.enddatetime as exit_date
+        from placement p
+        where p.personid = v_personid
+            and p.activeflag = 1
+            and p.altproviderid is not null
+            and (p.isvoided is null or p.isvoided = 0)
+            and (p.startdatetime::date <= coalesce (v_educationenddate, current_date ) -- "School End Date"
+            or p.startdatetime::date >= v_educationstartdate)
+            and ( p.enddatetime::date  is null or p.enddatetime::date >= v_educationstartdate ) -- "School Start Date"
+            and (select count(*)
+            from routing rt
+            where rt.objectid::character varying = p.placementid::character varying
+                and rt.eventcode = 'PLTR'
+                and rt.activeflag = 1
+                and rt.routingstatustypeid  = '16'
+) > 0
+            and f_prvpcklst_cat(p.altproviderid::bigint,'PLACEMENT')  <> '3302'
+    union all
+        select p.placementid, 'CPA Home Placement' as placement_type
+, pc.altproviderid as provider_id
+, f_ename('2953', pc.altproviderid::bigint) as provider_name
+, pc.entrydt::date as entry_date
+, pc.exitdt::date as exit_date
+        from placement p,
+            placementcpahomes pc
+        where p.placementid = pc.placementid
+            and p.personid = v_personid
+            and p.activeflag = 1
+            and pc.activeflag = 1
+            and p.altproviderid is not null
+            and (p.isvoided is null or p.isvoided = 0)
+   and (pc.entrydt::date <= coalesce (v_educationenddate, current_date ) -- "School End Date"
+            or pc.entrydt::date >= v_educationstartdate)
+            and ( pc.exitdt::date is null or pc.exitdt::date >= v_educationstartdate ) -- "School Start Date"
+            and (select count(*)
+            from routing rt
+            where rt.objectid::character varying = p.placementid::character varying
+                and rt.eventcode = 'PLTR'
+                and rt.activeflag = 1
+                and rt.routingstatustypeid  = '16'
+) > 0
+            and f_prvpcklst_cat(p.altproviderid::bigint,'PLACEMENT') = '3302'
+        order by 3 desc
+) pi;
+
+RETURN v_result;
+
+
+
+END;
+
+ 
+$function$
+

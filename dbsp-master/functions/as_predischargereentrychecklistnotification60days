@@ -1,0 +1,48 @@
+CREATE OR REPLACE FUNCTION as_predischargereentrychecklistnotification60days()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+DECLARE  
+v_intakeserviceid uuid;
+v_intakeservreqtypeid uuid;
+v_intakeservicerequestclassid uuid;
+v_investigationid uuid;
+v_securityusersid character varying;
+v_status character varying;
+v_status1 character varying;
+v_activity  record;
+v_msg character varying;
+BEGIN     
+/* notifying  the Caseworker to complete the complete the Pre-Discharge checklist 60 days before the projected release date */ 
+FOR  v_activity  IN
+select distinct 
+ ISR.intakeserviceid, ISR.servicerequestnumber, ISR.intakenumber, cast((TRIM(UP.lastname)|| '' , '' ||TRIM(UP.firstname)) as  character varying) as fromuser,
+cast((TRIM(UP1.lastname)|| '' , '' ||TRIM(UP1.firstname)) as  character varying) as touser,R.fromsecurityusersid,R.tosecurityusersid,
+cast((TRIM(P.lastname)|| '' , '' ||TRIM(P.firstname)) as  character varying) as youthname , cast(pr.providename as character varying) as provider
+           from intakeservicerequest as ISR
+      JOIN routing as R 
+           ON R.objectid = ISR.intakeserviceid::character varying  and R.toroleid='JSCW'
+      LEFT JOIN placement pl on ISR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1 and pl.placementadmissionclassificationkey='RES'
+   left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+      JOIN userprofile as UP
+           ON UP.securityusersid = R.fromsecurityusersid and UP.activeflag = 1  
+      JOIN userprofile as UP1
+           ON UP1.securityusersid = R.tosecurityusersid and UP1.activeflag = 1 
+      JOIN intakeservicerequestactor as ISRA
+           ON ISR.intakeserviceid  = ISRA.intakeserviceid  and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+      JOIN actor as A
+           ON A.actorid  = ISRA.actorid  and A.activeflag = 1  
+      JOIN Person as P
+           ON P.personid  = A.personid  and P.activeflag = 1  
+         
+      WHERE to_char(pl.releasedate,'MM/DD/YYYY') = to_char(now()::date + '60 day'::interval   ,'MM/DD/YYYY')
+LOOP
+v_msg:=   'Complete Pre-Discharge checklist for '|| v_activity.youthname ||' is due for ('|| v_activity.servicerequestnumber || ') in residential placement ('|| v_activity.provider || '). Please complete it.';
+SELECT send_notification INTO v_status FROM as_send_notification(v_activity.tosecurityusersid, v_activity.fromsecurityusersid, v_activity.tosecurityusersid,
+'System', 'High', v_msg, v_msg , v_activity.intakeserviceid::character varying);
+END  LOOP;
+RETURN
+'Success';
+END;
+$function$
+

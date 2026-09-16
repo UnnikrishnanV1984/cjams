@@ -1,0 +1,3 @@
+ALTER TABLE cjams.tb_gapaudit_householdmember
+ALTER COLUMN applicablechildwelfareagenciesinthepreviousstatescontactedtoobt TYPE varchar(25)
+USING applicablechildwelfareagenciesinthepreviousstatescontactedtoobt::varchar(25);

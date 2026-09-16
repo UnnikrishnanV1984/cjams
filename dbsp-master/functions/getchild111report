@@ -1,0 +1,100 @@
+CREATE OR REPLACE FUNCTION getchild111report(v_clientid integer, date_sw character varying, date_from date, date_to date)
+ RETURNS TABLE(child111report json)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 05/26/2021 Vineet Tirodkar - Modifications to add the missing delete_sw in where clause (CIDM-2478)
+------------------------------------------------------------------------------------------------------------ 
+BEGIN  
+ RETURN QUERY 
+ 
+ (select json_agg(x) from (
+  select current_date::date as run_date ,
+   (select value_tx from tb_picklist_values 
+    where PICKLIST_type_id=37 AND delete_sw='N'
+     AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(payhead.check_status_cd)) as check_status,
+   (SELECT FISCAL_CATEGORY_DESC || ' (' || FISCAL_CATEGORY_CD || ')' 
+    FROM TB_FISCAL_CATEGORY_MASTER FCM
+   WHERE FCM.FISCAL_CATEGORY_CD = paydet.FINAL_FISCAL_CATEGORY_CD AND FCM.DELETE_SW = 'N' ) AS FISCAL_CATEGORY,
+   concat(p.firstname, ' ', p.middlename, ' ' ,p.lastname):: character varying as personname, 
+   p.cjamspid, 
+   p.cisclientid,
+   max(paydet.case_id) as case_id,
+   prov.provider_id as provider_id,
+   /*(select 
+   ISRT.description as case_nm from servicecase sc 
+   INNER JOIN tb_payment_detail d on d.case_id ::character varying = sc.servicecasenumber 
+   JOIN intakeservicerequest as ISR ON ISR.servicecaseid = sc.servicecaseid and ISR.activeflag =1
+   JOIN IntakeServiceRequestType ISRT ON ISRT.intakeservreqtypeid=ISR.intakeservreqtypeid and ISRT.activeflag =1
+   where   sc.activeflag=1  and d.client_id = v_clientid group by ISRT.description,sc.insertedon order by sc.insertedon desc limit  1) as case_nm,*/
+   (select getcasepersonname->0->> 'personname' as legalguardian 
+    from getcasepersonname 
+    ('servicecase',(select distinct sc.servicecaseid 
+     from tb_payment_detail pd
+      join servicecase sc on pd.case_id = sc.servicecasenumber
+       and pd.client_id = v_clientid limit 1)::character varying)
+   )as case_nm,
+   payhead.payment_id,
+   paydet.payment_detail_id,
+   payhead.payment_dt,
+   (select value_tx from tb_picklist_values 
+    where TRIM (PICKLIST_VALUE_CD)=tps.payment_status_cd AND PICKLIST_TYPE_ID='37') as payment_status_nm,
+   (select final_fiscal_category_cd from tb_payment_detail pdsub 
+    where pdsub.payment_id = payhead.payment_id 
+   order by pdsub.payment_detail_id limit 1)::varchar(5) as fiscal_category_cd,
+   (case when (prov.provider_nm is null or prov.provider_nm = '') then 
+    concat(prov.provider_first_nm, ' ', prov.provider_last_nm)
+   else 
+    prov.provider_nm  
+   end) :: character varying as providername,
+   (select value_tx from tb_picklist_values 
+    where TRIM(PICKLIST_VALUE_CD)=payhead.payment_type_cd AND PICKLIST_TYPE_ID='2') AS payment_type_nm,
+   paydet.final_service_start_dt, 
+   paydet.final_service_end_dt,
+   concat('', (coalesce(payhead.gross_amount_no,0.00) - coalesce(payhead.offset_amount_no,0.00) )) as net_amount,
+   concat('', (coalesce( paydet.final_amount_no,0.00))) as gross_amount_no,
+   concat('', coalesce( (select trd.receivable_balance_no 
+    from tb_receivable_detail trd 
+    where trd.payment_detail_id = paydet.payment_detail_id 
+   limit 1),0.00)) as receivable_balance_no,
+   (select tar.check_no 
+    from tb_afs_response tar where  tar.payment_id = payhead.payment_id   
+   union  
+   select tfr.warrant_no  
+    from tb_fmis_response tfr where tfr.invoice_no::integer = payhead.payment_id /*order by tar.create_ts desc*/ 
+   limit 1) as check_no,
+   (select tar.check_dt::date from tb_afs_response tar where tar.payment_id = payhead.payment_id 
+   union
+   select tfr.batch_dt::date   from tb_fmis_response tfr where tfr.invoice_no::integer = payhead.payment_id /*order by tar.create_ts desc*/ 
+   limit 1) as check_dt,
+   (select tar.payment_status from tb_afs_response tar where tar.payment_id = payhead.payment_id  
+   order by create_ts desc limit 1) as payment_status
+
+  from tb_payment_header payhead
+   left JOIN tb_payment_detail as paydet ON payhead.payment_id = paydet.payment_id
+    and paydet.delete_sw = 'N'
+   left join tb_provider prov on prov.provider_id = payhead.provider_id
+   left join tb_payment_status tps on tps.payment_id = payhead.payment_id
+    and tps.delete_sw = 'N'
+   left join person p on p.cjamspid = paydet.client_id
+  where (v_clientid is null or paydet.client_id = v_clientid) 
+   and payhead.payment_type_cd not in ('21','22')
+   and payhead.delete_sw = 'N'
+
+  and  (date_sw is null 
+    or case 
+       when date_sw = 'D' then 
+       to_date(cast(payhead.payment_dt as TEXT), 'YYYY-MM-DD') 
+       BETWEEN to_date(cast(date_from as TEXT), 'YYYY-MM-DD') 
+      AND to_date( cast(date_to as TEXT), 'YYYY-MM-DD' ) 
+    end) 
+ group by personname,p.cjamspid, p.cisclientid, payhead.payment_id,paydet.payment_detail_id,payhead.payment_dt,payment_status_nm,fiscal_category_cd,providername,payment_type_nm,
+ paydet.final_service_start_dt, paydet.final_service_end_dt,paydet.final_amount_no,check_no,check_dt,payment_status,payhead.gross_amount_no,
+ payhead.offset_amount_no,paydet.FINAL_FISCAL_CATEGORY_CD,payhead.check_status_cd,prov.provider_id
+ order by payhead.payment_id ,paydet.payment_detail_id desc
+ )as x ) ;
+END;
+
+$function$
+

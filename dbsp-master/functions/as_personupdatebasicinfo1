@@ -1,0 +1,148 @@
+CREATE OR REPLACE FUNCTION as_personupdatebasicinfo1(v_personid uuid, persondetails json, v_intakeserviceid uuid, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+ v_person json;
+ v_date timestamp without time zone;
+ dadetails json;
+ modifiedlog json;
+ v_deceaseddate timestamp without time zone;
+ 
+ v_isnamechanged boolean;
+ BEGIN 
+  
+  v_person := persondetails;
+  v_date:= now() at time zone 'utc';
+  
+  
+  select case when (p.lastname != v_person->>'lastname' OR p.firstname != v_person->>'firstname' OR p.middlename != v_person->>'middlename') then true else null end isnamechanged into v_isnamechanged from person p where p.personid = v_personid and p.activeflag = 1;
+ 
+  select json_strip_nulls(json_build_object('lastname', a.lastname, 'firstname', a.firstname
+    , 'dob', a.dob
+    , 'maritalstatustypekey', a.maritalstatustypekey, 'occupation', a.occupation, 'height', a.height, 'weight', a.weight, 'tattoo', a.tattoo, 'phymark', a.phymark, 'userphoto', a.userphoto)) from (
+     select case when p.lastname != v_person->>'lastname' then (select json_build_object('oldvalue', p.lastname, 'newvalue', v_person->>'lastname') x) else null end lastname
+     , case when p.firstname != v_person->>'firstname' then (select json_build_object('oldvalue', p.firstname, 'newvalue', v_person->>'firstname') x) else null end firstname
+     , case when p.dob != (v_person->>'dob')::timestamp then (select json_build_object('oldvalue', p.dob, 'newvalue', (v_person->>'dob')::timestamp) x) else null end dob
+     , case when p.dateofdeath != (v_person->>'dateofdeath')::timestamp then (select json_build_object('oldvalue', p.dateofdeath, 'newvalue', (v_person->>'dateofdeath')::timestamp) x) else null end dod
+     , case when p.maritalstatustypekey != v_person->>'maritalstatus' then (select json_build_object('oldvalue', p.maritalstatustypekey, 'newvalue', v_person->>'maritalstatus') x) else null end maritalstatustypekey
+     , case when p.occupation != v_person->>'occupation' then (select json_build_object('oldvalue', p.occupation, 'newvalue', v_person->>'occupation') x) else null end occupation
+     
+     , case when pht.attributevalue != v_person->>'height' then (select json_build_object('oldvalue', pht.attributevalue, 'newvalue', v_person->>'height') x) else null end height
+     , case when pwt.attributevalue != v_person->>'weight' then (select json_build_object('oldvalue', pwt.attributevalue, 'newvalue', v_person->>'weight') x) else null end weight
+     , case when ptt.attributevalue != v_person->>'tattoo' then (select json_build_object('oldvalue', ptt.attributevalue, 'newvalue', v_person->>'tattoo') x) else null end tattoo
+     , case when ppm.attributevalue != v_person->>'PhyMark' then (select json_build_object('oldvalue', ppm.attributevalue, 'newvalue', v_person->>'PhyMark') x) else null end phymark
+     
+     , case when p.userphoto != v_person->>'userphoto' then (select json_build_object('oldvalue', p.userphoto, 'newvalue', v_person->>'userphoto') x) else null end userphoto
+     from person p
+     left join personphysicalattribute pht on pht.personid = p.personid and pht.physicalattributetypekey ='Ht' and pht.activeflag = 1
+     left join personphysicalattribute pwt on pwt.personid = p.personid and pwt.physicalattributetypekey ='Wt' and pwt.activeflag = 1
+     left join personphysicalattribute ptt on ptt.personid = p.personid and ptt.physicalattributetypekey ='Tattoo' and ptt.activeflag = 1
+     left join personphysicalattribute ppm on ppm.personid = p.personid and ppm.physicalattributetypekey ='PhyMark' and ppm.activeflag = 1
+     where p.personid = v_personid and p.activeflag = 1
+    ) a
+    INTO modifiedlog;
+    
+
+
+ -- Inserting the old name to Alias if the name changed
+ IF v_isnamechanged = TRUE THEN
+  INSERT INTO alias (personid, firstname, lastname, middlename, insertedby, insertedon, activeflag, updatedby, updatedon) 
+  SELECT p.personid, p.firstname, p.lastname, p.middlename, v_securityuserid, now(), 1, v_securityuserid, now() FROM person p WHERE p.activeflag = 1 AND p.personid = v_personid;
+ END IF;
+ 
+  UPDATE person 
+     SET    dangertoself = (v_person ->> 'Dangerousself'):: int, 
+      dangertoselfreason = v_person ->> 'DangerousselfReason', 
+      ethnicgrouptypekey = v_person ->> 'ethnicgrouptypekey', 
+      racetypekey = v_person ->> 'racetypekey', 
+      firstname = v_person->>'firstname', 
+      lastname=v_person->>'lastname', 
+      middlename= v_person->>'middlename', 
+      dob = (v_person->>'dob')::timestamp, 
+      dateofdeath = (v_person->>'dateofdeath')::timestamp,    
+      isapproxdod = (v_person->>'isapproxdod')::int, 
+      religiontypekey= v_person ->> 'religiontypekey', 
+      tribalassociation= v_person ->> 'tribalassociation', 
+      physicalattributes= v_person ->> 'physicalattributes',
+      nationalitytypekey = v_person ->> 'nationalitytypekey',
+      gendertypekey = (v_person->>'gendertypekey'), 
+      suffix= v_person->>'suffix', 
+      userphoto = v_person->>'userphoto',
+      stateid = v_person->>'stateid',
+      maritalstatustypekey = v_person->>'maritalstatustypekey',
+      occupation = v_person->>'occupation',
+      needs = v_person->>'needs',
+      strengths = v_person->>'strengths',
+      ssnno = v_person->>'ssn',
+      updatedby = v_securityuserid,
+      updatedon = now(),
+      citizenalenageflag = (v_person->>'citizenalenageflag'):: int
+      
+     WHERE  personid = v_personid; 
+  
+               IF Length(lower(v_person ->> 'dl')) > 0 then 
+       UPDATE personidentifier SET activeflag =0 WHERE  personid= v_personid
+                AND personidentifiertypekey ='DL';
+    INSERT INTO personidentifier (personid, personidentifiertypekey, personidentifiervalue, 
+      insertedby, insertedon, activeflag, effectivedate) 
+        VALUES (v_personid, 'DL', v_person ->> 'dl', v_securityuserid, v_date, 1, v_date);
+    END IF;
+    
+    IF Length(lower(v_person ->> 'height')) > 0 then 
+       UPDATE personphysicalattribute SET activeflag =0 WHERE personid= v_personid
+                AND physicalattributetypekey ='Ht';
+    INSERT INTO personphysicalattribute (personid, physicalattributetypekey, attributevalue, 
+      insertedby, insertedon, activeflag, effectivedate) 
+        VALUES (v_personid, 'Ht', v_person ->> 'height', v_securityuserid, v_date, 1, v_date);
+    END IF;
+    
+    IF Length(lower(v_person ->> 'weight')) > 0 then 
+       UPDATE personphysicalattribute SET activeflag =0 WHERE  personid= v_personid
+                AND physicalattributetypekey ='Wt';
+    INSERT INTO personphysicalattribute (personid, physicalattributetypekey, attributevalue, 
+      insertedby, insertedon, activeflag, effectivedate) 
+        VALUES (v_personid, 'Wt', v_person ->> 'weight', v_securityuserid, v_date, 1, v_date);
+    END IF;
+    
+    IF Length(lower(v_person ->> 'tattoo')) > 0 then 
+       UPDATE personphysicalattribute SET activeflag =0 WHERE personid= v_personid
+                AND physicalattributetypekey ='Tattoo';
+    INSERT INTO personphysicalattribute(personid, physicalattributetypekey, attributevalue, 
+      insertedby, insertedon, activeflag, effectivedate) 
+        VALUES (v_personid, 'Tattoo', v_person ->> 'tattoo', v_securityuserid, v_date, 1, v_date);
+    END IF;
+    
+    IF Length(lower(v_person ->> 'PhyMark')) > 0 then 
+       UPDATE personphysicalattribute SET activeflag =0 WHERE personid= v_personid
+                AND physicalattributetypekey ='PhyMark';
+    INSERT INTO personphysicalattribute(personid, physicalattributetypekey, attributevalue, 
+      insertedby, insertedon, activeflag, effectivedate) 
+        VALUES (v_personid, 'PhyMark', v_person ->> 'PhyMark', v_securityuserid, v_date, 1, v_date );
+    END IF;
+   
+   SELECT json_agg(e)from ( select   
+     v_person->>'firstname' firstname,
+       v_person->>'lastname' lastname,
+     --, v_person->>'Dob' dob
+       v_person->>'maritalstatus' maritalstatus
+    ,   v_person->>'ssn' ssn, v_person->>'weight' weight,
+     v_person->>'occupation' occupation)e INTO dadetails;
+    
+    select dateofdeath into v_deceaseddate  from person where personid=v_personid;
+    if (v_deceaseddate is not null)
+             then 
+             insert into personalert(alerttype,status,startdatetime,notes,insertedby,personid) 
+             values ('DOD','Active',now()::timestamp ,'Youth Deceased','System',v_personid);
+            UPDATE personalert set status='Inactive',enddatetime=now() where personid=v_personid and status='Active' and alerttype!='DOD';
+
+             end if;
+ 
+           INSERT INTO auditlog(
+           logtypekey,description,referenceid,servicerequestnumber, isnew,isedit,isdelete,insertedon,metadata, modifieddata,insertedby)
+            VALUES('IP','Person Edited',v_personid,null,'false','true','false',v_date at time zone 'utc',dadetails::json, modifiedlog::json,v_securityuserid);
+
+    return 'Success';
+ END;
+ $function$
+

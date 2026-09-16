@@ -1,0 +1,328 @@
+CREATE OR REPLACE FUNCTION prov_getrccreport_djs(v_monitoring_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_provider_info json;
+v_entrance_conf json;
+v_child_record json;
+v_staff_questions json;
+v_staff_record json;
+v_exit_conf json;
+v_provider_id integer;
+v_licenserecomm_info json;
+v_program_operations json;
+v_monitoring_details  json;
+v_independent_details  json;
+v_site_details json;
+v_monitor_info json;
+v_site_list json;
+v_officers_info json;
+v_child_questions json;
+v_activity_info json;
+v_board_interview json;
+v_ec_record_child json;
+v_ec_record_staff json;
+v_ec_record_pplant json;
+v_ec_record_health json;
+v_ec_record_incident json;
+v_ec_record_basic_life json;
+v_ec_record_physical_restraint json;
+v_ec_record_child_neglect json;
+v_ec_record_behav json;
+v_personsign json;
+v_monitoring json;
+v_pminfo_info json;
+v_sofficers_info json;
+v_license_info json;
+v_exit_conf_details json;
+v_exit_conf_details_old json;
+v_exit_conf_details_cnt json;
+v_corp_info json;
+v_incident_info json;
+v_monitoring_st_dt date;
+v_child_interview json;
+v_staff_interview json;
+v_monitoring_end_dt date;
+v_startdate date;
+v_enddate date;
+v_prgram character varying;
+v_records_type character varying;
+v_reporting_start_date timestamp without time zone;
+v_reporting_end_date timestamp without time zone;
+v_previous_visit_start timestamp without time zone; 
+v_previous_visit_end timestamp without time zone; 
+
+begin
+ raise notice 'monitoring: %', v_monitoring_id;
+select provider_id,to_char(date_trunc('quarter', end_dt)  - interval '4 months' ),
+to_char( end_dt),prgram,periodic into v_provider_id,v_startdate,v_enddate,
+v_prgram,v_records_type from prov_monitoring where monitoring_id = v_monitoring_id limit 1;
+
+select monitoring_period_start_date, monitoring_period_end_date into v_reporting_start_date,v_reporting_end_date from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+ 
+select provider_id, monitoring_dt,end_dt into v_provider_id,v_monitoring_st_dt,v_monitoring_end_dt from prov_monitoring where monitoring_id = v_monitoring_id limit 1;
+ select json_agg(monitorinfo) into v_monitor_info from 
+ (select * from prov_monitoring where monitoring_id in 
+ (select monitoring_id from  prov_monitoring where  provider_id=v_provider_id and prgram=v_prgram and
+((periodic=v_records_type) and  (monitoring_id =v_monitoring_id))))monitorinfo;
+
+    select json_agg(providerinfo) into v_provider_info from (
+  select pi.agency,(select json_agg(a)  from(select tps.first_nm,tps.last_nm,tps.staff_email ,tps.staff_phone_no from providerstaff tps where tps.object_id = pi.provider_id  
+   and tps.employee_type='Program Administrator')a)as providerstaff ,pi.adm_contact_first_nm,pi.adm_contact_last_nm ,pi.provider_nm, (select * from prov_get_formatted_addresses(pi.provider_id)) as address
+     from tb_provider pi where pi.provider_id=v_provider_id
+ )providerinfo;
+
+ 
+
+   select json_agg(licenseinfo) into v_license_info from 
+  (select tpl.license_no, tpl.license_level, tpl.license_type, tpl.license_issue_dt ,tpl.license_expiry_dt ,
+  tpdesc.provider_description,tacc.children_no,ta.license_agency,tacc.minimum_age_no,tacc.maximum_age_no,
+  (select value_tx from tb_picklist_values where picklist_value_cd = tacc.gender_cd) as gender,
+  (select value_tx from tb_picklist_values where picklist_type_id=286 and trim(picklist_value_cd)=trim(tpl.license_status_cd)) as license_status_cd,
+  tpl.site_id, tp.provider_nm, tp.provider_category_cd, tp.adr_work_phone_tx,p.inspectedwith,
+  (select * from prov_get_formatted_addresses(pms.site_id)) as address,
+  (select * from prov_get_formatted_addresses_djs_part1(pms.site_id)) as address_1,
+  (select * from prov_get_formatted_addresses_djs_part2(pms.site_id)) as address_2,
+  (select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) from userprofilephonenumber u where  u.securityusersid in (select toworkeridno from providerassignment where objectid = pms.site_id and activeflag = '1'  order by startdate desc limit 1)) as staffcell,
+  (select u.username from muser u where  u.securityusersid in (select toworkeridno from providerassignment where
+  objectid = pms.site_id and activeflag = '1'  order by startdate desc limit 1)) as staffname,
+  (select r.name from muser u join rolemapping r2 on r2.principalid = u.id and r2.activeflag = '1'
+join role r on r.id = r2.roleid where  u.securityusersid in (select toworkeridno from providerassignment where
+  objectid = pms.site_id and activeflag = '1'  order by startdate desc limit 1) limit 1) as staffrole,
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+  -- (select json_agg(a) from ( select  count(rv.description), 
+        --             rv.description as category
+        --         from djs_services.grievance isg
+        --             left join prov.tb_provider pv on pv.provider_id=isg.providerid and pv.delete_sw='N'
+        --             left join djs_user.userprofile up on up.securityusersid = isg.retrievedby and up.activeflag = 1
+        --             left join djs_master.referencevalues rv on rv.ref_key=isg.categorytypekey and rv.activeflag=1 and rv.referencetypeid in(select referencetypeid from DJS_Master.referencetype where tablename='grievancecategory' and activeflag=1)
+        --             left join DJS_Master.referencevalues rv1 on rv1.ref_key=isg.grievancestatus and rv1.activeflag=1 and rv1.referencetypeid in(select referencetypeid from DJS_Master.referencetype where tablename='grievancestatustype' and activeflag=1)
+        --             left join djs_services.grievanceyouthinvolved gyi on gyi.grievanceid = isg.grievanceid AND gyi.personrole = 'Complainant' and gyi.activeflag = 1
+        --         where pv.provider_id = pms.site_id
+        --             group by rv.description) a) as grievance_info,
+  --    (select sum(a.count) from (select  count(rv.description)
+                   
+        --         from djs_services.grievance isg
+        --             left join prov.tb_provider pv on pv.provider_id=isg.providerid and pv.delete_sw='N'
+        --             left join djs_user.userprofile up on up.securityusersid = isg.retrievedby and up.activeflag = 1
+        --             left join djs_master.referencevalues rv on rv.ref_key=isg.categorytypekey and rv.activeflag=1 and rv.referencetypeid in(select referencetypeid from DJS_Master.referencetype where tablename='grievancecategory' and activeflag=1)
+        --             left join DJS_Master.referencevalues rv1 on rv1.ref_key=isg.grievancestatus and rv1.activeflag=1 and rv1.referencetypeid in(select referencetypeid from DJS_Master.referencetype where tablename='grievancestatustype' and activeflag=1)
+        --             left join djs_services.grievanceyouthinvolved gyi on gyi.grievanceid = isg.grievanceid AND gyi.personrole = 'Complainant' and gyi.activeflag = 1
+        --         where pv.provider_id = pms.site_id
+        --             group by rv.description) a) as grievance_count,
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+  (select json_agg(b)  from (
+            select x.* from (
+   select count( puid.precipitating_event),
+   (select value_text from referencevalues  where ref_key=puid.precipitating_event limit 1) 
+   from provider_uir pu 
+   join provider_uir_incident_detail puid on pu.uir_no = puid.uir_no  
+   join referencetype r2 on r2.typedescription = puid.incident_type 
+   where pu.site_id =pms.site_id and pu.uir_statusdesc = 'UIR Approved'
+   and (case when v_reporting_start_date is null then pu.effective_date between '1900-1-1'::date and '2023-05-13'::date
+                        else pu.effective_date::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end) 
+      group by puid.precipitating_event  ) x 
+                     order by x.count desc  ) b 
+                     ) as uirdetails,
+  (select SUM(a.count)  from (select count(1) from provider_uir pu 
+   join provider_uir_incident_detail puid on pu.uir_no = puid.uir_no 
+   where pu.site_id =pms.site_id and pu.uir_statusdesc = 'UIR Approved'
+   and (case when v_reporting_start_date is null then pu.effective_date between '1900-1-1'::date and '2023-05-13'::date
+                        else pu.effective_date::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end) 
+     
+  ) a) as uircount,
+  (select json_agg(a)  from (
+   select (CASE WHEN tb_provider_complaint_deficiencyid is not null THEN  'Yes'  ELSE 'No'  end) as status, 
+   complaint_number,complaint_date,complaint_source,narrative 
+          from tb_provider_complaint TPC  
+          left join tb_provider_complaint_deficiency tpcd on tpcd.provider_complaintid=tpc.provider_complaintid
+          where tpc.site_id = pms.site_id
+  ) a) as complaint_info,
+  (select json_agg(a)  from(select distinct recordreviewdate from prov_monitoring_record_site prms where prms.site_id = pms.site_id and prms.recordreviewdate is not null)a) as reviewdate
+  from 
+  prov_monitoring_site pms 
+  join prov_monitoring p on pms.monitoring_id = p.monitoring_id 
+  join tb_provider_licensing tpl on tpl.site_id = pms.site_id and active_sw ='Y'
+  join tb_provider tp on tpl.site_id = tp.provider_id
+  left join tb_provider_corp_info tpdesc on tpl.site_id = tpdesc.provider_id
+  left join tb_provider_applicant ta on tpl.site_id = ta.site_id and ta.applicant_id in (select ta.applicant_id from tb_provider_applicant ta where ta.application_status ='Approved' and ta.site_id = tpl.site_id order by create_ts desc limit 1 )
+  left join tb_prov_applicant_accomodation tacc on ta.applicant_id = tacc.provider_applicant_id
+  where pms.monitoring_id = v_monitoring_id 
+ ) licenseinfo;
+
+ select json_agg(exit_conf_details) into v_exit_conf_details from ( select  tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,prq.displayorder,
+                  (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                  (case when tp.provider_nm is null then (select * from prov_get_formatted_applicantaddresses(pv.applicant_id))  else (select * from prov_get_formatted_addresses(tp.provider_id)) end) as site_address,
+                  (case when tp.provider_id::character varying is null then pv.applicant_id else tp.provider_id::character varying end) as site_id,
+                  pv.reference_value_id,
+                  pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+                  pv.referencetype,
+                  pv.reference_id,
+                  pv.violation_id,
+                  pv.deficiency_number,
+                  mec.cap_number_djs,
+                  pv.comments,
+                  pv.isdraft,
+                  pv.cap_status,
+                  pv.cap_status_description,
+                  pv.planofcorrection,
+                  pv.personresponsible,
+                  pv.title,
+                  pv.disputecomarcitation,
+                  pv.targetdate,
+                  pv.isdispute,
+                  pv.isacknowledged,
+                  pv.reference_value_id as monitoring_id,
+                  pv.isnotificationsent,
+                  pv.duedate,
+                  pv.cap_needed,
+                  pv.cap_resolved,
+                  pv.rationale,
+                  mec.exit_conf_number, 
+                  mec.summary, 
+                  mec.program_changes, 
+                  mec.exit_dt, 
+                  mec.ec_comments, 
+                  mec.rationale_comments,
+                  mec.ec_status ,
+                  mec.ec_isacknowledged,
+                  mec.ec_isnotificationsent,
+                  mec.ec_prv_signimage,
+                  mec.ec_prv_signdate,
+                  mec.cap_submitted_by, 
+                  mec.cap_submitted_dt,
+                  mec.cap_created_dt,
+                  mec.provider_id,
+                  prq.type_of_regulation,
+                  prq.object_id as question_object_id,
+                  prq.object_type as question_object_type,
+                  prq.question_comments,
+                  pv.adhoc_regulation_sw
+              from  prov_violation pv
+                inner join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+                left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+                left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = pv.site_id and tp.delete_sw = 'N'
+                left join prov_monitoring mm                  on mm.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and mm.delete_sw = 'N'
+                where  pv.delete_sw = 'N'
+                    and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+                    and (case when pv.referencetype = 'Monitoring' then mm.delete_sw = 'N' else true end)
+    and pv.deficiency_number is not null 
+    and pv.reference_value_id = v_monitoring_id order by question_hint,  cap_needed nulls last)exit_conf_details;
+
+   select json_agg(exit_conf_details_cnt) into v_exit_conf_details_cnt from ( select prq.question ,count(1) as cnt
+    from  prov_violation pv
+                inner join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+                left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+                left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = pv.site_id and tp.delete_sw = 'N'
+                left join prov_monitoring mm                  on mm.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and mm.delete_sw = 'N'
+                where  pv.delete_sw = 'N'
+                    and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+                    and (case when pv.referencetype = 'Monitoring' then mm.delete_sw = 'N' else true end)
+    and pv.deficiency_number is not null 
+    and pv.reference_value_id = v_monitoring_id group by prq.question )exit_conf_details_cnt;
+
+select pmrd.monitoring_record_value into v_previous_visit_start
+                from prov_record_question prq 
+                   inner join prov_monitoring_record_data pmrd on prq.record_question_id = pmrd.record_question_id 
+                    inner join prov_monitoring_record_site pm on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                    inner join prov_monitoring m on pm.monitoring_id = m.monitoring_id and m.delete_sw = 'N'
+                    inner join prov_record pr on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                    where pr.module_name ='Details'
+                    and pr.records_type = v_records_type
+                        and m.provider_id = v_provider_id 
+                        and pm.delete_sw = 'N'
+                        and (pr.prgram = v_prgram or pr.prgram is null)
+     and m.monitoring_id = v_monitoring_id
+     and prq.question = 'Previous Deficiencies Range Start Date';
+select pmrd.monitoring_record_value into v_previous_visit_end
+                from prov_record_question prq 
+                   inner join prov_monitoring_record_data pmrd on prq.record_question_id = pmrd.record_question_id 
+                    inner join prov_monitoring_record_site pm on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                    inner join prov_monitoring m on pm.monitoring_id = m.monitoring_id and m.delete_sw = 'N'
+                    inner join prov_record pr on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                    where pr.module_name ='Details'
+                    and pr.records_type = v_records_type
+                        and m.provider_id = v_provider_id 
+                        and pm.delete_sw = 'N'
+                        and (pr.prgram = v_prgram or pr.prgram is null)
+     and m.monitoring_id = v_monitoring_id
+     and prq.question = 'Previous Deficiencies Range End Date';
+
+
+    select json_agg(entrance_conf) into v_entrance_conf from (select * from prov_listentranceconf(v_monitoring_id)) entrance_conf;
+ select json_agg(exit_conf) into v_exit_conf from (select * from prov_listexitconf(v_monitoring_id)) exit_conf;
+
+ select * from prov_getmonitordetails(v_monitoring_id, 'Child','Record') into v_child_record;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Child','Record') into v_child_questions;
+ select * from prov_getmonitordetails(v_monitoring_id, 'Staff','Record') into v_staff_record;
+ select * from prov_getchildaggmonitordetails(v_monitoring_id, 'Staff','Record') into v_staff_questions;
+
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Child', 'Record') into v_ec_record_child;----
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Staff', 'Record') into v_ec_record_staff;---
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Physical Plant', 'Record') into v_ec_record_pplant;----
+
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Health Care & Medication Administration', 'Record') into v_ec_record_health ;
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Incident Reporting', 'Record') into v_ec_record_incident ;
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Basic Life Needs, Food & Nutrition, Youths’ Rights and Youth Grievances', 'Record') into v_ec_record_basic_life ;
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Physical Restraints', 'Record') into v_ec_record_physical_restraint ;
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Child Abuse and Neglect', 'Record') into v_ec_record_child_neglect ;
+ select * from prov_midyrgetnoncompliance_djs(v_monitoring_id, 'Behavioral Interventions, Strategies and Supports', 'Record') into v_ec_record_behav ;
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, 'Board member','Interview') into v_board_interview;
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, 'Child','Interview') into v_child_interview;
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, 'Staff','Interview') into v_staff_interview;
+  -- Added for B-113406
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, 'Site Details','Details') into v_site_details;
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, v_records_type,'Details') into v_monitoring_details;
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, 'Independent','Details') into v_independent_details;
+ select * from prov_getmonitorinterviews_djs(v_monitoring_id, v_records_type,'Report') into v_program_operations;
+ 
+
+return (json_build_object('activity_info',v_activity_info,
+'officers_info',v_officers_info,
+'site_list',v_site_list,
+'monitor_info',v_monitor_info,
+'child_record',v_child_record,
+'child_questions',v_child_questions,
+'staff_record',v_staff_record,
+'staff_questions',v_staff_questions,
+'license_info',v_license_info,
+'exit_conf_details', v_exit_conf_details,
+'exit_conf_details_old',v_exit_conf_details_old,
+'exit_conf_details_cnt',v_exit_conf_details_cnt,
+'site_details', v_site_details,
+'provider_info', v_provider_info,
+'independent_details',v_independent_details,
+'exit_conf',v_exit_conf,
+'entrance_conf',v_entrance_conf,
+'child_interview',v_child_interview,
+'staff_interview',v_staff_interview,
+'board_interview',v_board_interview,
+'monitoring_details',v_monitoring_details,
+'program_operations',v_program_operations,
+'board_interview',v_board_interview,
+'ec_record_child', v_ec_record_child,
+'ec_record_staff', v_ec_record_staff,
+'ec_record_pplant', v_ec_record_pplant,
+'ec_record_health', v_ec_record_health,
+'ec_record_incident', v_ec_record_incident,
+'ec_record_basic_life', v_ec_record_basic_life,
+'ec_record_physical_restraint', v_ec_record_physical_restraint,
+'ec_record_child_neglect', v_ec_record_child_neglect,
+'ec_record_behav', v_ec_record_behav,
+'pminfo_info',v_pminfo_info,
+'sofficers_info',v_sofficers_info,
+'corp_info',v_corp_info,
+'incident_info',v_incident_info,
+'license_recomm',v_licenserecomm_info,
+'person_signature',v_personsign));
+
+END;
+$function$
+

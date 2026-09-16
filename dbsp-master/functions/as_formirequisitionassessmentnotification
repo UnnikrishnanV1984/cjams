@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION as_formirequisitionassessmentnotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+v_status character varying;
+
+v_count int;
+v_icjassessment20daysrecord  record;
+v_msg character varying;
+v_voluntrytype character varying;
+
+
+
+BEGIN
+     FOR  v_icjassessment20daysrecord  IN
+ 
+select distinct ISR.intakeserviceid, ISR.servicerequestnumber, ISR.intakenumber, 
+R.tosecurityusersid,R1.fromsecurityusersid as rcsecurityusersid,R.fromsecurityusersid 
+,P.lastname,P.firstname ,P.cjamspid
+ 
+           from intakeservicerequest as ISR
+          JOIN intakeservicerequesttype ISRT on ISRT.intakeservreqtypeid=ISR.intakeservreqtypeid and ISRT.intakeservreqtypekey='IC'
+    join servicerequestsubtype SRST on SRST.servicerequestsubtypeid=ISR.intakeservicerequestclassid and SRST.classkey='ICJ Sending requisition due to warrant' and SRST.activeflag=1
+  JOIN routing as R 
+           ON R.objectid = ISR.intakeserviceid::character varying  and R.toroleid='JSCW' and R.routingstatustypeid=4 
+     JOIN routing as R1 
+           ON R1.objectid = ISR.intakenumber  and R1.fromroleid='JSRC' and R1.routingstatustypeid=2 
+ JOIN intakeservicerequestactor as ISRA
+           ON ISR.intakeserviceid  = ISRA.intakeserviceid  and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+      JOIN actor as A
+           ON A.actorid  = ISRA.actorid  and A.activeflag = 1  
+      JOIN Person as P
+           ON P.personid  = A.personid  and P.activeflag = 1 
+JOIN intakeserreqinterstate ISIT on ISIT.intakeserviceid=ISR.intakeserviceid and ISIT.activeflag=1 --and ISIT.voluntrytype='NVRF' -- Gavaskar 31052019
+
+      WHERE  R.insertedon::date = now()::date -'30 day'::interval
+       --WHERE  R.insertedon::date = now()::date -'0 day'::interval
+      
+ LOOP
+   
+select count(*) into v_count from assessment AST 
+join assessmenttemplate ASMT on ASMT.assessmenttemplateid=AST.assessmenttemplateid 
+
+and AST.assessmentstatustypekey='Submitted' and AST.activeflag=1
+
+where AST.objectid=v_icjassessment20daysrecord.intakeserviceid 
+
+and ASMT.name='formIRequisitionForARunawayJuvenile';
+
+IF(v_count=0) THEN
+
+ v_msg:=   'ICJ Requisition Packet for the '|| v_icjassessment20daysrecord.lastname ||', '|| v_icjassessment20daysrecord.firstname ||'  ('|| v_icjassessment20daysrecord.cjamspid ||')is due for the past 30 days.Please submit it at the earliest';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.tosecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+ 
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.rcsecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.rcsecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+ 
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.fromsecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.fromsecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+     
+END IF;      
+    END LOOP;
+ 
+RETURN
+
+'Success';
+
+END;
+
+
+$function$
+

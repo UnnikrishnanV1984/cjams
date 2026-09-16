@@ -1,0 +1,3 @@
+update placement set enddatetime = '2021-04-21 00:00:00', updatedby = 'CDM-13427', updatedon = now() where placementid = 'c016d374-ea72-425c-9fff-20bbf739a09c';
+update placementrevision set exitdate = '2021-04-21 00:00:00', updatedby = 'CDM-13427', updatedon = now() where placementrevisionid = 'f914277d-2798-45c4-9e48-d528466827a7';
+update tb_placement_validation set delete_sw = 'Y', update_user_id = 'CDM-13427', update_ts = now() where placement_id = '1563164';

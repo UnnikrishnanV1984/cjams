@@ -1,0 +1,1 @@
+ALTER TABLE cjams.gapagreementrate ADD COLUMN IF NOT EXISTS status varchar(50) NULL;

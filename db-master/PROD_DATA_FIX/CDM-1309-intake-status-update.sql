@@ -1,0 +1,1 @@
+update cjams.routing set routingstatustypeid = 2 where objectid = 'I202000564192' and eventcode = 'INTR';

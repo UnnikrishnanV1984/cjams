@@ -1,0 +1,359 @@
+CREATE OR REPLACE FUNCTION routingprovideruir(objectid character varying, securityuserid character varying, appeventcode character varying, status integer, commenttext text, assignsecurityuserid character varying DEFAULT ''::character varying, bmanualrouting boolean DEFAULT false, bclosecase boolean DEFAULT false, bfromintake boolean DEFAULT false, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying, v_intakeserviceid character varying DEFAULT ''::character varying, v_intakeserreqstatustypeid character varying DEFAULT ''::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+/* One Parameter added decision - intakeserreqstatustypeid  */
+DECLARE 
+ 
+v_teamid uuid;
+v_fromroleid character varying;
+v_fromloadnumber character varying;
+v_toroleid character varying;
+v_securityuserid character varying;
+v_objectid character varying;
+v_status  character varying;
+v_routingid uuid;
+v_tosecurityusersid  character varying;
+v_notifystatus character varying;
+v_date timestamp without time zone;
+v_msg character varying;
+v_username character varying;
+v_assignsecurityuserid character varying;
+v_taskstatus character varying;
+v_dispositionstatusdescription text;
+v_dispositionstatusdesc text;
+v_tmpstatus integer;
+v_placementapproval character varying;
+v_restitutionpaymenttosecurityusersid  character varying;
+
+v_torolekey character varying;
+v_servicerequestno character varying;
+v_servicerequestnumber character varying;
+v_icjsecurityusersid uuid;
+v_dispositionupdate    Character    varying;
+BEGIN
+v_assignsecurityuserid:= assignsecurityuserid;
+v_securityuserid:= securityuserid;
+v_objectid:= objectid;
+RAISE NOTICE 'status:%', status;
+v_date:= now() ;
+v_torolekey := '';
+v_servicerequestno:='';
+v_servicerequestnumber:='';
+v_dispositionstatusdesc:='';
+v_dispositionstatusdescription:='';
+
+
+
+select ISRST.description,servicerequestnumber into v_dispositionstatusdescription,v_servicerequestno  from intakeservicerequest as ISR
+      join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag =1
+where ISR.activeflag =1 and ISR.intakenumber = v_objectid;
+/* Get case number implemented by Gavaskar 11-01-2019  */
+select  ISR.servicerequestnumber into v_servicerequestnumber from intakeservicerequest as ISR
+      join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag =1
+where ISR.activeflag =1 and ISR.intakeserviceid::character varying = v_objectid; 
+RAISE NOTICE 'v_servicerequestnumber:%', v_servicerequestnumber;
+RAISE NOTICE 'v_intakeserreqstatustypeid:%', v_intakeserreqstatustypeid;
+/* Get Status disposition implemented by Gavaskar 11-01-2019  */
+IF (coalesce(v_intakeserreqstatustypeid,'') <> '') THEN
+select ISRST.description into v_dispositionstatusdesc from intakeserreqstatustype as ISRST where ISRST.intakeserreqstatustypeid::character varying = v_intakeserreqstatustypeid;
+END IF;
+
+if (coalesce(v_intakeserviceid,'') <>'' OR (appeventcode IN('INVT','INTR'))) THEN
+IF (appeventcode IN('INVT','INTR')) THEN v_intakeserviceid = v_objectid; END IF ;
+SELECT servicerequestnumber into v_servicerequestno FROM intakeservicerequest 
+WHERE intakeserviceid :: character varying = v_intakeserviceid;
+END IF;
+   
+  
+          
+if (status in(27,31)) THEN
+
+  /*review  - Assign to Targetrole(Reviewer role) */
+ RAISE NOTICE 'inside:%', status;
+ SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey into 
+   v_teamid,v_fromloadnumber,v_fromroleid 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+        
+     SELECT routingid into v_routingid
+        FROM routing r WHERE tosecurityusersid = v_securityuserid 
+        AND activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode = appeventcode
+        ORDER BY insertedon desc limit 1;
+  
+       
+        UPDATE routing SET activeflag =0 ,remarks =commenttext,updatedon= v_date 
+        WHERE routingid = v_routingid;
+      
+            INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber)
+
+            SELECT rc.eventcode, v_securityuserid,
+                    tma.SecurityUsersId   , tm.teamid,
+                    v_fromroleid, tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno
+             FROM teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+             INNER join teammemberroletype  tmrt 
+                ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode AND tm.teamid =v_teamid
+            AND tma.activeflag =1    limit 1
+            RETURNING tosecurityusersid INTO v_tosecurityusersid;
+
+           
+             IF (status IN (27,31) AND appeventcode='PRCM') THEN   
+                 
+                 update tb_provider_complaint set complaint_status=status
+          where complaint_number=objectid and activeflag=1;
+                 END IF;
+           
+                     
+    
+          v_msg:=  v_notifymsg || ' by ';  /* Review Notification */
+        
+          
+          ELSif (status in(49)) THEN
+
+  /*review  - Assign to Targetrole(Reviewer role) */
+
+ SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey into 
+   v_teamid,v_fromloadnumber,v_fromroleid 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+        
+     SELECT routingid into v_routingid
+        FROM routing r WHERE tosecurityusersid = v_securityuserid 
+        AND activeflag =1
+        AND r.objectid  = v_objectid 
+  AND r.eventcode = appeventcode
+        ORDER BY insertedon desc limit 1;
+  
+       
+        UPDATE routing SET activeflag =0 ,remarks =commenttext,updatedon= v_date 
+        WHERE routingid = v_routingid;
+      
+            INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+                remarks,routeddescription,servicerequestnumber)
+
+            SELECT rc.eventcode, v_securityuserid,
+                    tma.SecurityUsersId   , tm.teamid,
+                    v_fromroleid, tm.roletypekey  ,
+                    v_objectid,status,
+                    v_securityuserid,v_securityuserid,
+                    v_date,v_date,true,
+                    commenttext,
+                    v_routeddescription,v_servicerequestno
+             FROM teammemberassignment tma
+             INNER join teammember tm
+                ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+             INNER join teammemberroletype  tmrt 
+                ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+            INNER join userprofile up 
+                ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+            INNER join routingcONfig rc  
+                ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                and rc.sourcerolekey =v_fromroleid
+            WHERE rc.eventcode =appeventcode --AND tm.teamid =v_teamid
+            AND tma.activeflag =1    limit 1
+            RETURNING tosecurityusersid INTO v_tosecurityusersid;
+           
+             RAISE NOTICE 'appeventcode:%', appeventcode;
+             RAISE NOTICE 'v_fromroleid:%', v_fromroleid;
+             RAISE NOTICE 'v_teamid:%', v_teamid;
+             RAISE NOTICE 'v_tosecurityusersid:%', v_tosecurityusersid;
+
+           
+ IF (status IN (49) AND appeventcode='PRUIR') THEN   
+                 
+                 update provider_uir set uir_status=status,  uir_statusdesc = v_routeddescription
+          where provider_uir_id=objectid::uuid  and active_flag=1;
+                 END IF;
+                
+          v_msg:=  v_notifymsg || ' by ';  /* Review Notification */
+          
+ELSif (status in(28,29,32)) THEN
+
+  SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey INTO 
+   v_teamid,v_fromloadnumber,v_fromroleid 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+       
+       
+        if (coalesce(v_assignsecurityuserid,'')='') then
+      
+         -- IF (v_assignsecurityuserid ='')  THEN
+        
+            SELECT routingid,fromsecurityusersid   INTO v_routingid,v_assignsecurityuserid
+            FROM routing r WHERE tosecurityusersid = v_securityuserid 
+            AND r.activeflag =1
+            AND r.objectid  = v_objectid
+            and r.eventcode = appeventcode
+            ORDER BY insertedon DESC LIMIT 1;
+           
+         
+        END IF;
+        
+ 
+   SELECT routingid   INTO v_routingid
+            FROM routing r WHERE tosecurityusersid = v_securityuserid 
+            AND r.activeflag =1
+            AND r.objectid  = v_objectid
+            and r.eventcode = appeventcode
+            ORDER BY insertedon DESC LIMIT 1;
+            
+         
+        
+  /*Mark previous data as inactive and mark as rereiview*/
+  UPDATE routing SET  activeflag =0  , updatedby = v_securityuserid,updatedon= v_date  WHERE routingid = v_routingid; 
+           
+  INSERT INTO routing(
+                            eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                            fromroleid, toroleid,objectid , routingstatustypeid,
+                            insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+       remarks,routeddescription,servicerequestnumber)
+
+              SELECT appeventcode, v_securityuserid,
+                        tma.SecurityUsersId   , tm.teamid,
+                        v_fromroleid, tm.roletypekey  , v_objectid::uuid,status,
+                        v_securityuserid,v_securityuserid,
+                        v_date,v_date,true, commenttext,
+      v_routeddescription,v_servicerequestno
+                 FROM teammemberassignment tma
+                 INNER join teammember tm
+                    ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+                 left join teammemberroletype  tmrt 
+                    ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+                INNER join userprofile up 
+                    ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+                left join routingcONfig rc  
+                    ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                    and rc.sourcerolekey =v_fromroleid
+                WHERE  tm.teamid =v_teamid
+                and
+                tma.SecurityUsersId = cast(v_assignsecurityuserid as character varying) 
+                AND tma.activeflag =1 limit 1;
+                 
+                v_tosecurityusersid:=cast(v_assignsecurityuserid as character varying) ; 
+               
+                                 
+               
+                   IF (status IN (28,29,32) AND appeventcode='PRCM') THEN   
+                 
+                 v_tmpstatus:=status;
+                 UPDATE tb_provider_complaint SET complaint_status = v_tmpstatus WHERE complaint_number = objectid and activeflag =1;
+                 END IF;  
+                
+                
+                  
+          v_msg:=  v_notifymsg || ' by '; 
+   
+         
+ELSif (status in(50,51,52,53)) THEN
+
+  SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey  
+  INTO  v_teamid,v_fromloadnumber,v_fromroleid 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+        ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        WHERE  tma.SecurityUsersId =v_securityuserid
+        AND   tma.activeflag =1;
+      
+ if (coalesce(v_assignsecurityuserid,'')='') then      
+            SELECT routingid,fromsecurityusersid   INTO v_routingid,v_assignsecurityuserid
+            FROM routing r WHERE tosecurityusersid = v_securityuserid 
+            AND r.activeflag =1
+            AND r.objectid  = v_objectid
+            and r.eventcode = appeventcode
+            ORDER BY insertedon DESC LIMIT 1;           
+ END IF;
+         RAISE NOTICE 'sample:%', v_fromroleid;
+  
+        
+  /*Mark previous data as inactive and mark as rereiview*/
+  UPDATE routing SET  activeflag =0  , updatedby = v_securityuserid,updatedon= v_date  WHERE routingid = v_routingid; 
+           
+  INSERT INTO routing(
+                            eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                            fromroleid, toroleid,objectid , routingstatustypeid,
+                            insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+       remarks,routeddescription,servicerequestnumber)
+
+              SELECT appeventcode, v_securityuserid,tma.SecurityUsersId, tm.teamid,
+                        v_fromroleid,tm.roletypekey,v_objectid::uuid,status,
+                        v_securityuserid,v_securityuserid,v_date,v_date,true,
+                        commenttext,v_routeddescription,v_servicerequestno
+                 FROM teammemberassignment tma
+                 INNER join teammember tm
+                    ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+                 left join teammemberroletype  tmrt 
+                    ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+                INNER join userprofile up 
+                    ON up.securityusersid = tma.securityusersid AND up.activeflag= 1
+                left join routingcONfig rc  
+                    ON rc.targetrolekey = tm.roletypekey   AND rc.activeflag= 1
+                  --  and rc.sourcerolekey =v_fromroleid
+                WHERE -- tm.teamid =v_teamid and
+                tma.SecurityUsersId = cast(v_assignsecurityuserid as character varying) 
+                AND tma.activeflag =1 limit 1;
+                 
+                v_tosecurityusersid:=cast(v_assignsecurityuserid as character varying) ;              
+                       
+  IF (status IN (50,51,52,53) AND appeventcode='PRUIR') THEN   
+update provider_uir set uir_status=status, uir_statusdesc = v_routeddescription  where provider_uir_id = objectid::uuid and active_flag=1;
+  END IF; 
+ 
+ v_msg:=  v_notifymsg || ' by '; 
+   
+
+ END IF; 
+ 
+  SELECT coalesce(lastname,'')||', '|| coalesce(firstname,'')into v_username
+    FROM userprofile WHERE securityusersid = v_securityuserid;
+
+ IF (status>0)then
+ /* DJS Get ICJ Regional Coordinator Securityusersid implemented by Gavaskar 11-01-2019  */
+ IF v_icjsecurityusersid IS NOT NULL THEN
+ v_msg:= v_msg || v_username || ' (ICJ Regional Coordinator).';
+ ELSE
+ v_msg:= v_msg || v_username;
+ END IF;
+   SELECT prov_send_notification INTO v_notifystatus FROM prov_send_notification(v_tosecurityusersid,v_securityuserid, v_tosecurityusersid,
+   'System', 'High', v_msg,
+    v_msg , v_objectid);
+ END IF;
+v_status:='SUCCESS';
+raise notice 'object%', v_objectid ;
+
+RETURN v_status;
+
+END;
+$function$
+

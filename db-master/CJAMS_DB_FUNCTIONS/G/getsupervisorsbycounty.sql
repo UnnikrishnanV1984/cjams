@@ -1,0 +1,56 @@
+CREATE OR REPLACE FUNCTION cjams.getsupervisorsbycounty(v_countyid uuid, v_roletypekey character varying)
+RETURNS json
+LANGUAGE plpgsql
+AS $function$   
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 04/21/2022 
+
+-- Stored Procedure to get Supervisors by County/Module (B-128967/CIDM-4372)
+
+-- Revision(s)
+------------------------------------------------------------------------     
+DECLARE   
+l_supervisors json;
+
+BEGIN     
+	 
+	select json_agg(e) 
+		into l_supervisors 
+	from (	
+			select mu.securityusersid,
+				up.firstname,
+				up.lastname,
+				up.fullname,
+				c.countyname,
+				mu.email,
+				r.roletypekey				
+			from team t 
+				join teammember tm on tm.teamid = t.teamid 
+					and tm.activeflag = 1 
+				join teammemberassignment tma on tma.teammemberid = tm.teammemberid 
+					and tma.activeflag = 1
+				join muser mu on mu.securityusersid = tma.securityusersid 
+					and mu.activeflag = 1 
+				join rolemapping rm on rm.principalid::int = mu.id 
+					and rm.activeflag = 1 
+				join role r on r.id = rm.roleid::int 
+				join userprofile up on up.securityusersid = mu.securityusersid 
+					and up.activeflag = 1
+				join county c on c.countyid = t.countyid::uuid
+					and c.activeflag = 1
+			where t.countyid = v_countyid::character varying 
+				and (case when v_roletypekey is not null and Btrim(v_roletypekey) <> '' THEN
+						r.roletypekey = v_roletypekey
+					 else
+						True	
+					 End)		
+		)e ;
+	 
+		RETURN l_supervisors;
+END;
+
+$function$
+;

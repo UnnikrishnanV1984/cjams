@@ -1,0 +1,249 @@
+CREATE OR REPLACE FUNCTION as_getinvestigationsummary(v_intakeserviceid uuid)
+ RETURNS TABLE(servicesubtype character varying, servicetype character varying, startdate timestamp without time zone, enddate timestamp without time zone, status character varying, general json, maltreatment json, childremoval json, assessment json, assessmentcontactnotes json, providername json, serviceplan json, l_serviceplanrate json, l_county json, l_serviceplangoal json, l_contactnotesdate json, l_dispostionclosingcode json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_cnt INT;
+v_investigationid uuid;
+l_general json;
+l_childremoval  json;
+l_maltreatment json;
+l_assessment json;
+v_supid character varying;
+v_cwid character varying;
+v_spname character varying;
+v_cwname character varying;
+v_cwaddress character varying;
+v_cwzipcode character varying;
+v_cwcounty character varying;
+v_phonenumber character varying;
+l_assessmentcontactnotes json;
+l_providername json; 
+l_serviceplan json;
+l_serviceplanrate json;
+l_county json;
+l_serviceplangoal json;
+v_servicereqid character varying;
+serviceSubtype character varying;
+servicetype character varying;
+v_intakeservreqtypeid uuid;
+v_intakeservicerequestclassid uuid;
+v_fromsecurityusersid character varying;
+v_tosecurityusersid  character varying;
+startdate timestamp without time zone;
+enddate timestamp without time zone;
+status character varying;
+l_contactnotesdate json;
+l_dispostionclosingcode json;
+
+
+BEGIN  
+  
+  select count(1) into v_cnt from caseassignment c where c.objectid::character varying = v_intakeserviceid::character varying and c.activeflag = '1' and c.enddate is null ;
+  IF(v_cnt = 0)
+  THEN
+  select c.fromworkeridno,c.toworkeridno,c.startdate into v_supid,v_cwid,startdate from caseassignment c where c.objectid::character varying = v_intakeserviceid::character varying and c.activeflag = '1' order by c.updatedon desc limit 1;
+  END IF;
+  IF(v_cnt = 1)
+  THEN
+  select c.fromworkeridno,c.toworkeridno,c.startdate into v_supid,v_cwid,startdate from caseassignment c where c.objectid::character varying = v_intakeserviceid::character varying and c.activeflag = '1' and c.enddate is null ;
+  END IF;
+  IF(v_cnt > 1)
+  THEN
+  select c.fromworkeridno,c.toworkeridno,c.startdate into v_supid,v_cwid,startdate from caseassignment c where c.objectid::character varying = v_intakeserviceid::character varying and c.activeflag = '1' and c.enddate is null 
+  and c.responsibilitytypekey = 'primary' order by c.updatedon desc limit 1 ;
+  END IF;
+
+  select lastname ||', ' || firstname  into v_spname from userprofile where securityusersid = v_supid;
+  select lastname ||', ' || firstname  into v_cwname from userprofile where securityusersid = v_cwid;
+
+  select address,zipcode,county into v_cwaddress,v_cwzipcode,v_cwcounty from userprofileaddress where securityusersid = v_cwid;
+  
+  SELECT  investigationid into v_investigationid
+  FROM investigation where intakeserviceid  = v_intakeserviceid;
+  
+    select phonenumber into v_phonenumber from userprofilephonenumber where securityusersid = v_cwid and activeflag=1 limit 1;
+   
+ SELECT  intakeserviceid into v_servicereqid
+  FROM intakeservicerequest where intakeserviceid  = v_intakeserviceid;
+  
+ select intakeservreqtypeid,intakeservicerequestclassid into v_intakeservreqtypeid,v_intakeservicerequestclassid from intakeservicerequest where intakeserviceid=v_intakeserviceid;
+
+
+select classkey into serviceSubtype from servicerequestsubtype where ServiceRequestSubTypeId = v_intakeservicerequestclassid;
+
+ select intakeservreqtypekey into servicetype from intakeservicerequesttype where IntakeServReqTypeId = v_intakeservreqtypeid;
+
+  select isd.insertedon into enddate from intakeservicerequestdispositioncode isd
+inner join intakeserreqstatustype ist on ist.intakeserreqstatustypeid=isd.intakeserreqstatustypeid
+
+where isd.intakeserviceid=v_intakeserviceid and ist.intakeserreqstatustypekey='Closed';
+
+  select ist.description into status from intakeservicerequestdispositioncode isd
+inner join intakeserreqstatustype ist on ist.intakeserreqstatustypeid=isd.intakeserreqstatustypeid
+
+where isd.intakeserviceid=v_intakeserviceid order by isd.insertedon desc limit 1;
+ 
+  SELECT Json_agg(gen) into l_general FROM   (
+        SELECT reporteddate, 
+         servicerequestnumber, 
+         narrative, 
+         
+         v_spname supervisorname,
+        v_cwname caseworkername,
+        v_cwaddress caseworkeraddress,
+        v_cwzipcode caseworkerzipcode,
+        v_cwcounty caseworkercounty,
+        v_phonenumber caseworkerphoneno
+        
+
+   FROM   intakeservicerequest isr 
+   WHERE isr.intakeserviceid = v_intakeserviceid) gen ;
+
+   SELECT as_getmaltreatment_invsummary into l_maltreatment FROM as_getmaltreatment_invsummary(v_investigationid);
+
+    SELECT Json_agg(asst) into l_assessment from 
+  (SELECT
+  amt.name,
+  amt.titleheadertext,
+  asm.assessmentstatustypekey,
+  asm.ischildsafe,
+  amt.updatedon,
+  amt.insertedon,
+  case asm.assessmentsubmissiontypekey when 'Submission' then asm.updatedon
+   else  null  end submittedupdatedate
+  FROM
+  assessment asm
+  JOIN assessmenttemplate amt ON amt.assessmenttemplateid=asm.assessmenttemplateid AND amt.activeflag=1
+  WHERE asm.objectid=v_intakeserviceid)asst ;
+ 
+ 
+     SELECT Json_agg(contactnotess) into l_assessmentcontactnotes from 
+    (select 
+          pn.contactdate,
+          pnd.description,
+          pnt.progressnotetypekey,
+          pnrt.typedescription as progressreasonnote,
+          CAST(COALESCE (PN.insertedon , PN.insertedon) AS TIMESTAMP(3)) AS RecordingDate  
+   from  progressnote pn
+   inner join progressnotedetail pnd on pn.progressnoteid=pnd.progressnoteid
+   inner join progressnotetype  pnt on pnt.progressnotetypeid=pn.progressnotetypeid
+   left join progressnotereasontype pnrt on pnrt.progressnotereasontypekey=pn.progressnotereasontypekey
+   where entitytypeid=v_servicereqid and pn.activeflag=1 and pnd.activeflag=1
+   and pnt.progressnotetypekey='Face to Face')contactnotess;
+   
+  SELECT Json_agg(providern) into l_providername from 
+    (select 
+          p.providername,pl.startdatetime,pa.buildingno,pa.addressline1,pa.addressline2,pa.city,pa.state,pc.phonenumber
+   from  placement pl
+   inner join provider p on p.providerid=pl.providerid
+   left join provideraddress pa on pa.providerid=p.providerid
+   left join providercontactinfo pc on pc.providerid=p.providerid
+   where pl.intakeserviceid=v_intakeserviceid and pl.activeflag=1 and p.activeflag=1)providern;
+   
+ SELECT Json_agg(serviceplaninfo) into l_serviceplan from 
+    (select 
+    spv.serviceplanvendorid,spv.vendorname,spv.bponumber,rv1.description as goal,spl.noofhours,
+    ( SELECT c.countyname FROM serviceplanvendor sp
+     INNER JOIN serviceplanvendorsubtypeconfig ssp ON ssp.serviceplanvendorid=sp.serviceplanvendorid AND ssp.activeflag=1
+     INNER JOIN county c ON c.countyid=ssp.countyid AND c.activeflag=1
+     WHERE sp.serviceplanvendorid IN (
+      SELECT spl.serviceplanvendorid FROM serviceplanlog spl
+      WHERE spl.objectid::uuid=v_intakeserviceid AND spl.activeflag = 1
+    ) limit 1)  countyname,
+    (SELECT json_agg(item) from
+    (select spg.serviceplangoalid,
+    spa.activitysubtypekey, rv.description as task,
+    rv1.description as goal,spl.noofhours,
+    spl.noofweeks,spl.providertypekey,spl.startdate,spl.enddate,p1.serviceplanvendorid,p1.vendorname,p1.bponumber,spl.rate,spl.categorysubtypekey
+    
+    from serviceplanactivity spa 
+left join serviceplangoal spg on spg.serviceplangoalid=spa.serviceplangoalid and spg.activeflag=1
+left join serviceplanlog spl on spl.serviceplanactivityid=spa.serviceplanactivityid and spl.activeflag=1 
+left join serviceplanvendor p1 on p1.serviceplanvendorid=spl.serviceplanvendorid and p1.activeflag=1
+--left join serviceplanvendorsubtypeconfig p2 on p2.serviceplanvendorid=p1.serviceplanvendorid and p2.activeflag=1
+--left join county c on c.countyid=p2.countyid and c.activeflag=1
+left join referencevalues rv on rv.ref_key=spa.activitysubtypekey and rv.activeflag=1
+left join referencevalues rv1 on rv1.ref_key=spg.goaltypekey and rv1.activeflag=1
+where spl.serviceplanvendorid=spv.serviceplanvendorid and spl.objectid :: uuid=v_intakeserviceid and spa.activeflag=1 limit 1
+    
+    )item)as details
+    
+from serviceplanactivity spa 
+left join serviceplangoal spg on spg.serviceplangoalid=spa.serviceplangoalid and spg.activeflag=1
+left join serviceplanlog spl on spl.serviceplanactivityid=spa.serviceplanactivityid and spl.activeflag=1 
+left join serviceplanvendor spv on spv.serviceplanvendorid=spl.serviceplanvendorid and spv.activeflag=1
+--left join serviceplanvendorsubtypeconfig p2 on p2.serviceplanvendorid=p1.serviceplanvendorid and p2.activeflag=1
+--left join county c on c.countyid=p2.countyid and c.activeflag=1
+left join referencevalues rv on rv.ref_key=spa.activitysubtypekey and rv.activeflag=1
+left join referencevalues rv1 on rv1.ref_key=spg.goaltypekey and rv1.activeflag=1
+--left join referencevalues rv2 on rv2.ref_key=ps.servicesubtypekey and rv2.activeflag=1
+where spa.objectid :: uuid=v_intakeserviceid and spa.activeflag=1)serviceplaninfo;
+
+SELECT Json_agg(serviceplanrate) into l_serviceplanrate from 
+ ( SELECT DISTINCT p2.service_id::CHARACTER VARYING AS servicetsubtypename,p2.hourly_rate
+  FROM as_tb_service_rates p2 WHERE p2.active_flag=1 AND p2.contract_id IN 
+  ( SELECT spl.contractid FROM serviceplanlog spl 
+   JOIN serviceplanactivity spa on spl.serviceplanactivityid=spa.serviceplanactivityid
+   WHERE spa.objectid::uuid=v_intakeserviceid and spa.activeflag=1 and spl.activeflag=1
+  )
+ )serviceplanrate;
+  
+  SELECT Json_agg(countyinfo) into l_county from 
+    (select 
+    isr.countyid,c.countyname,sf.phonenumber,sf.email,sf.zipcode,sf.address,sf.state,sf.city from intakeservicerequest isr
+    left join county c on c.countyid=isr.countyid and c.activeflag=1
+    inner join stateoffice sf on sf.countycode=c.countycode and sf.activeflag=1
+    
+    where isr.intakeserviceid=v_intakeserviceid and isr.activeflag=1
+          
+   )countyinfo;
+   
+    
+  SELECT Json_agg(serviceplangoalinfo) into l_serviceplangoal from 
+    (
+          select spg.serviceplangoalid,rv.description as goal,rv1.description as goalcategory,spg.plannedstartdate,spg.isprojecthome,spg.plannedenddate,
+
+     spg.challenges,spg.strengths, spg.initialcondition  ,spg.updatedon,
+   (SELECT json_agg(item)
+   FROM (select spa.activity,spa.initialcondition,spa.plannedstartdate,spa.personinvolved,spa.responsibleperson,
+   spv.vendorname,spl.familyworkername, spa.activitysubtypekey,rv.description as activitysubtype,spa.otherresponsibleperson,spa.serviceplanactivitystatustypekey,spa.plannedenddate,spa.updatedon
+   from serviceplanactivity spa
+   left join serviceplanlog spl on spl.serviceplanactivityid=spa.serviceplanactivityid and spl.activeflag=1
+   left join serviceplanvendor spv on spv.serviceplanvendorid=spl.serviceplanvendorid and spv.activeflag=1
+   left join referencevalues rv on rv.ref_key=spa.activitysubtypekey and rv.activeflag=1
+   
+
+ where spa.serviceplangoalid=spg.serviceplangoalid and spa.serviceplanactivitystatustypekey='ACTIVE' and spa.activeflag=1) item
+) as activitydetails
+from serviceplangoal spg
+left join referencevalues rv on rv.ref_key=spg.goaltypekey and rv.activeflag=1
+left join referencevalues rv1 on rv1.ref_key=spg.goalscategorytype and rv1.activeflag=1 
+
+where spg.activeflag=1 and objectid=v_intakeserviceid:: character varying
+
+   )serviceplangoalinfo;
+   
+   SELECT Json_agg(contactnotesdate) into l_contactnotesdate from 
+    (select 
+          pn.contactdate         
+   from  progressnote pn       
+   where entitytypeid=v_servicereqid and pn.activeflag=1 )contactnotesdate;
+  
+   SELECT Json_agg(dispostionclosingcode) into l_dispostionclosingcode from 
+    (select CCT.description as closingcode 
+    from intakeservicerequestdispositioncode  ISRDC
+inner join closingcodetype CCT on CCT.closingcodetypekey=ISRDC.closingcodetypekey
+where ISRDC.intakeserviceid=v_servicereqid::uuid and ISRDC.activeflag=1 )dispostionclosingcode;
+
+RETURN QUERY 
+select  serviceSubtype, servicetype,startdate, enddate,status,l_general,l_maltreatment,l_childremoval,
+l_assessment,l_assessmentcontactnotes,l_providername,l_serviceplan,l_serviceplanrate,l_county,
+l_serviceplangoal,l_contactnotesdate,l_dispostionclosingcode;
+
+ END; 
+
+
+$function$
+

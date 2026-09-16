@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION cjams.sp_audit_log_gapsuspension_changes(v_screenid bigint, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+	v_pagenumber int;
+	v_pageoffset int;
+    gapsuspensionLog json;
+BEGIN 
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+select json_agg(x) into gapsuspensionLog from 
+(
+select count(1) over() as total_count,a.* from
+(
+SELECT GS.alternateid AS REVISION_ID,   
+	GS.transactiondate TRANSACTION_DT,   
+	coalesce('1012',null) AS CHANGE_TYPE_CD,
+	F_PDESC('1012',10041) AS CHANGE_TYPE,
+	F_PDESC(GS.reasontypekey, 256) AS SUSPENSION_REASON,
+	GS.startdate ENTRY_DT,      
+	GS.enddate EXIT_DT,   
+	F_ENAME('2956', UPR.cjamspid) AS REQUESTED_BY ,
+	R.insertedon AS REQUESTED_DATE,
+	F_ENAME('2956', UPA.cjamspid) AS APPROVED_BY,
+	GS.approvaldate AS APPROVAL_DT,
+	GS.suspensionid SUSPENSION_ID,   
+	GS.guardiansubsidyid GUARDIAN_SUBSIDY_ID
+FROM gapsuspensionrevision GS,
+	gapsuspension GA,
+	guardianship GAP,
+	routing R,
+	userprofile UPR,
+    userprofile UPA 
+WHERE GS.suspensionid = GA.gapsuspensionid
+    and R.objectid = GA.gapsuspensionid::character varying 
+	and GAP.gapid = GS.guardiansubsidyid
+	and R.routingstatustypeid = 16 AND R.eventcode::text = 'GASR'::text AND R.activeflag = 1
+	AND GS.alternateid = v_screenid
+	AND COALESCE(GS.approvalstatustypekey, '') = '3047' 	
+	--AND COALESCE(GR.isoriginal,false) <> true
+	AND GS.activeflag =  1
+	and UPR.securityusersid=R.tosecurityusersid
+  	and UPA.securityusersid=R.fromsecurityusersid
+ORDER BY 2 DESC
+) a
+group by 
+	 REVISION_ID,   
+	TRANSACTION_DT,   
+	CHANGE_TYPE_CD,
+	 CHANGE_TYPE,
+	 SUSPENSION_REASON,
+	 a.ENTRY_DT,   
+	a.EXIT_DT,   
+	 REQUESTED_BY ,
+	REQUESTED_DATE,
+	 APPROVED_BY,
+	APPROVAL_DT,
+	SUSPENSION_ID,   
+	GUARDIAN_SUBSIDY_ID
+--	limit v_lipagesize offset v_pageoffset
+) x;
+
+return gapsuspensionLog; 
+
+END;
+$function$
+;

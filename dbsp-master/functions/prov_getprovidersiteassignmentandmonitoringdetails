@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION prov_getprovidersiteassignmentandmonitoringdetails(v_providerid character varying, filterby character varying, filter_status character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(provider_status_cd character varying, license_no character varying, active_sw character varying, license_agency character varying, license_level character varying, license_type character varying, license_status_cd character varying, site_id character varying, provider_nm character varying, picklist_value_cd character varying, adr_work_phone_tx character varying, contract_id character varying, program_status_cd character varying, license_issue_dt date, license_expiry_dt date, license_status text, license_status_program text, monitoringdata json, assignedworkers json)
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE
+ 
+     
+BEGIN
+ 
+return query
+select tp.provider_status_cd::character VARYING, tpl.license_no, tpl.active_sw::character varying, (select tpv.value_tx from tb_picklist_values tpv where tpv.picklist_type_id=111 and trim(tpv.picklist_value_cd)=trim(tpl.licensing_agency_cd)) as license_agency
+,tpl.license_level, tpl.license_type, (select tpv1.value_tx from tb_picklist_values tpv1 where tpv1.picklist_type_id=286 and trim(tpv1.picklist_value_cd)=trim(tpl.license_status_cd)) as license_status_cd, 
+tpl.site_id::character varying, tp.provider_nm, plist.picklist_value_cd, tp.adr_work_phone_tx, tcp.contract_id::character varying, tcp.program_status_cd, tpl.license_issue_dt::date , tpl.license_expiry_dt::date ,
+case when (tpl.license_expiry_dt is null or tpl.license_expiry_dt > now()) then 'Active' else 'Expired' end as license_status,
+case when  (tcp.program_status_cd::character  varying = '3625'::character varying) then 'Active' else 'Expired' end as license_status_program,
+(SELECT JSON_AGG(pla) FROM (
+ select pm.monitoring_id, pm.prgram, pm.site_id, pm.provider_id, pm.periodic, pm.monitoring_dt,pm.inspectedwith,pm.agency,pm.license_expiry_dt,pm.typeofinspection,
+  pm.time_visit, pm.announced_cd,pm.delete_sw,up.fullname as author_name,pm.end_dt,pm.provider_complaintid,
+  pm.monitoring_period_start_date,pm.monitoring_period_end_date,
+  tpc.complaint_number
+  , (SELECT json_agg(pa) FROM 
+         (
+            SELECT pms.*, tpa.license_agency
+            FROM prov_monitoring_site pms 
+   LEFT JOIN tb_provider_applicant tpa on tpa.applicant_id = pms.applicant_id and tpa.delete_sw = 'N'
+   WHERE pms.monitoring_id = pm.monitoring_id
+   AND pms.activeflag = 1 
+         ) pa)::json AS monitoring_site_list
+  , case tpd.status
+   when 'Submitted' then 'Pending'
+   when 'Incomplete' then 'Return to worker'
+   else tpd.status end as status 
+  from prov_monitoring pm 
+  left join tb_provider_decision tpd on pm.monitoring_id = tpd.objectid and tpd.eventcode = 'MVR' and tpd.activeflag = 1
+  left join userprofile up on up.securityusersid = pm.create_user_id
+  left join tb_provider_complaint tpc on tpc.provider_complaintid = pm.provider_complaintid 
+  /*join prov_monitoring_site pms on pms.monitoring_id = pm.monitoring_id and (pms.site_id  = tpl.site_id)
+  join tb_provider_applicant tpa on tpa.site_id = tpl.site_id and  pms.applicant_id = tpa.applicant_id*/
+  where (v_providerid is null or pm.provider_id = v_providerid)
+  and ( pm.monitoring_id in  (SELECT monitoring_id 
+            FROM prov_monitoring_site pms 
+   LEFT JOIN tb_provider_applicant tpa on tpa.applicant_id = pms.applicant_id and tpa.delete_sw = 'N'
+   WHERE tpa.provider_id = v_providerid and (pms.site_id =  tpl.site_id or tpa.site_id =  tpl.site_id )
+   AND pms.activeflag = 1))
+  and pm.delete_sw = 'N'  and pm.provider_id is not null order by monitoring_dt desc limit 1
+ ) AS pla) as monitoringdata, 
+ (SELECT  json_agg(y)  FROM  (
+   SELECT 
+    cast(UP.firstname || ' ' || UP.lastname as character varying)as toworkername,
+    UP.email,
+    UP.securityusersid,
+    r.name as role
+   FROM   userprofile UP 
+   join muser m on m.securityusersid = UP.securityusersid
+    join rolemapping r2 on r2.principalid = m.id and r2.activeflag = 1 
+    join role r on r.id = r2.roleid and r.activeflag =1
+    WHERE UP.securityusersid in (select distinct toworkeridno from providerassignment PVA where objectid = tpl.site_id and toworkeridno != '' and toworkeridno is not null)
+    )  AS  y  )  AS  assignedworkers
+from tb_provider_licensing tpl join tb_provider tp on tpl.site_id = tp.provider_id join tb_provider_picklist plist on plist.provider_id =  tp.provider_id join tb_picklist_values v on trim(v.picklist_value_cd) = trim(plist.picklist_value_cd) and v.picklist_type_id = 155 and trim(plist.picklist_value_cd) in ('3274','3302','3794','3795','3796') 
+left join prov.tb_prov_program_sites tpps on tpps.site_id  = tpl.site_id and tpps.delete_sw = 'N'
+left join prov.tb_contract_program tcp on tcp.program_id  = tpps.program_id  and tcp.delete_sw = 'N'
+where case when filterby = 'All' then tpl.provider_id = v_providerid  and tpl.active_sw = 'Y'
+    when filterby = 'Active' then tpl.provider_id = v_providerid and (tpl.license_expiry_dt is null or tpl.license_expiry_dt::date >= now()::date) and tpl.active_sw = 'Y'
+    when filterby = 'Expired' then tpl.provider_id = v_providerid and tpl.license_expiry_dt::date < now()::date
+    end
+    and
+    case when filter_status = 'Open' then tp.provider_status_cd = 1791
+        when filter_status = 'Closed' then tp.provider_status_cd = 1792
+    else true
+    end;
+
+
+END;
+ $function$
+

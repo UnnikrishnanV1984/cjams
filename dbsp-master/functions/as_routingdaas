@@ -1,0 +1,285 @@
+CREATE OR REPLACE FUNCTION as_routingdaas(appeventcode character varying, intake_service_req_id uuid, fromuserid character varying, v_assignedsecurityid character varying, v_responsibilitytypekey character varying, j_assignfolder json DEFAULT '{}'::json, isnotifyuser boolean DEFAULT true)
+ RETURNS routeda_temp_type
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+result routeda_temp_type;
+ 
+ 
+v_teamid uuid;
+v_investigationid uuid;
+v_intakesecurityid character varying;
+v_usernotificationid uuid;
+v_createduser character varying;
+v_servicetype character varying;
+ 
+v_fromroletypekey  character varying;
+v_toroletypekey  character varying;
+v_team_member_id  uuid;
+
+v_fromrolesupervisor bool;
+v_torolesupervisor bool;
+v_status  int;
+v_routingid uuid;
+v_isavailable int ;
+v_intakenumber character varying;
+v_date timestamp without time zone;
+v_notifystatus character varying;
+v_metadata json;
+v_auditlog  character varying;
+v_auditlogassign character varying;
+v_datypeid  uuid;
+v_dasubtypeid  uuid;
+v_roletypecode character varying;
+s_Actmsg  character varying;
+v_teamtypekey character varying;
+
+v_foldertypekey character varying;
+v_folderreasontypekey character varying;
+v_folderopendatetime timestamp without time zone;
+v_foldernotes text;
+--teamtypekey character varying;
+v_servicerequestnumber character varying;
+v_focuspersonname character varying;
+v_focuspersonid uuid;
+v_alertnotes character varying;
+v_savepersonalert character varying;
+v_servicerequestno character varying;
+v_routingdata character varying;
+v_message character varying;
+v_fromuserrole character varying;
+v_icjprobationcount bigint;
+BEGIN
+
+v_date:= now() ;
+
+v_foldertypekey := j_assignfolder->>'foldertypekey';
+v_folderreasontypekey := j_assignfolder->>'folderreasontypekey';
+v_folderopendatetime := j_assignfolder->>'folderopendatetime';
+v_foldernotes := j_assignfolder->>'foldernotes';
+
+v_status:= 4; /*Default routed status assigned*/
+RAISE NOTICE 'status:%', v_status;
+v_servicerequestno:='';
+/*Intake service request raised user and da type*/
+SELECT  a.insertedby,b.intakeservreqtypekey, a.intakeservreqtypeid ,a.intakeservicerequestclassid,
+teamtypekey,servicerequestnumber
+INTO v_intakesecurityid,v_servicetype,v_datypeid,v_dasubtypeid,v_teamtypekey,v_servicerequestno 
+FROM intakeservicerequest AS a JOIN intakeservicerequesttype AS b ON a.intakeservreqtypeid = b.intakeservreqtypeid 
+where intakeserviceid =intake_service_req_id;
+
+SELECT investigationid INTO v_investigationid FROM investigation WHERE intakeserviceid=intake_service_req_id;
+
+IF v_servicetype = 'RF' THEN
+/*Routing the case to Catherine if the service type is RF*/
+v_assignedsecurityid := 'S-1-5-21-152097760-152508613-1969071786-1011';
+ 
+END IF;
+
+/*Get caseworker name for Notification*/
+SELECT cast( lastname ||',' || firstname as character varying) INTO result.caseworker_name 
+ FROM userprofile WHERE SecurityUsersId=v_assignedsecurityid and activeflag =1;
+
+/*Intake service request raised user */
+SELECT cast( lastname ||',' || firstname as character varying)  INTO v_createduser 
+FROM userprofile 
+WHERE SecurityUsersId=fromuserid and activeflag =1;
+
+/*Assigned user team details*/
+SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey , 
+   t.teamname, tm.teammemberid ,coalesce(isupervisor,false) 
+        into  v_teamid ,result.loadnumber, v_toroletypekey,
+   result.teamname,v_team_member_id,v_torolesupervisor
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        inner join teammemberroletype tmrt on tmrt.roletypekey =tm.roletypekey 
+        WHERE  tma.SecurityUsersId = v_assignedsecurityid
+        AND   tma.activeflag =1;
+
+ 
+ /*Assigned user roletypecode*/
+ Select rt.roletypecode  into v_roletypecode
+  from role R inner join roletype rt on  rt.shortname = r.name 
+  and rt.activeflag =1
+ where r.roletypekey = v_toroletypekey 
+  and r.activeflag =1 limit 1;
+ 
+/*Logged in user role details*/ 
+SELECT  tm.roletypekey  
+        into  v_fromroletypekey 
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = fromuserid
+        AND   tma.activeflag =1;
+        
+
+ IF (coalesce(v_torolesupervisor,false) =true) THEN
+  RAISE NOTICE 'inside true:%', v_torolesupervisor; 
+     SELECT routingid ,1 into v_routingid,v_isavailable 
+        FROM routing r WHERE tosecurityusersid = fromuserid 
+        AND activeflag =1
+        AND r.objectid  = intake_service_req_id :: character varying
+        ORDER BY insertedon desc limit 1;
+          
+        if (coalesce(v_isavailable,0) =0 ) THEN /*if routing is not availble for sevice id */
+          select intakenumber into v_intakenumber from intakeservicerequest   
+              where  intakeserviceid=intake_service_req_id;
+            
+                SELECT routingid ,1 into v_routingid,v_isavailable
+                FROM routing r WHERE tosecurityusersid = fromuserid 
+                AND activeflag =1
+                AND r.objectid  = v_intakenumber
+                ORDER BY insertedon desc limit 1;
+        
+        END IF;
+        select  coalesce(tmrt.isupervisor,false)  into v_fromrolesupervisor from routing r
+        inner join teammemberroletype tmrt on tmrt.roletypekey =r.fromroleid 
+        where r.routingid = v_routingid;
+  /*Mark previous data as inactive and mark as accepted*/
+        if (coalesce(v_fromrolesupervisor,false) =true AND coalesce(v_torolesupervisor,false) = true ) THEN
+            UPDATE routing SET routingstatustypeid =9,activeflag =0  ,
+                                 updatedon= v_date
+            WHERE routingid = v_routingid;
+  ELSE
+            UPDATE routing SET routingstatustypeid =2,activeflag =0  ,
+                                 updatedon= v_date
+            WHERE routingid = v_routingid;
+        END IF;
+        v_status:= 9; /*Routed to Supervisor status  */
+
+ END IF;
+ 
+
+/*Routing to  user*/
+  INSERT INTO routing(
+                    eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                    fromroleid, toroleid,objectid , routingstatustypeid,
+                    insertedby,  updatedby , servicerequestnumber)
+
+values(appeventcode,fromuserid,v_assignedsecurityid,v_teamid,
+       v_fromroletypekey,v_toroletypekey,intake_service_req_id,v_status,
+       fromuserid,fromuserid,v_servicerequestno);
+ 
+ IF (coalesce(v_torolesupervisor,false) =false) THEN
+   RAISE NOTICE 'inside false:%', v_torolesupervisor; 
+ 
+ /* DSDS ACTION TASK GOAL DETAILS(Create action tasks) */
+    select as_createinvestigation INTO s_Actmsg from as_createinvestigation(
+   v_datypeid,
+   v_dasubtypeid ,
+   v_investigationid,
+    v_assignedsecurityid ,
+       v_roletypecode,
+      v_teamtypekey); 
+  RAISE NOTICE 'as_createinvestigation :%', s_Actmsg;    
+    INSERT INTO areateammemberservicerequest(
+                activeflag, teammemberid, intakeserviceid, 
+                routingstatustypekey,securityusersid, routedby, insertedby, insertedon)
+        VALUES (1, v_team_member_id, intake_service_req_id, 
+                'New',v_assignedsecurityid, NULL, fromuserid, v_date);
+
+    INSERT INTO intakeservicerequestuseraccess(
+                activeflag, securityusersid, 
+                intakeserviceid, insertedby)
+        VALUES (1, v_assignedsecurityid, intake_service_req_id,fromuserid);
+
+  /*  UPDATE activitytask set assignedto = result.loadnumber where activityid in (
+        SELECT activityid  from activity where objectid = v_investigationid); */
+
+    /*Routing details updated into service request */
+    if  (v_roletypecode='CW')  then
+        UPDATE intakeservicerequest set isrouted=true,routedon = v_date,
+            routedusersid= v_assignedsecurityid,responsibilitytypekey = v_responsibilitytypekey  where  intakeserviceid=intake_service_req_id;
+ end if;
+END IF;   
+    /*NOTIFICATION */ 
+    if(isnotifyuser=true) THEN
+      SELECT servicerequestnumber into v_intakenumber from intakeservicerequest   
+                    where  intakeserviceid=intake_service_req_id;
+                    
+       SELECT send_notification into v_notifystatus from as_send_notification(fromuserid, fromuserid,v_assignedsecurityid,
+            'System', 'Normal', 'Case #'||v_intakenumber|| ' Routed to '|| result.caseworker_name ,
+             'Case #'||v_intakenumber|| ' Routed to '|| result.caseworker_name ,
+             cast(intake_service_req_id as character varying));
+
+         
+         select count(1) into v_icjprobationcount  from intakeservicerequest ins 
+join intakeservicerequesttype inst on inst.intakeservreqtypeid=ins.intakeservreqtypeid and inst.activeflag=1
+join servicerequestsubtype sst on sst.servicerequestsubtypeid=ins.intakeservicerequestclassid and sst.activeflag=1
+where ins.intakeserviceid=intake_service_req_id and sst.classkey in ('ICJ Receiving Re-Entry','ICJ Receiving Probation')
+and inst.intakeservreqtypekey='Interstate Compact';
+
+select r.roletypekey into v_fromuserrole from muser mu 
+join  rolemapping rm on rm.principalid=mu.id::character varying  and rm.activeflag=1
+join "role" r on r.id=rm.roleid and r.activeflag=1
+where mu.securityusersid=fromuserid;
+if(v_icjprobationcount > 0 and v_fromuserrole='')
+   then
+    v_message = 'New case ('|| v_intakenumber||') is assigned by '|| v_createduser ||' (Note : Home Evaluation Report form VIII needs to be completed in 30 days.)';
+   else
+   v_message = 'New case ('|| v_intakenumber||') is assigned by '|| v_createduser ;
+  end if;
+        SELECT send_notification into v_notifystatus from as_send_notification(v_assignedsecurityid,fromuserid,v_assignedsecurityid,
+            'System', 'Normal',  v_message ,
+               v_message,
+             cast(intake_service_req_id as character varying));
+ 
+--       SELECT send_notification into v_notifystatus from as_send_notification(v_assignedsecurityid,fromuserid,v_assignedsecurityid,
+--            'System', 'Normal',   'New case ('|| v_intakenumber||') is assigned by '|| v_createduser ,
+--               'New case ('|| v_intakenumber||') is assigned by '|| v_createduser,
+--             cast(intake_service_req_id as character varying));
+
+        /*AUDIT LOG */   
+
+        
+
+        SELECT json_agg(e) from (SELECT result.caseworker_name  caseworkername,result.loadnumber  loadnumber, v_intakenumber  intakenumber, result.teamname teamname)e INTO v_metadata;
+
+        SELECT auditlog into v_auditlog from auditlog
+        ('IR','Case #'||v_intakenumber|| ' Routed to '|| result.caseworker_name,null,v_intakenumber,null,
+         v_intakesecurityid,
+         v_metadata,
+         null,
+         true,false,false);
+   
+   
+     SELECT auditlog into v_auditlogassign from auditlog
+    ('IR', 'New case ('|| v_intakenumber||') is assigned by '|| v_createduser,null,v_intakenumber,null,
+     v_intakesecurityid,
+     v_metadata,     null,
+     true,false,false);
+    END IF;         
+    -- DJS folder 
+    UPDATE intakeservicerequest set foldertypekey = v_foldertypekey, folderreasontypekey = v_folderreasontypekey,
+    folderopendatetime = v_folderopendatetime , foldernotes = v_foldernotes where intakeserviceid = intake_service_req_id;
+
+    --select teamtypekey into teamtypekey from userprofile where securityusersid = fromuserid;
+    IF v_teamtypekey = 'DJS' THEN
+
+             select ISR.servicerequestnumber,IDAS.raname,IDAS.focuspersonid into v_servicerequestnumber,v_focuspersonname,v_focuspersonid from intakeservicerequest as ISR
+      join intakeservicerequestcourtaction as ISRCA
+    on ISRCA.intakenumber = ISR.intakenumber and ISRCA.activeflag = 1
+             join intakeservicerequestcourtordertypeconfig as ISRCOTC
+    on ISRCOTC.intakeservicerequestcourtactionid = ISRCA.intakeservicerequestcourtactionid and ISRCOTC.activeflag=1
+      join intakedastaging as IDAS
+    on IDAS.intakenumber = ISR.intakenumber and IDAS.activeflag = 1
+      where ISR.intakeserviceid = intake_service_req_id and ISRCOTC.courtordertypekey = 'PS' and ISR.activeflag = 1;
+               
+             IF ((cast(v_servicerequestnumber as character varying)!='') and (cast(v_focuspersonname as character varying)!='') and (cast(v_focuspersonid as character varying)!='')) THEN
+             v_alertnotes = 'Safety Plan Initiative is set for '||v_focuspersonname ||'  in Case '||  v_servicerequestnumber;
+             SELECT savepersonalert INTO v_savepersonalert FROM as_savepersonalert('YSPL'::character varying,'Active'::character varying,now()::timestamp without time zone,v_alertnotes,v_focuspersonid,fromuserid);
+      
+     END IF;
+ 
+    END IF;
+        
+RETURN result;
+END;
+
+$function$
+

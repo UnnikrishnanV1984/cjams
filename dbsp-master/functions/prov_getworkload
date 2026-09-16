@@ -1,0 +1,113 @@
+CREATE OR REPLACE FUNCTION prov_getworkload(v_objectid character varying, v_objecttypekey character varying)
+ RETURNS TABLE(providerassignmentid uuid, casetype character varying, countyname character varying, teamname character varying, enddate timestamp without time zone, startdate timestamp without time zone, statustypekey character varying, remarks character varying, toteamid uuid, toworkeridno character varying, fromworkerdetails json, toworkerdetails json, loadnumber character varying, localdepartment character varying, tosecurityusersdata json, fromsecurityusersiddata json, countyid character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN  
+
+   RETURN  QUERY 
+   
+  SELECT    
+    PVA.providerassignmentid ::uuid,
+    PVA.objecttypekey as casetype,
+    c.countyname::character varying countyname,
+    T.teamname,
+--    COALESCE(PVA.startdate,PVA.effectivedate)::timestamp,
+    PVA.enddate,
+    PVA.startdate,
+    PVA.statustypekey,
+    PVA.remarks,
+    PVA.toteamid,
+    PVA.toworkeridno,
+   (SELECT  json_agg(x)  FROM  (
+   SELECT 
+     cast(UP2.firstname || ' ' || UP2.lastname as character varying)as fromworkername,
+     UP2.email,
+     UP2.cjamspid,
+     UPA.county,
+     UPP.phonenumber,
+     UP2.securityusersid
+    FROM  userprofile UP2  
+     LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = PVA.fromworkeridno AND UPA.activeflag =1
+     LEFT JOIN userprofilephonenumber UPP ON UPP.securityusersid = PVA.fromworkeridno AND UPP.activeflag =1 
+     WHERE UP2.securityusersid = COALESCE(PVA.fromworkeridno,PVA.fromsupervisoridno)  --AND UP2.activeflag =1
+     )  AS  x  )  AS  fromworkerdetails,
+
+   
+  (SELECT  json_agg(y)  FROM  (
+   SELECT 
+    cast(UP.firstname || ' ' || UP.lastname as character varying)as toworkername,
+    UP.email,
+    UP.cjamspid,
+    UPA.county,
+    UPP.phonenumber,
+    UP.securityusersid
+   FROM   userprofile UP 
+    LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = PVA.toworkeridno AND UPA.activeflag =1
+    LEFT JOIN userprofilephonenumber UPP ON UPP.securityusersid = PVA.toworkeridno AND UPP.activeflag =1  
+    WHERE UP.securityusersid = PVA.toworkeridno   --AND UP.activeflag =1
+    )  AS  y  )  AS  toworkerdetails,
+   
+  (SELECT tm.loadnumber FROM teammember tm
+    INNER JOIN  teammemberassignment tma on tma.teammemberid = tm.teammemberid where tma.securityusersid = PVA.toworkeridno limit 1
+  ) AS loadnumber,
+  --(SELECT ld.teamname FROM team ld WHERE (ld.teamid = t.parentteamid OR ld.teamid = DT.teamid) AND ld.activeflag =1 AND ld.teamtypekey ='LDSS' LIMIT  1),
+  (CASE COALESCE(PVA.toldssid::character varying ,'') 
+   WHEN '' THEN c.countyname
+   ELSE (SELECT c1.countyname from county c1 WHERE c1.countyid = PVA.toldssid LIMIT 1)
+  END )::character varying parentteamname,
+--  (SELECT  json_agg(x)  
+--   FROM  (
+--     
+--   SELECT  p.firstname,p.lastname,p.personid,acr.adoptioncaseactorid as intakeservicerequestactorid
+--   FROM  caseassignmentactor CAA
+--     INNER JOIN adoptioncaseactor  acr on acr.adoptioncaseactorid = caa.intakeservicerequestactorid --and acr.activeflag =1
+--     INNER JOIN person P on p.personid = acr.personid --and p.activeflag = 1
+--   WHERE  CAA.caseassignmentid = PVA.caseassignmentid AND CAA.activeflag =1 AND PVA.objecttypekey ='adoptioncase'
+--   UNION  ALL
+--   SELECT  p.firstname,p.lastname,p.personid,isra.intakeservicerequestactorid 
+--   FROM  caseassignmentactor CAA
+--     INNER JOIN intakeservicerequestactor ISRA on isra.intakeservicerequestactorid = caa.intakeservicerequestactorid --and isra.activeflag =1
+--     INNER JOIN person P on p.personid = isra.personid --and p.activeflag = 1
+--   WHERE  CAA.caseassignmentid = PVA.caseassignmentid AND CAA.activeflag =1 AND PVA.objecttypekey <>'adoptioncase'    )  AS  x  
+--  )  AS  childinfo,
+   (SELECT  json_agg(x)  FROM  (
+   SELECT 
+     cast(UP2.firstname || ' ' || UP2.lastname as character varying)as fromworkername,
+     UP2.email,
+     UP2.cjamspid,
+     UPA.county,
+     UPP.phonenumber,
+     UP2.securityusersid
+    FROM  userprofile UP2  
+     LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = PVA.fromworkeridno AND UPA.activeflag =1
+     LEFT JOIN userprofilephonenumber UPP ON UPP.securityusersid = PVA.fromworkeridno AND UPP.activeflag =1 
+     WHERE UP2.securityusersid in 
+     (select tosecurityusersid from routing where objectid::character varying=v_objectid::character varying)
+     )  AS  x  )  AS  tosecurityusersdata,
+      (SELECT  json_agg(x)  FROM  (
+   SELECT 
+     cast(UP2.firstname || ' ' || UP2.lastname as character varying)as fromworkername,
+     UP2.email,
+     UP2.cjamspid,
+     UPA.county,
+     UPP.phonenumber,
+     UP2.securityusersid
+    FROM  userprofile UP2  
+     LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = PVA.fromworkeridno AND UPA.activeflag =1
+     LEFT JOIN userprofilephonenumber UPP ON UPP.securityusersid = PVA.fromworkeridno AND UPP.activeflag =1 
+     WHERE UP2.securityusersid in 
+     (select fromsecurityusersid from routing where objectid::character varying=v_objectid::character varying)
+     )  AS  x  )  AS  fromsecurityusersiddata,
+     c.countyid::character varying
+   
+ FROM providerassignment PVA
+ --LEFT JOIN county C on C.countycode = PVA.tocountycode AND C.activeflag =1
+ --LEFT JOIN team DT on DT.teamid = PVA.toldssid and DT.activeflag = 1
+  LEFT JOIN team T on T.teamid = PVA.toteamid --AND T.activeflag =1
+  LEFT JOIN county c on c.countyid = t.countyid::uuid AND C.activeflag =1
+ WHERE PVA.objectid = v_objectid and PVA.activeflag = 1 ORDER BY COALESCE(PVA.enddate:: date,now() + interval '1' day ) desc ; 
+END;
+
+$function$
+

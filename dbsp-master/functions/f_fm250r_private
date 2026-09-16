@@ -1,0 +1,158 @@
+CREATE OR REPLACE FUNCTION f_fm250r_private(start_date date, end_date date)
+ RETURNS TABLE(provider_id bigint, provider_name character varying, provider_category character varying, monthly_due_amount numeric, last_received_dt date, receivable_balance numeric, provider_contact character varying, provider_phone character varying, ldss character varying)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+   RETURN QUERY
+      (SELECT DISTINCT
+              AA.PROVIDER_ID,
+              AA.PROVIDER_NAME,
+              AA.PROVIDER_CATEGORY,
+              AA.MONTHLY_DUE_AMOUNT,
+              CASE
+                 WHEN RECEIPT_DT = OFFSET_DT
+                 THEN
+                    CASE
+                       WHEN RECEIPT_DT = DATE ('01/01/1900')
+                       THEN
+                          CAST (NULL AS DATE)
+                       ELSE
+                          RECEIPT_DT
+                    END
+                 ELSE
+                    CASE
+                       WHEN RECEIPT_DT > OFFSET_DT THEN RECEIPT_DT
+                       ELSE OFFSET_DT
+                    END
+              END
+                 AS LAST_RECEIVED_DT,
+              (COLLECTION_AMOUNT - TOTAL_COLLECTED_AMOUNT)
+                 AS RECEIVABLE_BALANCE,
+              (SELECT    COALESCE (ADM_CONTACT_FIRST_NM, '')
+                      || ' '
+                      || COALESCE (ADM_CONTACT_MIDDLE_NM, '')
+                      || ' '
+                      || COALESCE (ADM_CONTACT_LAST_NM, '')
+                      || ' '
+                      || COALESCE (
+                            (SELECT TB_PICKLIST_VALUES.VALUE_TX
+                              FROM TB_PICKLIST_VALUES
+                             WHERE     TB_PICKLIST_VALUES.PICKLIST_TYPE_ID =
+                                       214
+                                   AND TB_PICKLIST_VALUES.PICKLIST_VALUE_CD =
+                                       ADM_CONTACT_SUFFIX_CD),
+                            ' ') AS PRVREF_NM
+                 FROM TB_PROVIDER
+                WHERE TB_PROVIDER.PROVIDER_ID = AA.PROVIDER_ID)::CHARACTER VARYING
+                 AS PROVIDER_CONTACT,
+              (SELECT ADR_WORK_PHONE_TX
+                 FROM TB_PROVIDER
+                WHERE TB_PROVIDER.PROVIDER_ID = AA.PROVIDER_ID)
+                 AS PROVIDER_PHONE,
+              F_PLVALUE (AA.LDSS, 104)
+                 LDSS
+         FROM (SELECT RH.PROVIDER_ID
+                         AS PROVIDER_ID,
+                      RD.COUNTY_CD
+                         AS LDSS,
+                      F_ENAME ('2953', RH.PROVIDER_ID)
+                         AS PROVIDER_NAME,
+                      F_PLVALUE (
+                         COALESCE (
+                            F_PRVPCKLST_CAT (RH.PROVIDER_ID, 'PLACEMENT'),
+                            F_PRVPCKLST_CAT (RH.PROVIDER_ID, 'VENDOR')),
+                         155)
+                         AS PROVIDER_CATEGORY,
+                      PP.AMOUNT_NO
+                         AS MONTHLY_DUE_AMOUNT,
+                      (SELECT COALESCE (MAX (RECEIPT_DT),
+                                        DATE ('01/01/1900'))
+                        FROM TB_PAYMENT_RECEIPT
+                       WHERE     TB_PAYMENT_RECEIPT.PROVIDER_ID =
+                                 RH.PROVIDER_ID
+                             AND RECEIPT_DT >= CAST (START_DATE AS DATE)
+                             AND RECEIPT_DT <= CAST (END_DATE AS DATE)
+                             AND DELETE_SW = 'N')
+                         AS RECEIPT_DT,
+                      (SELECT COALESCE (MAX (OFFSET_DT), DATE ('01/01/1900'))
+                        FROM TB_RECEIVABLE_OFFSET
+                       WHERE     PAYMENT_ID IN
+                                    (SELECT PAYMENT_ID
+                                      FROM TB_PAYMENT_HEADER
+                                     WHERE     TB_PAYMENT_HEADER.PROVIDER_ID =
+                                               RH.PROVIDER_ID
+                                           AND DELETE_SW = 'N')
+                             AND OFFSET_DT >= CAST (START_DATE AS DATE)
+                             AND OFFSET_DT <= CAST (END_DATE AS DATE))
+                         AS OFFSET_DT,
+                      (SELECT COALESCE (SUM (PAYMENT_AMOUNT_NO), 0)
+                        FROM TB_PAYMENT_RECEIPT
+                       WHERE     TB_PAYMENT_RECEIPT.PROVIDER_ID =
+                                 RH.PROVIDER_ID
+                             AND RECEIPT_DT >= CAST (START_DATE AS DATE)
+                             AND RECEIPT_DT <= CAST (END_DATE AS DATE)
+                             AND DELETE_SW = 'N')
+                         COLLECTED_AMOUNT,
+                      (SELECT COALESCE (SUM (OFFSET_AMOUNT_NO), 0)
+                        FROM TB_RECEIVABLE_OFFSET
+                       WHERE     PAYMENT_ID IN
+                                    (SELECT PAYMENT_ID
+                                      FROM TB_PAYMENT_HEADER
+                                     WHERE     TB_PAYMENT_HEADER.PROVIDER_ID =
+                                               RH.PROVIDER_ID
+                                           AND DELETE_SW = 'N')
+                             AND OFFSET_DT >= CAST (START_DATE AS DATE)
+                             AND OFFSET_DT <= CAST (START_DATE AS DATE))
+                         AS OFFSET_AMOUNT,
+                      (SELECT COALESCE (SUM (AMOUNT_NO), 0)
+                        FROM TB_RECEIVABLE_DETAIL
+                       WHERE     RECEIVABLE_STATUS_CD <> '21'
+                             AND DELETE_SW = 'N'
+                             AND DATE (RECEIVABLE_TS) <=
+                                 DATE (CAST (END_DATE AS DATE))
+                             AND APPROVAL_STATUS_CD = '3047'
+                             AND END_DT <= CAST (END_DATE AS DATE)
+                             AND RECEIVABLE_ID = RH.RECEIVABLE_ID)
+                         AS COLLECTION_AMOUNT,
+                        (SELECT COALESCE (SUM (PAYMENT_AMOUNT_NO), 0)
+                          FROM TB_PAYMENT_RECEIPT
+                         WHERE     TB_PAYMENT_RECEIPT.PROVIDER_ID =
+                                   RH.PROVIDER_ID
+                               AND RECEIPT_DT <= CAST (END_DATE AS DATE)
+                               AND DELETE_SW = 'N')
+                      + (SELECT COALESCE (SUM (OFFSET_AMOUNT_NO), 0)
+                          FROM TB_RECEIVABLE_OFFSET
+                         WHERE     PAYMENT_ID IN
+                                      (SELECT PAYMENT_ID
+                                        FROM TB_PAYMENT_HEADER
+                                       WHERE     TB_PAYMENT_HEADER.PROVIDER_ID =
+                                                 RH.PROVIDER_ID
+                                             AND DELETE_SW = 'N')
+                               AND OFFSET_DT <= CAST (END_DATE AS DATE)
+                               AND DELETE_SW = 'N')
+                         AS TOTAL_COLLECTED_AMOUNT
+                 FROM TB_RECEIVABLE_DETAIL RD,
+                      TB_PAYMENT_PLAN PP,
+                      TB_RECEIVABLE_HEADER RH
+                WHERE     RH.RECEIVABLE_ID = RD.RECEIVABLE_ID
+                      AND RH.RECEIVABLE_ID = PP.RECEIVABLE_ID
+                      AND F_PRVPCKLST_CAT (RH.PROVIDER_ID, 'PLACEMENT') <>
+                          '1783'
+                      AND PP.PAYMENT_PLAN_ID =
+                          (SELECT MAX (PAYMENT_PLAN_ID)
+                            FROM TB_PAYMENT_PLAN PP1
+                           WHERE     PP1.RECEIVABLE_ID = RD.RECEIVABLE_ID
+                                 AND DELETE_SW = 'N'
+                                 AND PP1.START_DT <=
+                                     CAST (START_DATE AS DATE)
+                                 AND (   PP1.END_DT >=
+                                         CAST (END_DATE AS DATE)
+                                      OR PP1.END_DT IS NULL))
+                      AND RECEIVABLE_BALANCE_NO > 0
+                      AND DATE (RECEIVABLE_TS) <= CAST (START_DATE AS DATE))
+              AS AA
+        WHERE    AA.TOTAL_COLLECTED_AMOUNT < AA.MONTHLY_DUE_AMOUNT
+              OR AA.COLLECTED_AMOUNT IS NULL);
+END;
+$function$
+

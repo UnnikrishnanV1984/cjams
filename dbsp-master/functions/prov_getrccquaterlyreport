@@ -1,0 +1,129 @@
+CREATE OR REPLACE FUNCTION prov_getrccquaterlyreport(v_monitoring_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_provider_info json;
+v_entrance_conf json;
+v_exit_conf json;
+v_provider_id integer;
+
+v_child_record json;
+v_staff_record json;
+v_parent_record json;
+v_personsign json;
+v_child_interview json;
+v_staff_interview json;
+v_parent_interview json;
+v_monitor_info json;
+v_site_list json;
+v_officers_info json;
+v_activity_info json;
+v_board_interview json;
+v_pplant_record json;
+v_noncomplience_list json;
+v_monitoring json;
+v_pminfo_info json;
+v_sofficers_info json;
+v_startdate date;
+v_enddate date;
+v_prgram character varying;
+v_monitoringids text;
+--v_monitoringids json;
+i json;
+
+begin
+ 
+ select provider_id,to_char(date_trunc('quarter', monitoring_dt)  - interval '1 months' ),to_char( monitoring_dt),prgram into v_provider_id,v_startdate,v_enddate,v_prgram from prov_monitoring where monitoring_id = v_monitoring_id limit 1;
+raise notice 'monitoring: %', v_monitoring_id;
+raise notice 'v_startdate: %', v_startdate;
+raise notice 'v_enddate: %', v_enddate;
+raise notice 'v_provider_id: %', v_provider_id;
+--select string_agg(trim(''''||monitoring_id||'''', '"'), ',') into v_monitoringids from prov_monitoring where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+--((periodic='Monthly') or  (monitoring_id =v_monitoring_id));
+--v_monitoringids:='(' || v_monitoringids|| ')'::text;
+--select monitoring_id from prov_monitoring where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+--((periodic='Monthly') or  (monitoring_id =v_monitoring_id));
+
+-- select json_agg(monitorinfo)into v_monitor_info  from(select * from prov_monitoring pm where pm.monitoring_id in 
+--            (select monitoring_id from prov_monitoring where provider_id='2020002678')) monitorinfo;
+           
+--select json_agg(monitorids) into v_monitoringids from (select monitoring_id from prov_monitoring where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+--((periodic='Monthly') or  (monitoring_id =v_monitoring_id)))monitorids;
+----
+select json_agg(monitorinfo)into v_monitor_info  from(select * from prov_monitoring pm where pm.monitoring_id in
+(select monitoring_id from  prov_monitoring where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+((periodic='Monthly') or  (monitoring_id =v_monitoring_id))) )monitorinfo;
+
+raise notice 'v_monitoringids now3333333: %', v_monitoringids;
+raise notice 'v_monitor_info now3333333: %', v_monitor_info;
+
+
+ select json_agg(activityinfo) into v_activity_info from (select * from tb_provider_applicant_checklist where category = 'Monitoring' and monitoring_id in (select monitoring_id from  prov_monitoring where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+((periodic='Monthly') or  (monitoring_id =v_monitoring_id))))activityinfo;
+
+ select json_agg(siteinfo) into v_site_list from (select tpaa.agency,tpaa.program_name,pac.children_no,tpl.license_no,tpl.site_id, tpl.license_level, tpl.license_type,tpl.licensed_beds_no,tpl.license_expiry_dt,
+        tpaa.requested_license_effective_date,tpaa.requested_license_end_date,
+  concat_ws( ',' , coalesce(tpa.adr_street_nm,''),coalesce(tpa.adr_city_nm,'') 
+   ,(select coalesce(countyname,'') from county where statecountycode = tpa.adr_county_cd ), 
+   (select coalesce(value_text) from referencevalues where  ref_key= tpa.adr_state_cd  and referencetypeid = 211),
+   coalesce(tpa.adr_zip5_no:: character varying,'') ) formatted_address,
+  tpa.adr_street_nm as address_line1,
+  concat_ws( ',' ,coalesce(tpa.adr_city_nm,'') 
+   ,(select coalesce(countyname,'') from county where statecountycode = tpa.adr_county_cd ), 
+   (select coalesce(value_text) from referencevalues where  ref_key= tpa.adr_state_cd  and referencetypeid = 211),
+   coalesce(tpa.adr_zip5_no:: character varying,'') ) address_line2
+        from prov_monitoring_site pms 
+        join  tb_provider_applicant tpaa on tpaa.applicant_id = pms.applicant_id
+  left join tb_provider_licensing tpl on tpl.site_id=tpaa.site_id
+        inner join tb_provider tp on tpaa.provider_id = tp.provider_id :: character varying 
+  left join tb_provider_applicant_addresses tpa on tpa.parent_key_id= tpaa.applicant_id 
+    left join tb_prov_accomodation pac on pac.license_application_id = tpl.license_application_id and pac.delete_sw = 'N'
+        where pms.monitoring_id in ((select monitoring_id from  prov_monitoring where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+((periodic='Monthly') or  (monitoring_id =v_monitoring_id)))))siteinfo;
+
+    select json_agg(providerinfo) into v_provider_info from (select pi.agency,pi.provider_first_nm,pi.provider_last_nm,pi.provider_middle_nm,(cast(initcap(trim(tbpad.adr_street_tx) 
+    ||' ' ||trim(tbpad.adr_street_nm) ||' ' ||trim(tbpad.adr_city_nm) ||' ' ||trim(tbpad.adr_state_cd) ||' ' || trim(tbpad.adr_zip5_no::character VARYING)) AS character VARYING)) AS address
+    from tb_provider pi inner join tb_provider_addresses tbpad on tbpad.parent_key_id = pi.provider_id :: character varying and tbpad.delete_sw ='N' where pi.provider_id=v_provider_id)providerinfo;
+ 
+    select json_agg(entrance_conf) into v_entrance_conf from (select * from prov_listentranceconf(v_monitoring_id)) entrance_conf;
+ select json_agg(exit_conf) into v_exit_conf from (select * from prov_listexitconf(v_monitoring_id)) exit_conf;
+
+ select json_agg(pminfo) into v_pminfo_info from (select * from providerstaff where object_id=v_provider_id::character varying and employee_type='Program Administrator' and delete_sw = 'N' limit 1)pminfo;
+
+ select json_agg(officers) into v_officers_info from (select * from muser mu,(select distinct tpd.fromsecurityusersid,tpd.fromroleid from tb_provider tp
+ inner join tb_provider_applicant tpa on tpa.provider_id=tp.provider_id::character varying
+ inner join tb_provider_decision tpd on tpa.applicant_id=tpd.objectid 
+ where tpd.fromroleid in ('Program Manager','Licensing Administrator') and tp.provider_id=v_provider_id) a where mu.securityusersid =a.fromsecurityusersid)officers;
+
+ select json_agg(officers) into v_sofficers_info from (select tmrt.roletypekey,tmrt.description,up.fullname from  teammemberassignment tma 
+ INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+ INNER JOIN  teammemberroletype  tmrt   ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+ inner join userprofile up on up.securityusersid=tma.securityusersid
+ where tmrt.roletypekey in ('PVRDJSSD','PVRDJSPD'))officers;
+  
+ select * from getmonitorquesans(v_monitoring_id, 'Child','Record') into v_child_record;
+ select * from getmonitorquesans(v_monitoring_id, 'Staff','Record') into v_staff_record;
+ select * from getmonitorquesans(v_monitoring_id, 'Parent','Record') into v_parent_record;
+ select * from getmonitorquesans(v_monitoring_id, 'Physical Plant','Record') into v_pplant_record;
+
+ select * from getmonitorquesans(v_monitoring_id, 'Child','Interview') into v_child_interview;
+ select * from getmonitorquesans(v_monitoring_id, 'Staff','Interview') into v_staff_interview;
+ select * from getmonitorquesans(v_monitoring_id, 'Parent','Interview') into v_parent_interview;
+ select * from getmonitorquesans(v_monitoring_id, 'Board member','Interview') into v_board_interview;
+ raise notice 'monitoring:start %', v_monitoring;
+    v_monitoring:=json_build_object('monitoring_id',v_monitoring_id,'report','quarterly');
+       raise notice 'monitoring:end %', v_monitoring;
+ select * from prov_getnoncompliance(v_monitoring) into v_noncomplience_list;
+
+select provider_signature into v_personsign  from prov_monitoring where monitoring_id::character varying=v_monitoring_id;
+
+raise notice '%', '';
+return (json_build_object('activity_info',v_activity_info,'officers_info',v_officers_info,'site_list',v_site_list,'monitor_info',v_monitor_info,'provider_info', v_provider_info,'exit_conf',v_exit_conf,'entrance_conf',v_entrance_conf,
+'child_record',v_child_record,'staff_record',v_staff_record,'parent_record',v_parent_record,'pplant_record',v_pplant_record,
+'child_interview',v_child_interview,'staff_interview',v_staff_interview,'parent_interview',v_parent_interview,'board_interview',v_board_interview,
+'noncomplience_list',v_noncomplience_list,'pminfo_info',v_pminfo_info,'sofficers_info',v_sofficers_info,'person_signature',v_personsign));
+
+END;
+$function$
+

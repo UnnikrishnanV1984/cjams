@@ -1,0 +1,106 @@
+DROP FUNCTION IF EXISTS cjams.gethouseholdinfoincome(v_removalid integer, v_toclientid integer);
+CREATE OR REPLACE FUNCTION cjams.gethouseholdinfoincome(v_removalid integer, v_toclientid integer)
+ RETURNS TABLE(involvedclientid integer, nameofhouseholdmember text, removalid integer, isincomedeemed character varying, inau character varying, disregardearnedincome character varying, alienstatustypekey character varying, citizenalenageflag integer, relationshiptypekey character varying, description text, earnedincome json, unearnedincome json, supportexpense json, asset json)
+ LANGUAGE plpgsql
+AS $function$
+ ------------------------------------------------------------------------------------------------------------
+-- Revision(s)
+-- 03/26/2025 Manasa Kasula - Person search Enhancements to retain the clientflag to 2 for providers when added to a case. (CIDM-10291)
+------------------------------------------------------------------------------------------------------------                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+
+DECLARE
+
+BEGIN
+
+RETURN QUERY 
+SELECT i.involvedclientid::int as ClientID, 
+CONCAT(p.firstname, ' ',p.lastname) as NameOfHouseholdMember,
+i.removalid::int,
+i.deemedincome as IsIncomeDeemed,
+i.assistanceunit as InAU,
+i.disregardearnedincome,
+p.alienstatustypekey,
+p.citizenalenageflag,
+(select ar.relationshiptypekey from actorrelationship ar join person pr on pr.cjamspid = i.involvedclientid join person pr1 on pr1.cjamspid = v_toclientid join relationshiptype rt on rt.relationshiptypekey = ar.relationshiptypekey where ar.person1id = pr.personid and ar.person2id = pr1.personid and ar.activeflag = 1 limit 1),
+(select rt.description from actorrelationship ar join person pr on pr.cjamspid = i.involvedclientid join person pr1 on pr1.cjamspid = v_toclientid join relationshiptype rt on rt.relationshiptypekey = ar.relationshiptypekey where ar.person1id = pr.personid and ar.person2id = pr1.personid and ar.activeflag = 1 limit 1),
+(
+SELECT json_agg(ei) FROM 
+(
+SELECT --incomeid, datasourcetypekey, 
+pi.startdate as StartDate,
+pi.incomeid as IncomeID,
+pi.enddate as EndDate,
+pi.datasourcetypekey as IncomeDataSource,
+pi.incomesourcetypekey as IncomeSourceType,
+pi.incomefrequencytypekey,
+pi.verificationtypekey as IncomeVerification,    
+tcis.exempt_sw as Exempts,
+pi.monthlyamount as IncomeAmount,
+pi.incomedisregardflag as IncomeDisregard,
+tcis.earned_sw as IncomeType,
+tcce.amount_earned_no as ChildCareAmoutEarned
+FROM personincome pi 
+inner join tb_client_income_source tcis on pi.incomesourcetypekey=tcis.income_source_id::character varying 
+left outer join tb_child_care_expense tcce on tcce.incomeid=pi.incomeid
+where pi.personid = p.personid and tcis.earned_sw = 'E' and exempt_sw = 'N' and pi.activeflag = 1
+) ei
+) as "earnedIncome",
+(
+SELECT json_agg(uei) FROM 
+(
+SELECT --incomeid, datasourcetypekey, 
+pi.startdate as StartDate,
+pi.incomeid as IncomeID,
+pi.enddate as EndDate,
+pi.datasourcetypekey as IncomeDataSource,
+pi.incomesourcetypekey as IncomeSourceType,
+pi.incomefrequencytypekey,
+pi.verificationtypekey as IncomeVerification,    
+tcis.exempt_sw as Exempts,
+pi.monthlyamount as IncomeAmount,
+pi.incomedisregardflag as IncomeDisregard,
+tcis.earned_sw as IncomeType,
+tcce.amount_earned_no as ChildCareAmoutEarned
+FROM personincome pi 
+inner join tb_client_income_source tcis on pi.incomesourcetypekey=tcis.income_source_id::character varying 
+left outer join tb_child_care_expense tcce on tcce.incomeid=pi.incomeid
+where pi.personid = p.personid and tcis.earned_sw = 'U' and tcis.delete_sw = 'N' and pi.activeflag = 1
+) uei
+) as "unearnedIncome",
+(
+SELECT json_agg(uei) FROM 
+(
+select         
+    cso.sopaymentamount as SupportExpenseAmount            
+    from csesclientsupportorder cso 
+where cso.personid = p.personid and cso.activeflag = 1
+) uei
+) as "supportExpense",
+(
+SELECT json_agg(assetdata) FROM 
+(
+SELECT 
+pa.disregardflag as Disregard,
+pa.beneficiaryname as AssetBeneficiary,
+pa.assettypekey as AssetType,
+pa.verificationtypekey as AssetVerification,
+pa.purchasedate as AssetStartDate,
+pa.disposaldate as AssetEndDate,
+pa.marketvaluetypekey as AssetsMarketValue,
+pa.facevalue as AssetFaceValue,
+pa.amountowed as AmountOwed
+from personasset pa
+WHERE pa.personid =  p.personid and pa.activeflag = 1
+
+) assetdata
+) as "asset"
+
+FROM ivepersonincome i
+inner join person p on i.involvedclientid=p.cjamspid
+inner join intakeservreqchildremoval isrcr on isrcr.removalid = i.removalid and isrcr.activeflag = 1
+where i.removalid = v_removalid and  i.toclientid=v_toclientid and i.activeflag=1;
+
+end;
+
+$function$
+;

@@ -1,0 +1,190 @@
+CREATE OR REPLACE FUNCTION getreferrallist(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_taxid numeric;
+    v_providernm character varying;
+    v_providerdecision character varying;
+    v_referralid character varying;
+    v_providerid int;
+ v_pagenumber int;
+ v_pageoffset int;
+v_data json;
+ 
+BEGIN 
+v_taxid := searchobj ->> 'tax_id';
+v_providernm := searchobj ->> 'provider_referral_nm';
+v_providerdecision := searchobj ->> 'referral_decision';
+v_referralid := searchobj ->> 'referral_id';
+v_providerid := searchobj ->> 'provider_id';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+if (v_referralid IS NULL) THEN 
+  select array_to_json(array_agg(row_to_json(t)))
+  from (
+  select count(1) over() as totalcount, a.* from (SELECT 
+  DISTINCT ON (p.provider_id) p.provider_id ,
+  p.mail_code_tx ,
+  p.prov_tax_type_cd ,
+  p.tax_id_no as corporation_entity_taxid,
+  p.indicator_1099_sw ,
+  p.medicaid_sw ,
+  p.withhold_payment_sw ,
+  p.admission_comments_tx ,
+  tpp.picklist_value_cd as provider_category_cd ,
+  p.conversion_no_tx ,
+  p.source_tx ,
+  p.provider_status_cd ,
+  p.paid_sw ,
+  p.profit_sw ,
+  p.provider_nm  as provider_referral_nm,
+  p.provider_prefix_cd ,
+  p.adm_contact_first_nm as provider_referral_first_nm,
+  p.provider_middle_nm ,
+  p.adm_contact_last_nm as provider_referral_last_nm,
+  p.provider_suffix_cd ,
+  p.business_start_tm ,
+  p.business_end_tm ,
+  p.medical_license_no_tx ,
+  p.medical_speciality_tx ,
+  p.school_district_tx ,
+  p.county_cd ,
+  p.collecting_entity_cd ,
+  p.vacancy_no ,
+  p.pay_to_affiliate_cd ,
+  p.dob_dt,
+  p.ref_contact_prefix_cd ,
+  p.ref_contact_first_nm ,
+  p.ref_contact_middle_nm ,
+  p.ref_contact_last_nm ,
+  p.ref_contact_suffix_cd ,
+  p.adm_contact_prefix_cd ,
+  p.adm_contact_first_nm ,
+  p.adm_contact_middle_nm ,
+  p.adm_contact_last_nm ,
+  p.adm_contact_suffix_cd ,
+  p.adr_work_phone_tx ,
+  p.adr_work_xtn_tx ,
+  p.adr_home_phone_tx ,
+  p.adr_pager_tx ,
+  p.adr_email_tx ,
+  p.adr_fax_tx ,
+  p.adr_cell_phone_tx ,
+  p.adr_url_tx ,
+  p.adr_other_contact_tx ,
+  p.create_ts ,
+  p.create_user_id ,
+  p.update_ts ,
+  p.update_user_id ,
+  p.delete_sw ,
+  p.affiliate_provider_id ,
+  p.co_prefix_cd ,
+  p.co_first_nm ,
+  p.co_middle_nm ,
+  p.co_last_nm ,
+  p.co_suffix_cd ,
+  p.co_ssn_no ,
+  p.co_dob_dt,
+  p.provider_type_cd ,
+  p.ive_reimbursable_sw ,
+  p.accept_plcmnt_ref_sw ,
+  p.ref_work_phone_tx ,
+  p.ref_work_xtn_tx ,
+  p.ref_home_phone_tx ,
+  p.ref_pager_tx ,
+  p.ref_email_tx ,
+  p.ref_fax_tx ,
+  p.ref_cell_phone_tx ,
+  p.ref_url_tx ,
+  p.ref_other_contact_tx ,
+  p.adm_work_phone_tx ,
+  p.adm_work_xtn_tx ,
+  p.adm_home_phone_tx ,
+  p.adm_pager_tx ,
+  p.adm_email_tx ,
+  p.adm_fax_tx ,
+  p.adm_cell_phone_tx ,
+  p.adm_url_tx ,
+  p.adm_other_contact_tx ,
+  p.formatted_first_nm ,
+  p.formatted_last_nm ,
+  p.first_nm_soundex ,
+  p.last_nm_soundex ,
+  p.eft_sw ,
+  p.formatted_middle_nm ,
+  p.formatted_provider_nm ,
+  p.provider_nm_soundex ,
+  p.lnm_soundex ,
+  p.fnm_soundex ,
+  p.pnm_soundex ,
+  p.info_date_changed,
+  p.reason_changed ,
+  p.old_provider_id ,
+  p.county_cd_tx ,
+  p.agency as license_agency, 
+  t1.provider_program_type,
+  pr.parent_entity,
+  pr.corporation_entity,
+  pr.is_son,
+  pr.is_rfp,
+  pr.is_taxid
+   
+    from tb_provider p    
+   left join  tb_provider_referral pr  on pr.provider_id = p.provider_id 
+   join tb_provider_picklist tpp on tpp.provider_id = p.provider_id and tpp.delete_sw = 'N'
+   LEFT JOIN LATERAL (
+    select array_to_json(array_agg(row_to_json(d))) as provider_program_type
+      from (
+     select distinct pt.program_type from tb_prov_ref_program_type pt 
+     join tb_provider_applicant tpa on tpa.applicant_id = pt.applicant_id
+     where tpa.provider_id = p.provider_id
+     ) d
+      
+   ) t1 ON ( 1=1 )
+   --join tb_prov_ref_program_type prg on pr.provider_referral_id = prg.referral_id
+   --left join tb_provider_referral_addresses pra on pr.provider_referral_id = pra.parent_key_id
+    where  (v_taxid is null or p.tax_id_no like '%'||v_taxid||'%') 
+    --and (v_referralid is null or pr.provider_referral_id=v_referralid) 
+    and  (COALESCE(lower(p.provider_nm) ,'') LIKE '%'||COALESCE(lower(v_providernm) ,'')||'%')
+  -- and  (COALESCE(lower(pr.referral_decision) ,'') LIKE COALESCE(lower(v_providerdecision) ,'')||'%')
+      and (v_providerid is null or p.provider_id=v_providerid)
+   --and pr.referral_status = 'Approved' 
+   and trim(tpp.picklist_value_cd) = '3049' and trim(tpp.picklist_type_id) = '155'
+    ) a order by a.provider_id desc LIMIT v_liPageSize OFFSET v_pageoffset
+  ) t into v_data;
+else 
+  select array_to_json(array_agg(row_to_json(t)))
+  from (
+  SELECT count(1) over() as totalcount,pr.*,
+   --pra.adr_city_nm,pra.adr_street_nm,(pra.adr_street_no)::int,(pra.adr_zip5_no)::int,pra.adr_state_cd,pra.adr_county_cd,pra.adr_country_tx,pra.adr_state_cd as state,
+   (
+     select array_to_json(array_agg(row_to_json(d)))
+     from (
+    select pt.program_type, pt.program_type_id from tb_prov_ref_program_type pt
+    where pt.referral_id = pr.provider_referral_id 
+     ) d
+   ) as provider_program_type
+    from tb_provider_referral pr 
+   --join tb_provider p on pr.provider_id = p.provider_id 
+   --join tb_prov_ref_program_type prg on pr.provider_referral_id = prg.referral_id
+   --left join tb_provider_referral_addresses pra on pr.provider_referral_id = pra.parent_key_id
+    where  (v_taxid is null or pr.corporation_entity_taxid=v_taxid) 
+    and (pr.provider_referral_id=v_referralid) 
+    and  (COALESCE(lower(pr.provider_referral_nm) ,'') LIKE COALESCE(lower(v_providernm) ,'')||'%')
+   and  (COALESCE(lower(pr.referral_decision) ,'') LIKE COALESCE(lower(v_providerdecision) ,'')||'%')
+      and (v_providerid is null or pr.provider_id=v_providerid)
+   --and pr.referral_status = 'Approved' 
+    LIMIT v_liPageSize OFFSET v_pageoffset
+  ) t into v_data;
+end if;
+ 
+
+return v_data;
+END;
+
+$function$
+

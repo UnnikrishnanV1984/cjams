@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION intakerecording(recordingdetailsjsondata json, intakeserviceid uuid, daservicerequestnumber character varying, securityuserid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+declare l_recording json;
+l_newProgressnoteId uuid;
+v_DAServiceRequestNumber VARCHAR(50);
+v_securityuserid character varying;
+v_date timestamp without time zone;
+recordingsloop json;
+v_RecordingDetailsjsondata json;
+v_IntakeServiceId uuid;
+v_contactroletypekey json;
+v_role json;
+v_progressnoteroletypeid uuid;
+v_person_actor json;
+begin
+ v_date:= now();
+ v_RecordingDetailsjsondata := RecordingDetailsjsondata; 
+ v_DAServiceRequestNumber := DAServiceRequestNumber;
+ v_securityuserid := securityuserid;
+ v_IntakeServiceId := IntakeServiceId;
+
+  FOR recordingsloop IN SELECT * FROM json_array_elements(v_RecordingDetailsjsondata)
+            LOOP
+                             
+                 -- Commented by Gavaskar 02/09/2018 Start
+
+                 v_contactroletypekey:= recordingsloop->>'contactroletypekey'; 
+                INSERT INTO progressnote(
+                        progressnotetypeid, title, description, entitytype,entitytypeid, pagetitle, pageurl, islatest,insertedby, 
+                        insertedon, savemode, progressnotesubtypeid, contactdate, contactname, progressnotetypekey,contactphone, contactemail, attemptindicator, 
+                        activeflag, stafftypekey, instantresults, contactstatus, drugscreen, progressnotepurposetypekey,locationname,starttime,endtime)            
+                VALUES ((recordingsloop->>'progressnotetypeid')::uuid,SUBSTRING(recordingsloop->>'title',1,50),recordingsloop->>'description','intakeservicerequest',v_IntakeServiceId,
+                recordingsloop->>'pagetitle',recordingsloop->>'pageurl',(recordingsloop->>'Islatest')::int,v_securityuserid,v_date,1::boolean,(recordingsloop->>'progressnotesubtypeid')::uuid,
+                (recordingsloop->>'contactdate')::timestamp,recordingsloop->>'contactname',recordingsloop->>'progressnotetypekey',recordingsloop->>'contactphone',
+                recordingsloop->>'contactEmail',(recordingsloop->>'Attemptindicator')::boolean,1, (recordingsloop->>'stafftype')::character varying,
+                (recordingsloop->>'instantresults')::integer, (recordingsloop->>'contactstatus')::boolean, (recordingsloop->>'drugscreen')::boolean,
+                (recordingsloop->>'progressnotepurposetypekey')::character varying,recordingsloop->>'locationname',(recordingsloop->>'starttime')::timestamp,
+                (recordingsloop->>'endtime')::timestamp) RETURNING "progressnoteid" INTO l_newProgressnoteId;
+                
+                
+                INSERT INTO progressnotedetail(
+                        progressnoteid, description, activeflag, 
+                        effectivedate, insertedby, insertedon)
+                VALUES (l_newProgressnoteId,recordingsloop->>'description',1,v_date,v_securityuserid,v_date);
+                
+                For v_person_actor in Select * from json_array_elements(recordingsloop->>'contactparticipant')
+          LOOP
+                INSERT INTO contactparticipant
+                (contactparticipantid, progressnoteid, participanttypekey,
+                intakeservicerequestactorid, firstname, lastname, address1, 
+                address2, city, state, zipcode, email, phonenumber, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id)
+                VALUES(gen_random_uuid(), l_newProgressnoteId, '', (v_person_actor->>'intakeservicerequestactorid')::uuid, '', '', '', '', '', '', '', '', '', 1, now(), v_securityuserid, now(), v_securityuserid, '', '');
+                END LOOP;
+
+                 v_contactroletypekey:= recordingsloop->>'contactroletypekey'; 
+
+                 For v_role in Select * from json_array_elements(v_contactroletypekey)
+     LOOP
+      v_progressnoteroletypeid :=   gen_random_uuid();
+      Insert Into progressnoteroletype (progressnoteroletypeid, progressnoteid, contactroletypekey, activeflag, insertedby,updatedby)
+      values (v_progressnoteroletypeid, l_newProgressnoteId, cast(v_role ->> 'contactroletypekey' as character varying),1, v_securityuserid, v_securityuserid);
+     
+     END LOOP;
+                
+            END LOOP;
+   
+        
+return l_recording;        
+end;
+
+
+$function$
+

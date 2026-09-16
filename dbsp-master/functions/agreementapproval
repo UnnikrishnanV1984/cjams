@@ -1,0 +1,387 @@
+CREATE OR REPLACE FUNCTION agreementapproval(v_securityuserid character varying, v_objectid uuid, appeventcode character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- Veera Nadimpalli - 12/09/2021 - Modifications for Gap Rate Approval
+------------------------------------------------------------------------------------------------
+
+                                
+DECLARE    
+v_gapid  uuid;
+v_startdate date;
+v_enddate date;
+v_gastartdate date;
+v_gaenddate date;
+v_clientid bigint;
+v_tcaamount numeric (10,2);
+v_providerid bigint;
+v_paymentamount  numeric (10,2);
+v_subsidyid bigint;
+v_gapagreementrateid uuid;
+v_newgapagreementrateid uuid;
+v_gapagreementid uuid;
+v_caseid bigint;
+v_disclosuredate date ;
+v_isoverride boolean;
+v_tcaamount1 character varying;
+v_eventcode int;
+v_routeddescription character varying;
+v_routingstatustypeid integer;
+v_gapsuspensionid uuid;
+v_guardian_subsidy_id int8;
+v_ratestartdate timestamp without time zone; --actually used for GAP startdate
+v_rateenddate timestamp without time zone;
+v_newgapsuspensionid uuid;
+v_newenddate  timestamp without time zone;
+v_newstartdate  timestamp without time zone;
+v_gapsuspensionrevisionid uuid;
+v_eligibility_count int;
+v_tousersid RECORD;
+v_username character varying;
+v_msg character varying;
+v_notifystatus character varying;  
+
+BEGIN
+
+  raise  notice  'appeventcode>>>>--%>',appeventcode;
+ 
+IF (appeventcode='GAAR') THEN
+
+    v_gapagreementid:=v_objectid;   
+ 
+ SELECT  gapid,startdate,enddate, 0 INTO  v_gapid , v_gastartdate ,v_gaenddate, v_tcaamount1 
+ FROM gapagreement  
+ WHERE gapagreementid = v_gapagreementid AND activeflag =1 LIMIT 1;
+ 
+    v_tcaamount:=  CASE COALESCE(v_tcaamount1,'') WHEN '' THEN 0 ELSE CAST( v_tcaamount1 as numeric) END;
+
+ SELECT  disclosuredate :: date INTO v_disclosuredate 
+ FROM gapdisclosure
+ WHERE gapid = v_gapid AND activeflag = 1 Limit 1;
+
+ SELECT gapagreementrateid,startdate,enddate, paymentamout,provider_id INTO 
+ v_gapagreementrateid,v_startdate,v_enddate,v_paymentamount,v_providerid
+ FROM gapagreementrate 
+ WHERE  gapagreementid =  v_gapagreementid AND activeflag =1 order by insertedon desc  LIMIT 1;
+ 
+
+
+ SELECT p.cjamspid , (isr.servicecasenumber:: bigint)   INTO v_clientid ,v_caseid
+ FROM guardianship ga
+ INNER JOIN permanencyplan tbp ON ga.permanencyplanid = tbp.permanencyplanid 
+ INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = tbp.intakeservicerequestactorid 
+ INNER JOIN person p ON p.personid = isra.personid and p.activeflag= 1
+ INNER JOIN servicecase isr ON isr.servicecaseid = ga.servicecaseid and isr.activeflag =1
+ WHERE ga.gapid = v_gapid and ga.activeflag =1 LIMIT 1;
+ 
+ SELECT  MAX(guardian_subsidy_id) INTO v_subsidyid
+ FROM tb_guardian_subsidy ;
+
+ v_subsidyid:= COALESCE(v_subsidyid,0) +1;
+
+ raise  notice  'v_gapagreementid>>>>--%>',v_gapagreementid;
+ raise  notice  'v_gapagreementrateid>>>>--%>',v_gapagreementrateid;
+
+ 
+ INSERT INTO gapannualreview(gapid, gapagreementid,reviewdate,ismanualentry,activeflag,insertedby,updatedby )
+  SELECT v_gapid,v_gapagreementid, v_enddate,0,1,v_securityuserid,v_securityuserid;
+ 
+    SELECT  rr.routingstatustypeid
+    into  v_routingstatustypeid  
+  FROM routing rr
+ where rr.eventcode::text = 'GAAR'::text AND rr.activeflag = 1  
+ AND rr.objectid=v_gapagreementid :: character varying order by rr.insertedon desc limit 1 ;  
+ 
+raise  notice  'v_routingstatustypeid>>>>--%>',v_routingstatustypeid;
+
+
+/*
+ select rateenddate into v_rateenddate from gapratesrevision where gaprateid = v_gapagreementrateid and activeflag=1 order by insertedon desc limit 1;
+
+   update gapagreementrate set activeflag=0,updatedon=now() where gapagreementrateid = v_gapagreementrateid;
+    
+   INSERT INTO gapagreementrate
+ (gapagreementid, startdate, enddate, paymentamout, isoverride, paymenttypekey, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, provider_id, status, negotiateddate, rateapprovaldate)
+ select gapagreementid, startdate, enddate, paymentamout, isoverride, paymenttypekey, notes, '1', effectivedate, insertedby, now(), updatedby, now(), old_id, provider_id,  'Approved', negotiateddate, rateapprovaldate
+ from gapagreementrate where gapagreementrateid = v_gapagreementrateid 
+  RETURNING "gapagreementrateid" INTO v_newgapagreementrateid ;
+ 
+   update gapagreementrate set enddate=v_rateenddate where gapagreementrateid=v_newgapagreementrateid;
+ 
+  update gapratesrevision set activeflag=0 --approvalstatustypekey = '3047',approvaldate = now()::date 
+  where gaprateid = v_gapagreementrateid ;
+ 
+  INSERT INTO gapratesrevision
+ ( transactiondate, ratestartdate, rateenddate, 
+  paymentamt, "comments", approvalstatustypekey, approvaldate, 
+  isoriginal, insertedon, insertedby, updatedon, updatedby, 
+  activeflag, gaprateid, guardiansubsidyid, providerid)
+ SELECT  transactiondate, ratestartdate, rateenddate, 
+ paymentamt, "comments", '3047', now()::date,
+ isoriginal, insertedon, insertedby, updatedon, updatedby, 
+ 1, v_newgapagreementrateid, guardiansubsidyid, providerid
+ FROM gapratesrevision where gaprateid = v_gapagreementrateid order by insertedon desc limit 1;
+
+  */
+ select guardian_subsidy_id into v_guardian_subsidy_id from tb_guardian_subsidy where gapagreementid=v_gapagreementid order by  create_ts desc limit 1;
+
+ select count(*) into v_eligibility_count from tb_client_eligibility where client_id = v_clientid and guardian_subsidy_id = v_guardian_subsidy_id and eligibility_type_cd = '2935';
+ IF (v_eligibility_count = 0) then 
+  INSERT INTO tb_client_eligibility 
+    (start_dt, 
+    end_dt, 
+    eligibility_type_cd, 
+    eligibility_status_cd, 
+    client_id, 
+    removal_id, 
+    create_user_id, 
+    update_user_id, 
+    delete_sw, 
+    adoption_id, 
+    case_id, 
+    data_valid_sw, 
+    client_merge_id, 
+    guardian_subsidy_id, 
+    transactionid, 
+    create_ts, 
+    update_ts)   
+   SELECT 
+    startdate::date,
+    enddate::date,  
+    '2935', 
+    '2909', 
+    v_clientid, 
+    null,
+    gap.insertedby,
+    gap.updatedby, 
+    'N',
+    null,
+    v_caseid ,
+    null,
+    null,
+    v_guardian_subsidy_id,--v_caseid::int8,-- null
+    null,
+    now(),
+    now()
+   FROM gapagreement gap where gap.gapagreementid=v_gapagreementid ;
+   
+   FOR v_tousersid IN 
+   select up.securityusersid from userprofile up 
+    inner join teammemberassignment tma on tma.securityusersid = up.securityusersid
+       inner join teammember tm on tm.teammemberid = tma.teammemberid 
+   where up.teamtypekey = 'CW' and tm.roletypekey = 'IVESV'
+   loop
+    SELECT COALESCE(lastname,'')||', '|| COALESCE(firstname,'')into v_username FROM userprofile WHERE securityusersid = v_securityuserid;
+    v_msg:= concat('Gap Initial Determination for client id ', v_clientid::text , ' is assigned by ', COALESCE( v_username,''));
+    SELECT send_notIFication INTO v_notifystatus FROM send_notIFication( v_tousersid.securityusersid,v_securityuserid, v_tousersid.securityusersid,
+    'System', 'High', v_msg, v_msg , v_objectid::varchar);
+   end loop;
+  END IF;
+
+    IF v_routingstatustypeid = 16 then  
+ 
+  raise  notice  'v_routingstatustypeid>>>>--%>',v_routingstatustypeid;
+  raise  notice  'v_gapagreementid>>>>--%>',v_gapagreementid;
+
+
+   --    update gapagreementrate set status='Approved',updatedon=now() where gapagreementrateid = v_gapagreementrateid;
+    
+    select startdate, enddate into v_ratestartdate, v_rateenddate from gapagreementrevision where gapagreementid = v_gapagreementid and activeflag=1 
+     order by updatedon desc limit 1;
+
+    update gapagreement set startdate=v_ratestartdate, enddate=v_rateenddate,updatedon=now() where gapagreementid = v_gapagreementid;
+    
+--  INSERT INTO gapagreementrate
+-- (gapagreementid, startdate, enddate, paymentamout, isoverride, paymenttypekey, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, provider_id, status, negotiateddate, rateapprovaldate)
+-- select gapagreementid, startdate, enddate, paymentamout, isoverride, paymenttypekey, notes, '1', effectivedate, insertedby, now(), updatedby, now(), old_id, provider_id,  'Approved', negotiateddate, rateapprovaldate
+-- from gapagreementrate where gapagreementrateid = v_gapagreementrateid 
+--  RETURNING "gapagreementrateid" INTO v_newgapagreementrateid ;
+ 
+ --  update gapagreementrate set enddate=v_rateenddate where gapagreementrateid=v_newgapagreementrateid;
+ 
+   update gapagreement set activeflag=1 --approvalstatustypekey = '3047'
+   where gapagreementid = v_gapagreementid  ;
+  
+    update gapagreementrevision set activeflag=0  ,approvaldate = now()::date 
+   where gapagreementid = v_gapagreementid and approvalstatustypekey = '3045' ;
+ 
+ 
+  INSERT INTO gapagreementrevision
+ ( gapagreementid, gapid, iscomprehensivehomestudy, iscgawardedcustody, isplacementenddate,
+ ischildreceivetca, startdate, enddate, signaturedate, guardianonedate, guardiantwodate, ldssdate, activeflag,
+ effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, tcaamount, isfianotified, fianotifieddate,
+ isrcnotifiedcontact, iscsnotifiedtocustody, approvalstatustypekey, approvaldate)
+ SELECT  gapagreementid, gapid, iscomprehensivehomestudy, iscgawardedcustody, isplacementenddate, 
+ ischildreceivetca, startdate, enddate, signaturedate, guardianonedate, guardiantwodate, ldssdate, 1,
+ effectivedate, insertedby,  now()::date, updatedby,  now(), old_id, tcaamount, isfianotified, fianotifieddate, 
+ isrcnotifiedcontact, iscsnotifiedtocustody, '3047',  now()
+ FROM gapagreementrevision where gapagreementid = v_gapagreementid order by insertedon desc limit 1;
+ 
+raise  notice  'v_gapagreementid>>>1>>>>>>--%>',v_gapagreementid;
+   
+    end if;   
+   
+   
+
+ELSIF (appeventcode = 'GARR' ) THEN
+
+    v_gapagreementrateid:=v_objectid;
+  
+ raise  notice  'v_gapagreementrateid-10 -%>',v_gapagreementrateid;
+   SELECT  rr.routingstatustypeid as integer
+    into v_routingstatustypeid  
+  FROM routing rr
+ where rr.eventcode::text = 'GARR'::text AND rr.activeflag = 1  
+ AND rr.objectid=v_gapagreementrateid :: character varying order by rr.insertedon desc limit 1 ; 
+raise  notice  'v_routingstatustypeid-10 -% ',v_routingstatustypeid;
+
+ SELECT  gapagreementrateid,gapagreementid,startdate,enddate, paymentamout,provider_id,isoverride INTO 
+ v_gapagreementrateid,v_gapagreementid,v_startdate,v_enddate,v_paymentamount,v_providerid,v_isoverride
+ FROM gapagreementrate 
+ WHERE  gapagreementrateid =  v_gapagreementrateid and activeflag =1  LIMIT 1;
+ 
+ SELECT  gapid   INTO  v_gapid   
+ FROM  gapagreement  
+ WHERE  gapagreementid  =  v_gapagreementid and activeflag =1 LIMIT  1; 
+  
+ SELECT  guardian_subsidy_id INTO v_subsidyid  
+ FROM tb_guardian_subsidy 
+ WHERE gapagreementid =  v_gapagreementid and delete_sw ='N' LIMIT 1;
+    
+ INSERT INTO gapannualreview(gapid, gapagreementid,reviewdate,ismanualentry,activeflag,
+        insertedby,updatedby )
+  SELECT v_gapid,v_gapagreementid,v_enddate,0,1,v_securityuserid,v_securityuserid;
+
+ IF v_isoverride = true THEN
+  raise  notice  'v_subsidyid--%>',v_subsidyid;
+
+  -- UPDATE  tb_gap_rates SET rate2_end_dt = v_enddate ,payment_amt = v_paymentamount,
+  --  override_status_cd  = '3045', rate_override_sw = 'Y'
+  -- WHERE    gapagreementrateid = v_gapagreementrateid AND delete_sw = 'N';
+ 
+ else
+  
+  raise  notice  'v_subsidyid-123 -%>',v_subsidyid;
+  raise  notice  'v_gapagreementrateid-11 -%>',v_gapagreementrateid;
+-- INSERT INTO tb_gap_rates(gap_rate_id,assistance_id,rate_start_dt,rate_end_dt,payment_amt,
+--       provider_id,delete_sw,approval_status_cd,gapagreementrateid)
+-- SELECT (coalesce((SELECT  MAX(gap_rate_id) 
+-- FROM tb_gap_rates),0)+1),v_subsidyid,v_startdate,v_enddate,v_paymentamount , 
+-- v_providerid,'N','3047',v_gapagreementrateid;
+ 
+ END IF;
+ 
+raise  notice  'v_gapagreementrateid-12 -%>',v_gapagreementrateid;
+raise  notice  'v_gapagreementrateid-13 -%>',v_gapagreementrateid;
+
+ update gapagreementrate set status='Approved',updatedon=now() where gapagreementrateid = v_gapagreementrateid;
+
+ raise  notice  'v_routingstatustypeid>>>>--%>',v_routingstatustypeid;
+
+   IF v_routingstatustypeid = 16 then  
+ 
+raise  notice  'v_routingstatustypeid>>>>--%>',v_routingstatustypeid;
+raise  notice  'v_gapagreementrateid>>>>--%>',v_gapagreementrateid;
+
+
+     update gapagreementrate set status='Approved',updatedon=now() where gapagreementrateid = v_gapagreementrateid;
+    
+   select rateenddate into v_rateenddate from gapratesrevision where gaprateid = v_gapagreementrateid and activeflag=1 
+    order by insertedon desc limit 1;
+
+   update gapagreementrate set enddate=v_rateenddate,updatedon=now() where gapagreementrateid = v_gapagreementrateid;
+    
+--  INSERT INTO gapagreementrate
+-- (gapagreementid, startdate, enddate, paymentamout, isoverride, paymenttypekey, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, provider_id, status, negotiateddate, rateapprovaldate)
+-- select gapagreementid, startdate, enddate, paymentamout, isoverride, paymenttypekey, notes, '1', effectivedate, insertedby, now(), updatedby, now(), old_id, provider_id,  'Approved', negotiateddate, rateapprovaldate
+-- from gapagreementrate where gapagreementrateid = v_gapagreementrateid 
+--  RETURNING "gapagreementrateid" INTO v_newgapagreementrateid ;
+ 
+ --  update gapagreementrate set enddate=v_rateenddate where gapagreementrateid=v_newgapagreementrateid;
+ 
+   update gapratesrevision set activeflag=1 ,approvaldate = now()::date , transactiondate = now()::date  --approvalstatustypekey = '3047'
+   where gaprateid = v_gapagreementrateid and approvalstatustypekey = '3047' ;
+  
+    update gapratesrevision set activeflag=0  ,approvaldate = now()::date ,transactiondate = now()::date --approvalstatustypekey = '3047'
+   where gaprateid = v_gapagreementrateid and approvalstatustypekey = '3045' ;
+ 
+ 
+  INSERT INTO gapratesrevision
+ ( transactiondate, ratestartdate, rateenddate, 
+  paymentamt, "comments", approvalstatustypekey, approvaldate, 
+  isoriginal, insertedon, insertedby, updatedon, updatedby, 
+  activeflag, gaprateid, guardiansubsidyid, providerid)
+ SELECT  transactiondate, ratestartdate, rateenddate, 
+ paymentamt, "comments", '3047', now()::date,
+ isoriginal, insertedon, insertedby, updatedon, updatedby, 
+ 1, v_gapagreementrateid, guardiansubsidyid, providerid
+ FROM gapratesrevision where gaprateid = v_gapagreementrateid order by insertedon desc limit 1;
+raise  notice  'v_gapagreementrateid>>>>--%>',v_gapagreementrateid;
+   
+    end if;   
+   
+   IF v_routingstatustypeid = 17 then     
+     update gapagreementrate set status='Rejected',updatedon=now() where gapagreementrateid = v_gapagreementrateid;   
+   end if;
+ 
+
+END IF;
+ 
+
+
+IF (appeventcode='GASR') then
+ 
+ v_gapsuspensionid:=v_objectid;   
+ 
+
+ update gapsuspension set activeflag = 0,updatedon=now()  
+  where gapsuspensionid = v_gapsuspensionid ;
+
+INSERT INTO gapsuspension
+  ( gapid, suspensionreasontypekey, startdate, enddate, notes, isdraft, suspensiondesc, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id, otherreason, approvalstatustypekey)
+SELECT  gapid, suspensionreasontypekey, startdate, enddate, notes, isdraft, suspensiondesc, 1, effectivedate, insertedby, now(), updatedby, now(), old_id, otherreason, '3047'
+FROM gapsuspension where gapsuspensionid = v_gapsuspensionid RETURNING "gapsuspensionid" INTO v_newgapsuspensionid ; 
+
+
+INSERT INTO routing(
+     eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+     FROMroleid, toroleid,objectid , routingstatustypeid,activeflag,
+     insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+     servicerequestnumber,remarks,routeddescription)
+    SELECT  'GASR', R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+       R.toroleid,R.FROMroleid,v_newgapsuspensionid :: character varying, 16,1,
+      R.insertedby,  R.updatedby,now(),now(), R.isreviewrequest, 
+      R.servicerequestnumber,'GAP Suspension Approved','GAP Suspension Approved' 
+      FROM routing as R 
+      WHERE R.objectid = v_objectid :: character varying
+      AND R.activeflag=1 and R.routingstatustypeid=16 order by R.insertedon desc limit 1;  
+
+ 
+   
+UPDATE routing SET activeflag=0 WHERE objectid =v_objectid :: character varying and eventcode='GASR'  and routingstatustypeid=16;
+  
+
+ update gapsuspensionrevision set activeflag = 0,updatedon=now()::Date  ,transactiondate = now()::date,approvaldate = now()::date
+  where suspensionid = v_objectid ; 
+ 
+INSERT INTO gapsuspensionrevision
+( suspensionid, guardiansubsidyid, transactiondate, reasontypekey, startdate, enddate, suspensiondesc, approvalstatustypekey, approvaldate, isoriginal, insertedon, insertedby, updatedon, updatedby, activeflag)
+SELECT  v_newgapsuspensionid, guardiansubsidyid, transactiondate, reasontypekey, startdate, enddate, suspensiondesc, '3047', approvaldate, isoriginal, now(), insertedby, now(), updatedby, 1
+FROM gapsuspensionrevision where suspensionid=v_objectid and approvalstatustypekey='3045' returning "gapsuspensionrevisionid" INTO v_gapsuspensionrevisionid ;
+
+select startdate,enddate into v_newstartdate,v_newenddate from gapsuspensionrevision where gapsuspensionrevisionid=v_gapsuspensionrevisionid;
+
+  update gapsuspension set enddate= v_newenddate,startdate=v_newstartdate  where gapsuspensionid=v_newgapsuspensionid;
+  
+ 
+end if;
+
+RETURN  'Success';
+
+END;
+ 
+$function$
+

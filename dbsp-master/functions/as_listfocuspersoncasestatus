@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION as_listfocuspersoncasestatus(v_intakeserviceid uuid, v_intakenumber character varying, v_personid uuid, v_status character varying, pagenumber bigint, pagesize bigint, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, focuspersoncasestatusid uuid, servicerequestnumber character varying, personid uuid, intakeserviceid uuid, intakenumber character varying, focuspersonstatustypekey character varying, description character varying, status character varying, startdate timestamp without time zone, enddate timestamp without time zone, manualclose boolean, effectivedate timestamp without time zone, opennotes text, closenotes text, createdname text)
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                   
+ DECLARE                                                                                                                                                                                                                                                                                                                                                                                                                           
+         v_pageoffset int;                                                                                                                                                                                                                                                                                                                                                                                                         
+         v_pagenumber int;                                                                                                                                                                                                                                                                                                                                                                                                         
+                                                                                                                                                                                                                                                                                                                                                                                                
+ BEGIN                                                                                                                                                                                                                                                                                                                                                                                                                             
+     v_pagenumber := pagenumber-1;                                                                                                                                                                                                                                                                                                                                                                                                 
+     v_pageoffset = v_pagenumber * pagesize;     
+
+       IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+  pagenumber := 1; 
+ END IF;                                                                                                                                                                                                                                                                                                                                                                                  
+                                                                                                                                                                                                                                                                                                                                                                                                                                   
+ RETURN query                                                                                                                                                                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                                                                                                                   
+ select count(1) OVER(),fp.focuspersoncasestatusid,ir.servicerequestnumber,fp.personid,fp.intakeserviceid,fp.intakenumber,fp.focuspersonstatustypekey,
+rv.description,fp.status,fp.startdate,
+fp.enddate,
+
+ case when
+((select json(ASM.submissiondata)->> 'panel2907352871485337SupervisionEpisodeEndDate' from assessment ASM 
+ join assessmenttemplate ASMT on ASMT.assessmenttemplateid=ASM.assessmenttemplateid  
+ and ASMT.name in ('subsequentScr') and ASMT.activeflag=1 and ASM.objectid=fp.intakeserviceid and ASM.objectname='servicerequest' 
+ order by ASM.insertedon ::date desc limit 1) ::date =
+ (select terminationdatetime ::date from intakeservicerequestcourtaction ina
+ join intakeservicerequestcourthearing inh on inh.intakeservicerequestcourthearingid=ina.intakeservicerequestcourthearingid and inh.hearingtypekey='Disp'
+ where ina.intakenumber=fp.intakenumber order by ina.insertedon::date limit 1) )
+ and fp.focuspersonstatustypekey='CTS' 
+ then fsk.ismanual=false else fsk.ismanual end as manualclose,fp.effectivedate,fp.opennotes,fp.closenotes,CONCAT(up.firstname,' ',up.lastname) as createdname
+from focuspersoncasestatus  fp
+left join referencevalues rv on rv.ref_key=fp.focuspersonstatustypekey and referencetypeid=21
+left join intakeservicerequest ir on fp.intakeserviceid = ir.intakeserviceid
+left join focusstatustypekeyconfig fsk on fsk.statustypekey = fp.focuspersonstatustypekey
+join userprofile up on fp.insertedby = up.securityusersid
+where (v_personid is null or fp.personid = v_personid)
+and (v_intakeserviceid is null or fp.intakeserviceid=v_intakeserviceid)
+and  (v_intakenumber is null or fp.intakenumber=v_intakenumber)
+and case when v_status='Open' then fp.status='Open' when v_status='Closed' then fp.status='Closed' else fp.status in ('Open','Closed') end
+LIMIT case when v_nolimit = false  then pagesize end offset case when v_nolimit = false  then v_pageoffset end;
+END;                                                                                                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                                                                                                                                   
+ $function$
+

@@ -1,0 +1,1 @@
+update adoptionapplicabilityinfo set ivestatus = 'APPROVED', updatedon = now(),updatedby = 'CDM-12926' where clientid  in  (4422526,3834189) and activeflag = 1;

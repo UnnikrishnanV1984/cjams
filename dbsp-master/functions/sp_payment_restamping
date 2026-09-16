@@ -1,0 +1,1427 @@
+CREATE OR REPLACE FUNCTION sp_payment_restamping(ad_run_dt date)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+------------------------------------------------------------------------\r
+--Sql Stored Procedure\r
+--Author : Gayathri Rajkumar\r
+--Date   : '2009-05-14'\r
+--Re-allocates child money for late transactions( Late entry, Late validation and Hold and Release)\r
+--Applied IVE logic\r
+--Gayathri Fixed negative amt '2009-06-02'   # 20315\r
+--Included Runtime log logic and fund_allocation_dt for restamping\r
+--Excluded current month late validations\r
+--Modified Coc Logic\r
+--Removed Hard coded\r
+--Modified System Adjustment logic - '2009-06-19'\r
+--Gayathri Modified the eligibility logic - '2010-04-05'\r
+-- 02/28/2012 Vineet Tirodkar - PRJ-02312\r
+-- To update Eligibility Status Code in TB_FUND_ALLOCATION_MASTER & TB_FUND_ALLOCATION_DETAIL\r
+-- 03/26/2012 Vineet Tirodkar - PRJ-02515\r
+-- To consider previously used child accounts funds from 'Closed' or 'Inactive' account. \r
+-- 09/04/2012 Vineet Tirodkar - Payment stamping batch production issue fix (Sept 2012)\r
+-- New condition ORDER BY ELIGIBILITY_ID DESC FETCH FIRST ROW ONLY in the SQL to get client's Eligibility Status.\r
+-- Added RETURN -1 for execptions & RETURN 0 for success\r
+-- 06/03/2020 Vineet Tirodkar - To fix issue of null/zero cost-of-care reimbursement amounts under all funding sources.\r
+-- 09/25/2020 Vineet Tirodkar - Changes to trim and compare Eligibility Status Code - CDM-4684\r
+-- 01/29/2021 Vineet Tirodkar - Modifications to update tb_fund_allocation_detail audit columns (CDM-9278)\r
+-- 04/30/2021 Vineet Tirodkar - Modifications to fix 1st System Adjustment Re-stamp Issue (No prior payment) (CDM-12488)\r
+-----------------------------------------------------------------------\r
+-- P1: BEGIN\r
+DECLARE vl_child_account_id    BIGINT       DEFAULT 0;\r
+DECLARE vl_client_id           BIGINT       DEFAULT 0;\r
+DECLARE vl_case_id             BIGINT       DEFAULT 0;\r
+DECLARE vl_eligiblity_status   INTEGER       DEFAULT 0;\r
+DECLARE vl_count            INTEGER       DEFAULT 0;\r
+DECLARE vn_payment_detail_id   BIGINT        DEFAULT 0;\r
+DECLARE vn_client_id           BIGINT       DEFAULT 0;\r
+DECLARE vn_client_account_id   BIGINT       DEFAULT 0;\r
+DECLARE vl_ret_status         INTEGER       DEFAULT 0;\r
+DECLARE vn_stamp_count           INTEGER       DEFAULT 0;\r
+DECLARE  vl_rs_eligiblity_status INTEGER       DEFAULT 0;\r
+--DECLARE  VN_STATUS_CHANGE        INTEGER       DEFAULT 0;\r
+DECLARE  VL_RUNTIME_ID           INTEGER       DEFAULT 0;\r
+\r
+DECLARE VN_PAYMENT_AMOUNT_NO   DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE COS_AMOUNT      DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE Vn_restamp_amt      DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_ssi_amt_adj_credit   DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_ssi_amt_adj_debit    DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_ssi_stamped_amt      DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_child_other_amount   DECIMAL(10,2) DEFAULT 0.00;\r
+\r
+DECLARE vdc_ssa_amt_adj_credit   DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_ssa_amt_adj_debit    DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_ssa_stamped_amt      DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_RS_SSI        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_RS_SSA        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_RS_COC        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_IS_SSI        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_IS_SSA        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_IS_COC        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_bl_SSI        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_bL_SSA        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VN_bl_COC        DECIMAL(10,2) DEFAULT 0.00;\r
+\r
+DECLARE vdc_othcoc_amt_adj_credit    DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_othcoc_amt_adj_debit     DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_othcoc_stamped_amt       DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vn_Required_balance          DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_Ive_require_amt        DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE vdc_state_amt              DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE TOTAL_ALL_AMT          DECIMAL(10,2) DEFAULT 0.00;\r
+DECLARE VDC_IVE_FUNDING_AMT          DECIMAL(10,2) DEFAULT 0.00;\r
+\r
+DECLARE VDT_START_DT  DATE  DEFAULT NULL;\r
+DECLARE VDT_END_DT    DATE  DEFAULT NULL;\r
+\r
+DECLARE VS_transaction_source_cd VARCHAR(4) DEFAULT NULL;\r
+DECLARE vs_fiscal_cat      VARCHAR(5) DEFAULT NULL;\r
+DECLARE VS_PRE_ELIGI_STATUS      CHAR(1)    DEFAULT 'N';\r
+DECLARE VS_ELIG_SW               CHAR(1) DEFAULT NULL;\r
+DECLARE vs_curr_elig_status_cd   VARCHAR(5);\r
+DECLARE vs_rs_elig_status_cd     VARCHAR(5);\r
+DECLARE vs_updt_elig_status_cd   VARCHAR(5);\r
+\r
+--Log Error\r
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';\r
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;\r
+p_sp_error CHAR(5);\r
+DECLARE vs_Procedure_nm  VARCHAR(100) DEFAULT 'SP_PAYMENT_RESTAMPING';\r
+DECLARE vs_identity_column  VARCHAR(100);\r
+DECLARE vs_identity_val  VARCHAR(100);\r
+DECLARE vs_message_text  VARCHAR(3000) DEFAULT '';\r
+DECLARE as_error       VARCHAR(3000);\r
+DECLARE al_sqlcode          INTEGER DEFAULT 0;\r
+DECLARE SQLCODE             INTEGER DEFAULT 0;\r
+DECLARE VL_SQL_CODE         INTEGER DEFAULT 0;\r
+\r
+-- Vineet START\r
+DECLARE vl_placement_id BIGINT;\r
+DECLARE vl_fund_alloc_cnt INTEGER;\r
+DECLARE V_SQL_STMT1 VARCHAR(3000);\r
+-- Selecting all client's FC payments eligible for Initial and restamping\r
+--DECLARE Late_entry_cur CURSOR WITH HOLD FOR s1;\r
+DECLARE Late_entry_cur REFCURSOR;\r
+DECLARE cur_late_validations REFCURSOR;\r
+DECLARE cur_late_validation_rec record;\r
+-- Vineet END\r
+\r
+-- Selecting all client's FC payments eligible for Initial and restamping\r
+--Declare Late_entry_cur cursor with hold for\r
+/*Declare Late_entry_cur cursor for\r
+ -- Late entry\r
+        select distinct * \r
+      from ( select distinct pd.payment_detail_id\r
+                 , ca.client_id\r
+                 , AT.BENEFIT_START_DT\r
+        , AT.BENEFIT_END_DT\r
+                 , pd.case_id\r
+                 , ( select payment_amount \r
+               from tb_fund_allocation_master \r
+         where payment_detail_id =  pd.payment_detail_id  \r
+               and delete_sw ='N') as pay_amt\r
+          from tb_payment_detail pd \r
+            inner join (tb_account_transaction at\r
+                             inner join tb_client_account ca on at.client_account_id = ca.client_account_id  )\r
+                     on pd.client_id = ca.client_id\r
+          where late_entry_sw = 'Y'\r
+                and final_service_start_dt between at.benefit_start_dt and at.benefit_end_dt\r
+                and At.delete_sw = 'N' \r
+       and ca.delete_sw = 'N'\r
+        union\r
+ -- Late validation (system adjustments)\r
+        Select pd.payment_detail_id\r
+         , client_id\r
+            , ph.payment_start_dt\r
+      , ph.payment_end_dt\r
+            , pd.case_id\r
+            , PD.FINAL_AMOUNT_NO  -\r
+                 COALESCE((  SELECT SUM(COALESCE(RD.AMOUNT_NO,0))\r
+                             FROM TB_RECEIVABLE_DETAIL RD\r
+                       WHERE RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID\r
+                       AND RD.DELETE_SW = 'N' ),0) as  pay_amt\r
+  from tb_payment_status ps \r
+           inner join (tb_payment_detail pd \r
+                         inner join tb_payment_header ph on pd.payment_id = ph.payment_id )\r
+                       on ps.payment_id =  pd.payment_id\r
+  where pd.delete_sw = 'N' \r
+      and ph.delete_sw = 'N'\r
+   and  PAYMENT_TYPE_CD IN ('3294')\r
+   and final_amount_no is not null\r
+   AND PD.PAYMENT_DETAIL_ID NOT IN ( SELECT PAYMENT_DETAIL_ID FROM TB_FUND_ALLOCATION_MASTER WHERE DELETE_SW = 'N' )\r
+         AND ( SELECT COUNT(*)\r
+              FROM TB_FUND_ALLOCATION_MASTER\r
+         WHERE DELETE_SW = 'N'\r
+               AND PAYMENT_DETAIL_ID in \r
+            (select pd1.payment_detail_id  \r
+           from tb_payment_status ps1 \r
+           inner join (tb_payment_detail pd1 inner join tb_payment_header ph1\r
+                               on pd1.payment_id = ph1.payment_id )\r
+                    on ps1.payment_id =  pd1.payment_id\r
+        where pd1.placement_id = pd.placement_id\r
+       and date_part('year',ph1.payment_start_dt) = date_part('year',ph.payment_start_dt)\r
+       and date_part('month',payment_start_dt) = date_part('month',ph.payment_start_dt)\r
+       and pd1.delete_sw = 'N' \r
+       and ph1.delete_sw = 'N'\r
+       and ps1.payment_status_cd in ( '1634','1636')\r
+                   and ps1.delete_sw = 'N'\r
+       and ph1.payment_type_cd in ( '6','3294' )) ) = 0\r
+   and payment_start_dt >= '2009-01-01'\r
+   --and ph.payment_start_dt <= chessie.f_daymonth(ad_run_dt - 1 MONTH ,'L','')\r
+   and ph.payment_start_dt <= f_daymonth((ad_run_dt - INTERVAL '1 month')::date ,'L','')\r
+      and placement_id is not null\r
+   and payment_status_cd in ( '1634','1636')\r
+   and ps.delete_sw = 'N'\r
+   AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )\r
+   and PD.FINAL_AMOUNT_NO  -\r
+   COALESCE(( SELECT SUM(COALESCE(RD.AMOUNT_NO,0))\r
+               FROM TB_RECEIVABLE_DETAIL RD\r
+            WHERE RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID\r
+               AND RD.DELETE_SW = 'N' ),0) > 0\r
+     \r
+  union\r
+  -- IV-E status changes\r
+  Select  distinct pd.payment_detail_id \r
+          , ive.client_id\r
+       , IVE.BENEFIT_START_DT\r
+    , ive.BENEFIT_END_DT\r
+       , pd.case_id\r
+       , (select payment_amount \r
+           from tb_fund_allocation_master \r
+       where payment_detail_id =  pd.payment_detail_id  \r
+             and delete_sw ='N') as pay_amt\r
+        from TB_RS_IVE_STATUS IVE \r
+          inner join tb_payment_detail pd on IVE.client_id = pd.client_id\r
+        where  pd.delete_sw = 'N' \r
+         and ive.delete_sw = 'N'\r
+               and date_part('year',benefit_start_dt) = date_part('year',final_service_start_dt)\r
+               and date_part('month',benefit_start_dt) = date_part('month',final_service_start_dt)\r
+               and payment_detail_id in (select payment_detail_id from tb_fund_allocation_master where delete_sw = 'N')\r
+   ) as d1\r
+  where pay_amt <> 0   \r
+        and pay_amt is not null\r
+  order by 1;*/\r
+\r
+\r
+--DECLARE CONTINUE HANDLER FOR SQLWARNING\r
+BEGIN\r
+ begin\r
+  EXCEPTION WHEN OTHERS THEN\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;\r
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;\r
+\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;\r
+  -- SET al_sqlcode = -1 ;\r
+  al_sqlcode := SQLCODE;\r
+  as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;\r
+  as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');\r
+  as_error := as_error || COALESCE(vs_message_text ,'');\r
+\r
+  select SP_BATCH_ERROR_LOG ( vs_Procedure_nm ,\r
+           NULL::bigint,\r
+           NULL::bigint,\r
+           NULL::character varying,\r
+           NULL::INTEGER,\r
+           NULL::character varying,\r
+           SQLSTATE::character varying,\r
+           as_error::character varying,\r
+           'finance'::character varying) INTO\r
+           vl_ret_status;\r
+\r
+  as_error := '';\r
+  al_sqlcode := 0;\r
+  RETURN 0;\r
+ END;\r
+\r
+ -- DECLARE EXIT HANDLER FOR SQLEXCEPTION\r
+ -- BEGIN\r
+ /*GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;\r
+  SET al_sqlcode = SQLCODE;\r
+  SET as_error = COALESCE(as_error ,'') || CHAR(CURRENT TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;\r
+  SET as_error = COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');\r
+  SET as_error = as_error || vs_message_text;\r
+\r
+  CALL CHESSIE.SP_BATCH_ERROR_LOG  ( vs_Procedure_nm\r
+           , NULL\r
+           , NULL\r
+           , NULL\r
+           , NULL\r
+           , as_error\r
+           , 'RESTAMP'\r
+           , vl_ret_status );\r
+  RETURN -1;         \r
+ END;\r
+ */\r
+\r
+ -- Vineet - START\r
+ -- Temporary table to get the Late_entry_cur records\r
+ DROP TABLE IF EXISTS TEMP_LATE_ENTRY_CUR;\r
+\r
+ CREATE TEMP TABLE TEMP_LATE_ENTRY_CUR\r
+  (  PAYMENT_DETAIL_ID BIGINT,\r
+   CLIENT_ID BIGINT,\r
+   PAYMENT_START_DT DATE,\r
+   PAYMENT_END_DT DATE,\r
+   CASE_ID BIGINT,\r
+   PAY_AMT DECIMAL(10,2)\r
+    );\r
+ --WITH REPLACE ;\r
+ -- Vineet - END\r
+\r
+\r
+ VL_RUNTIME_ID :=  NEXTVAL('sq_batch_runtime_log');\r
+ \r
+ INSERT INTO TB_BATCH_RUNTIME_LOG \r
+ ( RUNTIME_LOG_ID, PROGRAM_NM, RUNTIME_START_TS, CREATE_TS, \r
+  CREATE_USER_ID, UPDATE_TS, UPDATE_USER_ID)\r
+ VALUES \r
+ ( VL_RUNTIME_ID, 'SP_PAYMENT_RESTAMPING', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, \r
+  'RESTAMP', CURRENT_TIMESTAMP, 'RESTAMP');\r
+\r
+ Raise notice '>>>>>>>>>>sq_batch_runtime_log ->>after %', VL_RUNTIME_ID;\r
+\r
+ Raise notice '>>>>>>>>>>starting TEMP_LATE_ENTRY_CUR 1st insert %', now();\r
+ -- Vineet - START\r
+ -- Late entry (Insert 1st SQL of original cursor)\r
+ INSERT INTO TEMP_LATE_ENTRY_CUR   \r
+    ( PAYMENT_DETAIL_ID,\r
+   CLIENT_ID,\r
+   PAYMENT_START_DT,\r
+   PAYMENT_END_DT,\r
+   CASE_ID,\r
+   PAY_AMT\r
+  )\r
+ SELECT DISTINCT PD.PAYMENT_DETAIL_ID\r
+    , CA.CLIENT_ID\r
+    , ATR.BENEFIT_START_DT\r
+    , ATR.BENEFIT_END_DT\r
+    , PD.CASE_ID\r
+    , ( SELECT PAYMENT_AMOUNT \r
+     FROM TB_FUND_ALLOCATION_MASTER \r
+     WHERE PAYMENT_DETAIL_ID =  PD.PAYMENT_DETAIL_ID  \r
+     AND DELETE_SW ='N') AS PAY_AMT\r
+ FROM TB_PAYMENT_DETAIL PD \r
+  INNER JOIN (TB_ACCOUNT_TRANSACTION ATR\r
+       INNER JOIN TB_CLIENT_ACCOUNT CA ON ATR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID  )\r
+     ON PD.CLIENT_ID = CA.CLIENT_ID\r
+ WHERE LATE_ENTRY_SW = 'Y'\r
+   AND FINAL_SERVICE_START_DT BETWEEN ATR.BENEFIT_START_DT AND ATR.BENEFIT_END_DT\r
+   AND ATR.DELETE_SW = 'N' \r
+   AND CA.DELETE_SW = 'N'\r
+   AND PD.county_cd IN\r
+   ( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) ;  \r
+\r
+ Raise notice '>>>>>>>>>>after Late entry (Insert 1st SQL of original cursor) %', al_sqlcode;\r
+ Raise notice '>>>>>>>>>>starting TEMP_LATE_ENTRY_CUR 2nd insert %', now();\r
+\r
+ -- IV-E status changes (Insert 3rd SQL of original cursor)\r
+ INSERT INTO TEMP_LATE_ENTRY_CUR   \r
+    ( PAYMENT_DETAIL_ID,\r
+   CLIENT_ID,\r
+   PAYMENT_START_DT,\r
+   PAYMENT_END_DT,\r
+   CASE_ID,\r
+   PAY_AMT\r
+  ) \r
+ SELECT DISTINCT PD.PAYMENT_DETAIL_ID \r
+  , IVE.CLIENT_ID\r
+  , IVE.BENEFIT_START_DT\r
+  , IVE.BENEFIT_END_DT\r
+  , PD.CASE_ID\r
+  , FAM.PAYMENT_AMOUNT AS PAY_AMT\r
+ FROM TB_FUND_ALLOCATION_MASTER FAM,\r
+  TB_PAYMENT_DETAIL PD,\r
+  TB_RS_IVE_STATUS IVE  \r
+ WHERE FAM.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID\r
+  AND IVE.CLIENT_ID = PD.CLIENT_ID\r
+  AND FAM.DELETE_SW = 'N' \r
+  AND PD.DELETE_SW = 'N' \r
+  AND IVE.DELETE_SW = 'N'\r
+  AND date_part('year',IVE.BENEFIT_START_DT::date) = date_part('year',PD.FINAL_SERVICE_START_DT::date)\r
+  AND date_part('month',IVE.BENEFIT_START_DT::date) = date_part('month',PD.FINAL_SERVICE_START_DT::date)\r
+  AND PD.county_cd IN\r
+   ( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) ;\r
+\r
+\r
+ Raise notice '>>>>>>>>>>after IV-E status changes (Insert 3rd SQL of original cursor) %', al_sqlcode;\r
+\r
+ Raise notice '>>>>>>>>>>before Late validation (system adjustments) - (Insert 2nd SQL of original cursor) %', al_sqlcode;\r
+ Raise notice '>>>>>>>>>>starting TEMP_LATE_ENTRY_CUR 3rd insert %', now();\r
+ \r
+ -- Late validation (system adjustments) - (Insert 2nd SQL of original cursor)\r
+ -- FOR cur_late_validations AS\r
+ OPEN cur_late_validations FOR\r
+  SELECT PD.PAYMENT_DETAIL_ID\r
+     , PD.CLIENT_ID\r
+     , PH.PAYMENT_START_DT\r
+     , PH.PAYMENT_END_DT\r
+     , PD.CASE_ID\r
+     , PD.FINAL_AMOUNT_NO  -\r
+    COALESCE((  SELECT SUM(COALESCE(RD.AMOUNT_NO,0))\r
+        FROM TB_RECEIVABLE_DETAIL RD\r
+       WHERE RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID\r
+          AND RD.DELETE_SW = 'N' ),0) AS  PAY_AMT\r
+   , PD.PLACEMENT_ID      \r
+  FROM TB_PAYMENT_STATUS PS \r
+    INNER JOIN (TB_PAYMENT_DETAIL PD \r
+         INNER JOIN TB_PAYMENT_HEADER PH ON PD.PAYMENT_ID = PH.PAYMENT_ID )\r
+       ON PS.PAYMENT_ID =  PD.PAYMENT_ID\r
+  WHERE PD.DELETE_SW = 'N' \r
+   AND PH.DELETE_SW = 'N'\r
+   AND PH.PAYMENT_TYPE_CD IN ('3294')\r
+   AND PD.FINAL_AMOUNT_NO IS NOT NULL\r
+   AND PD.PAYMENT_DETAIL_ID NOT IN ( SELECT PAYMENT_DETAIL_ID FROM TB_FUND_ALLOCATION_MASTER WHERE DELETE_SW = 'N' )\r
+   \r
+   AND PH.PAYMENT_START_DT >= '2009-01-01'::date\r
+   --AND PH.PAYMENT_START_DT <= CHESSIE.F_DAYMONTH(AD_RUN_DT - 1 MONTH ,'L','')\r
+   and ph.payment_start_dt <= f_daymonth((ad_run_dt - INTERVAL '1 month')::date ,'L','')\r
+   AND PD.PLACEMENT_ID IS NOT NULL\r
+   AND PS.PAYMENT_STATUS_CD IN ( '1634','1636')\r
+   AND PS.DELETE_SW = 'N'\r
+   AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )\r
+   AND PD.FINAL_AMOUNT_NO  -\r
+   COALESCE(( SELECT SUM(COALESCE(RD.AMOUNT_NO,0))\r
+         FROM TB_RECEIVABLE_DETAIL RD\r
+      WHERE RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID\r
+         AND RD.DELETE_SW = 'N' ),0) > 0\r
+   AND PD.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) ;\r
+ --DO\r
+ LOOP\r
+ fetch cur_late_validations into cur_late_validation_rec;\r
+  exit when not found;\r
+          \r
+  vn_payment_detail_id := cur_late_validation_rec.PAYMENT_DETAIL_ID;\r
+  vn_client_id := cur_late_validation_rec.CLIENT_ID;\r
+  VDT_START_DT := cur_late_validation_rec.PAYMENT_START_DT;\r
+  VDT_END_DT := cur_late_validation_rec.PAYMENT_END_DT;\r
+  vl_case_id := cur_late_validation_rec.CASE_ID;\r
+  VN_PAYMENT_AMOUNT_NO := cur_late_validation_rec.PAY_AMT;\r
+  vl_placement_id := cur_late_validation_rec.PLACEMENT_ID;\r
+  vl_fund_alloc_cnt := 0;\r
+\r
+  Raise notice '>>>>>>>>>>fetch cur_late_validations %', vn_payment_detail_id;\r
+ \r
+  -- Verify if the payment stamping was done for original payment\r
+  /*SELECT COUNT(1)\r
+    INTO vl_fund_alloc_cnt\r
+   FROM TB_FUND_ALLOCATION_MASTER\r
+   WHERE DELETE_SW = 'N'\r
+   AND PAYMENT_DETAIL_ID IN \r
+    ( SELECT PD1.PAYMENT_DETAIL_ID  \r
+      FROM TB_PAYMENT_STATUS PS1 \r
+      INNER JOIN (TB_PAYMENT_DETAIL PD1 INNER JOIN TB_PAYMENT_HEADER PH1\r
+          ON PD1.PAYMENT_ID = PH1.PAYMENT_ID )\r
+      ON PS1.PAYMENT_ID =  PD1.PAYMENT_ID\r
+     WHERE PD1.PLACEMENT_ID = vl_placement_id\r
+      --AND YEAR(PH1.PAYMENT_START_DT) = YEAR(VDT_START_DT)\r
+      --AND MONTH(PAYMENT_START_DT) = MONTH(VDT_START_DT)\r
+      and date_part('year',ph1.payment_start_dt::date) = date_part('year',VDT_START_DT::date)\r
+      and date_part('month',ph1.payment_start_dt::date) = date_part('month',VDT_START_DT::date)\r
+      AND PD1.DELETE_SW = 'N' \r
+      AND PH1.DELETE_SW = 'N'\r
+      AND PS1.PAYMENT_STATUS_CD IN ( '1634','1636')\r
+      AND PS1.DELETE_SW = 'N'\r
+      AND PH1.PAYMENT_TYPE_CD IN ( '6','3294' )\r
+  ) ;*/\r
+   \r
+  SELECT COUNT(FAM.FUND_ALLOC_ID)  \r
+   INTO vl_fund_alloc_cnt\r
+  FROM TB_PAYMENT_STATUS PS1, \r
+   TB_PAYMENT_HEADER PH1,\r
+   TB_PAYMENT_DETAIL PD1\r
+   LEFT OUTER JOIN TB_FUND_ALLOCATION_MASTER FAM\r
+    ON FAM.PAYMENT_DETAIL_ID = PD1.PAYMENT_DETAIL_ID\r
+     AND FAM.DELETE_SW = 'N'\r
+  WHERE PS1.PAYMENT_ID = PH1.PAYMENT_ID\r
+   AND PS1.PAYMENT_ID = PD1.PAYMENT_ID\r
+   AND PS1.DELETE_SW = 'N'\r
+   AND PD1.DELETE_SW = 'N' \r
+   AND PH1.DELETE_SW = 'N'\r
+   AND PS1.PAYMENT_STATUS_CD IN ( '1634','1636')\r
+   AND PD1.PLACEMENT_ID = vl_placement_id\r
+   and date_part('year',ph1.payment_start_dt::date) = date_part('year',VDT_START_DT::date)\r
+   and date_part('month',ph1.payment_start_dt::date) = date_part('month',VDT_START_DT::date)\r
+   AND PH1.PAYMENT_TYPE_CD IN ( '6','3294' );\r
+   -- AND PD1.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) ;\r
+    \r
+  IF vl_fund_alloc_cnt = 0 THEN\r
+   Raise notice '>>>>>>>>>>fund allocation = 0 %', vn_payment_detail_id;\r
+   INSERT INTO TEMP_LATE_ENTRY_CUR   \r
+      ( PAYMENT_DETAIL_ID,\r
+     CLIENT_ID,\r
+     PAYMENT_START_DT,\r
+     PAYMENT_END_DT,\r
+     CASE_ID,\r
+     PAY_AMT\r
+    ) \r
+   VALUES\r
+    (\r
+     vn_payment_detail_id,\r
+     vn_client_id,\r
+     VDT_START_DT,\r
+     VDT_END_DT,\r
+     vl_case_id,\r
+     VN_PAYMENT_AMOUNT_NO\r
+    );\r
+ \r
+  END IF;\r
+\r
+  -- Reset\r
+  vn_payment_detail_id := NULL;\r
+  vn_client_id := NULL;\r
+  VDT_START_DT := NULL;\r
+  VDT_END_DT := NULL;\r
+  vl_case_id := NULL;\r
+  VN_PAYMENT_AMOUNT_NO := NULL;\r
+  vl_placement_id := NULL;\r
+  vl_fund_alloc_cnt := 0;\r
+ \r
+ END LOOP;\r
+\r
+ Raise notice '>>>>>>>>>>after Late validation (system adjustments) - (Insert 2nd SQL of original cursor)%', al_sqlcode;\r
+\r
+ close cur_late_validations; \r
+ Raise notice '>>>>>>>>>>ending TEMP_LATE_ENTRY_CUR 3rd insert %', now();\r
+ \r
+ -- Reset\r
+ vn_payment_detail_id := NULL;\r
+ vn_client_id := NULL;\r
+ VDT_START_DT := NULL;\r
+ VDT_END_DT := NULL;\r
+ vl_case_id := NULL;\r
+ VN_PAYMENT_AMOUNT_NO := NULL;\r
+ vl_placement_id := NULL;\r
+ vl_fund_alloc_cnt := NULL;\r
+ \r
+ V_SQL_STMT1 :=\r
+  ' SELECT DISTINCT PAYMENT_DETAIL_ID, '||\r
+  ' CLIENT_ID, '||\r
+  ' PAYMENT_START_DT, '||\r
+  ' PAYMENT_END_DT, '||\r
+  ' CASE_ID, '||\r
+  ' PAY_AMT '||\r
+  ' FROM TEMP_LATE_ENTRY_CUR '||\r
+  ' WHERE PAY_AMT <> 0 '|| \r
+  ' AND PAY_AMT IS NOT NULL '||\r
+  ' ORDER BY 1 ';\r
+\r
+ -- PREPARE s1 FROM V_SQL_STMT1;\r
+ -- Vineet - END\r
+ Raise notice '>>>>>>>>>>after reset %', V_SQL_STMT1;\r
+\r
+\r
+ -- OPEN late_entry_cur;\r
+ Raise notice '>>>>>>>>>>before Late_entry_cur %',Late_entry_cur;\r
+ OPEN Late_entry_cur FOR EXECUTE V_SQL_STMT1;\r
+\r
+ -- main_loop:\r
+ -- WHILE VL_SQL_CODE <> 100 DO\r
+ loop EXIT WHEN VL_SQL_CODE = 100::integer ;\r
+\r
+  FETCH Late_entry_cur INTO vn_payment_detail_id, \r
+         vn_client_id, \r
+         VDT_START_DT, \r
+         VDT_END_DT, \r
+         vl_case_id, \r
+         VN_PAYMENT_AMOUNT_NO;\r
+         \r
+  VL_SQL_CODE := SQLCODE;\r
+  Raise notice '>>>>>>>>>>Late_entry_cur>>>>>vn_payment_detail_id %',vn_payment_detail_id;\r
+  Raise notice '>>>>>>>>>>Late_entry_cur>>>>>vn_client_id %',vn_client_id;\r
+  Raise notice '>>>>>>>>>>Late_entry_cur>>>>>VL_SQL_CODE %',VL_SQL_CODE;\r
+  \r
+  IF (vn_payment_detail_id IS NULL AND vn_client_id IS NULL) THEN\r
+   VL_SQL_CODE:=100::integer; -- No data found\r
+   Raise notice '>>>>>>>>>>Late_entry_cur>>>>>Inside IF (vn_payment_detail_id IS NULL AND vn_client_id IS NULL) THEN >>>VL_SQL_CODE %',VL_SQL_CODE;\r
+  END IF;\r
+  \r
+  IF VL_SQL_CODE = 100 THEN\r
+   -- LEAVE main_loop ;\r
+  END IF;\r
+  Raise notice '>>>>>>>>>>Late_entry_cur>>>>>VL_SQL_CODE %',VL_SQL_CODE;\r
+\r
+  IF VL_SQL_CODE <> 100 THEN\r
+   Vn_restamp_amt := VN_PAYMENT_AMOUNT_NO;\r
+   vn_Required_balance := VN_PAYMENT_AMOUNT_NO;\r
+\r
+   -- Verify if Active 'Conserved' child account exists\r
+   -- 590 - Conserved\r
+   -- 592 - Active\r
+   IF COALESCE(vn_client_account_id,0) = 0 THEN\r
+    SELECT TA.CLIENT_ACCOUNT_ID\r
+     INTO vn_client_account_id\r
+    FROM TB_CLIENT_ACCOUNT TA\r
+    WHERE TA.DELETE_SW = 'N'\r
+     AND TA.ACCOUNT_TYPE_CD = '590'\r
+     AND TA.CLIENT_ID = vn_client_id\r
+     AND TA.STATUS_CD = '592';\r
+   END IF;\r
+\r
+   IF vn_client_account_id is NULL THEN\r
+    vn_client_account_id := 0;  \r
+   END IF;\r
+\r
+   -- Get the allocated amount as per pervious stamping\r
+   SELECT (SSI_FUNDING_AMT + SSA_FUNDING_AMT + COC_FUNDING_AMT),\r
+    IVE_FUNDING_AMT\r
+   INTO TOTAL_ALL_AMT,\r
+    VDC_IVE_FUNDING_AMT\r
+   FROM TB_FUND_ALLOCATION_MASTER\r
+   WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id\r
+    AND DELETE_SW = 'N';\r
+\r
+   TOTAL_ALL_AMT := COALESCE(TOTAL_ALL_AMT,0);\r
+     \r
+   IF COALESCE(VDC_IVE_FUNDING_AMT,0) <> 0 THEN\r
+    VS_PRE_ELIGI_STATUS  := 'Y'; -- If payment amount was divided into IV-E and State\r
+   ELSE\r
+    VS_PRE_ELIGI_STATUS  := 'N';\r
+   END IF;\r
+\r
+   -- PRJ-02312 Get client's Eligibility Status to update in TB_FUND_ALLOCATION_MASTER\r
+   -- New Logic - START\r
+   vs_rs_elig_status_cd := NULL;\r
+   vl_rs_eligiblity_status := 0;\r
+   vs_updt_elig_status_cd := NULL;\r
+  \r
+   -- Get Client's eligibility status from Re-stamping staging table\r
+   SELECT RESULTING_STATUS_CD\r
+    INTO vs_rs_elig_status_cd\r
+   FROM TB_RS_IVE_STATUS \r
+   WHERE CLIENT_ID = vn_client_id\r
+    AND benefit_start_dt = VDT_START_DT \r
+    and benefit_end_dt = VDT_END_DT\r
+    AND DELETE_SW = 'N';\r
+  \r
+   IF al_sqlcode < 0 THEN\r
+    as_error := as_error  ;\r
+    as_error := 'Error in getting RESULTING_STATUS_CD from TB_RS_IVE_STATUS.'  ;\r
+    --SIGNAL p_sp_error  ;       \r
+   END IF; \r
+  \r
+   IF vs_rs_elig_status_cd is NOT NULL THEN\r
+    IF vs_rs_elig_status_cd = '2913' THEN -- Eligible Reimbursable\r
+     vl_rs_eligiblity_status := 1;\r
+    END IF;\r
+    vs_updt_elig_status_cd := vs_rs_elig_status_cd;\r
+   ELSE\r
+    vs_curr_elig_status_cd := NULL;\r
+    vl_eligiblity_status := 0;\r
+   \r
+    -- Get Client's eligibility status from TB_CLIENT_ELIGIBILITY\r
+    SELECT btrim(ELIGIBILITY_STATUS_CD)\r
+     INTO vs_curr_elig_status_cd\r
+    FROM TB_CLIENT_ELIGIBILITY\r
+    WHERE CLIENT_ID = vn_client_id \r
+     AND case_id = vl_case_id \r
+     AND btrim(ELIGIBILITY_TYPE_CD) = '2931' \r
+     AND DELETE_SW = 'N' \r
+     AND START_DT <= VDT_END_DT \r
+     and (END_DT >= VDT_START_DT OR END_DT IS NULL)\r
+    ORDER BY ELIGIBILITY_ID DESC\r
+    FETCH FIRST ROW ONLY;\r
+  \r
+    IF al_sqlcode < 0 THEN\r
+     as_error := as_error  ;\r
+     as_error := 'Error in getting ELIGIBILITY_STATUS_CD from TB_CLIENT_ELIGIBILITY.'  ;\r
+     --SIGNAL p_sp_error  ;       \r
+    END IF; \r
+  \r
+    IF vs_curr_elig_status_cd = '2913' THEN -- Eligible Reimbursable\r
+     vl_eligiblity_status := 1; \r
+    END IF;\r
+   \r
+    vs_updt_elig_status_cd := vs_curr_elig_status_cd;\r
+   END IF;   \r
+   -- New Logic - END\r
+\r
+   -- Old Code \r
+   --    SELECT COUNT(*) \r
+   --     INTO vl_rs_eligiblity_status\r
+   --  FROM TB_RS_IVE_STATUS\r
+   -- WHERE client_id =  vn_client_id\r
+   --  AND benefit_start_dt = VDT_START_DT \r
+   --  AND benefit_end_dt = VDT_END_DT\r
+   --  AND resulting_status_cd =  '2913'\r
+   --  AND delete_sw = 'N';\r
+      \r
+   -- Verify if payment has been previously stamped\r
+   SELECT COUNT(*) \r
+    INTO vn_stamp_count\r
+   FROM TB_FUND_ALLOCATION_MASTER\r
+   WHERE PAYMENT_DETAIL_ID =  vn_payment_detail_id\r
+    AND DELETE_SW = 'N' ;\r
+\r
+   -- Re-stamping conditions \r
+   -- Previously used child accounts funds for COC <> PAYMENT AMOUNT\r
+   -- Client's Eligibility status changed (from ER to NOT ER) OR (from NOT ER to ER)\r
+   IF (TOTAL_ALL_AMT <>  COALESCE(VN_PAYMENT_AMOUNT_NO,0)  \r
+     OR (VS_PRE_ELIGI_STATUS = 'Y' AND  vl_rs_eligiblity_status = 0 )\r
+     OR (VS_PRE_ELIGI_STATUS = 'N' AND Vl_rs_eligiblity_status > 0 ) ) THEN\r
+   \r
+    -- If Active 'Conserved' child account exists - START  \r
+    IF vn_client_account_id > 0 THEN\r
+   \r
+     -- Get previously used SSI funds\r
+     SELECT coalesce(SSI_FUNDING_AMT,0)  \r
+      INTO VN_IS_SSI\r
+     FROM TB_FUND_ALLOCATION_MASTER\r
+     WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id \r
+      AND DELETE_SW = 'N';\r
+\r
+     -- CDM-12488\r
+     IF VN_IS_SSI is null THEN\r
+      VN_IS_SSI := 0;\r
+     END IF;\r
+     \r
+     -- Calculate SSI - START\r
+     -- 587 - SSI\r
+     IF ( VN_IS_SSI ) = 0 THEN  -- First time stamping\r
+      vs_transaction_source_cd  := '587';\r
+     \r
+      -- Set re-stamping amount = Total Payment amt - previously used Child Acc funds\r
+      Vn_restamp_amt := VN_PAYMENT_AMOUNT_NO - TOTAL_ALL_AMT ;\r
+\r
+      IF Vn_restamp_amt > 0 THEN\r
+       SELECT a.al_other_amt,a.al_adj_credit,a.al_adj_debit,a.al_stamped_amt,a.al_sqlcode,a.as_error \r
+        from SP_RS_ACC_TRANS_CALC (vs_transaction_source_cd\r
+                 ,vn_client_account_id\r
+                 ,VDT_START_DT\r
+                 ,VDT_END_DT\r
+                 ,vn_client_id) a \r
+        into\r
+         vdc_child_other_amount\r
+         ,vdc_SSI_amt_adj_credit\r
+         ,vdc_SSI_amt_adj_debit\r
+         ,vdc_SSI_stamped_amt\r
+         ,al_sqlcode\r
+         ,As_error;\r
+\r
+       IF al_sqlcode <> 0 THEN\r
+        as_error := as_error  ;\r
+        IF as_error is NULL OR as_error = '' THEN\r
+         as_error := 'SP_RS_ACC_TRANS_CALC failed - SSI'  ;\r
+        END IF;\r
+        -- SIGNAL p_sp_error  ;         \r
+       END IF;\r
+\r
+       vdc_child_other_amount := ( coalesce(vdc_child_other_amount,0) \r
+               + coalesce(vdc_SSI_amt_adj_credit,0) ) \r
+               - ( coalesce(vdc_SSI_amt_adj_debit,0) \r
+               + coalesce(vdc_SSI_stamped_amt,0) );\r
+      \r
+       IF vdc_child_other_amount < 0 THEN\r
+        vdc_child_other_amount := 0;\r
+       END IF;\r
+      \r
+       IF vdc_child_other_amount > VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT)  THEN\r
+        Cos_amount := ( VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT) ) ;\r
+        vn_Required_balance := ( VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT +  cos_amount) )  ;\r
+        Vn_restamp_amt := vn_Required_balance ;\r
+       ELSE\r
+        Cos_amount := vdc_child_other_amount ;\r
+        vn_Required_balance := VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT +  Cos_amount) ;\r
+        Vn_restamp_amt := vn_Required_balance ;\r
+       END IF;\r
+       VN_RS_SSI := Cos_amount;\r
+      ELSE --Vn_restamp_amt > 0\r
+       VN_RS_SSI := 0;\r
+      END IF; \r
+     ELSE --( VN_IS_SSI ) = 0\r
+      VN_RS_SSI :=  VN_IS_SSI   ;\r
+      VN_bl_SSI :=  VN_IS_SSI  ;\r
+     END IF;\r
+\r
+     IF VN_bl_SSI <> 0 THEN\r
+      VN_bl_SSI := 0 ;\r
+     ELSE\r
+      VN_bl_SSI := VN_RS_SSI;\r
+     END IF;\r
+     \r
+     -- 06/03 - set 0 if null\r
+     IF VN_bl_SSI is null THEN\r
+      VN_bl_SSI := 0;\r
+     END IF; \r
+     -- Calculate SSI - END\r
+\r
+     -- Get previously used SSA funds\r
+     SELECT SSA_FUNDING_AMT \r
+      INTO VN_IS_SSA\r
+     FROM TB_FUND_ALLOCATION_MASTER\r
+     WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id \r
+      AND DELETE_SW = 'N';\r
+\r
+     -- CDM-12488\r
+     IF VN_IS_SSA is null THEN\r
+      VN_IS_SSA := 0;\r
+     END IF;\r
+     \r
+     -- Calculate SSA - START\r
+     -- 586 - SSA\r
+     IF ( VN_IS_SSA ) = 0 THEN\r
+      vs_transaction_source_cd := '586';\r
+     \r
+      -- Set re-stamping amount = Total Payment amt - previously used Child Acc funds - SSI funds used in this run\r
+      Vn_restamp_amt := VN_PAYMENT_AMOUNT_NO - ( TOTAL_ALL_AMT + VN_bl_SSI);\r
+\r
+      IF Vn_restamp_amt > 0 THEN\r
+       SELECT  a.al_other_amt,a.al_adj_credit,a.al_adj_debit,a.al_stamped_amt,a.al_sqlcode,a.as_error \r
+        from  SP_RS_ACC_TRANS_CALC(vs_transaction_source_cd\r
+               ,vn_client_account_id\r
+               ,VDT_START_DT\r
+               ,VDT_END_DT\r
+               ,vn_client_id) a \r
+        INTO\r
+         vdc_child_other_amount\r
+         ,vdc_ssa_amt_adj_credit\r
+         ,vdc_SSa_amt_adj_debit\r
+         ,vdc_ssa_stamped_amt\r
+         ,al_sqlcode\r
+         ,As_error;\r
+\r
+       IF al_sqlcode <> 0 THEN\r
+        as_error := as_error  ;\r
+        IF as_error is NULL OR as_error = '' THEN\r
+         as_error := 'SP_RS_ACC_TRANS_CALC failed - SSA'  ;\r
+        END IF;\r
+        --SIGNAL p_sp_error  ;         \r
+       END IF;\r
+\r
+       vdc_child_other_amount := ( coalesce(vdc_child_other_amount,0) \r
+                + coalesce(vdc_SSa_amt_adj_credit,0) ) \r
+                - ( coalesce(vdc_SSa_amt_adj_debit,0) \r
+                + coalesce(vdc_SSa_stamped_amt,0) );\r
+      \r
+       IF vdc_child_other_amount < 0 THEN\r
+        vdc_child_other_amount := 0;\r
+       END IF;\r
+\r
+       IF vdc_child_other_amount > VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT  +  VN_bl_SSI ) THEN\r
+        Cos_amount :=  ( VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT +  VN_bl_SSI) ) ;\r
+        vn_Required_balance :=  ( VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT +  VN_bl_SSI + cos_amount) )  ;\r
+        Vn_restamp_amt := vn_Required_balance ;\r
+       ELSE\r
+        Cos_amount := vdc_child_other_amount;\r
+        vn_Required_balance := (VN_PAYMENT_AMOUNT_NO \r
+                - (TOTAL_ALL_AMT +  VN_bl_SSI)) -  vdc_child_other_amount  ;\r
+        Vn_restamp_amt := vn_Required_balance ;\r
+       END IF;\r
+       VN_RS_SSA := Cos_amount ;\r
+      ELSE -- Vn_restamp_amt  > 0\r
+       VN_RS_SSA := 0 ;\r
+      END IF;\r
+     ELSE --( VN_IS_SSA   ) = 0\r
+      VN_RS_SSA := VN_IS_SSA ;\r
+      VN_bl_SSA := VN_IS_SSA ;\r
+     END IF;\r
+\r
+     IF VN_bl_SSA  <> 0 THEN\r
+      VN_bl_SSA := 0  ;\r
+     ELSE\r
+      VN_bl_SSA := VN_RS_SSA;\r
+     END IF;\r
+     \r
+     -- 06/03 - set 0 if null\r
+     IF VN_bl_SSA is null THEN\r
+      VN_bl_SSA := 0;\r
+     END IF; \r
+     -- Calculate SSA - END\r
+     \r
+     -- Get previously used OTHER COC funds\r
+     SELECT COC_FUNDING_AMT  \r
+      INTO VN_IS_COC\r
+     FROM TB_FUND_ALLOCATION_MASTER\r
+     WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id\r
+      AND DELETE_SW = 'N' ;\r
+       \r
+     -- 06/03 - set 0 if null\r
+     IF VN_IS_COC is null THEN\r
+      VN_IS_COC := 0;\r
+     END IF; \r
+     \r
+     -- Calculate Other (Cost Of Care) - START\r
+     -- 585 - Other (Cost Of Care)\r
+     --  IF (VN_IS_COC) = 0 THEN\r
+     vs_transaction_source_cd  := '585'  ;\r
+    \r
+     -- Set re-stamping amount = \r
+     -- Total Payment amt - previously used Child Acc funds - SSI funds used in this run - SSA funds used in this run\r
+     Vn_restamp_amt  := VN_PAYMENT_AMOUNT_NO - ( TOTAL_ALL_AMT + VN_bl_SSI + VN_bl_SSA );\r
+    \r
+     IF Vn_restamp_amt > 0 THEN\r
+      SELECT  a.al_other_amt,a.al_adj_credit,a.al_adj_debit,a.al_stamped_amt,a.al_sqlcode,a.as_error \r
+       from SP_RS_ACC_TRANS_CALC (vs_transaction_source_cd\r
+              ,vn_client_account_id\r
+              ,VDT_START_DT\r
+              ,VDT_END_DT\r
+              ,vn_client_id) a \r
+       INTO\r
+        vdc_child_other_amount\r
+        ,vdc_othcoc_amt_adj_credit\r
+        ,vdc_othcoc_amt_adj_debit\r
+        , vdc_othcoc_stamped_amt\r
+        ,al_sqlcode\r
+        ,As_error;\r
+\r
+      IF al_sqlcode <> 0 THEN\r
+       as_error := as_error  ;\r
+       IF as_error is NULL OR as_error = '' THEN\r
+        as_error := 'SP_RS_ACC_TRANS_CALC failed - COC'  ;\r
+       END IF;\r
+       --SIGNAL p_sp_error  ;         \r
+      END IF;\r
+\r
+      vdc_child_other_amount := ( coalesce(vdc_child_other_amount,0) \r
+               + coalesce(vdc_othcoc_amt_adj_credit,0) ) \r
+               - ( coalesce(vdc_othcoc_amt_adj_debit,0) \r
+               + coalesce(vdc_othcoc_stamped_amt,0) ) \r
+               + vn_is_coc ;\r
+     \r
+      IF vdc_child_other_amount < 0 THEN\r
+       vdc_child_other_amount := 0;\r
+       IF ( coalesce(vdc_child_other_amount,0) \r
+        + coalesce(vdc_othcoc_amt_adj_credit,0) ) > coalesce(vdc_othcoc_amt_adj_debit,0) THEN\r
+        vdc_child_other_amount :=  ( coalesce(vdc_child_other_amount,0) \r
+               + coalesce(vdc_othcoc_amt_adj_credit,0) ) \r
+               - coalesce(vdc_othcoc_stamped_amt,0)  ;\r
+       END IF;\r
+      END IF;\r
+     \r
+      IF vdc_child_other_amount > VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT + VN_bl_SSI + VN_bl_SSA) THEN\r
+       Cos_amount := ( VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT + VN_bl_SSI + VN_bl_SSA )) ;\r
+       vn_Required_balance := ( VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT + VN_bl_SSI + VN_bl_SSA + cos_amount ))  ;\r
+       Vn_restamp_amt := vn_Required_balance ;\r
+      ELSE\r
+       Cos_amount := vdc_child_other_amount ;\r
+       vn_Required_balance :=  VN_PAYMENT_AMOUNT_NO - (TOTAL_ALL_AMT + VN_bl_SSI + VN_bl_SSA + Cos_amount) ;\r
+       Vn_restamp_amt := vn_Required_balance ;\r
+      END IF;\r
+      VN_RS_COC := Cos_amount ;\r
+     ELSE\r
+      VN_RS_COC := 0;\r
+     END IF;--Vn_restamp_amt > 0\r
+      --  ELSE\r
+      -- SET VN_RS_COC = VN_IS_COC  ;\r
+      -- SET  VN_bl_COC =  VN_IS_COC  ;\r
+      -- set Vn_restamp_amt  = VN_PAYMENT_AMOUNT_NO - ( TOTAL_ALL_AMT +  VN_bl_SSI +   VN_bl_SSA );\r
+      --   END IF;--(VN_IS_COC) = 0\r
+     -- Calculate Other (Cost Of Care) - END\r
+    \r
+     -- Set remaining payment amount after Child account 'Cost of Care Reimbursement' \r
+     vn_Required_balance := Vn_restamp_amt;\r
+    \r
+     -- SSI Transaction insert - START\r
+     IF VN_rs_ssi <> 0 AND vn_iS_ssi = 0 THEN\r
+      -- 587 - SSI\r
+      vs_transaction_source_cd := '587' ;\r
+     \r
+      SELECT a.al_sqlcode,a.as_error \r
+       from SP_ACC_TRANS_RS_INSERT( vs_transaction_source_cd, VN_rs_ssi, VN_PAYMENT_DETAIL_ID,\r
+            VN_CLIENT_ACCOUNT_ID, VDT_START_DT, VDT_END_DT, ad_run_dt) a \r
+       into\r
+        al_sqlcode, as_error;\r
+\r
+      IF al_sqlcode <> 0 THEN\r
+       as_error := as_error  ;\r
+       IF as_error is NULL OR as_error = '' THEN\r
+        as_error := 'SP_ACC_TRANS_RS_INSERT failed - SSI'  ;\r
+       END IF;\r
+       --SIGNAL p_sp_error ; \r
+      END IF;\r
+     END IF;\r
+     -- SSI Transaction insert - END\r
+    \r
+     -- SSA Transaction insert - START\r
+     IF VN_RS_SSA <> 0 AND VN_IS_SSA  = 0 then\r
+      -- 586 - SSA\r
+      vs_transaction_source_cd := '586' ;\r
+     \r
+      SELECT  a.al_sqlcode,a.as_error \r
+       from  SP_ACC_TRANS_RS_INSERT( vs_transaction_source_cd, VN_rs_ssa, VN_PAYMENT_DETAIL_ID,\r
+           VN_CLIENT_ACCOUNT_ID, VDT_START_DT, VDT_END_DT, ad_run_dt) a \r
+       into\r
+        al_sqlcode, as_error;\r
+\r
+      IF al_sqlcode <> 0 THEN\r
+       as_error := as_error  ;\r
+       IF as_error is NULL OR as_error = '' THEN\r
+        as_error := 'SP_ACC_TRANS_RS_INSERT failed - SSA'  ;\r
+       END IF;\r
+       --SIGNAL p_sp_error  ;         \r
+      END IF;    \r
+     END IF;                    \r
+     -- SSA Transaction insert - END\r
+    \r
+     -- Other (Cost Of Care) Transaction insert - START\r
+     IF VN_RS_coc <> 0 and VN_rs_coc <> VN_IS_coc THEN\r
+      -- 585 - Other (Cost Of Care)\r
+      vs_transaction_source_cd := '585' ;\r
+     \r
+      SELECT  a.al_sqlcode,a.as_error \r
+       from  SP_ACC_TRANS_RS_INSERT( vs_transaction_source_cd, VN_rs_coc, VN_PAYMENT_DETAIL_ID,\r
+            VN_CLIENT_ACCOUNT_ID, VDT_START_DT, VDT_END_DT, ad_run_dt) a \r
+       into\r
+        al_sqlcode, As_error;\r
+\r
+      IF al_sqlcode <> 0 THEN\r
+       as_error := as_error  ;\r
+       IF as_error is NULL OR as_error = '' THEN\r
+        as_error := 'SP_ACC_TRANS_RS_INSERT failed - COC'  ;\r
+       END IF;\r
+       --SIGNAL p_sp_error  ;       \r
+      END IF;          \r
+     END IF; \r
+     -- Other (Cost Of Care) Transaction insert - END\r
+     -- PRJ-02515 - New condition for 'Closed' or 'Inactive' child account - START\r
+    ELSE\r
+     IF TOTAL_ALL_AMT > 0 THEN -- Previously used Child Accounts funds for 'Cost of Care Reimbursement' \r
+      vn_Required_balance := vn_Required_balance - TOTAL_ALL_AMT;\r
+     END IF; \r
+     -- PRJ-02515 - New condition for 'Closed' or 'Inactive' child account - END \r
+    END IF ; \r
+    -- If Active 'Conserved' child account exists - END\r
+\r
+    -- IVE CALCULATION - START\r
+    IF  vn_Required_balance > 0 THEN\r
+     -- PRJ-02312 Get client's Eligibility Status to update in TB_FUND_ALLOCATION_MASTER\r
+     -- New Logic - START\r
+     IF vs_updt_elig_status_cd = '2913' THEN -- Eligible Reimbursable\r
+      vdc_Ive_require_amt := vn_Required_balance / 2;\r
+      vdc_state_amt := vn_Required_balance / 2;\r
+     ELSE\r
+      vdc_Ive_require_amt := 0;\r
+      vdc_state_amt := vn_Required_balance ;\r
+     END IF; \r
+     -- New Logic - END\r
+    \r
+     -- PRJ-02312 Commented on 03/08/2012\r
+     -- Old Logic - START\r
+     --   SELECT COUNT(*) \r
+     --       INTO VN_STATUS_CHANGE\r
+     --       FROM TB_RS_IVE_STATUS \r
+     --   WHERE CLIENT_ID = VN_CLIENT_ID\r
+     --    AND  benefit_start_dt = VDT_START_DT \r
+     --    and benefit_end_dt = VDT_END_DT\r
+     --    AND DELETE_SW = 'N';\r
+\r
+     --       IF VN_STATUS_CHANGE > 0 THEN\r
+     --       IF  VS_PRE_ELIGI_STATUS = 'Y' AND  vl_RS_eligiblity_status  = 0 then\r
+     --     set vdc_Ive_require_amt = 0;\r
+     --     set vdc_state_amt = vn_Required_balance ;\r
+     --         elseIF  VS_PRE_ELIGI_STATUS = 'N' AND  vl_RS_eligiblity_status  > 0 then\r
+     --     Set vdc_Ive_require_amt = vn_Required_balance / 2;\r
+     --     set vdc_state_amt = vn_Required_balance / 2;\r
+     --             elseIF  VS_PRE_ELIGI_STATUS = 'N' AND  vl_RS_eligiblity_status  = 0 then\r
+     --              set vdc_Ive_require_amt = 0;\r
+     --           set vdc_state_amt = vn_Required_balance ;\r
+     --             elseif VS_PRE_ELIGI_STATUS = 'Y' AND  vl_RS_eligiblity_status  > 0 then   \r
+     --     Set vdc_Ive_require_amt = vn_Required_balance / 2;\r
+     --     set vdc_state_amt = vn_Required_balance / 2;\r
+     --             END IF; \r
+\r
+     --   ELSE\r
+     --    SELECT COUNT(*)\r
+     --     INTO vl_eligiblity_status\r
+     --     FROM TB_CLIENT_ELIGIBILITY\r
+     --    WHERE CLIENT_ID = vn_client_id \r
+     --     AND case_id = vl_case_id \r
+     --     AND ELIGIBILITY_STATUS_CD = '2913'  -- Eligibility Reimb\r
+     --     AND ELIGIBILITY_TYPE_CD = '2931' \r
+     --     AND DELETE_SW = 'N' \r
+     --     AND start_dt <= VDT_END_DT \r
+     --     and (end_dt >=  VDT_START_DT  or end_dt is null);\r
+\r
+     --    IF vl_eligiblity_status > 0 then\r
+     --     set vdc_Ive_require_amt = vn_Required_balance / 2;\r
+     --     set vdc_state_amt = vn_Required_balance / 2;\r
+     --          ELSE\r
+     --         set vdc_state_amt = vn_Required_balance;\r
+     --     set vdc_Ive_require_amt  = 0;\r
+     --          end if;\r
+     --   END IF;\r
+        -- Old Logic - END\r
+    ELSE\r
+     vn_Required_balance := 0;\r
+     vdc_Ive_require_amt  := 0;\r
+    END IF ;\r
+    --IVE CALCULATION - END\r
+   \r
+    -- Get Fiscal Category code - START\r
+    IF vl_rs_eligiblity_status > 0 OR vl_eligiblity_status > 0 THEN\r
+     VS_ELIG_SW := 'Y' ;\r
+    ELSE\r
+     VS_ELIG_SW := 'N';\r
+    END IF;\r
+\r
+    SELECT a.as_fiscalcat,a.al_sqlcode,a.as_error \r
+     from SP_RS_FISCAL_CAT_CD ( VN_CLIENT_ID,\r
+            vn_payment_detail_id,\r
+            VS_ELIG_SW,\r
+            VDT_start_dt,\r
+            VDT_END_dt) a \r
+     into\r
+      Vs_fiscal_cat,\r
+      al_sqlcode,\r
+      As_error;\r
+\r
+    IF al_sqlcode <> 0 THEN\r
+     as_error := as_error  ;\r
+     IF as_error is NULL OR as_error = '' THEN\r
+      as_error := 'SP_RS_FISCAL_CAT_CD failed'  ;\r
+     END IF;\r
+     --SIGNAL p_sp_error  ;\r
+    END IF;\r
+    -- Get Fiscal Category code - END\r
+   \r
+    -- Fund Allocation Transactions insert - START\r
+    IF vn_client_account_id > 0  THEN -- If Active 'Conserved' child account exists\r
+     IF vn_stamp_count > 0 THEN -- Re-stamping\r
+      IF VN_RS_ssi <> VN_IS_ssi or VN_RS_SsA <> vN_IS_SSA or VN_RS_coc <> coalesce(VN_IS_coc ,0)\r
+       or ((VS_PRE_ELIGI_STATUS = 'Y' AND  vl_RS_eligiblity_status  = 0 and vl_eligiblity_status = 0 )\r
+       or (VS_PRE_ELIGI_STATUS = 'N' AND ( vl_RS_eligiblity_status  > 0 or vl_eligiblity_status > 0 ) )\r
+        ) THEN\r
+\r
+       INSERT INTO TB_FUND_ALLOCATION_DETAIL \r
+        ( FUND_ALLOC_HISTORY_ID\r
+         ,FUND_ALLOC_ID\r
+         ,FUND_ALLOCATION_DATE\r
+         ,PAYMENT_DETAIL_ID\r
+         ,PAYMENT_AMOUNT\r
+         ,FISCAL_CATEGORY_CD\r
+         ,SSI_FUNDING_AMT\r
+         ,SSA_FUNDING_AMT\r
+         ,COC_FUNDING_AMT\r
+         ,STATE_FUNDING_AMT\r
+         ,IVE_FUNDING_AMT\r
+         ,IVD_FUNDING_AMT\r
+         ,LOCAL_FUNDING_AMT\r
+         ,INITIAL_STAMPING_SW\r
+         ,DELETE_SW\r
+         ,CREATE_TS\r
+         ,CREATE_USER_ID\r
+         ,UPDATE_TS\r
+         ,UPDATE_USER_ID\r
+         ,ELIGIBILITY_STATUS_CD)\r
+       ( SELECT NEXTVAL('sq_fund_allocation_detail')\r
+            ,fund_alloc_id\r
+            ,FUND_ALLOCATION_DATE\r
+            ,PAYMENT_DETAIL_ID\r
+            ,PAYMENT_AMOUNT\r
+            ,FISCAL_CATEGORY_CD\r
+            ,SSI_FUNDING_AMT\r
+            ,SSA_FUNDING_AMT\r
+            ,COC_FUNDING_AMT\r
+            ,STATE_FUNDING_AMT\r
+            ,IVE_FUNDING_AMT\r
+            ,IVD_FUNDING_AMT\r
+            ,LOCAL_FUNDING_AMT\r
+            ,INITIAL_STAMPING_SW\r
+            ,DELETE_SW\r
+            ,current_timestamp -- CREATE_TS\r
+            ,'finance' -- CREATE_USER_ID\r
+            ,current_timestamp -- UPDATE_TS\r
+            ,'finance' -- UPDATE_USER_ID\r
+            ,ELIGIBILITY_STATUS_CD\r
+        FROM TB_FUND_ALLOCATION_MASTER\r
+        WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id\r
+         AND DELETE_SW = 'N'\r
+       );\r
+\r
+       al_sqlcode := SQLCODE;\r
+       IF al_sqlcode <> 0  THEN\r
+        as_error := 'Error in inserting funding allocation history record';\r
+       END IF ;\r
+\r
+      \r
+       UPDATE TB_FUND_ALLOCATION_MASTER\r
+        SET SSI_FUNDING_AMT = coalesce( VN_RS_ssi,0),\r
+         SSA_FUNDING_AMT = COALESCE( VN_RS_ssa,0),\r
+         COC_FUNDING_AMT =  COALESCE( VN_RS_COC,0) + COALESCE(Vn_Is_coc,0),\r
+         FISCAL_CATEGORY_CD = vs_fiscal_cat,\r
+         FUND_ALLOCATION_DATE = ad_run_dt,\r
+         STATE_FUNDING_AMT = vdc_state_amt ,\r
+         IVE_FUNDING_AMT = vdc_Ive_require_amt,\r
+         INITIAL_STAMPING_SW = 'N',\r
+         UPDATE_USER_ID = 'finance',\r
+         UPDATE_TS = current_timestamp,\r
+         ELIGIBILITY_STATUS_CD = vs_updt_elig_status_cd\r
+       WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id\r
+          AND DELETE_SW = 'N';\r
+\r
+       al_sqlcode := SQLCODE;\r
+       IF al_sqlcode <> 0  THEN\r
+        as_error := 'Error in updating funding allocation master record';\r
+       END IF ;\r
+      END IF;\r
+     ELSE -- Initial stamping\r
+      -- 06/03 to add COALESCE for VN_RS_ssi, VN_RS_SSA & VN_RS_coc\r
+      INSERT INTO TB_FUND_ALLOCATION_MASTER\r
+       ( FUND_ALLOC_ID,   FUNDING_AMOUNT_NO,\r
+         PAYMENT_DETAIL_ID,  FUND_ALLOCATION_DATE,\r
+         PAYMENT_AMOUNT,   FISCAL_CATEGORY_CD,\r
+         SSI_FUNDING_AMT,   SSA_FUNDING_AMT,\r
+         COC_FUNDING_AMT,   STATE_FUNDING_AMT,\r
+         IVE_FUNDING_AMT,   IVD_FUNDING_AMT,\r
+         LOCAL_FUNDING_AMT,  INITIAL_STAMPING_SW,\r
+         DELETE_SW,\r
+         CREATE_TS,       CREATE_USER_ID,\r
+         UPDATE_TS,       UPDATE_USER_ID,\r
+         ELIGIBILITY_STATUS_CD  )\r
+      VALUES ( NEXTVAL('sq_FUND_ALLOCATION_MASTER'),  0,\r
+         vn_payment_detail_id,  ad_run_dt,\r
+         VN_PAYMENT_AMOUNT_NO,  vs_fiscal_cat,\r
+         COALESCE(VN_RS_ssi,0),    COALESCE(VN_RS_SSA,0),\r
+         COALESCE(VN_RS_coc,0), vdc_state_amt,\r
+         vdc_Ive_require_amt,  0,\r
+         0,      'Y',\r
+         'N',\r
+         CURRENT_TIMESTAMP,  'finance',\r
+         CURRENT_TIMESTAMP,  'finance',\r
+         vs_updt_elig_status_cd )  ;\r
+\r
+      al_sqlcode := SQLCODE;\r
+      IF al_sqlcode <> 0  THEN\r
+       as_error := 'Error in inserting funding allocation master record';\r
+      END IF ; \r
+     END IF;\r
+    ELSE -- If NO Active 'Conserved' child account exists\r
+     VN_RS_ssi := 0;\r
+     VN_RS_SSA := 0;\r
+     VN_RS_COC := 0 ;\r
+    \r
+     IF vn_stamp_count > 0 THEN -- Re-stamping\r
+      IF ((VS_PRE_ELIGI_STATUS = 'Y' AND  vl_RS_eligiblity_status  = 0  and vl_eligiblity_status = 0 )\r
+       or (VS_PRE_ELIGI_STATUS = 'N' AND ( vl_RS_eligiblity_status  > 0 or vl_eligiblity_status > 0 ) )) THEN\r
+\r
+       INSERT INTO TB_FUND_ALLOCATION_DETAIL \r
+        ( FUND_ALLOC_HISTORY_ID\r
+         ,FUND_ALLOC_ID\r
+         ,FUND_ALLOCATION_DATE\r
+         ,PAYMENT_DETAIL_ID\r
+         ,PAYMENT_AMOUNT\r
+         ,FISCAL_CATEGORY_CD\r
+         ,SSI_FUNDING_AMT\r
+         ,SSA_FUNDING_AMT\r
+         ,COC_FUNDING_AMT\r
+         ,STATE_FUNDING_AMT\r
+         ,IVE_FUNDING_AMT\r
+         ,IVD_FUNDING_AMT\r
+         ,LOCAL_FUNDING_AMT\r
+         ,INITIAL_STAMPING_SW\r
+         ,DELETE_SW\r
+         ,CREATE_TS\r
+         ,CREATE_USER_ID\r
+         ,UPDATE_TS\r
+         ,UPDATE_USER_ID\r
+         ,ELIGIBILITY_STATUS_CD)\r
+       (SELECT NEXTVAL('sq_fund_allocation_detail')\r
+        ,fund_alloc_id\r
+        ,FUND_ALLOCATION_DATE\r
+        ,PAYMENT_DETAIL_ID\r
+        ,PAYMENT_AMOUNT\r
+        ,FISCAL_CATEGORY_CD\r
+        ,SSI_FUNDING_AMT\r
+        ,SSA_FUNDING_AMT\r
+        ,COC_FUNDING_AMT\r
+        ,STATE_FUNDING_AMT\r
+        ,IVE_FUNDING_AMT\r
+        ,IVD_FUNDING_AMT\r
+        ,LOCAL_FUNDING_AMT\r
+        ,INITIAL_STAMPING_SW\r
+        ,DELETE_SW\r
+        ,current_timestamp -- CREATE_TS\r
+        ,'finance' -- CREATE_USER_ID\r
+        ,current_timestamp -- UPDATE_TS\r
+        ,'finance' -- UPDATE_USER_ID\r
+        ,ELIGIBILITY_STATUS_CD\r
+       FROM TB_FUND_ALLOCATION_MASTER\r
+       WHERE PAYMENT_DETAIL_ID = vn_payment_detail_id\r
+        AND DELETE_SW = 'N'\r
+\r
+       );\r
+\r
+       al_sqlcode := SQLCODE;\r
+       IF al_sqlcode <> 0  THEN\r
+        as_error := 'Error in inserting funding allocation history record';\r
+       END IF ;\r
+      \r
+       -- PRJ-02515 - New condition for 'Closed' or 'Inactive' child account - START\r
+       -- Set Previously used Child Accounts funds for 'Cost of Care Reimbursement' \r
+       SELECT COALESCE(SSI_FUNDING_AMT,0),\r
+        COALESCE(SSA_FUNDING_AMT,0),\r
+        COALESCE(COC_FUNDING_AMT,0)\r
+       INTO VN_RS_ssi,\r
+        VN_RS_SSA,\r
+        VN_RS_COC\r
+       FROM TB_FUND_ALLOCATION_MASTER\r
+       WHERE PAYMENT_DETAIL_ID  = vn_payment_detail_id\r
+        AND DELETE_SW = 'N';\r
+\r
+   \r
+       IF al_sqlcode < 0 THEN\r
+        as_error := as_error  ;\r
+        as_error := 'Error in getting Previously used Child Accounts funds.'  ;\r
+       -- SIGNAL p_sp_error;       \r
+       END IF; \r
+       -- PRJ-02515 - New condition for 'Closed' or 'Inactive' child account - END\r
+      \r
+       UPDATE TB_FUND_ALLOCATION_MASTER\r
+        SET SSI_FUNDING_AMT = COALESCE( VN_RS_ssi,0),\r
+         SSA_FUNDING_AMT = COALESCE( VN_RS_ssa,0),\r
+         COC_FUNDING_AMT =  COALESCE( VN_RS_COC,0) ,\r
+         FISCAL_CATEGORY_CD =  vs_fiscal_cat,\r
+         FUND_ALLOCATION_DATE = ad_run_dt,\r
+         STATE_FUNDING_AMT =  vdc_state_amt ,\r
+         IVE_FUNDING_AMT =vdc_Ive_require_amt,\r
+         INITIAL_STAMPING_SW = 'N',\r
+         UPDATE_USER_ID = 'finance',\r
+         UPDATE_TS = current_timestamp,\r
+         ELIGIBILITY_STATUS_CD = vs_updt_elig_status_cd\r
+       WHERE PAYMENT_DETAIL_ID =  vn_payment_detail_id\r
+         AND DELETE_SW = 'N'; \r
+\r
+       al_sqlcode := SQLCODE;\r
+       IF al_sqlcode <> 0  THEN\r
+        as_error := 'Error in updating funding allocation master record';\r
+       END IF ;\r
+      END IF;\r
+     ELSE -- Initial stamping\r
+      -- 06/03 to add COALESCE for VN_RS_ssi, VN_RS_SSA & VN_RS_coc\r
+      INSERT INTO TB_FUND_ALLOCATION_MASTER\r
+       ( FUND_ALLOC_ID,   FUNDING_AMOUNT_NO,\r
+        PAYMENT_DETAIL_ID,      FUND_ALLOCATION_DATE,\r
+        PAYMENT_AMOUNT,   FISCAL_CATEGORY_CD,\r
+        SSI_FUNDING_AMT,   SSA_FUNDING_AMT,\r
+        COC_FUNDING_AMT,   STATE_FUNDING_AMT,\r
+        IVE_FUNDING_AMT,   IVD_FUNDING_AMT,\r
+        LOCAL_FUNDING_AMT,      INITIAL_STAMPING_SW,\r
+        DELETE_SW,\r
+        CREATE_TS,              CREATE_USER_ID,\r
+        UPDATE_TS,           UPDATE_USER_ID,\r
+        ELIGIBILITY_STATUS_CD )\r
+      VALUES ( NEXTVAL('sq_FUND_ALLOCATION_MASTER') ,  0,\r
+        vn_payment_detail_id,  ad_run_dt,\r
+        VN_PAYMENT_AMOUNT_NO,  vs_fiscal_cat,\r
+        COALESCE(VN_RS_ssi,0),  COALESCE(VN_RS_SSA,0),\r
+        COALESCE(VN_RS_coc,0),  vdc_state_amt,\r
+        vdc_Ive_require_amt,  0,\r
+        0,       'Y',\r
+        'N',\r
+        CURRENT_TIMESTAMP,   'finance',\r
+        CURRENT_TIMESTAMP,   'finance',\r
+        vs_updt_elig_status_cd )  ;\r
+\r
+      al_sqlcode := SQLCODE;\r
+      IF al_sqlcode <> 0  THEN\r
+       as_error := 'Error in inserting funding allocation master record';\r
+      END IF ; \r
+     END IF ;\r
+    END IF ; --vn_client_account_id > 0\r
+    -- Fund Allocation Transactions insert - END\r
+   END IF ; --TOTAL_ALL_AMT <>  coalesce(VN_PAYMENT_AMOUNT_NO,0)\r
+\r
+   -- 5583 AFS\r
+   IF VN_IS_COC = 0 AND VN_IS_SSI = 0 AND VN_IS_SSA = 0 THEN\r
+    UPDATE TB_PAYMENT_HEADER\r
+       SET INTERFACE_TO_CD = '5583'\r
+    WHERE DELETE_SW = 'N'\r
+     AND PAYMENT_TYPE_CD = '3294'\r
+     AND MANUAL_SW= 'N'\r
+     AND PAYMENT_START_DT =VDT_START_DT\r
+     AND PAYMENT_END_DT = VDT_END_DT\r
+     AND PAYMENT_ID IN (SELECT PAYMENT_ID\r
+           FROM TB_PAYMENT_DETAIL\r
+          WHERE DELETE_SW = 'N'\r
+             AND PAYMENT_DETAIL_ID = vn_payment_detail_id \r
+             AND county_cd IN\r
+             ( select statecountycode \r
+            from county where activeflag = 1 and golivedate <= CURRENT_DATE )    \r
+          ) ;\r
+\r
+    al_sqlcode := SQLCODE;\r
+    IF al_sqlcode < 0 THEN\r
+     as_error := 'Error in Updating Payment Header with code interface to AFS'  ;\r
+     vs_identity_column := 'Payment ID';\r
+     vs_identity_val := 'Multiple';\r
+     --SIGNAL p_sp_error  ;\r
+    END IF ;\r
+   END IF ;\r
+  \r
+\r
+   -- COMMIT;--\r
+   VN_PAYMENT_AMOUNT_NO      := 0;\r
+   vl_rs_eligiblity_status   := 0;\r
+   VN_RS_COC          := 0;\r
+   VN_RS_SSI          := 0;\r
+   VN_RS_SSA          := 0;\r
+   VN_IS_COC          := 0;\r
+   VN_IS_SSI          := 0;\r
+   VN_IS_SSA          := 0;\r
+   VN_BL_COC          := 0;\r
+   VN_BL_SSI          := 0;\r
+   VN_BL_SSA          := 0;\r
+   Cos_amount         := 0;\r
+   vdc_child_other_amount    := 0;\r
+   vn_Required_balance       := 0;\r
+   vdc_state_amt             := 0;\r
+   vdc_Ive_require_amt       := 0;\r
+   Vn_restamp_amt            := 0;\r
+   vn_payment_detail_id      := 0;\r
+   vn_client_account_id      := 0;\r
+   VDT_START_DT         := null;\r
+   VDT_END_DT           := null;\r
+   vn_client_id              := 0;\r
+   vdc_child_other_amount    := 0;\r
+   vdc_ssa_amt_adj_credit    := 0;\r
+   vdc_SSa_amt_adj_debit     := 0;\r
+   vdc_ssa_stamped_amt       := 0;\r
+   vdc_ssa_amt_adj_credit    := 0;\r
+   vdc_SSa_amt_adj_debit     := 0;\r
+   vdc_ssi_amt_adj_credit    := 0;\r
+   vdc_SSi_amt_adj_debit     := 0;\r
+   vdc_ssi_stamped_amt       := 0;\r
+   vdc_othcoc_amt_adj_credit := 0;\r
+   vdc_othcoc_amt_adj_debit  := 0;\r
+   vdc_ssa_stamped_amt       := 0;\r
+   vdc_othcoc_stamped_amt    := 0;\r
+   total_all_amt             := 0;\r
+   vn_stamp_count            := 0;\r
+   vl_eligiblity_status      := 0;\r
+   --   VN_STATUS_CHANGE          := 0;\r
+   VS_PRE_ELIGI_STATUS       := NULL;\r
+   VDC_IVE_FUNDING_AMT       := 0;\r
+   VS_ELIG_SW                := NULL;\r
+   vs_fiscal_cat             := NULL;\r
+   vs_updt_elig_status_cd := NULL;\r
+  END IF;\r
+  --END WHILE ;\r
+ END LOOP;\r
+\r
+ Raise notice '>>>>>>>>>>start SP_PAYMENT_STAMPING %',now();\r
+\r
+ CLOSE Late_entry_cur;\r
+\r
+ Perform SP_PAYMENT_STAMPING ( ad_run_dt ) ;\r
+ al_sqlcode := SQLCODE;\r
+ IF al_sqlcode <> 0  THEN\r
+  as_error := 'Error in PAYMENT_STAMPING';\r
+ End if;\r
+\r
+ Raise notice '>>>>>>>>>>end SP_PAYMENT_STAMPING %',now();\r
+ UPDATE TB_BATCH_RUNTIME_LOG\r
+  SET RUNTIME_END_TS = CURRENT_TIMESTAMP, \r
+   UPDATE_TS = CURRENT_TIMESTAMP, \r
+   UPDATE_USER_ID = 'RESTAMP',\r
+   DELETE_SW = 'N',\r
+   SUCCESS_SW = 'Y'\r
+ WHERE RUNTIME_LOG_ID = VL_RUNTIME_ID;\r
+   \r
+ al_sqlcode := 0;\r
+ as_error := '';\r
+ RETURN 1;\r
+END;\r
+\r
+$function$
+

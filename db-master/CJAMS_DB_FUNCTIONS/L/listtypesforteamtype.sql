@@ -1,0 +1,42 @@
+ CREATE OR REPLACE FUNCTION public.listtypesforteamtype(teamtypekey character varying, objecttype character varying, pagenumber integer, pagesize integer, nolimit boolean DEFAULT false)
+  RETURNS TABLE(totalcount bigint, sequencenumber integer, typekey character varying, datavalue integer, typedescription character varying)                                              
+  LANGUAGE plpgsql                                                                                                                                                                       
+ AS $function$                                                                                                                                                                         
+                                                                                                                                                                                       
+   DECLARE                                                                                                                                                                             
+         v_teamtypekey character varying;                                                                                                                                              
+         v_pageoffset int;                                                                                                                                                             
+         v_pagenumber int;                                                                                                                                                             
+                 v_pagesize int;                                                                                                                                                       
+                                                                                                                                                                                       
+ BEGIN                                                                                                                                                                                 
+         v_teamtypekey:= teamtypekey;                                                                                                                                                  
+     v_pagenumber := pagenumber-1;                                                                                                                                                     
+     v_pageoffset = v_pagenumber * pagesize;                                                                                                                                           
+         v_pagesize:= pagesize;                                                                                                                                                        
+         IF nolimit = TRUE THEN                                                                                                                                                        
+                 v_pagesize:= null;                                                                                                                                                    
+                 v_pageoffset:= null;                                                                                                                                                  
+         END IF;                                                                                                                                                                       
+                                                                                                                                                                                       
+         IF objecttype = 'racetype' THEN                                                                                                                                               
+                 RETURN QUERY                                                                                                                                                          
+                 select count(1) over(), rt.sequencenumber, rt.racetypekey, rt.datavalue, rt.typedescription                                                                           
+                  from racetype rt                                                                                                                                                     
+                 join typesagencymapping tt on tt.objecttypekey = rt.racetypekey                                                                                                       
+                 where rt.activeflag = 1 and tt.activeflag = 1 and tt.teamtypekey = v_teamtypekey and tt.objecttype = 'racetype'                                                       
+                 LIMIT v_pagesize OFFSET v_pageoffset;                                                                                                                                 
+         ELSIF objecttype = 'ethnicgrouptype' THEN                                                                                                                                     
+                 RETURN QUERY                                                                                                                                                          
+                 select count(1) over(), rt.sequencenumber, rt.ethnicgrouptypekey, rt.datavalue, rt.typedescription                                                                    
+                  from ethnicgrouptype rt                                                                                                                                              
+                 join typesagencymapping tt on tt.objecttypekey = rt.ethnicgrouptypekey                                                                                                
+                 where rt.activeflag = 1 and tt.activeflag = 1 and tt.teamtypekey = v_teamtypekey and tt.objecttype = 'ethnicgrouptype'                                                
+                 LIMIT v_pagesize OFFSET v_pageoffset;                                                                                                                                 
+         END IF;                                                                                                                                                                       
+                                                                                                                                                                                       
+                                                                                                                                                                                       
+ END;                                                                                                                                                                                  
+                                                                                                                                                                                       
+ $function$                                                                                                                                                                              
+

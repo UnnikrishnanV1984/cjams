@@ -1,0 +1,39 @@
+DROP FUNCTION  IF EXISTS cjams.getadoptionplanning(uuid);
+
+CREATE OR REPLACE FUNCTION cjams.getadoptionplanning(v_permanencyplanid uuid)                                                         
+  RETURNS json                                                                                                                          
+  LANGUAGE plpgsql                                                                                                                      
+ AS $function$  
+
+--------------------------------------------------------------------------------------------------------------
+--- CDM-21268 - 03-21 - Removed Active Flag check for intakeservicerequestactor Table
+-- CDM-21967 - 05-13
+
+--------------------------------------------------------------------------------------------------------------
+
+DECLARE l_adoptionplanning json;
+
+begin
+	
+	
+SELECT json_agg(adoptionplanning) INTO l_adoptionplanning FROM(
+SELECT ap.adoptionplanningid, ap.intakeserviceid, ap.intakeservicerequestactorid,
+       ap.isnoeffort, ap.remarks, ap.adoptiondate, ap.narrative, ap.permanencyplanid, ap.isexceptiongranted, ap.dateofexceptiongranted,
+ (SELECT  json_agg(adoptioneffortsdetails)  AS  adoptioneffortsdetails  FROM  (
+SELECT ade.efforttype,  ade.notes, ade.effortdate FROM adoptionefforts ade  
+INNER JOIN adoptionplanning adp ON adp.adoptionplanningid = ade.adoptionplanningid AND adp.activeflag =1
+			AND ade.activeflag =1
+WHERE adp.adoptionplanningid = ap.adoptionplanningid 
+ )  adoptioneffortsdetails)
+FROM adoptionplanning ap
+LEFT JOIN adoptionefforts ae ON ae.adoptionplanningid = ap.adoptionplanningid AND ae.activeflag =1 
+--INNER JOIN intakeservicerequest isr ON isr.servicecaseid = ap.servicecaseid AND isr.activeflag =1
+INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = ap.intakeservicerequestactorid --AND isra.activeflag =1
+WHERE ap.permanencyplanid = v_permanencyplanid AND ap.activeflag =1
+) AS adoptionplanning;
+
+RETURN l_adoptionplanning;      
+end;
+
+$function$ ;
+

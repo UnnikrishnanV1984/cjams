@@ -1,0 +1,47 @@
+CREATE OR REPLACE FUNCTION cjams.getreversalreceiptlist(searchobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_receipt json;
+                   
+v_offset    integer;
+v_securityusersid character varying;
+v_page integer;
+v_limit integer;
+v_status character varying;
+ 
+
+begin
+v_securityusersid := 	searchObj ->> 'securityusersid';
+v_page := 	searchObj ->> 'page';
+v_limit := 	searchObj ->> 'limit';
+v_offset  :=  (v_page  -  1)  *  v_limit;  
+v_status := 	searchObj ->> 'statusval';
+ 
+
+	
+SELECT json_agg(receipt) INTO l_receipt FROM (
+
+select count(1) over() as totalcount,tpr.create_ts as enteredat,up.fullname as enteredby,tpr.receipt_dt,tpr.payment_type_cd,tpr.payment_method_cd,tpr.payment_no_tx,
+trl.collected_amount_no, tpr.reversal_amount_no as payment_amount_no,trl.receivable_detail_id,(select tpd.client_id from tb_receivable_liquidation trl 
+inner join tb_receivable_detail trd on trd.receivable_detail_id=trl.receivable_detail_id
+inner join tb_payment_detail tpd on tpd.payment_detail_id=trd.payment_detail_id
+where trl.receipt_id=tpr.receipt_id limit 1),(select value_tx from tb_picklist_values where PICKLIST_type_id=5 AND delete_sw='N'
+AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(tpr.payment_method_cd)) as receipttype,tpr.provider_id,tpr.receipt_id,(select trd.payment_detail_id from tb_receivable_detail trd where trd.receivable_detail_id=trl.receivable_detail_id limit 1) from tb_RECEIVABLE_LIQUIDATION trl 
+inner join tb_payment_receipt tpr on trl.receipt_id = tpr.receipt_id 
+ left join userprofile up on up.securityusersid = tpr.create_user_id
+ inner join tb_receivable_detail trdt on trdt.receivable_detail_id = trl.receivable_detail_id and trdt.isreversal=true
+ inner join routing r on r.objectid = tpr.receipt_id::character varying and r.eventcode='RVRSL'  and r.tosecurityusersid = v_securityusersid  
+ and case v_status when  'P' then r.remarks='Pending' when 'A' then r.remarks='Approved' when 'R' then r.remarks='Rejected' else r.remarks in ('Pending','Approved','Rejected') end
+ order by r.insertedon desc
+LIMIT  v_limit  OFFSET  v_offset
+) AS receipt;
+
+RETURN l_receipt;     
+
+
+
+end;
+
+$function$

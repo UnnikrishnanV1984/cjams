@@ -1,0 +1,119 @@
+DROP FUNCTION IF EXISTS cjams.casereviewaddupdate(person_id uuid, casereview json, insertedby character varying);
+CREATE OR REPLACE FUNCTION cjams.casereviewaddupdate(person_id uuid, casereview json, insertedby character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE 
+
+v_casereview json;
+v_insertedby character varying;
+v_personId uuid;
+v_casereviewid uuid;
+BEGIN
+
+v_insertedby := insertedby;
+v_casereview := casereview;
+v_personId := person_id;
+RAISE NOTICE 'casereviewid : %', v_casereview ->> 'casereviewid' ;  
+RAISE NOTICE 'caseid : %', v_casereview ->> 'caseid' ;  
+ 
+if (v_casereview ->> 'casereviewid') is null  then 
+	 INSERT INTO casereview(casereviewid ,
+			reviewtypekey,
+			reviewdate ,
+	        reviewtime ,
+	        nextreviewdate ,
+            panelworkerid,
+            panelsupervisorid,
+	        otherpanelmembers,
+            caseid,
+            continuedneedtypekey,
+            carequalitytypekey,
+            permanencyplantypekey,
+            recommendations,
+            crbrecmdtypekey,
+            crbresponsetypekey,
+            comments,
+	        insertedon,
+	        insertedby,
+	        updatedon,
+	        updatedby,
+            placementplantypekey,
+            waiverreuinontypekey,
+            tprtypekey,
+            adequacyprogresstypekey,
+            safetyassessmenttypekey,
+            clientmergeid,
+			personid)
+		VALUES (gen_random_uuid(),
+		v_casereview ->> 'reviewtypekey' ,
+		(v_casereview ->>'reviewdate') ::timestamp,
+		(v_casereview ->>'reviewtime') ::timestamp ,
+		(v_casereview ->> 'nextreviewdate') ::timestamp,
+        (v_casereview ->> 'panelworkerid'):: integer,
+        (v_casereview ->> 'panelsupervisorid'):: integer,
+		v_casereview ->> 'otherpanelmembers',
+        (v_casereview ->> 'caseid') :: uuid,
+        v_casereview ->> 'continuedneedtypekey',
+        v_casereview ->> 'carequalitytypekey',
+        v_casereview ->> 'permanencyplantypekey',
+        v_casereview ->> 'recommendations',
+        v_casereview ->> 'crbrecmdtypekey',
+        v_casereview ->> 'crbresponsetypekey',
+        v_casereview ->> 'comments',
+		now(),
+        v_insertedby :: uuid,
+		now(),
+        v_insertedby :: uuid,
+       v_casereview ->> 'placementplantypekey',
+       v_casereview ->> 'waiverreuinontypekey',
+       v_casereview ->> 'tprtypekey', 
+       v_casereview ->> 'adequacyprogresstypekey',
+       v_casereview ->> 'safetyassessmenttypekey',
+       (v_casereview ->> 'clientmergeid') :: uuid,
+		v_personId);
+ else 
+	 select casereviewid  into v_casereviewid 
+	 from casereview 
+	 where caseid :: uuid  = (v_casereview ->>'caseid') :: uuid 
+	 order by insertedon desc fetch first row only ;
+	 
+	UPDATE casereview SET activeflag = 1,
+	    reviewtypekey = v_casereview ->>'reviewtypekey', 
+       reviewdate = (v_casereview ->>'reviewdate') :: timestamp, 
+       reviewtime = (v_casereview ->>'reviewtime')  :: timestamp, 
+       nextreviewdate = (v_casereview ->>'nextreviewdate')  :: timestamp, 
+ --      panelworkerid = (v_casereview ->>'panelworkerid'):: integer, 
+  --     panelsupervisorid = (v_casereview ->>'panelsupervisorid'):: integer, 
+        otherpanelmembers = v_casereview ->>'otherpanelmembers', 
+       caseid = (v_casereview ->>'caseid')::uuid, 
+    --   otherparticipants = v_casereview ->>'otherparticipants', 
+   --    continuedneedtypekey = v_casereview ->>'continuedneedtypekey', 
+   --    carequalitytypekey = v_casereview ->>'carequalitytypekey', 
+    --   permanencyplantypekey = v_casereview ->>'permanencyplantypekey', 
+       recommendations = v_casereview ->>'recommendations', 
+   --    crbrecmdtypekey = v_casereview ->>'crbrecmdtypekey', 
+   --    crbresponsetypekey = v_casereview ->>'crbresponsetypekey', 
+       "comments" = v_casereview ->>'comments', 
+   --    fk_id = v_casereview ->>'fk_id', 
+   --    insertedby = v_casereview ->>'insertedby', 
+   --    insertedon = v_casereview ->>'insertedon', 
+      updatedby =  v_insertedby :: uuid ,  
+      updatedon = now()
+       --- active flag have checked activeflag = v_casereview ->>'activeflag', 
+  --     placementplantypekey = v_casereview ->>'placementplantypekey', 
+  --     waiverreuinontypekey = v_casereview ->>'waiverreuinontypekey', 
+  --     tprtypekey = v_casereview ->>'tprtypekey', 
+  --     adequacyprogresstypekey = v_casereview ->>'adequacyprogresstypekey', 
+  --     safetyassessmenttypekey = v_casereview ->>'safetyassessmenttypekey', 
+  --     datavalidflag = v_casereview ->>'datavalidflag', 
+  --     clientmergeid = (v_casereview ->>'clientmergeid') :: uuid ,
+ --      old_id = v_casereview ->>'old_id'
+       where (casereviewid = v_casereviewid);
+END IF;
+    RETURN 'SUCCESS';
+   
+END 
+$function$
+;

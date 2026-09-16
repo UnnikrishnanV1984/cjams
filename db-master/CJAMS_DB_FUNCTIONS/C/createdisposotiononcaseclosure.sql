@@ -1,0 +1,71 @@
+DROP FUNCTION IF EXISTS createdisposotiononcaseclosure(uuid, uuid, uuid, uuid);
+DROP FUNCTION IF EXISTS createdisposotiononcaseclosure(uuid, uuid, uuid, character varying);
+
+CREATE OR REPLACE FUNCTION createdisposotiononcaseclosure(
+	v_intakeserviceid uuid,
+	v_intakeserreqstatustypeid uuid,
+	v_dispostionid uuid,
+	v_securityuserid character varying)
+    RETURNS character varying
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+
+DECLARE                    
+v_intakeservicerequestdispositioncodeid uuid;
+v_randomuuid uuid;
+v_status character varying;
+v_intakestatus uuid;
+
+
+Begin
+
+	RAISE NOTICE 'v_intakeserviceid>>>>>>>>>>>>>>>>>>%',v_intakeserviceid;
+	RAISE NOTICE 'v_intakeserreqstatustypeid>>>>>>>>>%',v_intakeserreqstatustypeid;
+	RAISE NOTICE 'v_dispostionid>>>>>>>>>>>>>>>>>>>>>%',v_dispostionid;
+	RAISE NOTICE 'v_securityuserid>>>>>>>>>>>>>>>>>>>%',v_securityuserid;
+	   	   
+	 select gen_random_uuid() into v_randomuuid;   
+
+	RAISE NOTICE 'v_randomuuid>>>>>>>>>>>>>>>>>>>%',v_randomuuid;
+
+
+ 	INSERT INTO cjams.intakeservicerequestdispositioncode 
+	( intakeservicerequestdispositioncodeid,intakeserviceid, insertedby, insertedon, updatedby, updatedon, "timestamp", 
+	statusdate, description, expirationdate, effectivedate, activeflag, 
+	intakeserreqstatustypeid, servicerequesttypeconfigiddispostionid, dateofsubpoena, subpoenareason,
+	lastfacetofacedate, seenwithin, dateseen, reviewcomments, reasonfordelay, old_id,
+	closingcodetypekey, servicerequestdispositionsubtypeconfigid, servicerequestdispositionsubtypenotes, 
+	approvalid, approvalnaturetypekey, entitytypetypekey, additionalkey,
+	entitykeyid1, entitykeyid2, requestdate, actiondueddate, approvestaffid, approvalstatustypekey,
+	denialreasontypekey, requestorcomments, approvalcomments, currentstatustypekey, 
+	forwardcountytypekey, forwardunitid, administratorid, datavalidflag, clientmergeid)
+	VALUES(v_randomuuid, v_intakeserviceid	, v_securityuserid, now(), v_securityuserid, now(), NULL,
+	now(), NULL, NULL, now(), 1, 
+	v_intakeserreqstatustypeid, v_dispostionid, NULL, NULL,
+	NULL, NULL, now(), '', NULL, NULL, 
+	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 
+	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) 
+	RETURNING intakeservicerequestdispositioncodeid INTO v_intakeservicerequestdispositioncodeid;
+
+	RAISE NOTICE 'v_intakeservicerequestdispositioncodeid>>>>>>>>>>>>>>>>>>>%',v_intakeservicerequestdispositioncodeid;
+
+ 	select routingintake into v_status from routingintake(v_intakeservicerequestdispositioncodeid ::character varying ,
+ 	v_securityuserid ::character varying,
+    'INDR',15,'Disposition approved',v_securityuserid ::character varying,true,false,false,
+   'Disposition approved','Disposition approved',v_intakeserviceid::character varying,'',0)  ;
+ 
+  	update routing set routingstatustypeid=16 where objectid=v_intakeservicerequestdispositioncodeid ::character varying;
+  
+  
+  	select intakeserreqstatustypeid  into v_intakestatus from  intakeserreqstatustype  
+  	where description ='Closed';
+  	
+  	update intakeservicerequest set intakeserreqstatustypeid = v_intakestatus where intakeserviceid=v_intakeserviceid;
+  
+		Return  'Success';		
+End
+
+$BODY$;

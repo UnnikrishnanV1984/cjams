@@ -1,0 +1,28 @@
+ CREATE OR REPLACE FUNCTION public.servicecaselist(v_intakeserviceid uuid, pagenumber bigint, pagesize bigint)
+  RETURNS json                                                                                                
+  LANGUAGE plpgsql                                                                                            
+ AS $function$                                                                                              
+                                                                                                            
+ DECLARE                                                                                                    
+         v_pageoffset  int;                                                                                 
+         v_pagenumber  int;                                                                                 
+         l_servicecase  json;                                                                               
+                                                                                                            
+ BEGIN                                                                                                      
+         v_pagenumber  :=  pagenumber-1;                                                                    
+         v_pageoffset  =  v_pagenumber  *  pagesize;                                                        
+                                                                                                            
+ SELECT json_agg(TT) INTO l_servicecase FROM (                                                              
+         SELECT sc.servicecasenumber,sc.insertedon casecreateddate ,sc.startdate, sc.enddate,               
+         '' as assigned ,null assigneddate                                                                  
+     FROM servicecase sc                                                                                    
+         INNER JOIN intakeservicerequest ir ON sc.servicecaseid = ir.servicecaseid AND ir.activeflag =1     
+          WHERE sc.activeflag =1  and ir.intakeserviceid =v_intakeserviceid                                 
+         LIMIT  pagesize  OFFSET  v_pageoffset                                                              
+ ) TT;                                                                                                      
+                                                                                                            
+ Return l_servicecase;                                                                                      
+ END;                                                                                                       
+                                                                                                            
+ $function$                                                                                                   
+

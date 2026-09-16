@@ -1,0 +1,1 @@
+	ALTER TABLE cjams.personrole ALTER COLUMN drugexposedtypekey TYPE json USING drugexposedtypekey::json;

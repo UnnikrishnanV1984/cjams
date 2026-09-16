@@ -1,0 +1,157 @@
+CREATE OR REPLACE FUNCTION as_recondudate_scheduler()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                         
+                                                                                                                                                                       
+ DECLARE                                                                                                                                                               
+                                                                                                                                                                       
+ v_duedateoffset int;                                                                                                                                                       
+ v_asservice record;
+ v_count int;
+
+ v_cwcount int;
+ v_amactivityid uuid;
+ v_ammappingid uuid;
+v_activityid uuid;
+v_tosecurityusersid uuid;
+v_amtaskid uuid;
+v_investigationid uuid;
+v_amname  character varying;
+v_amdescription character varying;
+ v_amhelptext character varying;
+ BEGIN   
+
+
+ 
+select sc.duedateoffset into v_duedateoffset from servicerequesttypeconfig sc
+inner join servicerequestsubtype st on sc.servicerequestsubtypeid =st.servicerequestsubtypeid 
+where st.classkey ='IHAS' and sc.activeflag =1 and st.activeflag =1;
+
+select am.amactivityid , am.ammappingid , am.name, am.description , am.helptext 
+ into v_amactivityid, v_ammappingid, v_amname, v_amdescription, v_amhelptext from ammapping am 
+inner join amactivity ac on ac.amactivityid = am.amactivityid where
+ac.name ='IHAS - Reconsideration';
+
+select amtaskid into v_amtaskid from amtask  where name='IHAS - Reconsideration';
+
+FOR  v_asservice IN select recon_due_dt , startdate ,* from asservicesoncase a
+inner join intakeserv i on i.intakeservid = a.caseservicetypeid 
+where i.intakeservtypekey ='IHAS' 
+and 
+(
+(a.recon_due_dt  < current_date + interval '30' day and a.recon_due_dt > current_date)
+or (a.recon_due_dt is null and (a.startdate + v_duedateoffset < current_date + interval '30' day ) and a.startdate + v_duedateoffset > current_date)
+)
+and (a.approvalstatus ='approved' or (a.approvalstatus in ('draft','review') and a.enddate is not null))
+
+LOOP
+    select count(*) INTO v_count from activity a
+    inner join amactivity am on a.amactivityid = am.amactivityid 
+    where am."name" ='IHAS - Reconsideration' and a.objectid = v_asservice.ascaseid;
+
+ select tosecurityusersid  into v_tosecurityusersid from routing where objectid :: character varying = v_asservice.ascaseid :: character varying;
+
+
+ select count(*) into v_cwcount from caseassignment where activeflag =1 and objectid =  v_asservice.ascaseid;
+
+ if(v_cwcount > 0) then
+
+  if(v_cwcount > 1) then
+   
+   select count(*) into v_cwcount from caseassignment where activeflag =1 and objectid =  v_asservice.ascaseid and responsibilitytypekey='primary';
+
+   if(v_cwcount > 1) then
+    select toworkeridno into v_tosecurityusersid from caseassignment where servicetype='IHAS Request' and responsibilitytypekey='primary' and  activeflag =1 and objectid =  v_asservice.ascaseid limit 1;
+
+   else 
+    select toworkeridno into v_tosecurityusersid from caseassignment where responsibilitytypekey='primary' and  activeflag =1 and objectid =  v_asservice.ascaseid limit 1;
+
+   end if;
+   
+  else 
+   select toworkeridno into v_tosecurityusersid from caseassignment where  activeflag =1 and objectid =  v_asservice.ascaseid;
+
+
+  end if;
+
+
+    if(v_count = 0) then
+            v_activityid := gen_random_uuid(); 
+           if(v_asservice.recon_due_dt = null) then
+           v_asservice.recon_due_dt = v_asservice.startdate + v_duedateoffset;
+           end if;
+           
+          select investigationid into v_investigationid from Investigation where intakeserviceid =v_asservice.ascaseid limit 1;
+
+          
+            INSERT INTO activity ( activityid,
+       description, 
+       amactivityid, 
+       ammappingid, 
+       objectid, 
+       activitytypekey, 
+       sourcedescription, 
+       helptext, 
+       iseditable, 
+       activeflag, 
+       insertedby, 
+       insertedon)
+    values  ( v_activityid,
+       v_amname,
+       v_amactivityid,
+       v_ammappingid,
+       v_investigationid,
+       'Reconsideration',
+       v_amdescription,
+       v_amhelptext,
+       true,
+       1,
+                            'admin',
+       now());
+
+
+                INSERT INTO activitytask( activityid, 
+          duedate,
+          name,
+          description,
+          helptext,
+          amtaskid,
+          assignedto,
+          assignedon,
+          activitytaskstatustypekey,
+          activitytasktypekey,
+          activityprioritytypekey,
+          required,
+          iseditable,
+          activeflag, 
+          insertedby, 
+          insertedon)
+      VALUES  ( v_activityid,
+          v_asservice.recon_due_dt, 
+          v_amname,
+          v_amdescription,
+          v_amhelptext,
+          v_amtaskid,
+           v_tosecurityusersid, 
+          now(),
+          'InvOpen',
+          'InvGeneral',
+          'InvHigh',
+          true,
+          true, 
+                                        1,
+          'system', 
+          now());
+
+    end if;
+
+
+end if;
+ END LOOP;
+                                                                                                                           
+                                                                                                                                                                       
+     RETURN    'SUCCESS';                                                                                                                                              
+ END;                                                                                                                                                                  
+                                                                                                                                                                       
+ $function$
+

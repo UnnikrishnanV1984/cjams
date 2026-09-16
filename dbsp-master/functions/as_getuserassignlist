@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION as_getuserassignlist(page integer, size integer, _first_name character varying, _last_name character varying, _position_code character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE result json;
+DECLARE totalcount integer;
+DECLARE usrnotificationgroupid uuid;
+DECLARE first_name character varying;
+DECLARE last_name character varying;
+DECLARE position_code character varying;
+BEGIN
+
+     
+      IF _first_name = 'undefined' OR _first_name='' THEN 
+           first_name = null; 
+      ELSE 
+           first_name = _first_name; 
+      END IF;
+      IF _last_name = 'undefined' OR _last_name='' THEN 
+          last_name = null; 
+      ELSE 
+          last_name = _last_name; 
+      END IF;
+      IF _position_code = 'undefined' OR _position_code='' THEN 
+         position_code = null; 
+      ELSE 
+         position_code = _position_code; 
+      END IF;
+
+      totalcount := 0;
+
+      IF page = 1 THEN
+
+        SELECT count(*) into totalcount FROM userprofile A
+        inner join muser m on m.securityusersid = A.securityusersid 
+        left join securityusers B on A.SecurityUsersId = B.SecurityUsersId AND B.Activeflag=1
+        left join as_teammemberassignment C on C.SecurityUsersId = B.SecurityUsersId  AND C.Activeflag=1 
+        left join teammember F on C.teammemberid = F.teammemberid AND F.Activeflag=1
+        WHERE   C.SecurityUsersId  is null AND 
+           m.id:: character varying not in ( SELECT principalid from rolemapping where activeflag =1 and principalid is not null) AND
+         CASE WHEN first_name is null THEN TRUE ELSE A.firstname LIKE first_name || '%' END
+        AND CASE WHEN last_name is  null THEN  TRUE ELSE A.lastname  LIKE last_name || '%'  END
+        AND CASE WHEN position_code is null THEN TRUE ELSE F.loadnumber LIKE position_code || '%' END;
+  
+      END IF;
+      
+     select array_to_json(array_agg(e)) from
+      (SELECT array_to_json(array_agg(row_to_json(d))) as "data",totalcount as "count" from (
+      SELECT A.teammemberassignmentid,A.teammemberid,A.loadnumber,A.positioncode,A.displayname,A.firstname,A.lastname,A.SecurityUsersId,
+      A.userworkstatustypekey,A.usertypekey,A.unavailableflag,A.email,A.dob,A.gender,A.id as userid FROM 
+      (SELECT C.teammemberassignmentid,F.teammemberid,F.loadnumber,F.positioncode,A.displayname,A.firstname,A.lastname,B.SecurityUsersId,
+      A.userworkstatustypekey,A.usertypekey,A.unavailableflag,A.email,A.dob,G.typedescription as gender, m.id FROM userprofile A
+      inner join muser m on m.securityusersid = A.securityusersid 
+      left join securityusers B on A.SecurityUsersId = B.SecurityUsersId AND B.Activeflag=1
+  left join as_teammemberassignment C on C.SecurityUsersId = B.SecurityUsersId AND C.Activeflag=1 
+  left join teammember F on C.teammemberid = F.teammemberid AND F.Activeflag=1
+  left join gendertype G on g.gendertypekey = A.gendertypekey
+ WHERE  --B.Activeflag=1 AND C.Activeflag=1 AND F.Activeflag=1 AND
+       C.SecurityUsersId is null AND
+      m.id:: character varying not in ( SELECT principalid from rolemapping where activeflag =1 and principalid is not null) AND
+ CASE WHEN first_name is null THEN TRUE ELSE A.firstname LIKE first_name || '%' END
+ AND CASE WHEN last_name is null THEN  TRUE ELSE A.lastname  LIKE last_name || '%'  END
+ AND CASE WHEN position_code is null THEN TRUE ELSE F.loadnumber LIKE position_code || '%' END) A
+ --LEFT OUTER JOIN as_teammemberassignment D ON F.teammemberid = D.teammemberid 
+ ORDER BY A.displayname ASC LIMIT size OFFSET  (page - 1) * size)d)e INTO result;
+
+RETURN COALESCE(result,'[]');
+
+END; 
+
+$function$
+

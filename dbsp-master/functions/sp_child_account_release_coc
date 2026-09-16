@@ -1,0 +1,440 @@
+CREATE OR REPLACE FUNCTION sp_child_account_release_coc(ad_run_dt date)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author      : Vineet Tirodkar\r
+-- Date        : 03/04/2009\r
+-- Description : To Release remaining COC for Ancillary Payments after Payment Stamping - CIS-17739\r
+-- Arguments   : 1) ad_run_dt: To Release remaining COC for Ancillary after Payment Stamping\r
+--               currently NOT in use, current logic is to recalculate balances of all Active-Conserved Accounts\r
+-- 10/24/2008 Vineet Tirodkar - # 29004 / CIS-17739\r
+--         NOT to Include transactions 5530 Ancillary Goods/Services Obligation \r
+--            for calculation of Total Balance No\r
+-- 03/23/2009 Vineet Tirodkar - Change in logic to get vd_date_2months \r
+-- 05/11/2009 Vineet Tirodkar - To reset LATE_ENTRY_FLAG in TB_ACCOUNT_TRANSACTION - CIS-18372\r
+-- 05/26/2009 Vineet Tirodkar - To Copy Data from TB_RS_IVE_STATUS to TB_RS_IVE_STATUS_HISTORY - CIS-18372\r
+-- 01/16/2013 Vineet Tirodkar - To change logic of calculating vd_date_2months - PRJ-03058\r
+-- 10/13/2020 Vineet Tirodkar - Changes to update new column eligibility_period_id in tb_rs_ive_status_history table (B-85031)\r
+------------------------------------------------------------------------\r
+DECLARE vs_cursor_sql VARCHAR(12000) ;\r
+\r
+DECLARE vd_previous_month_start_dt DATE;\r
+DECLARE vd_previous_month_end_dt DATE;\r
+DECLARE vd_current_month_end_dt DATE;\r
+\r
+DECLARE vd_date_2months DATE;\r
+\r
+DECLARE vl_row_cnt BIGINT DEFAULT 0;\r
+DECLARE vl_client_acc_id BIGINT DEFAULT NULL;\r
+\r
+DECLARE vdc_total_credit decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_total_debit decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_total_balance decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_obligated_for_COC decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_obligated_for_ANC decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_available_bal decimal(10,2) DEFAULT 0.00;\r
+DECLARE vdc_total_acc_balance decimal(10,2) DEFAULT 0.00;\r
+\r
+DECLARE vl_commingled_acc_id BIGINT DEFAULT NULL;\r
+\r
+--Log Error\r
+DECLARE SQLCODE INT DEFAULT 0;\r
+DECLARE al_sqlcode INT DEFAULT 0;\r
+DECLARE as_error VARCHAR(3000);\r
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';\r
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--\r
+p_sp_error CHAR(5);\r
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';\r
+DECLARE vl_ret_status INTEGER DEFAULT 0;\r
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_CHILD_ACCOUNT_RELEASE_COC';\r
+DECLARE vs_identity_column VARCHAR(100);\r
+DECLARE vs_identity_val VARCHAR(100);\r
+--Log Error\r
+\r
+--DECLARE CUR_CHILD_ACCOUNTS CURSOR WITH HOLD FOR s1;--\r
+CUR_CHILD_ACCOUNTS REFCURSOR;\r
+\r
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION\r
+BEGIN\r
+ begin\r
+  EXCEPTION WHEN OTHERS THEN\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--\r
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;\r
+\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--\r
+  -- SET al_sqlcode = -1 ;--\r
+  as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;\r
+  as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');\r
+  as_error := as_error || COALESCE(vs_message_text ,'');\r
+\r
+  select CHESSIE.SP_BATCH_ERROR_LOG ( 'SP_CHILD_ACCOUNT_RELEASE_COC',\r
+                     NULL::bigint,\r
+            NULL::bigint,\r
+                  NULL::character varying,\r
+            NULL::INTEGER,\r
+      NULL::character varying,\r
+            SQLSTATE::character varying,\r
+                  as_error::character varying,\r
+            'finance'::character varying) INTO\r
+                  vl_ret_status;\r
+\r
+  as_error := '';\r
+ END;\r
+ --Log error\r
+\r
+ --  Get the last month start date and end date based on parameter date\r
+ SELECT (date_trunc('month', now()) - interval '1 month')::date,\r
+     (date_trunc('month', now())::date - 1),\r
+     ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date\r
+ INTO    vd_previous_month_start_dt,\r
+   vd_previous_month_end_dt,\r
+   vd_current_month_end_dt;\r
+   \r
+ -- Get Prior 1Months Date for Obligated COC calculations\r
+ -- PRJ-03058\r
+ SELECT F_daymonth((ad_run_dt - interval '1 month')::date  ,'L' , 'C') \r
+  INTO vd_date_2months;\r
+  \r
+ vs_cursor_sql := ''; -- INITIAL VALUE\r
+\r
+ vs_cursor_sql :=\r
+ ' SELECT TCA.CLIENT_ACCOUNT_ID, '||\r
+ '        TCA.OBLIGATED_FOR_ANC '||\r
+ '   FROM TB_CLIENT_ACCOUNT  TCA '||\r
+ ' WHERE TCA.ACCOUNT_TYPE_CD = ''590'' '||\r
+ '       AND TCA.STATUS_CD = ''592'' '||\r
+ '   AND TCA.DELETE_SW = ''N'' ';\r
+   \r
+        \r
+ vl_row_cnt := 0; -- INITIAL VALUE\r
+\r
+ SELECT COUNT(TCA.CLIENT_ACCOUNT_ID)\r
+  INTO vl_row_cnt\r
+ FROM TB_CLIENT_ACCOUNT TCA\r
+ WHERE TCA.ACCOUNT_TYPE_CD = '590'\r
+  AND TCA.STATUS_CD = '592'\r
+  AND TCA.DELETE_SW = 'N' ;\r
+    \r
+\r
+ IF vl_row_cnt > 0 THEN\r
+  --PREPARE s1 FROM vs_cursor_sql;--\r
+  -- OPEN CUR_CHILD_ACCOUNTS;--\r
+  OPEN CUR_CHILD_ACCOUNTS FOR EXECUTE vs_cursor_sql;\r
+  --CHILDACCOUNTS:\r
+  --WHILE vl_row_cnt > 0  DO\r
+  loop EXIT WHEN vl_row_cnt = 0::bigint ;\r
+   vl_client_acc_id := NULL; -- INITIAL VALUE\r
+   vdc_obligated_for_ANC := NULL; -- INITIAL VALUE\r
+\r
+   -- Client Acc ID, Client ID and Client NM\r
+   FETCH CUR_CHILD_ACCOUNTS INTO vl_client_acc_id, vdc_obligated_for_ANC;\r
+\r
+   IF vl_row_cnt = 0 THEN\r
+    --LEAVE CHILDACCOUNTS;--\r
+   END IF;\r
+\r
+   -- Get Sum of All Credit Transactions\r
+   -- If Adjustments consider only Approved transactions\r
+   vdc_total_credit := 0.00; -- INITIAL VALUE\r
+\r
+   SELECT SUM(COALESCE(TR.TRANSACTION_AMOUNT_NO,0))\r
+    INTO vdc_total_credit\r
+   FROM TB_ACCOUNT_TRANSACTION  TR\r
+   WHERE TR.CLIENT_ACCOUNT_ID =  vl_client_acc_id\r
+      AND ( TR.TRANSACTION_TYPE_CD <> '588' OR\r
+       ( TR.TRANSACTION_TYPE_CD = '588' AND  TR.ADJUSTMENT_APPROVAL_STATUS_CD = '3047' ) )\r
+      AND TR.TRANSACTION_TYPE_CD <> '5530'    \r
+      AND TR.CREDIT_DEBIT_SW = 'C'\r
+      AND TR.DELETE_SW = 'N' ;\r
+\r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in getting Total Credit Transactions.';\r
+    vs_identity_column := 'Client Account ID';\r
+    vs_identity_val := TO_CHAR(vl_client_acc_id);\r
+    --   SIGNAL p_sp_error  ;--\r
+   END IF ;\r
+\r
+   IF vdc_total_credit is NULL THEN\r
+    vdc_total_credit := 0.00;\r
+   END IF;\r
+\r
+   -- Get Sum of All Debit Transactions\r
+   -- If Adjustments consider only Approved transactions\r
+   vdc_total_debit := 0.00; -- INITIAL VALUE\r
+\r
+   SELECT SUM(COALESCE(TR.TRANSACTION_AMOUNT_NO,0))\r
+    INTO vdc_total_debit\r
+   FROM TB_ACCOUNT_TRANSACTION  TR\r
+   WHERE TR.CLIENT_ACCOUNT_ID =  vl_client_acc_id\r
+    AND ( TR.TRANSACTION_TYPE_CD <> '588' OR\r
+       ( TR.TRANSACTION_TYPE_CD = '588' AND  TR.ADJUSTMENT_APPROVAL_STATUS_CD = '3047' ) )\r
+    AND TR.TRANSACTION_TYPE_CD <> '5530'    \r
+    AND TR.CREDIT_DEBIT_SW = 'D'\r
+    AND TR.DELETE_SW = 'N' ;\r
+\r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in getting Total Debit Transactions.';\r
+    vs_identity_column := 'Client Account ID';\r
+    vs_identity_val := TO_CHAR(vl_client_acc_id);\r
+    --SIGNAL p_sp_error  ;--\r
+   END IF ;\r
+\r
+   IF vdc_total_debit is NULL THEN\r
+    vdc_total_debit := 0.00;\r
+   END IF;\r
+\r
+   -- Total Balance = Sum of All Credits - Sum of All Debits\r
+   vdc_total_balance := vdc_total_credit - vdc_total_debit;\r
+\r
+   -- Get Obligated for COC (SSI, SSA or Other [COC]) as of current date\r
+   -- Receipts + Adj Credit - Adj Debit where Benefit_Start_dt > 2MonthsDate\r
+   vdc_obligated_for_COC := 0.00; -- INITIAL VALUE\r
+\r
+   SELECT\r
+    (  SELECT SUM(COALESCE(TR.TRANSACTION_AMOUNT_NO,0))\r
+      FROM TB_ACCOUNT_TRANSACTION TR\r
+     WHERE TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID\r
+     AND TR.DELETE_SW = 'N'\r
+     AND TR.CREDIT_DEBIT_SW = 'C'\r
+     AND TR.TRANSACTION_SOURCE_CD IN ('587','586','585') \r
+     AND BENEFIT_START_DT > vd_date_2months\r
+    )\r
+    +\r
+    COALESCE((\r
+    SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)) \r
+     FROM TB_ACCOUNT_TRANSACTION TR1\r
+    WHERE TR1.TRANSACTION_TYPE_CD = '588'\r
+     AND TR1.CREDIT_DEBIT_SW = 'C'\r
+     AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+     AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+     AND TR1.REFERENCE_TRANSACTION_ID in\r
+      (\r
+       SELECT TR.TRANSACTION_ID\r
+        FROM TB_ACCOUNT_TRANSACTION TR\r
+       WHERE TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID\r
+        AND TR.DELETE_SW = 'N'\r
+        AND TR.CREDIT_DEBIT_SW = 'C'\r
+        AND TR.TRANSACTION_SOURCE_CD IN ('587','586','585') \r
+        AND BENEFIT_START_DT > vd_date_2months\r
+      )\r
+     ),0)\r
+    -\r
+    COALESCE((\r
+    SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)) \r
+     FROM TB_ACCOUNT_TRANSACTION TR1\r
+    WHERE TR1.TRANSACTION_TYPE_CD = '588'\r
+     AND TR1.CREDIT_DEBIT_SW = 'D'\r
+     AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+     AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+     AND TR1.REFERENCE_TRANSACTION_ID in\r
+     (\r
+      SELECT TR.TRANSACTION_ID\r
+       FROM TB_ACCOUNT_TRANSACTION TR\r
+      WHERE TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID\r
+       AND TR.DELETE_SW = 'N'\r
+       AND TR.CREDIT_DEBIT_SW = 'C'\r
+       AND TR.TRANSACTION_SOURCE_CD IN ('587','586','585') \r
+       AND BENEFIT_START_DT > vd_date_2months\r
+     )\r
+    ),0)\r
+    INTO vdc_obligated_for_COC\r
+   FROM TB_CLIENT_ACCOUNT CA\r
+   WHERE CA.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+    AND CA.DELETE_SW = 'N' ;\r
+\r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in getting Obligated for COC Transactions as of current date.';\r
+    vs_identity_column := 'Client Account ID';\r
+    vs_identity_val := TO_CHAR(vl_client_acc_id);\r
+    --SIGNAL p_sp_error  ;--\r
+   END IF ;\r
+\r
+   IF vdc_obligated_for_COC is NULL THEN\r
+    vdc_obligated_for_COC := 0.00;  \r
+   END IF;\r
+\r
+   IF vdc_obligated_for_ANC is NULL THEN\r
+    vdc_obligated_for_ANC := 0.00;\r
+   END IF;\r
+\r
+   -- Available Balance = Total Balance - ( Obligated for COC + Obligated for ANC )\r
+   vdc_available_bal := vdc_total_balance - ( vdc_obligated_for_ANC + vdc_obligated_for_COC );\r
+\r
+   UPDATE TB_CLIENT_ACCOUNT\r
+   SET TOTAL_BALANCE_NO = vdc_total_balance,\r
+    OBLIGATED_FOR_COC = vdc_obligated_for_COC,\r
+    AVAILABLE_BALANCE_NO = vdc_available_bal,\r
+    UPDATE_TS = CURRENT_TIMESTAMP,\r
+    UPDATE_USER_ID = 'finance'\r
+   WHERE CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+    AND DELETE_SW = 'N' ;\r
+  \r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in Updating Child Account Balances.';\r
+    vs_identity_column := 'Client Account ID';\r
+    vs_identity_val := TO_CHAR(vl_client_acc_id);\r
+    -- SIGNAL p_sp_error  ;--\r
+   END IF ;\r
+\r
+   -- To reset LATE_ENTRY_FLAG - CIS-18372\r
+   UPDATE TB_ACCOUNT_TRANSACTION  \r
+   SET LATE_ENTRY_SW = 'N',   \r
+    UPDATE_TS = CURRENT_TIMESTAMP,   \r
+    UPDATE_USER_ID = 'finance'  \r
+   WHERE CLIENT_ACCOUNT_ID = vl_client_acc_id \r
+    AND DELETE_SW = 'N' \r
+    AND COALESCE(LATE_ENTRY_SW, 'N') = 'Y'   ;\r
+\r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in resetting late entry flags.';\r
+    vs_identity_column := 'Client Account ID';\r
+    vs_identity_val := TO_CHAR(vl_client_acc_id);\r
+    --SIGNAL p_sp_error  ;--\r
+   END IF ;  \r
+ \r
+       \r
+   -- Update Total Balance No in Commingled Account - START\r
+   vl_commingled_acc_id := NULL; -- INITIAL VALUE\r
+ \r
+   SELECT COMM_ACCOUNT_ID\r
+    INTO vl_commingled_acc_id\r
+   FROM TB_CLIENT_ACCOUNT\r
+   WHERE CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+    AND DELETE_SW = 'N' ;\r
+\r
+   al_sqlcode := SQLCODE;\r
+   IF al_sqlcode < 0 THEN\r
+    as_error := 'Error in getting Commingled Account ID.';\r
+    vs_identity_column := 'Client Account ID';\r
+    vs_identity_val := TO_CHAR(vl_client_acc_id);\r
+    --SIGNAL p_sp_error;--\r
+   END IF ;    \r
+      \r
+   IF vl_commingled_acc_id is NULL THEN\r
+    vl_commingled_acc_id := 0;\r
+   END IF;   \r
+     \r
+   IF vl_commingled_acc_id > 0 THEN\r
+    vdc_total_acc_balance := 0.00; -- INITIAL VALUE\r
+ \r
+    SELECT SUM(COALESCE(TOTAL_BALANCE_NO,0))\r
+     INTO vdc_total_acc_balance\r
+    FROM TB_CLIENT_ACCOUNT\r
+    WHERE COMM_ACCOUNT_ID = vl_commingled_acc_id\r
+     AND DELETE_SW = 'N' ;\r
+  \r
+    al_sqlcode := SQLCODE;\r
+    IF al_sqlcode < 0 THEN\r
+     as_error := 'Error in Selecting Total Balance to update Commingled Account.';\r
+     vs_identity_column := 'Client Account ID';\r
+     vs_identity_val := TO_CHAR(vl_commingled_acc_id);\r
+     -- SIGNAL p_sp_error;--\r
+    END IF ;\r
+     \r
+    UPDATE TB_COMMINGLED_ACCOUNT\r
+     SET TOTAL_BALANCE_NO = vdc_total_acc_balance\r
+    WHERE COMM_ACCOUNT_ID = vl_commingled_acc_id\r
+     AND DELETE_SW = 'N' ;\r
+\r
+     \r
+    al_sqlcode := SQLCODE;\r
+    IF al_sqlcode < 0 THEN\r
+     as_error := 'Error in Updating Commingled Account.';\r
+     vs_identity_column := 'Client Account ID';\r
+     vs_identity_val := TO_CHAR(vl_commingled_acc_id);\r
+     --SIGNAL p_sp_error;--\r
+    END IF ;\r
+   END IF;\r
+   -- Update Total Balance No in Commingled Account - END \r
+ \r
+   --COMMIT;   \r
+   vl_row_cnt := vl_row_cnt  - 1; \r
+  --END WHILE ;--\r
+  END loop;\r
+  CLOSE CUR_CHILD_ACCOUNTS ;\r
+ END IF;\r
+\r
+ -- To Copy Data from TB_RS_IVE_STATUS to TB_RS_IVE_STATUS_HISTORY - CIS-18372 - START\r
+ insert into tb_rs_ive_status_history  \r
+         ( rs_ive_status_hist_id,   \r
+           event_id,   \r
+           event_date,   \r
+           client_id,   \r
+           benefit_start_dt,   \r
+           benefit_end_dt,   \r
+           demographics_sw,   \r
+           removal_type_sw,   \r
+           removal_home_sw,   \r
+           income_sw,   \r
+           assets_sw,   \r
+           court_sw,   \r
+           deprivation_sw,   \r
+           placement_sw,   \r
+           resulting_status_cd,   \r
+           reason_cd,   \r
+           create_user_id,   \r
+           create_ts,   \r
+           update_user_id,   \r
+           update_ts,   \r
+           delete_sw,\r
+     eligibility_period_id     \r
+      )  \r
+ ( SELECT nextval('sq_rs_ive_status_history'),   \r
+         event_id,   \r
+         event_date,   \r
+         client_id,   \r
+         benefit_start_dt,   \r
+         benefit_end_dt,   \r
+         demographics_sw,   \r
+         removal_type_sw,   \r
+         removal_home_sw,   \r
+         income_sw,   \r
+         assets_sw,   \r
+         court_sw,   \r
+         deprivation_sw,   \r
+         placement_sw,   \r
+         resulting_status_cd,   \r
+         reason_cd,   \r
+         create_user_id,   \r
+         create_ts,   \r
+         update_user_id,   \r
+         update_ts,   \r
+         delete_sw,\r
+   eligibility_period_id   \r
+ from tb_rs_ive_status  \r
+ where delete_sw = 'N' \r
+ )   ;\r
+   \r
+    al_sqlcode := SQLCODE;\r
+ IF al_sqlcode < 0 THEN\r
+  as_error := 'Error in Transferring Data from TB_RS_IVE_STATUS to TB_RS_IVE_STATUS_HISTORY.';\r
+  vs_identity_column := '';\r
+  vs_identity_val := '';\r
+  --SIGNAL p_sp_error;--\r
+ END IF ;\r
+   \r
+ -- Delete from TB_RS_IVE_STATUS \r
+ DELETE FROM TB_RS_IVE_STATUS WHERE DELETE_SW = 'N';\r
+ \r
+ al_sqlcode := SQLCODE;\r
+ IF al_sqlcode < 0 THEN\r
+  as_error := 'Error in Deleteing the Data from TB_RS_IVE_STATUS.';\r
+  vs_identity_column := '';\r
+  vs_identity_val := '';\r
+  --SIGNAL p_sp_error;--\r
+ END IF ;\r
+                                         \r
+ -- COMMIT;   \r
+ -- To Copy Data from TB_RS_IVE_STATUS to TB_RS_IVE_STATUS_HISTORY - CIS-18372 - END\r
+\r
+END;\r
+\r
+$function$
+

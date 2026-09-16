@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION as_getclientpaymentsearch(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, client_id bigint, client_name character varying, client_dob timestamp without time zone, ssn character varying, local_dept character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_client_id bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_DateFrom   TIMESTAMP(3);
+ v_DateTo TIMESTAMP(3);
+ v_ssn character varying;
+ v_caseworker_name character varying;
+ v_localdpt character varying;
+ v_firstname character varying;
+ v_lastname character varying;
+
+BEGIN
+ v_client_id := searchobj ->> 'clientid';
+ v_DateFrom   := searchobj ->> 'daterangefrom';
+ v_DateTo   := searchobj ->> 'daterangeto';
+ v_pagenumber := v_liPageNumber - 1;
+ v_pageoffset := v_pagenumber * v_liPageSize;
+ v_ssn := searchobj ->> 'ssn';
+ v_caseworker_name :=searchobj ->> 'caseworker_name';
+ v_localdpt := searchobj ->> 'local_dept';
+ v_firstname := searchobj ->> 'v_firstname';
+ v_lastname := searchobj ->> 'v_lastname';
+
+ RETURN query
+ SELECT COUNT(1) OVER() totalcount,
+ P.cjamspid as client_ids, 
+ CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) || CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) 
+  ELSE '' END)AS CHARACTER VARYING) AS client_names,
+ P.dob as client_dob, 
+ ( SELECT pid.personidentifiervalue FROM personidentifier pid
+  WHERE pid.personidentifiertypekey = 'SSN' AND pid.personid = p.personid AND pid.activeflag = 1 LIMIT 1):: CHARACTER VARYING AS l_ssn,
+ vup.countyname as local_dept
+ FROM tb_payment_header payhead
+ LEFT JOIN tb_payment_detail AS tpd ON payhead.payment_id = tpd.payment_id
+  JOIN person AS P ON p.cjamspid =tpd.client_id AND p.activeflag=1
+ LEFT JOIN intakeservicerequest AS isr ON isr.intakeserviceid::CHARACTER VARYING = tpd.case_id:: character VARYING AND isr.activeflag = 1 AND isr.teamtypekey = 'AS'
+ LEFT JOIN caseassignment ca ON ca.objectid = isr.intakeserviceid AND ca.activeflag =1
+    LEFT JOIN v_userprofile vup ON vup.securityusersid= ca.toworkeridno
+    LEFT JOIN tb_payment_status tps ON tps.payment_id = payhead.payment_id
+    WHERE (v_client_id IS NULL OR P.cjamspid = v_client_id)
+    AND (v_firstname IS NULL OR (lower(TRIM(P.firstname)) LIKE '%'||  lower(TRIM(v_firstname)) ||'%' OR 
+     (soundex(lower(trim(p.firstname))) = soundex(lower(trim(v_firstname))))))
+    AND (v_lastname IS NULL OR (lower(TRIM(P.lastname)) like '%'||  lower(TRIM(v_lastname)) ||'%' OR 
+     (soundex(lower(trim(p.lastname))) = soundex(lower(trim(v_lastname))))))
+    AND (v_DateFrom IS NULL OR to_char(payhead.payment_dt, 'YYYY-MM-DD') ::date >= to_char(DATE(v_DateFrom ::varchar), 'YYYY-MM-DD')  :: date)
+    AND (v_DateTo IS NULL OR to_char(payhead.payment_dt, 'YYYY-MM-DD') ::date <= to_char(DATE(v_DateTo ::varchar), 'YYYY-MM-DD')  :: date)
+    AND (v_ssn IS NULL OR p.ssnno  = v_ssn )
+    AND (v_localdpt IS NULL OR vup.countyname  ILIKE '%'||v_localdpt||'%' )
+    AND p.activeflag =1
+    AND tps.payment_status_cd IN ('1634','1636')
+    GROUP BY client_ids, client_names, client_dob, l_ssn, local_dept, p.firstname, p.lastname
+    ORDER BY levenshtein((lower(CAST(INITCAP(TRIM(P.firstname) || ' '||TRIM(P.lastname) )as character varying))),
+    (lower( trim(v_firstname) || ' ' || trim(v_lastname)  )),1,0,4)
+ LIMIT v_liPageSize OFFSET v_pageoffset;
+
+END;
+
+$function$
+

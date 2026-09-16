@@ -1,0 +1,28 @@
+CREATE OR REPLACE FUNCTION cjams.getenvironmentconfigvalue(v_env_variable character varying, v_env_variable_module character varying)
+ RETURNS TABLE(env_variable_value character varying, is_enabled boolean)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 04/13/2022 
+-- Generic Function to get the get the Environment Config values (CIDM-4403/B-85070)
+
+-- Revision(s)
+
+------------------------------------------------------------------------------------------------------------	
+BEGIN 
+	return query
+	select ec.env_variable_value,
+		ec.is_enabled
+	from cjams.environmentconfig ec
+	where lower(ec.env_variable) = lower(v_env_variable)
+		and (case when v_env_variable_module is not null and btrim(v_env_variable_module) <> '' then 
+				lower(ec.env_variable_module) = lower(v_env_variable_module) 
+			 else 
+				true
+			end	) ;
+END;
+
+$function$
+;

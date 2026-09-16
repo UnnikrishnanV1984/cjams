@@ -1,0 +1,1 @@
+update intakeservicerequest set intakeserreqstatustypeid = 'e3ad33c8-33b1-459d-abe0-4b75a2cd262a', updatedon = now(),updatedby = 'CDM-12446' where intakeserviceid = '8aaef230-7c65-4fbd-818b-544b70780449';

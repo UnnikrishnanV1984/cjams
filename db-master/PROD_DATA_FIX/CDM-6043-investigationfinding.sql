@@ -1,0 +1,1 @@
+update cjams.Investigationallegationmaltreators set scappealedsetdate = '2020-06-23 12:00:00' where investigationallegationmaltreatorsid = '5d6904f0-6f12-41d6-87bd-829f09dac277';

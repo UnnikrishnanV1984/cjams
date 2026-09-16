@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION migratecpahomes()
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                                                              
+ DECLARE
+  v_yo record;
+ v_cpa_provider_id int4;
+v_cpahomeid uuid;
+v_provider_cpa_adop_person_id int4;
+begin
+ 
+update tb_prov_cpa_homes hh set hh.cpa_provider_id = (select cpa_provider_id from tb_prov_cpa_address where provider_cpa_address_id = hh.provider_cpa_address_id limit 1)
+where hh.cpa_provider_id is null;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+FOR v_cpahomeid IN select cpahomeid from tb_prov_cpa_homes home
+LOOP
+ insert into tb_prov_cpa_adop_person ( provider_id
+ ,first_nm,last_nm,home_phone, email,mobile_phone
+ ,home_start_dt, home_end_dt, dob_dt, dod_dt
+ ,create_user_id, update_user_id, create_ts, update_ts
+ ,delete_sw
+ ,person_type_cd
+ ,gender_cd
+ ,hispanic_cd
+ )
+ select  cpa_provider_id
+ ,person_first_nm,person_last_nm,person_home_phone,person_email,person_mobile_phone
+ ,home_start_dt, home_end_dt, person_dob_dt, person_dod_dt
+ ,create_user_id,update_user_id, create_ts::timestamp without time zone, update_ts::timestamp without time zone
+ ,(case activeflag when 1 then 'N'  when 0 then 'Y' end)
+ ,(case h.person_type when 'Applicant' then 3610 
+       when 'Co-applicant' then 3611
+       when 'Member' then 3613
+ end)
+ ,(case h.person_sex when 'Female' then 1281 
+       when 'Male' then 1282
+       when 'Both' then 3297
+ end)
+ ,(case h.hispanic_heritage when 'Hispanic or Latino' then 'Y' 
+       when 'Not Hispanic or Latino' then 'N'
+ end)
+ from tb_prov_cpa_homes h where cpahomeid = v_cpahomeid
+ returning provider_cpa_adop_person_id into v_provider_cpa_adop_person_id;
+
+ update tb_prov_cpa_clearnce set provider_cpa_adop_person_id = v_provider_cpa_adop_person_id where cpa_household_id=v_cpahomeid;
+ update tb_prov_cpa_medical set provider_cpa_adop_person_id = v_provider_cpa_adop_person_id where cpa_household_id=v_cpahomeid;
+
+end loop;
+
+--
+ RETURN 'Success'
+ ;
+ END; 
+ $function$
+

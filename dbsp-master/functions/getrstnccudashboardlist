@@ -1,0 +1,172 @@
+CREATE OR REPLACE FUNCTION getrstnccudashboardlist(v_securityusersid character varying, pagenumber bigint, pagesize bigint, searchcol character varying, searchval character varying, v_status character varying, nolimit boolean)
+ RETURNS TABLE(totalcount bigint, intakeserreqrestitutionid uuid, restitutionno integer, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, youthpersonid uuid, youthpersonname text, victimpersonid uuid, victimpersonname text, restitutiontype character varying, payment numeric, paidamount numeric, balanceamount numeric, liablepersonid uuid, liablepersonname text, relationship character varying, relationshipdescription text, duedate date, courtdeferredduedate date, status character varying, frequency character varying, installmentamount numeric, initialpaymentdate date, inactivereasontype character varying, isccu boolean, isccusent boolean, createdby character varying, insertedon timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$ declare v_searchkey character varying ;
+
+v_pageoffset int;
+
+v_pagenumber int;
+
+limitstring character varying(500);
+
+declare searchstring character varying(5000);
+begin
+v_pagenumber := pagenumber-1;
+
+v_pageoffset = v_pagenumber * pagesize;
+
+limitstring := '';
+
+if (not nolimit) then limitstring := ' LIMIT ' || pagesize || ' OFFSET ' || v_pageoffset;
+end if ;
+
+searchstring := coalesce(searchstring, '');
+
+if(searchcol != ''
+and searchval != '' ) then if (searchcol = 'intakenumber') then searchstring := '  AND  inr.intakenumber  =  ''' || searchval || '''  ';
+end if;
+
+if (searchcol = 'servicerequestnumber') then searchstring := '  AND  ISR.servicerequestnumber  =  ''' || searchval || '''  ';
+end if;
+end if;
+
+raise notice 'searchstring : %',
+searchstring;
+
+if lower(v_status) = 'pending' then return Query execute 'select count(1) over() totalcount, inr.intakeserreqrestitutionid, inr.restitutionno ,
+  inr.intakeserviceid ,ISR.servicerequestnumber , inr.intakenumber , inr.youthpersonid,yp.lastname || '', '' || yp.firstname as  youthpersonname ,
+  inr.victimpersonid ,vp.lastname || '', '' || vp.firstname as  victimpersonname ,inr.restitutiontype ,
+  --((coalesce(inr.payment, 0)) - coalesce(inr.paidamount, 0)) + (coalesce(inr.additionalamount, 0)) - (coalesce(inr.waivedamount, 0)) as payment,
+  coalesce(inr.payment, 0) as payment,
+  coalesce(inr.paidamount,0) as paidamount,
+  coalesce(inr.payment,0)-coalesce(inr.paidamount,0) as balanceamount,
+  inr.liablepersonid ,lp.lastname || '', '' || lp.firstname as  liablepersonname ,
+  inr.liablepersonrelationtypekey as relationship,rst.description as relationshipdescription ,
+  inr.duedate,inr.courtdeferredduedate,inr.status,inr.frequency,
+  inr.installmentamount ,inr.paymentstartdate as initialpaymentdate,inr.inactivereasontype,inr.isccu, inr.isccusent,
+  up.fullname as createdby,inr.insertedon as createdon
+  from
+  (select restitutionno, max(insertedon) insertedon from intakeserreqrestitution where activeflag = 1 group by restitutionno) res
+  Join intakeserreqrestitution as inr 
+    on inr.restitutionno = res.restitutionno and inr.insertedon = res.insertedon
+  Join person yp 
+    on yp.personid=inr.youthpersonid 
+  Join person vp 
+    on vp.personid=inr.victimpersonid
+  left Join person lp 
+    on lp.personid=inr.liablepersonid 
+  left join relationshiptype rst 
+    on rst.relationshiptypekey =inr.liablepersonrelationtypekey 
+  Join userprofile up 
+    on up.securityusersid=inr.insertedby  
+  join intakeservicerequest as ISR
+    on ISR.intakeserviceid = inr.intakeserviceid and ISR.activeflag=1  
+        Join routing as r 
+    on r.objectid = inr.restitutionno::character varying and r.activeflag = 1 and r.routingstatustypeid = 63    
+  where inr.isccusent = true and inr.activeflag=1 and inr.status!=''Inactive'' and r.tosecurityusersid = ''' || v_securityusersid || ''' 
+  ' || searchstring || '
+   ORDER BY inr.updatedon desc  ' || limitstring || '';
+
+elsif lower(v_status) = 'approved' then return Query execute 'select count(1) over() totalcount, inr.intakeserreqrestitutionid, inr.restitutionno ,
+  inr.intakeserviceid ,ISR.servicerequestnumber , inr.intakenumber , inr.youthpersonid,yp.lastname || '', '' || yp.firstname as  youthpersonname ,
+  inr.victimpersonid ,vp.lastname || '', '' || vp.firstname as  victimpersonname ,inr.restitutiontype ,
+  --((coalesce(inr.payment, 0)) - coalesce(inr.paidamount, 0)) + (coalesce(inr.additionalamount, 0)) - (coalesce(inr.waivedamount, 0)) as payment,
+  coalesce(inr.payment, 0) as payment,
+  coalesce(inr.paidamount,0) as paidamount,
+  coalesce(inr.payment,0)-coalesce(inr.paidamount,0) as balanceamount,
+  inr.liablepersonid ,lp.lastname || '', '' || lp.firstname as  liablepersonname ,
+  inr.liablepersonrelationtypekey as relationship,rst.description as relationshipdescription ,
+  inr.duedate,inr.courtdeferredduedate,inr.status,inr.frequency,
+  inr.installmentamount ,inr.paymentstartdate as initialpaymentdate,inr.inactivereasontype,inr.isccu, inr.isccusent,
+  up.fullname as createdby,inr.insertedon as createdon
+  from
+  (select restitutionno, max(insertedon) insertedon from intakeserreqrestitution where activeflag = 1 group by restitutionno) res
+  Join intakeserreqrestitution as inr 
+    on inr.restitutionno = res.restitutionno and inr.insertedon = res.insertedon
+  Join person yp 
+    on yp.personid=inr.youthpersonid 
+  Join person vp 
+    on vp.personid=inr.victimpersonid
+  left Join person lp 
+    on lp.personid=inr.liablepersonid 
+  left join relationshiptype rst 
+    on rst.relationshiptypekey =inr.liablepersonrelationtypekey 
+  Join userprofile up 
+    on up.securityusersid=inr.insertedby  
+  join intakeservicerequest as ISR
+    on ISR.intakeserviceid = inr.intakeserviceid and ISR.activeflag=1
+        Join routing as r 
+    on r.objectid = inr.restitutionno::character varying and r.activeflag = 1 and r.routingstatustypeid = 64     
+  where inr.isccusent = true and inr.activeflag=1 and inr.status!=''Inactive'' and r.fromsecurityusersid = ''' || v_securityusersid || '''  
+  ' || searchstring || '
+   ORDER BY inr.updatedon desc  ' || limitstring || '';
+
+elsif lower(v_status) = 'approved finance worker' then return Query execute 'select count(1) over() totalcount, inr.intakeserreqrestitutionid, inr.restitutionno ,
+  inr.intakeserviceid ,ISR.servicerequestnumber , inr.intakenumber , inr.youthpersonid,yp.lastname || '', '' || yp.firstname as  youthpersonname ,
+  inr.victimpersonid ,vp.lastname || '', '' || vp.firstname as  victimpersonname ,inr.restitutiontype ,
+  --((coalesce(inr.payment, 0)) - coalesce(inr.paidamount, 0)) + (coalesce(inr.additionalamount, 0)) - (coalesce(inr.waivedamount, 0)) as payment,
+  coalesce(inr.payment, 0) as payment,
+  coalesce(inr.paidamount,0) as paidamount,
+  coalesce(inr.payment,0)-coalesce(inr.paidamount,0) as balanceamount,
+  inr.liablepersonid ,lp.lastname || '', '' || lp.firstname as  liablepersonname ,
+  inr.liablepersonrelationtypekey as relationship,rst.description as relationshipdescription ,
+  inr.duedate,inr.courtdeferredduedate,inr.status,inr.frequency,
+  inr.installmentamount ,inr.paymentstartdate as initialpaymentdate,inr.inactivereasontype,inr.isccu, inr.isccusent,
+  up.fullname as createdby,inr.insertedon as createdon
+  from
+  (select restitutionno, max(insertedon) insertedon from intakeserreqrestitution where activeflag = 1 group by restitutionno) res
+  Join intakeserreqrestitution as inr 
+    on inr.restitutionno = res.restitutionno and inr.insertedon = res.insertedon
+  Join person yp 
+    on yp.personid=inr.youthpersonid 
+  Join person vp 
+    on vp.personid=inr.victimpersonid
+  left Join person lp 
+    on lp.personid=inr.liablepersonid 
+  left join relationshiptype rst 
+    on rst.relationshiptypekey =inr.liablepersonrelationtypekey 
+  Join userprofile up 
+    on up.securityusersid=inr.insertedby  
+  join intakeservicerequest as ISR
+    on ISR.intakeserviceid = inr.intakeserviceid and ISR.activeflag=1
+        Join routing as r 
+    on r.objectid = inr.restitutionno::character varying and r.activeflag = 1 and r.routingstatustypeid = 64     
+  where inr.isccusent = true and inr.activeflag=1 and inr.status!=''Inactive'' and r.tosecurityusersid = ''' || v_securityusersid || '''  
+  ' || searchstring || '
+   ORDER BY inr.updatedon desc ' || limitstring || '';
+else return Query execute 'select count(1) over() totalcount, inr.intakeserreqrestitutionid, inr.restitutionno ,
+  inr.intakeserviceid ,ISR.servicerequestnumber , inr.intakenumber , inr.youthpersonid,yp.lastname || '', '' || yp.firstname as  youthpersonname ,
+  inr.victimpersonid ,vp.lastname || '', '' || vp.firstname as  victimpersonname ,inr.restitutiontype ,
+  --((coalesce(inr.payment, 0)) - coalesce(inr.paidamount, 0)) + (coalesce(inr.additionalamount, 0)) - (coalesce(inr.waivedamount, 0)) as payment,
+  coalesce(inr.payment, 0) as payment,
+  coalesce(inr.paidamount,0) as paidamount,
+  coalesce(inr.payment,0)-coalesce(inr.paidamount,0) as balanceamount,
+  inr.liablepersonid ,lp.lastname || '', '' || lp.firstname as  liablepersonname ,
+  inr.liablepersonrelationtypekey as relationship,rst.description as relationshipdescription ,
+  inr.duedate,inr.courtdeferredduedate,inr.status,inr.frequency,
+  inr.installmentamount ,inr.paymentstartdate as initialpaymentdate,inr.inactivereasontype,inr.isccu, inr.isccusent,
+  up.fullname as createdby,inr.insertedon as createdon
+  from
+  (select restitutionno, max(insertedon) insertedon from intakeserreqrestitution where activeflag = 1 group by restitutionno) res
+  Join intakeserreqrestitution as inr 
+    on inr.restitutionno = res.restitutionno and inr.insertedon = res.insertedon
+  Join person yp 
+    on yp.personid=inr.youthpersonid 
+  Join person vp 
+    on vp.personid=inr.victimpersonid
+  left Join person lp 
+    on lp.personid=inr.liablepersonid 
+  left join relationshiptype rst 
+    on rst.relationshiptypekey =inr.liablepersonrelationtypekey 
+  Join userprofile up 
+    on up.securityusersid=inr.insertedby  
+  join intakeservicerequest as ISR
+    on ISR.intakeserviceid = inr.intakeserviceid and ISR.activeflag=1     
+  where inr.isccusent = true and inr.activeflag=1 and inr.status!=''Inactive''   
+  ' || searchstring || '
+   ORDER BY inr.updatedon desc  ' || limitstring || '';
+end if;
+end;
+
+$function$
+

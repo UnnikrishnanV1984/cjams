@@ -1,0 +1,42 @@
+ CREATE OR REPLACE FUNCTION public.getteamcasecountbyuser(userid character varying, source character varying)                                                              
+  RETURNS TABLE(totalcount bigint, closed bigint, overdue bigint, unallocated bigint, allocated bigint, unacknowledged integer, open bigint, cancelled bigint)             
+  LANGUAGE plpgsql                                                                                                                                                         
+ AS $function$                                                                                                                                                             
+                                                                                                                                                                           
+                                                                                                                                                                           
+ BEGIN                                                                                                                                                                     
+                                                                                                                                                                           
+ RETURN QUERY                                                                                                                                                              
+ SELECT count(*) as TotalCount                                                                                                                                             
+ ,COUNT(CASE WHEN  ISRS.description in('Closed','Completed')  THEN 1 END) as Closed                                                                                        
+ ,COUNT(CASE WHEN ISR.targetcompletedate::date = now()::date AND ISRS.description = 'In Progress' THEN 1 END) as Overdue                                                   
+ ,COUNT(CASE WHEN ISRS.description = 'Open' THEN 1 END) +                                                                                                                  
+ COUNT(CASE WHEN  ISRS.description like 'Cancelled%'  THEN 1 END) as UnAllocated                                                                                           
+ ,COUNT(CASE WHEN ISRS.description = 'In Progress' THEN 1 END) +                                                                                                           
+ COUNT(CASE WHEN ISRS.description = 'Closed' THEN 1 END) as Allocated                                                                                                      
+ ,0 as UnAcknowledged  --  need to analyze                                                                                                                                 
+ ,COUNT(CASE WHEN ISRS.description = 'Open' THEN 1 END) as Open                                                                                                            
+ ,COUNT(CASE WHEN ISRS.description = 'Cancelled' THEN 1 END) as Cancelled                                                                                                  
+ FROM intakeservicerequest AS ISR                                                                                                                                          
+ JOIN intakeservicerequestgroupdetails AS ISGD ON ISR.intakeserviceid=ISGD.intakeserviceid                                                                                 
+ JOIN IntakeSerReqStatusType AS ISRS ON  ISR.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId and ISRS.activeflag=1                                                
+ JOIN Intakeservicerequestdispositioncode ISRDC ON ISRDC.intakeserviceid = ISR.intakeserviceid AND ISRDC.activeflag=1                                                      
+ JOIN AreaTeamMemberServiceRequest AS ATSR ON ATSR.IntakeServiceId = ISR.IntakeServiceId AND ATSR.ActiveFlag = 1                                                           
+ JOIN (select TM.TeamMemberId  from TeamMember AS TM                                                                                                                       
+       where teamid in (select teamid from TeamMember AS TM                                                                                                                
+ JOIN teammemberassignment tma on TM.teammemberid=tma.teammemberid                                                                                                         
+  and tma.securityusersid=userid and TM.activeflag =1                                                                                                                      
+      and tma.activeflag =1 )) TM  ON ATSR.TeamMemberId = TM.TeamMemberId                                                                                                  
+ -- and TM.teamid in (                                                                                                                                                     
+ -- select team.teamid from muser muser                                                                                                                                    
+ -- inner join teammemberassignment tma on muser.securityusersid=tma.securityusersid                                                                                       
+ -- inner join teammember tm on tm.teammemberid=tma.teammemberid                                                                                                           
+ -- inner join team team on team.teamid=tm.teamid and muser.id=1 )                                                                                                         
+ and ISRDC.insertedon::date >= CASE WHEN source='today' THEN now()::date                                                                                                   
+                                                                   WHEN source='month' THEN date_trunc('month', current_date)--now()::date-previousdate                    
+                                                                   WHEN source='year' THEN  date_trunc('year', current_date)                                               
+                                                          END;                                                                                                             
+  END;                                                                                                                                                                     
+                                                                                                                                                                           
+ $function$                                                                                                                                                                
+

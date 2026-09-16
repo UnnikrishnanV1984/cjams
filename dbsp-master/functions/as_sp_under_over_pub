@@ -1,0 +1,2876 @@
+CREATE OR REPLACE FUNCTION as_sp_under_over_pub(ad_run_dt date)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- 07/30/2007 Vineet Tirodkar
+--Check for all placement validation happen today.
+-- Check if this is late placement validation
+-- Final batch is already run.
+-- For this placement for the previous month there is a draft payment exist and no final payment exist.
+--      And provider payment status is not hold. (???)
+--Create a system adjustment
+-- Create a new system payment adjustment for the provider (create a header record)
+-- Create details for that record (Attached original payment id to this payment).
+--Create a system adjustment for Initial Clothing Allowance/ Clothing Allowance / Stipend
+-- if applicable and not paid
+-- In all the above type of payments, if over paid then create receivables
+-- 08/30/2007 Vineet Tirodkar - Change in Logic to get Payment Detail ID for reference in Receivables
+-- 11/19/2007 Vineet Tirodkar - Call New Stored Procedure CHESSIE.SP_AR_TICKLER
+-- 03/18/2008 Vineet Tirodkar - Changes for Provider Checklist (CIS-16755)
+--       Change in Cursor CUR_VALIDATED_PLACEMENT to add Provider checklist table,DOB and Age conditions  
+-- 05/13/2008 Vineet Tirodkar - Changes to avoid the error of linking the adjustment payment
+--            from detail table to maintenance payment of header table.
+--            Changes in LOG ERROR texts to identify exact SQLs
+-- 05/29/2008 Vineet Tirodkar - Changes in logic for Provider Checklist,
+--            In case of missing information generate payment with status as 'Hold'.
+-- 05/30/2008 Vineet Tirodkar - New logic to get LINKED_PYMNT_HDR_ID and REFERENCE_PAYMENT_DETAIL_ID
+--            New arguments Original Payment ID and Pay Detl ID for CHESSIE.SP_PAYMENT_DETAIL_INSERT
+-- 08/18/2008 Vineet Tirodkar - Change in Cursor CUR_VALIDATED_PLACEMENT for Age conditions (< 21). CIS-17754 
+-- 09/22/2008 Vineet Tirodkar - CIS-17815
+--            1) New Argument 'ad_run_dt', use of this argument instead of CURRENT DATE. So CHESSIE can run this SP on any day for any day.
+--            2) New condition NOT to create Maximum Initial Clothing / Monthly Clothing Allowances
+--            for placement structure Emergency Foster Home Care (13)   
+--            3) New Logic for payments to the placement with 'Emergency Foster Home Care' for first 60 days and there after.
+--            4) Call of New Stored Procedure - CHESSIE.SP_EFC_RFC_TICKLERS  
+--            5) To Add Commit at end of this SP
+-- 10/2/2008 Vineet Tirodkar - 1) Changes for CHESSIE was underpaying for 1 night in case of Placement Structure ID 13 (Emergency Foster Home Care)
+-- 10/17/2008 Vineet Tirodkar - Changes in logic for Clothing payments to initial or monthly clothing allowance. CIS-18129   
+-- 12/23/2008 Vineet Tirodkar - To pass New Argument for CHESSIE.SP_PAYMENT_PLAN_INSERT CIS-18124
+-- 03/18/2009 Vineet Tirodkar - Change in Placement Cursor for Age conditions.
+--            CHESSIE will pay to all clients up to DOB for the client's turning 21 in that service month  - CIS-18524 
+-- 08/05/2009 Vineet Tirodkar - CIS-18971
+--            1) Comment logic to generate Adjustment payment/ Receivables for 'Maximum Initial Clothing Allowance'
+--            2) Current Logic is required for service periods Jan 09 to Aug 09.
+-- 08/18/2009 Vineet Tirodkar - Changes to Implement Per Diem Rates for chessie_mask Provider Payments -- CIS-19002
+-- 12/07/2009 Vineet Tirodkar - Changes in logic for Stipend calculation
+-- 02/08/2010 Vineet Tirodkar - CIS-18884
+--            New Logic for 'Room & Board/Clothing/Differential' rate type
+--            Call of New procedure CHESSIE.SP_COUNTY_SPECIFIC_UNOV_FSS
+-- 01/24/2012 Vineet Tirodkar - Over payment EFC-RFC issue fix
+-- 07/13/2012 Vineet Tirodkar PRJ-02667 - MD CHESSIE Batch Process Redesign - To change Return 0 on success
+-- 10/17/2012 Vineet Tirodkar PRJ-03018 - To fix Link payment header id issue.
+-- 05/27/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+--      Modifications to SP_OVER_PAYMENT and SP_PAYMENT_DETAIL_INSERT calls for Fiscal Audit Trail(BDSD Req # 36)
+--      Modifications to add under over logic for Foster Care (COMAR) Rate changes (BDSD Req # 42)
+--          Modifications to generate payments with 5670 - Room & Board/Clothing rate type for New TFC & IFC Placement Structures
+-- 09/19/2015 Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+--     Modifications to Differentiate system adjustments for Foster Care payments & Subsidy Payments (BDSD Req # 77)
+--     To pass new input parameter for SP_GET_CURRENT_BALANCE 
+------------------------------------------------------------------------
+
+DECLARE vl_placement_id BIGINT DEFAULT 0;--
+DECLARE vl_adjust_payment_id BIGINT DEFAULT 0;--
+DECLARE vl_provider_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_id BIGINT DEFAULT 0;--
+DECLARE vl_orig_payment_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_detail_id BIGINT DEFAULT 0;--
+DECLARE vl_client_id BIGINT DEFAULT 0;--
+DECLARE vl_receivable_provider_id BIGINT DEFAULT 0;--
+ 
+DECLARE vl_final_pay_count INT DEFAULT 0;--
+DECLARE vl_placement_structure_id BIGINT DEFAULT 0;--
+DECLARE vl_age_of_child INT DEFAULT 0;--
+DECLARE vd_placement_validation_start DATE;--
+DECLARE vd_placement_validation_end DATE;--
+DECLARE vd_place_entry_dt DATE;--
+DECLARE vd_place_exit_dt DATE;--
+DECLARE vd_service_start_dt DATE;--
+DECLARE vd_service_end_dt DATE;--
+DECLARE vl_unit_no INT;--
+DECLARE vs_unit_type varchar(5);--
+
+DECLARE vs_room_board VARCHAR(5) DEFAULT '1232';--
+DECLARE vs_init_clothing_cd VARCHAR(5) DEFAULT '5669';--
+DECLARE vs_clothing_cd VARCHAR(5) DEFAULT '1233';--
+DECLARE vs_stipend_cd VARCHAR(5) DEFAULT '1234';--
+
+DECLARE vs_rate_inital_clothing CHAR(1) DEFAULT 'I';--
+DECLARE vs_rate_clothing_cd CHAR(1) DEFAULT 'C';--
+DECLARE vs_rate_stipend_cd CHAR(1) DEFAULT 'S';--
+
+DECLARE vs_rate_type_cd CHAR(1);--
+DECLARE vs_placement_type CHAR(1);--
+DECLARE vs_draft_final_type CHAR(1);--
+DECLARE vdc_monthly_rate DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_perdiem_rate DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_gross_amount DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+ 
+DECLARE vdc_receivable_amount decimal(10,2);  -- INTIAL VALUE
+DECLARE vdc_current_balance decimal(10,2);  -- INTIAL VALUE
+ 
+DECLARE vl_final_payment_run INT DEFAULT 0;--
+DECLARE vs_payment_type VARCHAR(5) DEFAULT '3294';  -- SYSTEM ADJUSTMENTS
+DECLARE vl_sql_code INT DEFAULT 0;--
+
+DECLARE vl_rate_structure_id BIGINT DEFAULT 0;--
+DECLARE vl_init_placement_id BIGINT DEFAULT 0;--
+DECLARE vl_placement_count INT DEFAULT 0;--
+DECLARE vs_clothing_type_cd CHAR(5);--
+DECLARE vs_clothing_rate_cd CHAR(1);--
+DECLARE vdc_monthly_clothing DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_clothing_perdiem DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_stipend_amount_no decimal(10,2);  -- INTIAL VALUE
+DECLARE vdc_perdiem_stipend_rate decimal(10,2);  -- INTIAL VALUE
+DECLARE vdc_stipend_rate decimal(10,2);  -- INTIAL VALUE
+DECLARE vl_doc_level_id BIGINT DEFAULT 0;--
+
+DECLARE vd_dob DATE;--
+DECLARE vs_county_cd VARCHAR(5) DEFAULT NULL; --
+
+DECLARE vl_linked_pymnt_hdr_id BIGINT DEFAULT NULL;--
+DECLARE vl_reference_payment_detail_id BIGINT DEFAULT NULL;--
+    
+DECLARE vd_null_dt DATE DEFAULT NULL;--
+
+--PRJ-04753
+DECLARE vs_TRAN_TYPE VARCHAR(20) DEFAULT NULL; --
+DECLARE vs_change_type VARCHAR(5);--
+DECLARE vs_DO_RECALC CHAR(1);--
+DECLARE vd_fc_rate_st_dt DATE;--
+DECLARE vd_fc_rate_end_dt DATE;--
+DECLARE vl_fc_min_age_no INTEGER;--
+DECLARE vl_fc_max_age_no INTEGER;--
+    
+DECLARE vl_efc_calc_days INT;--
+DECLARE vd_efc_service_st_dt DATE;--
+DECLARE vd_efc_service_end_dt DATE;--
+DECLARE vl_efc_unit_no INT;--
+DECLARE vs_efc_unit_type VARCHAR(5);--
+DECLARE vd_rfc_service_st_dt DATE;--
+DECLARE vd_rfc_service_end_dt DATE;--
+DECLARE vl_rfc_unit_no INT;--
+DECLARE vs_rfc_unit_type VARCHAR(5);--
+DECLARE vl_plc_structure_rfc_id BIGINT DEFAULT 10;--
+DECLARE vl_no_of_days INTEGER;--
+
+-- 12/07/2009
+DECLARE vd_stipend_service_start_dt DATE;--
+DECLARE vd_stipend_service_end_dt DATE;--
+DECLARE vl_stipend_unit_no INT;--
+DECLARE vs_stipend_unit_type VARCHAR(5);--
+
+-- 02/15/2010
+DECLARE vs_csrfc_rate_type_cd VARCHAR(5) DEFAULT '5670'; -- Room & Board/Clothing
+DECLARE vs_csrfcd_rate_type_cd VARCHAR(5) DEFAULT '5671'; -- Room & Board/Clothing/Differential
+DECLARE vd_csrfc_service_st_dt DATE;--
+DECLARE vd_csrfc_service_end_dt DATE;--
+DECLARE vl_csrfc_unit_no INT;--
+DECLARE vs_csrfc_unit_type VARCHAR(5);--
+DECLARE vd_csrfcd_service_st_dt DATE;--
+DECLARE vd_csrfcd_service_end_dt DATE;--
+DECLARE vl_csrfcd_unit_no INT;--
+DECLARE vs_csrfcd_unit_type VARCHAR(5);--
+
+DECLARE vl_final_payment_cnt INT;--
+
+DECLARE vdc_csrfc_gross_amount DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_csrfc_perdiem_rate DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+
+DECLARE vdc_csrfcd_gross_amount DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_csrfcd_perdiem_rate DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+
+DECLARE vdc_csrfc_current_balance DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+DECLARE vdc_csrfcd_current_balance DECIMAL(10,2) DEFAULT 0.00; -- INTIAL VALUE
+
+-- Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_UNDER_OVER_PUB';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+ 
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+ CUR_VALIDATED_PLACEMENT record;
+ CUR_VALIDATED_PLACEMENT_refcur REFCURSOR;
+ COMAR_RATE_CUR record;
+ COMAR_RATE_CUR_refcur REFCURSOR;
+BEGIN
+begin
+ EXCEPTION WHEN OTHERS THEN
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+ GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+--    SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT CHESSIE.SP_BATCH_ERROR_LOG ( 'SP_UNDER_OVER_PUB' ,
+           NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+
+     as_error := '';--
+   RETURN 0;
+END;
+--Log error
+
+-- CURRENT DATE to ad_run_dt
+-- ALL PLACEMENT VALIDATION VALIDATED TODAY ALSO PLACMENT NOT VOIDED OR DELETED (VALID PLACEMENT)
+--FOR CUR_VALIDATED_PLACEMENT AS
+--cur1 CURSOR WITH HOLD FOR
+OPEN CUR_VALIDATED_PLACEMENT_refcur FOR
+SELECT PV.PLACEMENT_ID,
+       PV.VALIDATION_START_DT,
+       PV.VALIDATION_END_DT,
+       P.PROVIDER_ID,
+       P.PLACEMENT_STRUCTURE_ID,
+       P.ENTRY_DT,
+       (CASE WHEN as_f_age(C.dob::DATE,PV.VALIDATION_END_DT) = 21 AND ( (C.dob::DATE + INTERVAL '21 year') < P.EXIT_DT OR P.EXIT_DT is NULL)  THEN
+            C.dob::DATE + INTERVAL '21 year' 
+        ELSE
+            P.EXIT_DT
+        END ) AS EXIT_DT,
+       C.dob::DATE,
+       P.CLIENT_ID,
+       P.RATE_STRUCTURE_ID,
+       f_prim_county (P.CASE_ID,'NULL') AS COUNTY_CD,
+       (CASE WHEN as_f_age(C.dob::DATE, PV.VALIDATION_END_DT) = 21 THEN
+          20
+        ELSE
+            as_f_age(C.dob::DATE, PV.VALIDATION_END_DT )
+   END ) AS CHILD_AGE,
+ 'PLACEMENT_CHANGES' AS TRAN_TYPE
+FROM TB_PLACEMENT_VALIDATION PV,
+     TB_PLACEMENT P,
+     TB_PROVIDER PR,
+     person C
+  WHERE P.CLIENT_ID = C.cjamspid
+ AND P.PROVIDER_ID = PR.PROVIDER_ID
+ AND C.activeflag = 1
+ AND PR.DELETE_SW = 'N'
+ AND P.PLACEMENT_ID = PV.PLACEMENT_ID
+ AND PV.VALIDATION_STATUS_CD = '1750'
+ AND PV.DELETE_SW = 'N'
+ AND P.DELETE_SW = 'N'
+ AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))
+ AND DATE(PV.UPDATE_TS) = ad_run_dt
+ AND P.CONVERSION_SW IS NULL
+ AND P.PROVIDER_ORGANIZATION_ID IS NULL
+ AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)
+ AND C.dob::DATE IS NOT NULL
+ 
+ /*AND ( CHESSIE.as_f_age(C.DOB_DT, PV.VALIDATION_END_DT ) < 21
+  OR ( month(C.DOB_DT + INTERVAL '21 year') = month(PV.VALIDATION_END_DT)
+          AND YEAR(C.DOB_DT + INTERVAL '21 year') = YEAR(PV.VALIDATION_END_DT)
+        AND DAY(C.DOB_DT + INTERVAL '21 year') <> 1
+            )
+            )*/
+ AND ( as_f_age(C.dob::DATE, PV.VALIDATION_END_DT ) < 21
+  OR ( date_part('month', C.dob::DATE + INTERVAL '21 year') = date_part('month', PV.VALIDATION_END_DT)--month(PV.VALIDATION_END_DT)   
+          AND date_part('YEAR', C.dob::DATE + INTERVAL '21 year') = date_part('YEAR', PV.VALIDATION_END_DT)
+        AND date_part('DAY', C.dob::DATE + INTERVAL '21 year') <> 1
+            )
+            )
+UNION
+SELECT PV.PLACEMENT_ID,
+       PV.VALIDATION_START_DT,
+       PV.VALIDATION_END_DT,
+       P.PROVIDER_ID,
+       P.PLACEMENT_STRUCTURE_ID,
+       P.ENTRY_DT,
+       (CASE WHEN as_f_age(C.dob::DATE,PV.VALIDATION_END_DT) = 21 AND ( (C.dob::DATE + INTERVAL '21 year') < P.EXIT_DT OR P.EXIT_DT is NULL)  THEN
+            C.dob::DATE + INTERVAL '21 year' 
+        ELSE
+            P.EXIT_DT
+        END ) AS EXIT_DT,
+       C.dob::DATE,
+       P.CLIENT_ID,
+       P.RATE_STRUCTURE_ID,
+       f_prim_county (P.CASE_ID,'NULL') AS COUNTY_CD,
+       (CASE WHEN as_f_age(C.dob::DATE, PV.VALIDATION_END_DT) = 21 THEN
+          20
+        ELSE
+            as_f_age(C.dob::DATE, PV.VALIDATION_END_DT )
+      END ) AS CHILD_AGE,
+    'COUNTY_SPECIFIC_CHANGES' AS TRAN_TYPE
+FROM TB_PLACEMENT_VALIDATION PV,
+     TB_PLACEMENT P,
+     TB_PROVIDER PR,
+     person C,
+     TB_COUNTY_SPECIFIC_UNOV  CSP
+  WHERE P.CLIENT_ID = C.cjamspid
+ AND P.PROVIDER_ID = PR.PROVIDER_ID
+ AND CSP.PROVIDER_ID = P.PROVIDER_ID
+      AND CSP.DELETE_SW = 'N'
+      AND ( PV.VALIDATION_START_DT BETWEEN CSP.MIN_ADR_START_DT AND CSP.MAX_ADR_START_DT
+       OR PV.VALIDATION_END_DT BETWEEN CSP.MIN_ADR_START_DT AND CSP.MAX_ADR_START_DT
+     )
+        AND PV.VALIDATION_START_DT >= DATE('2010-04-01')
+ AND C.activeflag = 1
+ AND PR.DELETE_SW = 'N'
+ AND P.PLACEMENT_ID = PV.PLACEMENT_ID
+ AND PV.VALIDATION_STATUS_CD = '1750'
+ AND PV.DELETE_SW = 'N'
+ AND P.DELETE_SW = 'N'
+ AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))
+ AND DATE(PV.UPDATE_TS) <> ad_run_dt
+ AND P.CONVERSION_SW IS NULL
+ AND P.PROVIDER_ORGANIZATION_ID IS NULL
+ AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)
+ AND C.dob::DATE IS NOT NULL
+ /*AND ( CHESSIE.as_f_age(C.DOB_DT, PV.VALIDATION_END_DT ) < 21
+  OR ( month(C.DOB_DT + INTERVAL '21 year') = month(PV.VALIDATION_END_DT)
+          AND YEAR(C.DOB_DT + INTERVAL '21 year') = YEAR(PV.VALIDATION_END_DT)
+        AND DAY(C.DOB_DT + INTERVAL '21 year') <> 1
+            )
+            )*/
+ AND ( as_f_age(C.dob::DATE, PV.VALIDATION_END_DT ) < 21
+  OR ( date_part('month', C.dob::DATE + INTERVAL '21 year') = date_part('month', PV.VALIDATION_END_DT)--month(PV.VALIDATION_END_DT)   
+          AND date_part('YEAR', C.dob::DATE + INTERVAL '21 year') = date_part('YEAR', PV.VALIDATION_END_DT)
+        AND date_part('DAY', C.dob::DATE + INTERVAL '21 year') <> 1
+            )
+            )
+ UNION 
+ SELECT PV.PLACEMENT_ID,
+       PV.VALIDATION_START_DT,
+       PV.VALIDATION_END_DT,
+       P.PROVIDER_ID,
+       P.PLACEMENT_STRUCTURE_ID,
+       P.ENTRY_DT,
+       (CASE WHEN as_f_age(C.dob::DATE,PV.VALIDATION_END_DT) = 21 AND ( (C.dob::DATE + INTERVAL '21 year') < P.EXIT_DT OR P.EXIT_DT is NULL)  THEN
+            C.dob::DATE + INTERVAL '21 year' 
+        ELSE
+            P.EXIT_DT
+        END ) AS EXIT_DT,
+       C.dob::DATE,
+       P.CLIENT_ID,
+       P.RATE_STRUCTURE_ID,
+       f_prim_county (P.CASE_ID,'NULL') AS COUNTY_CD,
+       (CASE WHEN as_f_age(C.dob::DATE, PV.VALIDATION_END_DT) = 21 THEN
+          20
+        ELSE
+            as_f_age(C.dob::DATE, PV.VALIDATION_END_DT )
+   END ) AS CHILD_AGE,
+ 'FC_RATE_CHANGES' AS TRAN_TYPE
+FROM TB_PLACEMENT_VALIDATION PV,
+     TB_PLACEMENT P,
+     TB_PROVIDER PR,
+     person C
+  WHERE P.CLIENT_ID = C.cjamspid
+ AND P.PROVIDER_ID = PR.PROVIDER_ID
+ AND C.activeflag = 1
+ AND PR.DELETE_SW = 'N'
+ AND P.PLACEMENT_ID = PV.PLACEMENT_ID
+ AND PV.VALIDATION_STATUS_CD = '1750'
+ AND PV.DELETE_SW = 'N'
+ AND P.DELETE_SW = 'N'
+ AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))
+-- AND DATE(PV.UPDATE_TS) = ad_run_dt
+ AND P.CONVERSION_SW IS NULL
+ AND P.PROVIDER_ORGANIZATION_ID IS NULL
+ AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)
+ AND C.dob::DATE IS NOT NULL
+ /*AND ( CHESSIE.as_f_age(C.DOB_DT, PV.VALIDATION_END_DT ) < 21
+  OR ( month(C.DOB_DT + INTERVAL '21 year') = month(PV.VALIDATION_END_DT)
+          AND YEAR(C.DOB_DT + INTERVAL '21 year') = YEAR(PV.VALIDATION_END_DT)
+        AND DAY(C.DOB_DT + INTERVAL '21 year') <> 1
+            )
+            )*/
+ AND ( as_f_age(C.dob::DATE, PV.VALIDATION_END_DT ) < 21
+  OR ( date_part('month', C.dob::DATE + INTERVAL '21 year') = date_part('month', PV.VALIDATION_END_DT)--month(PV.VALIDATION_END_DT)   
+          AND date_part('YEAR', C.dob::DATE + INTERVAL '21 year') = date_part('YEAR', PV.VALIDATION_END_DT)
+        AND date_part('DAY', C.dob::DATE + INTERVAL '21 year') <> 1
+            )
+            )
+ AND P.RATE_STRUCTURE_ID 
+  IN ( SELECT FC.SERVICE_ID
+     FROM TB_FOSTER_CARE_RATE FC
+    WHERE FC.DELETE_SW = 'N'
+    AND FC.RATE_ID 
+     IN ( SELECT FCR.RATE_ID
+       FROM TB_FOSTER_CARE_RATE_REVISION FCR
+       WHERE FCR.APPROVAL_DT = ad_run_dt
+         AND FCR.DELETE_SW = 'N'
+        )
+   )  
+ORDER BY PLACEMENT_ID,
+         VALIDATION_START_DT;
+--DO
+loop
+ fetch CUR_VALIDATED_PLACEMENT_refcur into CUR_VALIDATED_PLACEMENT;
+           exit when not found;
+  vl_placement_id := CUR_VALIDATED_PLACEMENT.PLACEMENT_ID;--
+  vd_placement_validation_start := CUR_VALIDATED_PLACEMENT.VALIDATION_START_DT;--
+  vd_placement_validation_end := CUR_VALIDATED_PLACEMENT.VALIDATION_END_DT;--
+  vl_provider_id := CUR_VALIDATED_PLACEMENT.PROVIDER_ID;--
+  vl_placement_structure_id := CUR_VALIDATED_PLACEMENT.PLACEMENT_STRUCTURE_ID;--
+  vd_place_entry_dt := CUR_VALIDATED_PLACEMENT.ENTRY_DT;--
+  vd_place_exit_dt := CUR_VALIDATED_PLACEMENT.EXIT_DT;--
+  vl_age_of_child := CUR_VALIDATED_PLACEMENT.CHILD_AGE;--
+  vd_dob := CUR_VALIDATED_PLACEMENT.DOB;--
+  vd_service_start_dt := NULL;   -- INITIAL VALUE
+  vd_service_end_dt := NULL;   -- INITIAL VALUE
+  vl_unit_no := 0;   -- INITIAL VALUE
+  vs_unit_type := NULL;   -- INITIAL VALUE
+  vl_client_id := CUR_VALIDATED_PLACEMENT.CLIENT_ID;--
+  vl_rate_structure_id := CUR_VALIDATED_PLACEMENT.RATE_STRUCTURE_ID;--
+  vs_county_cd := CUR_VALIDATED_PLACEMENT.COUNTY_CD;--
+  vs_TRAN_TYPE := CUR_VALIDATED_PLACEMENT.TRAN_TYPE;--
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vl_placement_id  %',vl_placement_id;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vd_placement_validation_start  %',vd_placement_validation_start;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vd_placement_validation_end  %',vd_placement_validation_end;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vl_provider_id  %',vl_provider_id;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vl_placement_structure_id  %',vl_placement_structure_id;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vd_place_entry_dt  %',vd_place_entry_dt;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vd_place_exit_dt  %',vd_place_exit_dt;
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vl_age_of_child  %',vl_age_of_child; 
+ RAISE NOTICE 'CUR_VALIDATED_PLACEMENT_refcur>>>>>>>>>>>> vs_TRAN_TYPE  %',vs_TRAN_TYPE;
+
+ -- PRJ-04753 - Set Change Type for Fiscal Audit Trail
+ IF vs_TRAN_TYPE = 'FC_RATE_CHANGES' THEN
+   vs_change_type := '1002'; -- Foster Care Rate Changes
+ ELSEIF vs_TRAN_TYPE = 'COUNTY_SPECIFIC_CHANGES' THEN 
+   vs_change_type := '1010'; -- County Specific Changes
+ ELSE -- PLACEMENT_CHANGES
+   vs_change_type := '1001'; -- Placement Changes
+ END IF;--
+ 
+ 
+ -- To Exclude Placement Validation records out of range of Placement Dates - START
+ -- These cases are handled in CHESSIE.SP_VOIDPLACEMENT_RECEIVABLE
+ IF (vd_place_exit_dt is NULL OR (vd_place_exit_dt IS NOT NULL AND vd_place_exit_dt >= vd_placement_validation_start))
+      AND vd_place_entry_dt <= vd_placement_validation_end THEN
+ RAISE NOTICE 'Entered into IF >>>>>>>>>>>> vl_age_of_child  ';
+
+  -- PRJ-04753 - To Exclude Placement Validation records out of range of Foster Care (COMAR) Rate Changes - START
+   vs_DO_RECALC := NULL;--
+  IF vs_TRAN_TYPE = 'FC_RATE_CHANGES' THEN
+   RAISE NOTICE 'Entered into IF >>>>>>>>>>>> IF vs_TRAN_TYPE = FC_RATE_CHANGES';
+
+   -- Verify the placement validation month and client age is imapcated due to updated Foster Care (COMAR) rate slab 
+   --FOR COMAR_RATE_CUR as
+   OPEN COMAR_RATE_CUR_refcur FOR
+    SELECT FC.START_DT,
+        FC.END_DT,
+        FC.MIN_AGE_NO,
+        FC.MAX_AGE_NO
+     FROM TB_FOSTER_CARE_RATE FC
+    WHERE FC.DELETE_SW = 'N'
+     AND FC.SERVICE_ID = vl_rate_structure_id
+     AND FC.RATE_ID IN ( SELECT FCR.RATE_ID
+           FROM TB_FOSTER_CARE_RATE_REVISION FCR
+          WHERE FCR.APPROVAL_DT = ad_run_dt
+          AND FCR.DELETE_SW = 'N'
+            )
+    ORDER BY FC.RATE_ID ;
+   --DO
+   loop
+ fetch COMAR_RATE_CUR_refcur into COMAR_RATE_CUR;
+           exit when not found;
+     vd_fc_rate_st_dt := COMAR_RATE_CUR.START_DT;--
+     vd_fc_rate_end_dt := COMAR_RATE_CUR.END_DT;--
+     vl_fc_min_age_no := COMAR_RATE_CUR.MIN_AGE_NO;--
+     vl_fc_max_age_no := COMAR_RATE_CUR.MAX_AGE_NO;--
+
+    IF vd_fc_rate_st_dt <= vd_placement_validation_start
+     AND ((vd_fc_rate_end_dt >= vd_placement_validation_end) OR (vd_fc_rate_end_dt IS NULL)) 
+     AND vl_fc_min_age_no <= vl_age_of_child
+     AND vl_fc_max_age_no >= vl_age_of_child THEN
+     
+      vs_DO_RECALC := 'Y';--
+    -- GOTO SKIP_COMAR_RATE_CUR;-- //here-- commented for goto
+        
+    END IF;  --
+    
+    -- Reset
+     vd_fc_rate_st_dt := NULL;--
+     vd_fc_rate_end_dt := NULL;--
+     vl_fc_min_age_no := NULL;--
+     vl_fc_max_age_no := NULL;--
+   --END FOR;  --
+   END LOOP; 
+ close COMAR_RATE_CUR_refcur;
+ 
+  ELSE -- Placement Changes OR County Specific Changes always recalculate payment amounts
+    vs_DO_RECALC := 'Y';--
+  RAISE NOTICE 'Entered into else of>>> IF vs_TRAN_TYPE = FC_RATE_CHANGES>>>>>>vs_DO_RECALC %',vs_DO_RECALC;
+
+  END IF;--
+  --SKIP_COMAR_RATE_CUR:  //here-- commented for goto
+  IF vs_DO_RECALC = 'Y' THEN 
+  RAISE NOTICE 'Entered into >>>>>IF vs_DO_RECALC = Y THEN >>>>>>>vs_DO_RECALC %',vs_DO_RECALC;
+
+   -- Check for first Placement for INITIAL CLOTHING  - START
+    vl_placement_count := 0;--
+    vl_init_placement_id := 0;--
+  
+   SELECT min(placement_id)
+    INTO vl_init_placement_id
+   FROM TB_PLACEMENT
+   WHERE CLIENT_ID = vl_client_id 
+    AND DELETE_SW = 'N' 
+    AND ENTRY_DT IS NOT NULL 
+    AND ((VOID_SW IS NULL) OR (VOID_SW = 'N')) 
+    AND APPROVAL_STATUS_CD = '3047' 
+    AND CONVERSION_SW IS NULL;--
+  RAISE NOTICE 'Check for first Placement for INITIAL CLOTHING  - START >>>>>>>vl_init_placement_id %',vl_init_placement_id;
+
+   IF vl_placement_id = vl_init_placement_id THEN -- CHECK FOR IF IT IS THE FIRST PLACEMENT
+     RAISE NOTICE 'Entered into IF vl_placement_id = vl_init_placement_id';
+
+    SELECT COUNT(*)
+       INTO vl_placement_count
+    FROM TB_PAYMENT_DETAIL PD, TB_PAYMENT_HEADER PH
+    WHERE PH.PAYMENT_ID = PD.PAYMENT_ID 
+     AND PH.DELETE_SW = 'N' 
+     AND PD.DELETE_SW = 'N' 
+     AND PD.PLACEMENT_ID = vl_placement_id 
+     /*AND MONTH(PAYMENT_START_DT) = MONTH(vd_place_entry_dt) 
+     AND YEAR(PAYMENT_START_DT) = YEAR(vd_place_entry_dt);--*/
+     AND date_part('month', PAYMENT_START_DT) = date_part('month', vd_place_entry_dt) 
+     AND date_part('YEAR', PAYMENT_START_DT)  = date_part('YEAR', vd_place_entry_dt);--
+    RAISE NOTICE 'Entered into IF vl_placement_id = vl_init_placement_id>>>>>>>>>>>>vl_placement_count %',vl_placement_count;
+ 
+   
+    -- CIS-18129   
+    IF vl_placement_count = 0 THEN
+     IF vd_place_entry_dt < vd_placement_validation_start THEN
+       vl_placement_count := 1;--
+     END IF;--
+    END IF;--
+    -- CIS-18129   
+   ELSE
+     vl_placement_count := 1;--
+   RAISE NOTICE 'Entered into ELSE part of IF vl_placement_id = vl_init_placement_id>>>>>>>>>>>>vl_placement_count %',vl_placement_count;
+
+   END IF;--
+   -- Check for first Placement for INITIAL CLOTHING  - END 
+  
+   --  chessie_mask PROVIDER - PLACEMENT CHECK FOR THE VALIDATION MONTH IF chessie_mask FINAL PAYEMENT BATCH IS ALREADY RUN
+    vs_placement_type := 'L'; -- chessie_mask provider (local department placement)
+    vs_rate_type_cd := 'R';  -- FOR chessie_mask PROVIDER
+
+   -- CHECK FOR FINAL RUN TB_PAYMENT_RUNTIMES_LOG - START
+    vl_final_payment_run := 0; -- INITIAL VALUE
+   SELECT COUNT(*)
+    INTO vl_final_payment_run
+   FROM TB_PAYMENT_RUNTIMES_LOG
+   WHERE PAYMENT_TX = 'FC_PUBLIC_FINAL'
+     AND DELETE_SW = 'N'
+    /* AND MONTH(PAYMENT_CURRENT_RUN_TS) = MONTH(vd_placement_validation_start + INTERVAL '1 month')
+     AND YEAR(PAYMENT_CURRENT_RUN_TS) = YEAR( vd_placement_validation_start + INTERVAL '1 month');--*/
+     AND date_part('month', PAYMENT_CURRENT_RUN_TS::date) = date_part('month', vd_placement_validation_start + INTERVAL '1 month') 
+     AND date_part('YEAR', PAYMENT_CURRENT_RUN_TS::date)  = date_part('YEAR', vd_placement_validation_start + INTERVAL '1 month');--
+   -- CHECK FOR FINAL RUN TB_PAYMENT_RUNTIMES_LOG - END
+
+   -- CHECK FOR FINAL RUN - STRAT
+      RAISE NOTICE 'Before IF vl_final_payment_run > 0 THEN>>>>>>>>>>vl_final_payment_run %',vl_final_payment_run;
+
+   IF vl_final_payment_run > 0 THEN
+      RAISE NOTICE 'Entered into IF vl_final_payment_run > 0 THEN';
+
+    -- ROOM BOARD - START
+    IF vl_rate_structure_id <> 13 THEN
+     -- CIS-18884
+     RAISE NOTICE 'Entered into IF vl_rate_structure_id <> 13 THEN';
+
+     IF vl_rate_structure_id <> 10 OR ( vl_rate_structure_id = 10 AND vd_placement_validation_end <= DATE('2010-03-31')) THEN
+     RAISE NOTICE 'Entered into IF vl_rate_structure_id <> 10 OR ( vl_rate_structure_id = 10 AND vd_placement_validation_end <= DATE(2010-03-31)) THEN';
+
+      -- Existing Code
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - START
+       vl_unit_no := 0;--
+       vs_unit_type := NULL;--
+      SELECT a.ad_service_start_dt,
+        a.ad_service_end_dt,
+        a.al_unit_no,
+        a.as_unit_type from SP_FOSTERCARE_CALCULATION('P',
+        'R',
+        vl_placement_structure_id,
+        vd_place_entry_dt,
+        vd_place_exit_dt,
+        vd_placement_validation_start,
+        vd_placement_validation_end) a INTO
+        vd_service_start_dt,
+        vd_service_end_dt,
+        vl_unit_no,
+        vs_unit_type;--
+
+       vdc_monthly_rate := 0.00; -- INTIAL VALUE
+       vdc_perdiem_rate := 0.00; -- INTIAL VALUE
+       vdc_gross_amount := 0.00; -- Initial Value
+       vs_draft_final_type := 'F'; -- only final amount will be entered
+
+      SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from  SP_GET_PLACEMENT_RATE (vl_rate_structure_id,
+        vl_age_of_child,vd_service_start_dt,vd_service_end_dt,vs_rate_type_cd) a INTO
+        vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+      IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Rate Structure ID';--
+          vs_identity_val := TO_CHAR(vl_rate_structure_id);--
+          as_error := as_error || ' (SP-1)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_PLACEMENT_RATE failed. (SP-1)'  ;--
+         END IF;--
+        -- SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      IF vl_unit_no = 1 and vs_unit_type = '5611' THEN  -- monthly rate
+          vdc_gross_amount := vdc_monthly_rate;--
+          vdc_perdiem_rate := vdc_monthly_rate;--
+          vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+      ELSE
+          vdc_gross_amount := vdc_perdiem_rate * vl_unit_no;--
+      END IF;--
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - END 
+
+      --- CHECK CURRENT BALANCE - START
+       vdc_current_balance := 0;--
+       vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+       vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+
+      
+      -- New condition for Room & Board Rate Type cd - CIS-19002  
+      -- PRJ-04753 - Changes for new TFC & IFC placement structures 
+      IF vd_service_end_dt <= DATE('2009-08-31') 
+       AND vl_rate_structure_id NOT IN ( 11405, 11406, 11407, 11408, 11409 ) THEN
+         vs_room_board := '1232'; -- Room & Board 
+      ELSE
+         vs_room_board := '5670'; -- Room & Board/Clothing
+      END IF;--
+   
+      SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_current_balance,a.al_sqlcode,a.as_error FROM  SP_GET_CURRENT_BALANCE(vl_placement_id,
+           vd_service_start_dt,
+           vd_service_end_dt,
+           vs_room_board,
+           vd_placement_validation_start,
+           vl_rate_structure_id) a INTO
+           vl_linked_pymnt_hdr_id,
+           vl_reference_payment_detail_id,
+           vdc_current_balance,
+           al_sqlcode,
+           as_error;--
+
+      IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+          as_error := as_error || ' (SP-2)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_CURRENT_BALANCE failed. (SP-2)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      IF vl_linked_pymnt_hdr_id = 0 THEN
+          vl_linked_pymnt_hdr_id := NULL;--
+          vl_reference_payment_detail_id := NULL;--
+      END IF;--
+      --- CHECK CURRENT BALANCE - END  
+
+      -- SET ORIGINAL PAYMENT ID - ALREADY GENERATED FOR THIS PLACEMENT- START
+       vl_orig_payment_id := 0; -- INITIAL VALUE
+
+      IF vl_linked_pymnt_hdr_id is NOT NULL AND vl_linked_pymnt_hdr_id > 0 THEN
+          vl_orig_payment_id := vl_linked_pymnt_hdr_id;--
+      END IF;--
+
+      IF vl_orig_payment_id IS NULL THEN
+          vl_orig_payment_id := 0;--
+      END IF;--
+      -- SET ORIGINAL PAYMENT ID - ALREADY GENERATED FOR THIS PLACEMENT- END
+
+      -- CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - START
+       vl_final_pay_count := 0; -- INITIAL VALUE
+       RAISE notice '>>>>>>>>>>>vl_orig_payment_id %',vl_orig_payment_id;
+
+      IF vl_orig_payment_id > 0 THEN
+         SELECT COUNT(*)
+          INTO vl_final_pay_count
+        FROM TB_PAYMENT_DETAIL
+         WHERE PAYMENT_ID = vl_orig_payment_id
+        AND PLACEMENT_ID = vl_placement_id
+        AND FINAL_RATE_TYPE_CD = vs_room_board
+        AND FINAL_SERVICE_ID IS NOT NULL;--
+      END IF; --
+      -- CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - END
+
+      -- TAKE FIRST ADJUSTMENT ID - START
+      -- This or Original Payment ID will be always there in case of current status is Receivable
+       vl_adjust_payment_id := 0; -- INITIAL VALUE
+RAISE notice '>>>>>>>>>>>vl_final_pay_count %',vl_final_pay_count;
+
+      SELECT MIN(PH.PAYMENT_ID)
+       INTO vl_adjust_payment_id
+         FROM TB_PAYMENT_HEADER PH,
+          TB_PAYMENT_DETAIL PD
+        WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+        AND PH.PROVIDER_ID = vl_provider_id
+        AND PH.PAYMENT_DT = CURRENT_DATE
+        AND PH.PAYMENT_TYPE_CD = '3294'
+        AND PD.PLACEMENT_ID IS NOT NULL
+        AND PH.MANUAL_SW = 'N'
+        AND PH.DELETE_SW = 'N'
+        AND PD.DELETE_SW = 'N'
+       /* AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+        AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start)*/
+        AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+     AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start)--
+        AND PD.COUNTY_CD =  vs_county_cd
+        AND PD.CLIENT_ID = vl_client_id ;--
+RAISE notice '>>>>>>>>>>>vl_adjust_payment_id %',vl_adjust_payment_id;
+      IF vl_adjust_payment_id IS NULL THEN
+          vl_adjust_payment_id := 0; --
+      END IF;--
+      -- TAKE FIRST ADJUSTMENT ID - END
+
+      -- PRJ-03018 - Commented
+      -- SET REFERNCE PAYMENT ID FOR RECEIVABLE - START
+ --     SET vl_payment_id = 0; -- INITIAL VALUE
+ --     IF vl_final_pay_count > 0 THEN
+ --        SET vl_payment_id = vl_orig_payment_id;  --
+ --     ELSE
+ --        SET vl_payment_id = vl_adjust_payment_id;  --
+ --     END IF;--
+      -- SET REFERNCE PAYMENT ID FOR RECEIVABLE - END
+
+      -- PRJ-03018 - New code
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - START
+       vl_payment_id := 0; -- INITIAL VALUE
+      IF vl_adjust_payment_id > 0 THEN
+        vl_payment_id := vl_adjust_payment_id; --
+      END IF;--
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - END
+
+      
+      -- PAYABLE / RECEIVABLE - START
+
+      -- IF To Pay and Current Balance are same, DO NOTHING  
+      IF vdc_gross_amount = vdc_current_balance THEN
+         -- DO NOTHING
+      ELSEIF vdc_gross_amount > vdc_current_balance THEN -- Payable
+
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - START 
+       IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+        SELECT a.al_header_id,a.al_sqlcode,a.as_error from  SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+              vd_placement_validation_start,vd_placement_validation_end) a INTO
+              vl_payment_id, al_sqlcode, as_error;--
+       IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Provider ID';--
+           vs_identity_val := TO_CHAR(vl_provider_id);--
+           as_error := as_error || ' (SP-3)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-3)'  ;--
+          END IF;--
+          --SIGNAL p_sp_error  ;--
+       END IF ;--
+        vl_adjust_payment_id := vl_payment_id; -- 05/13/2008 Set New ID as Adj Pay ID  
+       END IF;--
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - END
+
+       -- CREATE SYSTEM ADJUSTMENT FOR PLACEMENT
+        vdc_gross_amount := vdc_gross_amount - vdc_current_balance;--
+
+       -- create payment detail id and insert record in payment detail
+       SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+              vl_payment_id,
+              vl_rate_structure_id,
+              vd_service_start_dt,
+              vd_service_end_dt,
+              vdc_gross_amount,
+              vl_unit_no,
+              vs_unit_type,
+              vdc_perdiem_rate,
+              vs_draft_final_type,
+              vs_room_board,
+              vl_linked_pymnt_hdr_id,
+              vl_reference_payment_detail_id,
+              vs_change_type) a INTO
+              al_sqlcode,
+              as_error;--
+
+       IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Placement ID';--
+            vs_identity_val := TO_CHAR(vl_placement_id);--
+           as_error := as_error || ' (SP-4)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-4)'  ;--
+          END IF;--
+         -- SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - START
+       IF vl_final_pay_count = 0 THEN
+        /*UPDATE TB_PLACEMENT
+        SET PAYMENT_HEADER_ID = vl_payment_id,
+         UPDATE_TS = CURRENT_TIMESTAMP
+        WHERE PLACEMENT_ID = vl_placement_id;--*/
+       UPDATE PLACEMENT
+        SET paymentheaderid = vl_payment_id,
+         updatedon = CURRENT_TIMESTAMP
+        WHERE alternateid = vl_placement_id;--
+                
+         al_sqlcode := SQLCODE;--
+        IF al_sqlcode <> 0 THEN
+          as_error := 'Error in Updating PLACEMENT - PAYMENT HEADER ID. (SQL-1)'  ;--
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+         --SIGNAL p_sp_error  ;--
+        END IF;--
+       END IF;--
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - END
+
+      ELSE -- Receivable
+      
+        vl_receivable_provider_id :=  vl_provider_id;--
+        vdc_receivable_amount := vdc_current_balance - vdc_gross_amount ;--
+        vl_payment_detail_id := 0;-- INITIAL VALUE 
+
+       IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+         vl_payment_detail_id := vl_reference_payment_detail_id;--
+       END IF;--
+
+       IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+         as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (Room & Board)'  ;--
+        -- PRJ-03018 - Commented
+        --IF vl_payment_id > 0 THEN
+        --   SET vs_identity_column = 'Placement ID / Payment ID';--
+        --   SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+        --ELSE
+            vs_identity_column := 'Placement ID';--
+            vs_identity_val := TO_CHAR(vl_placement_id);--
+        --END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+         SELECT a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+           vl_client_id,
+           vl_receivable_provider_id,
+           vd_service_start_dt,
+           vd_service_end_dt,
+           vdc_receivable_amount,
+           vs_change_type) a INTO
+           al_sqlcode,
+           as_error;--
+
+       IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Provider ID / Client ID';--
+           vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+           as_error := as_error || ' (SP-5)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_OVER_PAYMENT failed. (SP-5)'  ;--
+          END IF;--
+         -- SIGNAL p_sp_error  ;--
+       END IF ;--
+
+      END IF; -- PAYABLE / RECEIVABLE - END
+     ELSE -- New condition CIS-18884 - START
+      -- New SP for Service days calculation based on Provider Location Address county
+      -- Returns payment days for 'Room & Board/Clothing' and/or 'Room & Board/Clothing/Differential'
+      -- INTIAL VALUES
+       vd_csrfc_service_st_dt := NULL;--
+       vd_csrfc_service_end_dt := NULL;--
+       vl_csrfc_unit_no := NULL;--
+       vs_csrfc_unit_type := NULL;--
+        
+       vd_csrfcd_service_st_dt := NULL;--
+       vd_csrfcd_service_end_dt := NULL;--
+       vl_csrfcd_unit_no := NULL;--
+       vs_csrfcd_unit_type := NULL;--
+       al_sqlcode := 0;--
+       as_error := NULL;--
+         
+      SELECT a.ad_rfc_service_st_dt,
+        a.ad_rfc_service_end_dt,
+        a.al_rfc_unit_no,
+        a.as_rfc_unit_type,
+        a.ad_rfcd_service_st_dt,
+        a.ad_rfcd_service_end_dt,
+        a.al_rfcd_unit_no,
+        a.as_rfcd_unit_type,
+        a.al_sqlcode,
+        a.as_error FROM SP_CSRB_DAYS_CALCULATION( 'R',
+          vl_provider_id,  
+          vl_placement_structure_id,
+          vd_place_entry_dt,
+          vd_place_exit_dt,
+          vd_placement_validation_start,
+          vd_placement_validation_end) a INTO
+          vd_csrfc_service_st_dt,
+          vd_csrfc_service_end_dt,
+          vl_csrfc_unit_no,
+          vs_csrfc_unit_type,
+          vd_csrfcd_service_st_dt,
+          vd_csrfcd_service_end_dt,
+          vl_csrfcd_unit_no,
+          vs_csrfcd_unit_type,
+          al_sqlcode,
+          as_error;--
+   
+      -- County Specific RFC - Room & Board/Clothing - START
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - START
+      -- INTIAL VALUES
+       vdc_monthly_rate := 0.00;--
+       vdc_perdiem_rate := 0.00;--
+       vdc_gross_amount := 0.00;--
+       vdc_csrfc_gross_amount := 0.00;--
+       vdc_csrfc_perdiem_rate := 0.00;--
+       vs_draft_final_type := 'F'; -- only final amount will be entered
+   
+      IF vl_csrfc_unit_no is NOT NULL AND vl_csrfc_unit_no > 0 THEN
+         SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_rate_structure_id,
+        vl_age_of_child,vd_csrfc_service_st_dt,vd_csrfc_service_end_dt,vs_rate_type_cd) a INTO
+        vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+         IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Rate Structure ID';--
+          vs_identity_val := TO_CHAR(vl_rate_structure_id);--
+          as_error := as_error || ' (SP-5AA)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_PLACEMENT_RATE failed for County Specific RFC. (SP-5AA)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+         END IF ;--
+
+         IF vl_csrfc_unit_no = 1 and vs_csrfc_unit_type = '5611' THEN  -- monthly rate
+          vdc_gross_amount := vdc_monthly_rate;--
+          vdc_perdiem_rate := vdc_monthly_rate;--
+          vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+         ELSE
+          vdc_gross_amount := vdc_perdiem_rate * vl_csrfc_unit_no;--
+         END IF;--
+      END IF;--
+   
+       vdc_csrfc_gross_amount := vdc_gross_amount;--
+       vdc_csrfc_perdiem_rate := vdc_perdiem_rate;--
+      -- County Specific RFC - Room & Board/Clothing - END
+
+      -- County Specific RFCD - Room & Board/Clothing/Differential - START
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - START
+      -- INTIAL VALUES
+       vdc_monthly_rate := 0.00;--
+       vdc_perdiem_rate := 0.00;--
+       vdc_gross_amount := 0.00;--
+       vdc_csrfcd_gross_amount := 0.00;--
+       vdc_csrfcd_perdiem_rate := 0.00;--
+       vs_draft_final_type := 'F'; -- only final amount will be entered
+
+      IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0 THEN
+       SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_rate_structure_id,
+         vl_age_of_child,vd_csrfcd_service_st_dt,vd_csrfcd_service_end_dt,'D') a INTO
+         vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Rate Structure ID';--
+         vs_identity_val := TO_CHAR(vl_rate_structure_id);--
+         as_error := as_error || ' (SP-5AB)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_PLACEMENT_RATE failed for County Specific RFCD. (SP-5AB)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       IF vl_csrfcd_unit_no = 1 and vs_csrfcd_unit_type = '5611' THEN  -- monthly rate
+         vdc_gross_amount := vdc_monthly_rate;--
+         vdc_perdiem_rate := vdc_monthly_rate;--
+         vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+       ELSE
+         vdc_gross_amount := vdc_perdiem_rate * vl_csrfcd_unit_no;--
+       END IF;--
+      END IF;--
+   
+       vdc_csrfcd_gross_amount := vdc_gross_amount;--
+       vdc_csrfcd_perdiem_rate := vdc_perdiem_rate;--
+
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - END
+      -- County Specific RFCD - Room & Board/Clothing/Differential - END
+
+      --- CHECK CURRENT BALANCE - START
+      -- INITIAL VALUES
+       vdc_csrfc_current_balance := 0;--
+       vdc_csrfcd_current_balance := 0;--
+       vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+       vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+   
+      SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_csrfc_current_balance,a.adc_csrfcd_current_balance,a.al_sqlcode,a.as_error from SP_CSRB_GET_CURRENT_BALANCE ( vl_placement_id,
+           vd_placement_validation_start,
+           vs_csrfc_rate_type_cd,
+           vs_csrfcd_rate_type_cd,
+           vl_rate_structure_id) a INTO 
+           vl_linked_pymnt_hdr_id,
+           vl_reference_payment_detail_id,
+           vdc_csrfc_current_balance,
+           vdc_csrfcd_current_balance,
+           al_sqlcode,
+           as_error;--
+
+      IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id,'99999999');--
+          as_error := as_error || ' (SP-5AC)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_CSRB_GET_CURRENT_BALANCE failed for County Specific. (SP-5AC)'  ;--
+         END IF;--
+       --  SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      IF vl_linked_pymnt_hdr_id = 0 THEN
+          vl_linked_pymnt_hdr_id := NULL;--
+          vl_reference_payment_detail_id := NULL;--
+      END IF;--
+      
+      --- CHECK CURRENT BALANCE - END   
+   
+      -- TAKE FIRST ADJUSTMENT ID - START
+       vl_adjust_payment_id := 0; -- INITIAL VALUE
+
+      SELECT MIN(PH.PAYMENT_ID)
+       INTO vl_adjust_payment_id
+         FROM TB_PAYMENT_HEADER PH,
+          TB_PAYMENT_DETAIL PD
+        WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+        AND PH.PROVIDER_ID = vl_provider_id
+        AND PH.PAYMENT_DT = CURRENT_DATE
+        AND PH.PAYMENT_TYPE_CD = '3294'
+        AND PD.PLACEMENT_ID IS NOT NULL
+        AND PH.MANUAL_SW = 'N'
+        AND PH.DELETE_SW = 'N'
+        AND PD.DELETE_SW = 'N'
+       /* AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+        AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start)*/
+         AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+     AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start)--
+        AND PD.COUNTY_CD =  vs_county_cd
+        AND PD.CLIENT_ID = vl_client_id ;--
+
+      IF vl_adjust_payment_id IS NULL THEN
+          vl_adjust_payment_id := 0; --
+      END IF;--
+      -- TAKE FIRST ADJUSTMENT ID - END
+
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - START
+       vl_payment_id := 0; -- INITIAL VALUE
+      IF vl_adjust_payment_id > 0 THEN
+          vl_payment_id := vl_adjust_payment_id;  --
+      END IF;--
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - END
+   
+      -- PAYABLE / RECEIVABLE - START
+      -- IF To Pay (RFC + RFCD) and Current Balance (RFC + RFCD) are same, DO NOTHING  
+      IF ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) = ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance ) THEN
+         -- DO NOTHING
+      ELSEIF ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) > ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance ) THEN -- Payable
+   
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - START 
+       IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+        SELECT a.al_header_id,a.al_sqlcode,a.as_error from  SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+              vd_placement_validation_start,vd_placement_validation_end) a INTO 
+              vl_payment_id, al_sqlcode, as_error;--
+          
+        IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Provider ID';--
+          vs_identity_val := TO_CHAR(vl_provider_id);--
+          as_error := as_error || ' (SP-5AD)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-5AD)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+        END IF ;--
+         vl_adjust_payment_id := vl_payment_id; -- Set New ID as Adj Pay ID  
+       END IF;--
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - END
+
+       -- CREATE SYSTEM ADJUSTMENT FOR PLACEMENT
+       -- Check final payment for the placement/month - START
+       -- IF found create Sys Adj Payment as NET ELSE separate for R&B and R&B/D
+        vl_final_payment_cnt := 0;--
+   
+       SELECT COUNT(*)
+        INTO vl_final_payment_cnt
+       FROM TB_PAYMENT_HEADER PH,
+         TB_PAYMENT_DETAIL PD
+       WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+        AND PD.PLACEMENT_ID = vl_placement_id
+        AND PH.PAYMENT_TYPE_CD in ('6', '3294')
+        AND PH.MANUAL_SW = 'N'
+        AND PH.DELETE_SW = 'N'
+        AND PD.DELETE_SW = 'N'
+        AND PD.FINAL_SERVICE_ID IS NOT NULL
+        /*AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+        AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start) ;--*/
+         AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+     AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start);--
+
+       IF vl_final_payment_cnt = 0 THEN
+   
+        -- Create payment detail for RFC
+        IF vl_csrfc_unit_no is NOT NULL AND vl_csrfc_unit_no > 0 THEN
+          vd_service_start_dt := vd_csrfc_service_st_dt;--
+          vd_service_end_dt := vd_csrfc_service_end_dt;          --
+          vl_unit_no := vl_csrfc_unit_no;--
+          vs_unit_type := vs_csrfc_unit_type; --
+          vdc_gross_amount := vdc_csrfc_gross_amount - vdc_csrfc_current_balance;--
+          vdc_perdiem_rate := vdc_csrfc_perdiem_rate;--
+          vs_room_board := '5670' ; -- Room & Board/Clothing
+    
+         SELECT a.al_sqlcode, a.as_error from  SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+            vl_payment_id,
+            vl_rate_structure_id,
+            vd_service_start_dt,
+            vd_service_end_dt,
+            vdc_gross_amount,
+            vl_unit_no,
+            vs_unit_type,
+            vdc_perdiem_rate,
+            vs_draft_final_type,
+            vs_room_board,
+            vl_linked_pymnt_hdr_id,
+            vl_reference_payment_detail_id,
+            vs_change_type) a INTO
+            al_sqlcode,
+            as_error;--
+
+         IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Placement ID';--
+           vs_identity_val := TO_CHAR(vl_placement_id);--
+           as_error := as_error || ' (SP-5AAF)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_PAYMENT_DETAIL_INSERT failed for CSRFC. (SP-5AAF)'  ;--
+          END IF;--
+          --SIGNAL p_sp_error  ;--
+         END IF ;--
+        END IF;--
+    
+        -- Create payment detail for RFCD
+        IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0 THEN
+          vd_service_start_dt := vd_csrfcd_service_st_dt;--
+          vd_service_end_dt := vd_csrfcd_service_end_dt;--
+          vl_unit_no := vl_csrfcd_unit_no;--
+          vs_unit_type := vs_csrfcd_unit_type;--
+          vdc_gross_amount :=  vdc_csrfcd_gross_amount  -  vdc_csrfcd_current_balance;--
+          vdc_perdiem_rate := vdc_csrfcd_perdiem_rate;--
+          vs_room_board := '5671'; -- Room & Board/Clothing/Differential  
+     
+         SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+            vl_payment_id,
+            vl_rate_structure_id,
+            vd_service_start_dt,
+            vd_service_end_dt,
+            vdc_gross_amount,
+            vl_unit_no,
+            vs_unit_type,
+            vdc_perdiem_rate,
+            vs_draft_final_type,
+            vs_room_board,
+            vl_linked_pymnt_hdr_id,
+            vl_reference_payment_detail_id,
+            vs_change_type) a INTO
+            al_sqlcode,
+            as_error;--
+
+         IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Placement ID';--
+           vs_identity_val := TO_CHAR(vl_placement_id);--
+           as_error := as_error || ' (SP-5BAF)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_PAYMENT_DETAIL_INSERT failed for CSRFCD. (SP-5BAF)'  ;--
+          END IF;--
+          --SIGNAL p_sp_error  ;--
+         END IF ;   --
+        END IF;--
+       ELSE
+         vdc_gross_amount := ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) - ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance );--
+   
+        IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0
+          AND vdc_csrfcd_gross_amount > vdc_csrfcd_current_balance THEN
+          vd_service_start_dt := vd_csrfcd_service_st_dt;--
+          vd_service_end_dt := vd_csrfcd_service_end_dt;--
+          vl_unit_no := vl_csrfcd_unit_no;--
+          vs_unit_type := vs_csrfcd_unit_type;--
+          vdc_perdiem_rate := vdc_csrfcd_perdiem_rate;--
+          vs_room_board := '5671'; -- Room & Board/Clothing/Differential
+        ELSE -- vdc_csrfc_gross_amount > vdc_csrfc_current_balance
+          vd_service_start_dt := vd_csrfc_service_st_dt;--
+          vd_service_end_dt := vd_csrfc_service_end_dt;          --
+          vl_unit_no := vl_csrfc_unit_no;--
+          vs_unit_type := vs_csrfc_unit_type;          --
+          vdc_perdiem_rate := vdc_csrfc_perdiem_rate;--
+          vs_room_board := '5670' ; -- Room & Board/Clothing
+         END IF;--
+         
+         vs_draft_final_type := 'F';--
+   
+        -- create payment detail id and insert record in payment detail
+        SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+           vl_payment_id,
+           vl_rate_structure_id,
+           vd_service_start_dt,
+           vd_service_end_dt,
+           vdc_gross_amount,
+           vl_unit_no,
+           vs_unit_type,
+           vdc_perdiem_rate,
+           vs_draft_final_type,
+           vs_room_board,
+           vl_linked_pymnt_hdr_id,
+           vl_reference_payment_detail_id,
+           vs_change_type) a INTO
+           al_sqlcode,
+           as_error;--
+
+        IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+          as_error := as_error || ' (SP-5AF)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-5AF)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+        END IF ;--
+       END IF;--
+       -- Check final payment for the placement/month - END
+   
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - START
+       IF vl_final_pay_count = 0 THEN
+        /*UPDATE TB_PLACEMENT
+         SET PAYMENT_HEADER_ID = vl_payment_id,
+          UPDATE_TS = CURRENT_TIMESTAMP
+        WHERE PLACEMENT_ID = vl_placement_id;--*/
+       UPDATE PLACEMENT
+        SET paymentheaderid = vl_payment_id,
+         updatedon = CURRENT_TIMESTAMP
+        WHERE alternateid = vl_placement_id;--
+
+         al_sqlcode := SQLCODE;--
+        IF al_sqlcode <> 0 THEN
+          as_error := 'Error in Updating PLACEMENT - PAYMENT HEADER ID. (SQL-1AA)'  ;--
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+         --SIGNAL p_sp_error  ;--
+        END IF;--
+       END IF;--
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - END
+      ELSE -- Receivable
+      
+        vl_receivable_provider_id :=  vl_provider_id;--
+        vdc_receivable_amount := ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance ) - ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) ;--
+        vl_payment_detail_id := 0;-- INITIAL VALUE 
+
+       IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+         vl_payment_detail_id := vl_reference_payment_detail_id;--
+       END IF;--
+
+       IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+         as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (County Specific Room & Board)'  ;--
+        -- PRJ-03018 - Commented
+        --IF vl_payment_id > 0 THEN
+        -- SET vs_identity_column = 'Placement ID / Payment ID';--
+        -- SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+        --ELSE
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+        --END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0
+         AND vdc_csrfcd_current_balance > vdc_csrfcd_gross_amount THEN
+         vd_service_start_dt := vd_csrfcd_service_st_dt;--
+         vd_service_end_dt := vd_csrfcd_service_end_dt;--
+       ELSE -- vdc_csrfc_current_balance > vdc_csrfc_gross_amount
+         vd_service_start_dt := vd_csrfc_service_st_dt;--
+         vd_service_end_dt := vd_csrfc_service_end_dt;          --
+       END IF;--
+
+       SELECT a.al_sqlcode,a.as_error from  SP_OVER_PAYMENT (vl_payment_detail_id,
+             vl_client_id,
+             vl_receivable_provider_id,
+             vd_service_start_dt,
+             vd_service_end_dt,
+             vdc_receivable_amount,
+             vs_change_type) a INTO
+             al_sqlcode,
+             as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Provider ID / Client ID';--
+         vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+         as_error := as_error || ' (SP-5AG)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_OVER_PAYMENT failed. (SP-5AG)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;  --
+      END IF;--
+      -- PAYABLE / RECEIVABLE - END
+     
+     END IF; -- New condition CIS-18884 - END
+    ELSE -- Case vl_rate_structure_id = 13 (Emergency Foster Home Care)
+     --- NO OF DAYS calculation for EFC or/and RFC- START
+     --New SP for 60 days calculation, to return days in EFC and/or RFC for payments  
+     -- INTIAL VALUES
+      vd_efc_service_st_dt := NULL;--
+      vd_efc_service_end_dt := NULL;--
+      vl_efc_unit_no := NULL;--
+      vs_efc_unit_type := NULL;--
+      vd_rfc_service_st_dt := NULL;--
+      vd_rfc_service_end_dt := NULL;--
+      vl_rfc_unit_no := NULL;--
+      vs_rfc_unit_type := NULL;--
+
+      vl_efc_calc_days := 60;--
+
+     SELECT a.ad_efc_service_st_dt,
+      a.ad_efc_service_end_dt,
+      a.al_efc_unit_no,
+      a.as_efc_unit_type,
+      a.ad_rfc_service_st_dt,
+      a.ad_rfc_service_end_dt,
+      a.al_rfc_unit_no,
+      a.as_rfc_unit_type FROM  F_SP_EFC_DAYS_CALCULATION( 'R',
+        vl_rate_structure_id,
+        vd_place_entry_dt,
+        vd_place_exit_dt,
+        vd_placement_validation_start,
+        vd_placement_validation_end,
+        vl_efc_calc_days) a INTO
+        vd_efc_service_st_dt,
+        vd_efc_service_end_dt,
+        vl_efc_unit_no,
+        vs_efc_unit_type,
+        vd_rfc_service_st_dt,
+        vd_rfc_service_end_dt,
+        vl_rfc_unit_no,
+        vs_rfc_unit_type;--
+
+     IF vd_efc_service_st_dt is NOT NULL THEN
+         vd_service_start_dt := vd_efc_service_st_dt ;--
+     ELSE
+         vd_service_start_dt := vd_rfc_service_st_dt ;--
+     END IF;--
+
+     IF vd_rfc_service_end_dt is NOT NULL THEN
+         vd_service_end_dt := vd_rfc_service_end_dt;--
+     ELSE
+         vd_service_end_dt := vd_efc_service_end_dt;--
+     END IF;--
+     --- NO OF DAYS calculation for EFC or/and RFC- END
+   
+     --EFC - START
+   
+     --- EFC -  HOW MUCH WE WERE SUPPOSE TO PAY - START
+      vdc_monthly_rate := 0.00; -- INTIAL VALUE
+      vdc_perdiem_rate := 0.00; -- INTIAL VALUE
+      vdc_gross_amount := 0.00; -- Initial Value
+      vs_draft_final_type := 'F'; -- only final amount will be entered
+
+     IF vl_efc_unit_no is NOT NULL AND vl_efc_unit_no > 0 THEN
+      SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_rate_structure_id,
+       vl_age_of_child,vd_efc_service_st_dt,vd_efc_service_end_dt,vs_rate_type_cd) a INTO
+       vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Rate Structure ID';--
+        vs_identity_val := TO_CHAR(vl_rate_structure_id);--
+        as_error := as_error || ' (SP-5A)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_GET_PLACEMENT_RATE failed. (SP-5A)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      IF vl_efc_unit_no = 1 and vs_efc_unit_type = '5611' THEN  -- monthly rate
+         IF vd_efc_service_end_dt = vd_placement_validation_end and (vd_efc_service_end_dt <> vd_place_exit_dt or vd_place_exit_dt is null) THEN
+        --SELECT  DAY(F_daymonth(vd_placement_validation_start ,'L', 'P' )) - 1
+        SELECT date_part('day', F_daymonth(vd_placement_validation_start ,'L', 'P' ))-1
+          INTO vl_no_of_days;
+        --FROM sysibm.sysdummy1;--
+
+         vdc_gross_amount := vdc_perdiem_rate * (vl_no_of_days + 1);--
+         vdc_perdiem_rate := COALESCE(vdc_gross_amount,0);--
+         vdc_monthly_rate := COALESCE(vdc_gross_amount,0);--
+         ELSE
+         vdc_gross_amount := vdc_monthly_rate;--
+         vdc_perdiem_rate := vdc_monthly_rate;--
+         vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+       END IF;--
+      ELSE
+        vdc_gross_amount := vdc_perdiem_rate * vl_efc_unit_no;--
+      END IF;--
+     END IF;--
+     --- EFC -  HOW MUCH WE WERE SUPPOSE TO PAY - END
+
+     --- EFC - CHECK CURRENT BALANCE - START
+      vdc_current_balance := 0;--
+      vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+      vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+   
+     -- RESET Room & Board Rate Type cd - CIS-19002  
+      vs_room_board := '1232'; -- Room & Board 
+   
+     SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_current_balance,a.al_sqlcode,a.as_error FROM SP_GET_CURRENT_BALANCE(vl_placement_id,
+          vd_service_start_dt,
+          vd_service_end_dt,
+          vs_room_board,
+          vd_placement_validation_start,
+          vl_rate_structure_id) a INTO
+          vl_linked_pymnt_hdr_id,
+          vl_reference_payment_detail_id,
+          vdc_current_balance,
+          al_sqlcode,
+          as_error;--
+
+     IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Placement ID';--
+         vs_identity_val := TO_CHAR(vl_placement_id);--
+         as_error := as_error || ' (SP-5B)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_GET_CURRENT_BALANCE failed. (SP-5B)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+     END IF ;--
+
+     IF vl_linked_pymnt_hdr_id = 0 THEN
+         vl_linked_pymnt_hdr_id := NULL;--
+         vl_reference_payment_detail_id := NULL;--
+     END IF;--
+     --- EFC - CHECK CURRENT BALANCE - END  
+   
+     -- EFC - CHECK IF THE DRAFT PAYMENT IS ALREADY GENERATED FOR THIS PLACEMENT - START
+      vl_orig_payment_id := 0; -- INITIAL VALUE
+
+     IF vl_linked_pymnt_hdr_id is NOT NULL AND vl_linked_pymnt_hdr_id > 0 THEN
+         vl_orig_payment_id := vl_linked_pymnt_hdr_id;--
+     END IF;--
+
+     IF vl_orig_payment_id IS NULL THEN
+         vl_orig_payment_id := 0;--
+     END IF;--
+     -- EFC - CHECK IF THE DRAFT PAYMENT IS ALREADY GENERATED FOR THIS PLACEMENT - END
+
+     -- EFC -  CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - START
+      vl_final_pay_count = 0; -- INITIAL VALUE
+     IF vl_orig_payment_id > 0 THEN
+        SELECT COUNT(*)
+         INTO vl_final_pay_count
+       FROM TB_PAYMENT_DETAIL
+        WHERE PAYMENT_ID = vl_orig_payment_id
+       AND PLACEMENT_ID = vl_placement_id
+       AND FINAL_RATE_TYPE_CD = vs_room_board
+       AND FINAL_SERVICE_ID IS NOT NULL;--
+     END IF; --
+     -- EFC -  CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - END
+
+     -- EFC -  TAKE FIRST ADJUSTMENT ID - START
+     -- This or Original Payment ID will be always there in case of current status is Receivable
+      vl_adjust_payment_id := 0; -- INITIAL VALUE
+
+     SELECT MIN(PH.PAYMENT_ID)
+      INTO vl_adjust_payment_id
+        FROM TB_PAYMENT_HEADER PH,
+         TB_PAYMENT_DETAIL PD
+       WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+       AND PH.PROVIDER_ID = vl_provider_id
+       AND PH.PAYMENT_DT = CURRENT_DATE
+       AND PH.PAYMENT_TYPE_CD = '3294'
+       AND PD.PLACEMENT_ID IS NOT NULL
+       AND PH.MANUAL_SW = 'N'
+       AND PH.DELETE_SW = 'N'
+       AND PD.DELETE_SW = 'N'
+      /* AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+       AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start)*/
+       AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+          AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start)--
+       AND PD.COUNTY_CD =  vs_county_cd
+       AND PD.CLIENT_ID = vl_client_id ;--
+
+     IF vl_adjust_payment_id IS NULL THEN
+         vl_adjust_payment_id := 0; --
+     END IF;--
+     -- EFC -  TAKE FIRST ADJUSTMENT ID - END
+
+     -- PRJ-03018 - Commented
+     -- EFC -  SET REFERNCE PAYMENT ID FOR RECEIVABLE - START
+ --    SET vl_payment_id = 0; -- INITIAL VALUE
+ --    IF vl_final_pay_count > 0 THEN
+ --       SET vl_payment_id = vl_orig_payment_id;  --
+ --    ELSE
+ --       SET vl_payment_id = vl_adjust_payment_id;  --
+ --    END IF;--
+     -- EFC -  SET REFERNCE PAYMENT ID FOR RECEIVABLE - END
+
+     -- PRJ-03018 - New code
+     -- SET REFERNCE PAYMENT ID FOR PAYABLE - START
+      vl_payment_id := 0; -- INITIAL VALUE
+     IF vl_adjust_payment_id > 0 THEN
+         vl_payment_id := vl_adjust_payment_id; --
+     END IF;--
+     -- SET REFERNCE PAYMENT ID FOR PAYABLE - END
+     
+     -- EFC - PAYABLE / RECEIVABLE - START
+     -- IF To Pay and Current Balance are same, DO NOTHING  
+     IF vdc_gross_amount = vdc_current_balance THEN
+        -- DO NOTHING
+     ELSEIF vdc_gross_amount > vdc_current_balance THEN -- Payable
+
+      -- CHECK ADJUSTMENT CREATED ON THAT DAY - START 
+      IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+       SELECT SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+          vd_placement_validation_start,vd_placement_validation_end,
+          vl_payment_id, al_sqlcode, as_error );--
+          
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Provider ID';--
+         vs_identity_val := TO_CHAR(vl_provider_id);--
+         as_error := as_error || ' (SP-5C)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-5C)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+        vl_adjust_payment_id := vl_payment_id; -- 05/13/2008 Set New ID as Adj Pay ID  
+      END IF;--
+      -- CHECK ADJUSTMENT CREATED ON THAT DAY - END
+
+      -- CREATE SYSTEM ADJUSTMENT FOR PLACEMENT
+       vdc_gross_amount := vdc_gross_amount - vdc_current_balance;--
+
+      -- create payment detail id and insert record in payment detail
+      SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+             vl_payment_id,
+             vl_rate_structure_id,
+             vd_efc_service_st_dt,
+             vd_efc_service_end_dt,
+             vdc_gross_amount,
+             vl_efc_unit_no,
+             vs_efc_unit_type,
+             vdc_perdiem_rate,
+             vs_draft_final_type,
+             vs_room_board,
+             vl_linked_pymnt_hdr_id,
+             vl_reference_payment_detail_id,
+             vs_change_type) a INTO
+             al_sqlcode,
+             as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Placement ID';--
+        vs_identity_val := TO_CHAR(vl_placement_id);--
+        as_error := as_error || ' (SP-5D)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-5D)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - START
+      IF vl_final_pay_count = 0 THEN
+       /*UPDATE TB_PLACEMENT
+        SET PAYMENT_HEADER_ID = vl_payment_id,
+         UPDATE_TS = CURRENT_TIMESTAMP
+       WHERE PLACEMENT_ID = vl_placement_id;--*/
+
+      UPDATE placement
+    SET paymentheaderid = vl_payment_id,     
+     updatedon= current_timestamp
+    WHERE alternateid = vl_placement_id;--
+      
+        al_sqlcode := SQLCODE;--
+       IF al_sqlcode <> 0 THEN
+         as_error := 'Error in Updating PLACEMENT - PAYMENT HEADER ID. (SQL-3A)'  ;--
+         vs_identity_column := 'Placement ID';--
+         vs_identity_val := TO_CHAR(vl_placement_id);--
+        --SIGNAL p_sp_error  ;--
+       END IF;--
+      END IF;--
+      -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - END
+     ELSE -- Receivable
+     
+       vl_receivable_provider_id :=  vl_provider_id;--
+       vdc_receivable_amount := vdc_current_balance - vdc_gross_amount ;--
+       vl_payment_detail_id := 0;-- INITIAL VALUE 
+
+      IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+        vl_payment_detail_id := vl_reference_payment_detail_id;--
+      END IF;--
+
+      IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+        as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (Room & Board)'  ;--
+       -- PRJ-03018 - Commented
+       --IF vl_payment_id > 0 THEN
+       -- SET vs_identity_column = 'Placement ID / Payment ID';--
+       -- SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+       --ELSE
+         vs_identity_column := 'Placement ID';--
+         vs_identity_val := TO_CHAR(vl_placement_id);--
+       --END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      SELECT a.al_sqlcode,a.as_error from  SP_OVER_PAYMENT (vl_payment_detail_id,
+        vl_client_id,
+        vl_receivable_provider_id,
+        vd_service_start_dt,
+        vd_service_end_dt,
+        vdc_receivable_amount,
+        vs_change_type) a INTO
+        al_sqlcode,
+        as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Provider ID / Client ID';--
+        vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+        as_error := as_error || ' (SP-5E)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_OVER_PAYMENT failed. (SP-5E)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+   
+     END IF;--
+     -- EFC - PAYABLE / RECEIVABLE - END
+     --EFC - END
+   
+     --RFC - START
+     -- CIS-18884 new condition II
+     IF vd_placement_validation_end <= DATE('2010-03-31') THEN
+      -- Existing Code
+      --- RFC -  HOW MUCH WE WERE SUPPOSE TO PAY - START
+       vdc_monthly_rate := 0.00; -- INTIAL VALUE
+       vdc_perdiem_rate := 0.00; -- INTIAL VALUE
+       vdc_gross_amount := 0.00; -- Initial Value
+       vs_draft_final_type := 'F'; -- only final amount will be entered
+
+      IF vl_rfc_unit_no is NOT NULL AND vl_rfc_unit_no > 0 THEN
+       SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_plc_structure_rfc_id,
+         vl_age_of_child,vd_rfc_service_st_dt,vd_rfc_service_end_dt,vs_rate_type_cd) a INTO
+         vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Rate Structure ID';--
+         vs_identity_val := TO_CHAR(vl_plc_structure_rfc_id);--
+         as_error := as_error || ' (SP-5F)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_PLACEMENT_RATE failed. (SP-5F)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       IF vl_rfc_unit_no = 1 and vs_rfc_unit_type = '5611' THEN  -- monthly rate
+         vdc_gross_amount := vdc_monthly_rate;--
+         vdc_perdiem_rate := vdc_monthly_rate;--
+         vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+       ELSE
+         vdc_gross_amount := vdc_perdiem_rate * vl_rfc_unit_no;--
+       END IF;--
+      END IF;--
+      --- RFC -  HOW MUCH WE WERE SUPPOSE TO PAY - END
+
+      --- RFC - CHECK CURRENT BALANCE - START
+       vdc_current_balance := 0;--
+       vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+       vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+   
+      -- New condition for Room & Board Rate Type cd - CIS-19002  
+      IF COALESCE(vd_rfc_service_end_dt, vd_efc_service_end_dt) <= DATE('2009-08-31') THEN
+        vs_room_board := '1232'; -- Room & Board 
+      ELSE
+        vs_room_board := '5670'; -- Room & Board/Clothing
+      END IF;--
+   
+      SELECT  a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_current_balance,a.al_sqlcode,a.as_error FROM  SP_GET_CURRENT_BALANCE(vl_placement_id,
+              vd_service_start_dt,
+              vd_service_end_dt,
+              vs_room_board,
+              vd_placement_validation_start,
+              vl_plc_structure_rfc_id) a INTO
+              vl_linked_pymnt_hdr_id,
+              vl_reference_payment_detail_id,
+              vdc_current_balance,
+              al_sqlcode,
+              as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Placement ID';--
+        vs_identity_val := TO_CHAR(vl_placement_id);--
+        as_error := as_error || ' (SP-5G)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_GET_CURRENT_BALANCE failed. (SP-5G)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      IF vl_linked_pymnt_hdr_id = 0 THEN
+        vl_linked_pymnt_hdr_id := NULL;--
+        vl_reference_payment_detail_id := NULL;--
+      END IF;--
+      --- RFC - CHECK CURRENT BALANCE - END  
+   
+      -- RFC - CHECK IF THE DRAFT PAYMENT IS ALREADY GENERATED FOR THIS PLACEMENT - START
+       vl_orig_payment_id := 0; -- INITIAL VALUE
+
+      IF vl_linked_pymnt_hdr_id is NOT NULL AND vl_linked_pymnt_hdr_id > 0 THEN
+        vl_orig_payment_id := vl_linked_pymnt_hdr_id;--
+      END IF;--
+
+      IF vl_orig_payment_id IS NULL THEN
+        vl_orig_payment_id := 0;--
+      END IF;--
+      -- RFC - CHECK IF THE DRAFT PAYMENT IS ALREADY GENERATED FOR THIS PLACEMENT - END
+
+      -- RFC -  CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - START
+      SET vl_final_pay_count = 0; -- INITIAL VALUE
+      IF vl_orig_payment_id > 0 THEN
+       SELECT COUNT(*)
+        INTO vl_final_pay_count
+       FROM TB_PAYMENT_DETAIL
+       WHERE PAYMENT_ID = vl_orig_payment_id
+        AND PLACEMENT_ID = vl_placement_id
+        AND FINAL_RATE_TYPE_CD = vs_room_board
+        AND FINAL_SERVICE_ID IS NOT NULL;--
+      END IF; --
+      -- RFC -  CHECK IS FINAL PAYMENT IS GENERATED FOR THESE DRAFT - END
+
+      -- RFC -  TAKE FIRST ADJUSTMENT ID - START
+      -- This or Original Payment ID will be always there in case of current status is Receivable
+       vl_adjust_payment_id := 0; -- INITIAL VALUE
+
+      SELECT MIN(PH.PAYMENT_ID)
+       INTO vl_adjust_payment_id
+      FROM TB_PAYMENT_HEADER PH,
+        TB_PAYMENT_DETAIL PD
+      WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+       AND PH.PROVIDER_ID = vl_provider_id
+       AND PH.PAYMENT_DT = CURRENT_DATE
+       AND PH.PAYMENT_TYPE_CD = '3294'
+       AND PD.PLACEMENT_ID IS NOT NULL
+       AND PH.MANUAL_SW = 'N'
+       AND PH.DELETE_SW = 'N'
+       AND PD.DELETE_SW = 'N'
+       /*AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+       AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start)*/
+       AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+             AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start)--
+       AND PD.COUNTY_CD =  vs_county_cd
+       AND PD.CLIENT_ID = vl_client_id ;--
+
+      IF vl_adjust_payment_id IS NULL THEN
+        vl_adjust_payment_id := 0; --
+      END IF;--
+      -- RFC -  TAKE FIRST ADJUSTMENT ID - END
+
+      -- PRJ-03018 - Commented
+      -- RFC -  SET REFERNCE PAYMENT ID FOR RECEIVABLE - START
+ --     SET vl_payment_id = 0; -- INITIAL VALUE
+ --     IF vl_final_pay_count > 0 THEN
+ --      SET vl_payment_id = vl_orig_payment_id;  --
+ --     ELSE
+ --      SET vl_payment_id = vl_adjust_payment_id;  --
+ --     END IF;--
+      -- RFC -  SET REFERNCE PAYMENT ID FOR RECEIVABLE - END
+
+      -- PRJ-03018 - New code
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - START
+       vl_payment_id := 0; -- INITIAL VALUE
+      IF vl_adjust_payment_id > 0 THEN
+        vl_payment_id := vl_adjust_payment_id; --
+      END IF;--
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - END
+     
+      -- RFC - PAYABLE / RECEIVABLE - START
+      -- IF To Pay and Current Balance are same, DO NOTHING  
+      IF vdc_gross_amount = vdc_current_balance THEN
+       -- DO NOTHING
+      ELSEIF vdc_gross_amount > vdc_current_balance THEN -- Payable
+
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - START 
+       IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+        SELECT a.al_header_id,a.al_sqlcode,a.as_error from  SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+           vd_placement_validation_start,vd_placement_validation_end) a INTO
+           vl_payment_id, al_sqlcode, as_error;--
+
+        IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Provider ID';--
+          vs_identity_val := TO_CHAR(vl_provider_id);--
+          as_error := as_error || ' (SP-5H)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-5H)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+        END IF ;--
+         vl_adjust_payment_id := vl_payment_id; -- 05/13/2008 Set New ID as Adj Pay ID  
+       END IF;--
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - END
+
+       -- CREATE SYSTEM ADJUSTMENT FOR PLACEMENT
+        vdc_gross_amount := vdc_gross_amount - vdc_current_balance;--
+
+       -- create payment detail id and insert record in payment detail
+       SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+              vl_payment_id,
+              vl_plc_structure_rfc_id,
+              vd_rfc_service_st_dt,
+              vd_rfc_service_end_dt,
+              vdc_gross_amount,
+              vl_rfc_unit_no,
+              vs_rfc_unit_type,
+              vdc_perdiem_rate,
+              vs_draft_final_type,
+              vs_room_board,
+              vl_linked_pymnt_hdr_id,
+              vl_reference_payment_detail_id,
+              vs_change_type) a INTO
+              al_sqlcode,
+              as_error;--
+
+       IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Placement ID';--
+           vs_identity_val := TO_CHAR(vl_placement_id);--
+           as_error := as_error || ' (SP-5I)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-5I)'  ;--
+          END IF;--
+          --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - START
+       IF vl_final_pay_count = 0 THEN
+        /*UPDATE TB_PLACEMENT
+         SET PAYMENT_HEADER_ID = vl_payment_id,
+          UPDATE_TS = CURRENT_TIMESTAMP
+        WHERE PLACEMENT_ID = vl_placement_id;--*/
+     UPDATE placement
+    SET paymentheaderid = vl_payment_id,     
+     updatedon= current_timestamp
+    WHERE alternateid = vl_placement_id;--
+        
+     al_sqlcode := SQLCODE;--
+        IF al_sqlcode <> 0 THEN
+          as_error := 'Error in Updating PLACEMENT - PAYMENT HEADER ID. (SQL-3B)'  ;--
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+         --SIGNAL p_sp_error  ;--
+        END IF;--
+       END IF;--
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - END
+
+      ELSE -- Receivable
+      
+        vl_receivable_provider_id :=  vl_provider_id;--
+        vdc_receivable_amount := vdc_current_balance - vdc_gross_amount ;--
+        vl_payment_detail_id := 0;-- INITIAL VALUE 
+
+       IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+         vl_payment_detail_id := vl_reference_payment_detail_id;--
+       END IF;--
+
+       IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+         as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (Room & Board)'  ;--
+        -- PRJ-03018 - Commented
+        --IF vl_payment_id > 0 THEN
+        -- SET vs_identity_column = 'Placement ID / Payment ID';--
+        -- SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+        --ELSE
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+        --END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       SELECT a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+           vl_client_id,
+           vl_receivable_provider_id,
+           vd_service_start_dt,
+           vd_service_end_dt,
+           vdc_receivable_amount,
+           vs_change_type) a INTO
+           al_sqlcode,
+           as_error;--
+
+       IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Provider ID / Client ID';--
+           vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+           as_error := as_error || ' (SP-5J)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_OVER_PAYMENT failed. (SP-5J)'  ;--
+          END IF;--
+         -- SIGNAL p_sp_error  ;--
+       END IF ;--
+   
+      END IF;--
+      -- RFC - PAYABLE / RECEIVABLE - END  
+     ELSE -- CIS-18884 new condition II  - START
+      -- New SP for Service days calculation based on Provider Location Address county
+      -- Returns payment days for 'Room & Board/Clothing' and/or 'Room & Board/Clothing/Differential'
+      -- Over payment EFC-RFC issue fix 01/24/2012
+      -- INTIAL VALUES
+       vd_csrfc_service_st_dt := NULL;--
+       vd_csrfc_service_end_dt := NULL;--
+       vl_csrfc_unit_no := NULL;--
+       vs_csrfc_unit_type := NULL;--
+    
+       vd_csrfcd_service_st_dt := NULL;--
+       vd_csrfcd_service_end_dt := NULL;--
+       vl_csrfcd_unit_no := NULL;--
+       vs_csrfcd_unit_type := NULL;--
+       al_sqlcode := 0;--
+       as_error := NULL;--
+     
+      IF vl_rfc_unit_no is NOT NULL AND vl_rfc_unit_no > 0 THEN
+       -- INTIAL VALUES moved out of above IF..... condition (Over payment EFC-RFC issue fix 01/24/2012)
+         
+       SELECT a.ad_rfc_service_st_dt,
+        a.ad_rfc_service_end_dt,
+        a.al_rfc_unit_no,
+        a.as_rfc_unit_type,
+        a.ad_rfcd_service_st_dt,
+        a.ad_rfcd_service_end_dt,
+        a.al_rfcd_unit_no,
+        a.as_rfcd_unit_type,
+        a.al_sqlcode,
+        a.as_error FROM SP_CSRB_DAYS_CALCULATION( 'R',
+          vl_provider_id,  
+          vl_plc_structure_rfc_id,
+          vd_rfc_service_st_dt,
+          vd_place_exit_dt,
+          vd_placement_validation_start,
+          vd_placement_validation_end) a INTO
+          vd_csrfc_service_st_dt,
+          vd_csrfc_service_end_dt,
+          vl_csrfc_unit_no,
+          vs_csrfc_unit_type,
+          vd_csrfcd_service_st_dt,
+          vd_csrfcd_service_end_dt,
+          vl_csrfcd_unit_no,
+          vs_csrfcd_unit_type,
+          al_sqlcode,
+          as_error;  --
+      END IF;--
+   
+      -- County Specific RFC - Room & Board/Clothing - START
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - START
+      -- INTIAL VALUES
+       vdc_monthly_rate := 0.00;--
+       vdc_perdiem_rate := 0.00;--
+       vdc_gross_amount := 0.00;--
+       vdc_csrfc_gross_amount := 0.00;--
+       vdc_csrfc_perdiem_rate := 0.00;--
+       vs_draft_final_type := 'F'; -- only final amount will be entered
+   
+      IF vl_csrfc_unit_no is NOT NULL AND vl_csrfc_unit_no > 0 THEN
+       SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from  SP_GET_PLACEMENT_RATE (vl_plc_structure_rfc_id,
+         vl_age_of_child,vd_csrfc_service_st_dt,vd_csrfc_service_end_dt,vs_rate_type_cd) a INTO
+         vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Rate Structure ID RFC';--
+         vs_identity_val := TO_CHAR(vl_plc_structure_rfc_id);--
+         as_error := as_error || ' (SP-5JA)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_GET_PLACEMENT_RATE failed for County Specific RFC. (SP-5JA)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       IF vl_csrfc_unit_no = 1 and vs_csrfc_unit_type = '5611' THEN  -- monthly rate
+         vdc_gross_amount := vdc_monthly_rate;--
+         vdc_perdiem_rate := vdc_monthly_rate;--
+         vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+       ELSE
+         vdc_gross_amount := vdc_perdiem_rate * vl_csrfc_unit_no;--
+       END IF;--
+      END IF;--
+   
+       vdc_csrfc_gross_amount := vdc_gross_amount;--
+       vdc_csrfc_perdiem_rate := vdc_perdiem_rate;--
+      -- County Specific RFC - Room & Board/Clothing - END
+   
+      -- County Specific RFCD - Room & Board/Clothing/Differential - START
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - START
+      -- INTIAL VALUES
+       vdc_monthly_rate := 0.00;--
+       vdc_perdiem_rate := 0.00;--
+       vdc_gross_amount := 0.00;--
+       vdc_csrfcd_gross_amount := 0.00;--
+       vdc_csrfcd_perdiem_rate := 0.00;--
+       vs_draft_final_type := 'F'; -- only final amount will be entered
+
+      IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0 THEN
+       SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_plc_structure_rfc_id,
+          vl_age_of_child,vd_csrfcd_service_st_dt,vd_csrfcd_service_end_dt,'D') a INTO
+          vdc_monthly_rate,vdc_perdiem_rate, al_sqlcode, as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Rate Structure ID RFCD';--
+         vs_identity_val := TO_CHAR(vl_plc_structure_rfc_id);--
+         as_error := as_error || ' (SP-5JB)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_PLACEMENT_RATE failed for County Specific RFCD. (SP-5JB)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       IF vl_csrfcd_unit_no = 1 and vs_csrfcd_unit_type = '5611' THEN  -- monthly rate
+         vdc_gross_amount := vdc_monthly_rate;--
+         vdc_perdiem_rate := vdc_monthly_rate;--
+         vdc_monthly_rate := COALESCE(vdc_monthly_rate,0);--
+       ELSE
+         vdc_gross_amount := vdc_perdiem_rate * vl_csrfcd_unit_no;--
+       END IF;--
+      END IF;--
+   
+       vdc_csrfcd_gross_amount := vdc_gross_amount;--
+       vdc_csrfcd_perdiem_rate := vdc_perdiem_rate;--
+   
+      --- HOW MUCH WE WERE SUPPOSE TO PAY - END
+      -- County Specific RFCD - Room & Board/Clothing/Differential - END 
+   
+      --- CHECK CURRENT BALANCE - START
+      -- INITIAL VALUES
+       vdc_csrfc_current_balance := 0;--
+       vdc_csrfcd_current_balance := 0;--
+       vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+       vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+     
+      SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_csrfc_current_balance,a.adc_csrfcd_current_balance,a.al_sqlcode,a.as_error from SP_CSRB_GET_CURRENT_BALANCE ( vl_placement_id,
+          vd_placement_validation_start,
+          vs_csrfc_rate_type_cd,
+          vs_csrfcd_rate_type_cd,
+          vl_plc_structure_rfc_id) a INTO
+          vl_linked_pymnt_hdr_id,
+          vl_reference_payment_detail_id,
+          vdc_csrfc_current_balance,
+          vdc_csrfcd_current_balance,
+          al_sqlcode,
+          as_error;--
+   
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Placement ID';--
+        vs_identity_val := TO_CHAR(vl_placement_id,'9999999');--
+        as_error := as_error || ' (SP-5JC)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_CSRB_GET_CURRENT_BALANCE failed for County Specific. (SP-5JC)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+   
+      IF vl_linked_pymnt_hdr_id = 0 THEN
+        vl_linked_pymnt_hdr_id := NULL;--
+        vl_reference_payment_detail_id := NULL;--
+      END IF;--
+      --- CHECK CURRENT BALANCE - END   
+   
+      -- TAKE FIRST ADJUSTMENT ID - START
+       vl_adjust_payment_id := 0; -- INITIAL VALUE
+
+      SELECT MIN(PH.PAYMENT_ID)
+       INTO vl_adjust_payment_id
+      FROM TB_PAYMENT_HEADER PH,
+        TB_PAYMENT_DETAIL PD
+      WHERE  PH.PAYMENT_ID = PD.PAYMENT_ID
+       AND PH.PROVIDER_ID = vl_provider_id
+       AND PH.PAYMENT_DT = CURRENT_DATE
+       AND PH.PAYMENT_TYPE_CD = '3294'
+       AND PD.PLACEMENT_ID IS NOT NULL
+       AND PH.MANUAL_SW = 'N'
+       AND PH.DELETE_SW = 'N'
+       AND PD.DELETE_SW = 'N'
+       /*AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+       AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start)*/
+       AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+             AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start)--
+       AND PD.COUNTY_CD =  vs_county_cd
+       AND PD.CLIENT_ID = vl_client_id ;--
+
+      IF vl_adjust_payment_id IS NULL THEN
+        vl_adjust_payment_id := 0; --
+      END IF;--
+      -- TAKE FIRST ADJUSTMENT ID - END
+
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - START
+       vl_payment_id := 0; -- INITIAL VALUE
+      IF vl_adjust_payment_id > 0 THEN
+        vl_payment_id := vl_adjust_payment_id;  --
+      END IF;--
+      -- SET REFERNCE PAYMENT ID FOR PAYABLE - END
+
+      -- PAYABLE / RECEIVABLE - START
+      IF ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) = ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance ) THEN
+       -- DO NOTHING
+      ELSEIF ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) > ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance ) THEN -- Payable
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - START 
+       IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+        SELECT a.al_header_id,a.al_sqlcode,a.as_error from SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+              vd_placement_validation_start,vd_placement_validation_end) a INTO
+              vl_payment_id, al_sqlcode, as_error;--
+
+        IF al_sqlcode <> 0 THEN
+            vs_identity_column := 'Provider ID';--
+            vs_identity_val := TO_CHAR(vl_provider_id);--
+            as_error := as_error || ' (SP-5JD)' ;--
+           IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-5JD)'  ;--
+           END IF;--
+           --SIGNAL p_sp_error  ;--
+        END IF ;--
+         vl_adjust_payment_id := vl_payment_id; -- Set New ID as Adj Pay ID  
+       END IF;--
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - END
+
+       -- CREATE SYSTEM ADJUSTMENT FOR PLACEMENT
+   
+       -- Check final payment for the placement/month - START
+       -- IF found create Sys Adj Payment as NET ELSE separate for R&B and R&B/D
+        vl_final_payment_cnt := 0;--
+   
+       SELECT COUNT(*)
+       INTO vl_final_payment_cnt
+         FROM TB_PAYMENT_HEADER PH,
+           TB_PAYMENT_DETAIL PD
+       WHERE PH.PAYMENT_ID = PD.PAYMENT_ID
+        AND PD.PLACEMENT_ID = vl_placement_id
+        AND PH.PAYMENT_TYPE_CD in ('6', '3294')
+        AND PH.MANUAL_SW = 'N'
+        AND PH.DELETE_SW = 'N'
+        AND PD.DELETE_SW = 'N'
+        AND PD.FINAL_SERVICE_ID IS NOT NULL
+        /*AND MONTH(PH.PAYMENT_START_DT) = MONTH(vd_placement_validation_start)
+        AND YEAR(PH.PAYMENT_START_DT) = YEAR(vd_placement_validation_start) ;--*/
+        AND date_part('month', PH.PAYMENT_START_DT) = date_part('month', vd_placement_validation_start) 
+        AND date_part('YEAR', PH.PAYMENT_START_DT)  = date_part('YEAR', vd_placement_validation_start);--
+
+       IF vl_final_payment_cnt = 0 THEN
+
+        -- Create payment detail for RFC
+        IF vl_csrfc_unit_no is NOT NULL AND vl_csrfc_unit_no > 0 THEN
+          vd_service_start_dt := vd_csrfc_service_st_dt;--
+          vd_service_end_dt := vd_csrfc_service_end_dt;          --
+          vl_unit_no := vl_csrfc_unit_no;--
+          vs_unit_type := vs_csrfc_unit_type; --
+          vdc_gross_amount := vdc_csrfc_gross_amount - vdc_csrfc_current_balance;--
+          vdc_perdiem_rate := vdc_csrfc_perdiem_rate;--
+          vs_room_board := '5670' ; -- Room & Board/Clothing
+
+         SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+               vl_payment_id,
+               vl_plc_structure_rfc_id,
+               vd_service_start_dt,
+               vd_service_end_dt,
+               vdc_gross_amount,
+               vl_unit_no,
+               vs_unit_type,
+               vdc_perdiem_rate,
+               vs_draft_final_type,
+               vs_room_board,
+               vl_linked_pymnt_hdr_id,
+               vl_reference_payment_detail_id,
+               vs_change_type) a INTO
+               al_sqlcode,
+               as_error;--
+
+         IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Placement ID';--
+           vs_identity_val := TO_CHAR(vl_placement_id);--
+           as_error := as_error || ' (SP-5AAF)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_PAYMENT_DETAIL_INSERT failed for CSRFC. (SP-5AAF)'  ;--
+          END IF;--
+          --SIGNAL p_sp_error  ;--
+         END IF ;--
+        END IF;--
+   
+        -- Create payment detail for RFCD
+        IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0 THEN
+          vd_service_start_dt := vd_csrfcd_service_st_dt;--
+          vd_service_end_dt := vd_csrfcd_service_end_dt;--
+          vl_unit_no := vl_csrfcd_unit_no;--
+          vs_unit_type := vs_csrfcd_unit_type;--
+          vdc_gross_amount :=  vdc_csrfcd_gross_amount  -  vdc_csrfcd_current_balance;--
+          vdc_perdiem_rate := vdc_csrfcd_perdiem_rate;--
+          vs_room_board := '5671'; -- Room & Board/Clothing/Differential  
+    
+         SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+               vl_payment_id,
+               vl_plc_structure_rfc_id,
+               vd_service_start_dt,
+               vd_service_end_dt,
+               vdc_gross_amount,
+               vl_unit_no,
+               vs_unit_type,
+               vdc_perdiem_rate,
+               vs_draft_final_type,
+               vs_room_board,
+               vl_linked_pymnt_hdr_id,
+               vl_reference_payment_detail_id,
+               vs_change_type) a INTO
+               al_sqlcode,
+               as_error;--
+
+         IF al_sqlcode <> 0 THEN
+           vs_identity_column := 'Placement ID';--
+           vs_identity_val := TO_CHAR(vl_placement_id);--
+           as_error := as_error || ' (SP-5BAF)' ;--
+          IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_PAYMENT_DETAIL_INSERT failed for CSRFCD. (SP-5BAF)'  ;--
+          END IF;--
+          --SIGNAL p_sp_error  ;--
+         END IF ;   --
+        END IF;--
+       ELSE  
+         vdc_gross_amount := ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) - ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance );--
+
+        IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0
+          AND vdc_csrfcd_gross_amount > vdc_csrfcd_current_balance THEN
+          vd_service_start_dt := vd_csrfcd_service_st_dt;--
+          vd_service_end_dt := vd_csrfcd_service_end_dt;--
+          vl_unit_no := vl_csrfcd_unit_no;--
+          vs_unit_type := vs_csrfcd_unit_type;--
+          vdc_perdiem_rate := vdc_csrfcd_perdiem_rate;--
+          vs_room_board := '5671'; -- Room & Board/Clothing/Differential
+        ELSE -- vdc_csrfc_gross_amount > vdc_csrfc_current_balance
+          vd_service_start_dt := vd_csrfc_service_st_dt;--
+          vd_service_end_dt := vd_csrfc_service_end_dt;          --
+          vl_unit_no := vl_csrfc_unit_no;--
+          vs_unit_type := vs_csrfc_unit_type;          --
+          vdc_perdiem_rate := vdc_csrfc_perdiem_rate;--
+          vs_room_board := '5670' ; -- Room & Board/Clothing
+        END IF;--
+
+        -- create payment detail id and insert record in payment detail
+        SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+               vl_payment_id,
+               vl_plc_structure_rfc_id,
+               vd_service_start_dt,
+               vd_service_end_dt,
+               vdc_gross_amount,
+               vl_unit_no,
+               vs_unit_type,
+               vdc_perdiem_rate,
+               vs_draft_final_type,
+               vs_room_board,
+               vl_linked_pymnt_hdr_id,
+               vl_reference_payment_detail_id,
+               vs_change_type) a INTO
+               al_sqlcode,
+               as_error;--
+
+        IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+          as_error := as_error || ' (SP-5JE)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-5JE)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+        END IF ;--
+       END IF;--
+       -- Check final payment for the placement/month - END
+   
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - START
+       IF vl_final_pay_count = 0 THEN
+       /* UPDATE TB_PLACEMENT
+        SET PAYMENT_HEADER_ID = vl_payment_id,
+         UPDATE_TS = CURRENT_TIMESTAMP
+        WHERE PLACEMENT_ID = vl_placement_id;--*/
+       UPDATE placement
+    SET paymentheaderid = vl_payment_id,     
+     updatedon= current_timestamp
+    WHERE alternateid = vl_placement_id;--
+
+         al_sqlcode := SQLCODE;--
+        IF al_sqlcode <> 0 THEN
+          as_error := 'Error in Updating PLACEMENT - PAYMENT HEADER ID. (SQL-1AD)'  ;--
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+         --SIGNAL p_sp_error  ;--
+        END IF;--
+       END IF;--
+       -- UPDATE TB_PLACEMENT FOR Maintenance Payment if exist, Else Last Adjustment Payment - END
+      ELSE -- Receivable
+      
+        vl_receivable_provider_id :=  vl_provider_id;--
+        vdc_receivable_amount := ( vdc_csrfc_current_balance + vdc_csrfcd_current_balance ) - ( vdc_csrfc_gross_amount + vdc_csrfcd_gross_amount ) ;--
+        vl_payment_detail_id := 0;-- INITIAL VALUE 
+
+       IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+         vl_payment_detail_id := vl_reference_payment_detail_id;--
+       END IF;--
+
+       IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+         as_error := 'No PAYMENT_DETAIL_ID found for Receivable RFC. (County Specific Room & Board)'  ;--
+        -- PRJ-03018 - Commented
+        --IF vl_payment_id > 0 THEN
+        -- SET vs_identity_column = 'Placement ID / Payment ID';--
+        -- SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+        --ELSE
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+        --END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       IF vl_csrfcd_unit_no is NOT NULL AND vl_csrfcd_unit_no > 0
+         AND vdc_csrfcd_current_balance > vdc_csrfcd_gross_amount THEN
+         vd_service_start_dt := vd_csrfcd_service_st_dt;--
+         vd_service_end_dt := vd_csrfcd_service_end_dt;--
+       ELSE -- vdc_csrfc_current_balance > vdc_csrfc_gross_amount
+         vd_service_start_dt := vd_csrfc_service_st_dt;--
+         vd_service_end_dt := vd_csrfc_service_end_dt;          --
+       END IF;--
+  
+       SELECT a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+              vl_client_id,
+              vl_receivable_provider_id,
+              vd_service_start_dt,
+              vd_service_end_dt,
+              vdc_receivable_amount,
+              vs_change_type) a INTO
+              al_sqlcode,
+              as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Provider ID / Client ID';--
+         vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+         as_error := as_error || ' (SP-5JF)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_OVER_PAYMENT failed. (SP-5JF)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;   --
+      END IF;--
+      -- PAYABLE / RECEIVABLE - END
+     END IF;--
+     -- CIS-18884 new condition II  - END
+     --RFC - END
+    END IF;--
+    --ROOM BOARD - END
+
+    --INITIAL CLOTHING / CLOTHING - START
+    -- New condition to hard code date as AUG 31st 09 for Clothing recalculation - CIS-18971
+    -- Placement Structure <> Emergency Foster Home Care (13) - START
+    -- PRJ-04753 - Changes for new TFC & IFC placement structures 
+    IF vl_placement_structure_id <> 13 
+     AND vd_placement_validation_end <= DATE('2009-08-31') 
+     AND vl_rate_structure_id NOT IN ( 11405, 11406, 11407, 11408, 11409 ) THEN 
+  
+      vs_clothing_type_cd := '';--
+      vs_clothing_rate_cd := '';--
+
+     IF vl_placement_count = 0 THEN -- FIRST PLACEMENT / INITIAL CLOTHING
+       vs_clothing_type_cd := vs_init_clothing_cd;--
+       vs_clothing_rate_cd := vs_rate_inital_clothing; --
+     ELSE -- MONTHLY CLOTHING
+       vs_clothing_type_cd := vs_clothing_cd;--
+       vs_clothing_rate_cd := vs_rate_clothing_cd; --
+     END IF;--
+
+     --- HOW MUCH WE WERE SUPPOSE TO PAY FOR CLOTHING - START
+      vdc_monthly_clothing := 0;--
+      vdc_clothing_perdiem := 0;--
+
+     -- PAY only if FIRST PLACEMENT or Placment is for Entire Month
+     IF vl_placement_count = 0 OR ( vl_unit_no = 1 and vs_unit_type = '5611')  THEN
+      SELECT  a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from  SP_GET_PLACEMENT_RATE (vl_rate_structure_id,vl_age_of_child,
+         vd_service_start_dt,vd_service_end_dt,vs_clothing_rate_cd) a INTO
+         vdc_monthly_clothing,vdc_clothing_perdiem,al_sqlcode,as_error;--
+         
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Rate Structure ID';--
+        vs_identity_val := TO_CHAR(vl_rate_structure_id);--
+        as_error := as_error || ' (SP-6)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_GET_PLACEMENT_RATE failed - Monthly Clothing Allowances. (SP-6)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+     END IF;--
+     --- HOW MUCH WE WERE SUPPOSE TO PAY FOR CLOTHING - END
+
+     --- CHECK CURRENT BALANCE FOR CLOTHING - START
+      vdc_current_balance := 0;--
+      vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+      vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+
+      SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_current_balance,a.al_sqlcode,a.as_error FROM  SP_GET_CURRENT_BALANCE(vl_placement_id,
+         vd_service_start_dt,
+         vd_service_end_dt,
+         vs_clothing_type_cd,
+         vd_placement_validation_start,
+         vl_rate_structure_id) a INTO
+         vl_linked_pymnt_hdr_id,
+         vl_reference_payment_detail_id,
+         vdc_current_balance,
+         al_sqlcode,
+         as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Placement ID';--
+        vs_identity_val := TO_CHAR(vl_placement_id);--
+        as_error := as_error || ' (SP-7)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_GET_CURRENT_BALANCE failed - FOR CLOTHING. (SP-7)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+     IF vl_linked_pymnt_hdr_id = 0 THEN
+       vl_linked_pymnt_hdr_id := NULL;--
+       vl_reference_payment_detail_id := NULL;--
+     END IF;--
+     --- CHECK CURRENT BALANCE FOR CLOTHING - END  
+
+     -- PAYABLE / RECEIVABLE - START
+
+     -- IF To Pay and Current Balance are same, DO NOTHING  
+     IF vdc_monthly_clothing = vdc_current_balance THEN
+      -- DO NOTHING
+     ELSEIF vdc_monthly_clothing > vdc_current_balance THEN -- Payable
+      -- DO not create system Adjustment for Initial Clothing Allowance - CIS-18971
+      IF vs_clothing_type_cd = vs_clothing_cd THEN -- Monthly Clothing Only - START
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - START -- 05/13/2008   
+       IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+        SELECT a.al_header_id,a.al_sqlcode,a.as_error from SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+         vd_placement_validation_start,vd_placement_validation_end) a INTO
+         vl_payment_id, al_sqlcode, as_error;--
+      
+        IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Provider ID';--
+          vs_identity_val := TO_CHAR(vl_provider_id);--
+          as_error := as_error || ' (SP-8)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-8)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+        END IF ;--
+         vl_adjust_payment_id := vl_payment_id;--
+       END IF;--
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - END -- 05/13/2008   
+
+        vdc_monthly_clothing := vdc_monthly_clothing - vdc_current_balance;--
+        vdc_clothing_perdiem := vdc_monthly_clothing;--
+
+       SELECT a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+         vl_payment_id,
+         vl_rate_structure_id,
+         vd_service_start_dt,
+         vd_service_end_dt,
+         vdc_monthly_clothing,
+         vl_unit_no,
+         vs_unit_type,
+         vdc_clothing_perdiem,
+         vs_draft_final_type,
+         vs_clothing_type_cd,
+         vl_linked_pymnt_hdr_id,
+         vl_reference_payment_detail_id,
+         vs_change_type) a INTO
+         al_sqlcode,
+         as_error;--
+
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Placement ID';--
+         vs_identity_val := TO_CHAR(vl_placement_id);--
+         as_error := as_error || ' (SP-9)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_PAYMENT_DETAIL_INSERT failed - Clothing Allowances. (SP-9)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+      END IF; -- Monthly Clothing Only - END 
+     ELSE -- Receivable
+       
+       vl_receivable_provider_id :=  vl_provider_id;--
+       vdc_receivable_amount := vdc_current_balance - vdc_monthly_clothing ;--
+       vl_payment_detail_id := 0;-- INITIAL VALUE 
+
+      IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+        vl_payment_detail_id := vl_reference_payment_detail_id;--
+      END IF;--
+
+      IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+       --SET as_error = 'Error in Selecting PAYMENT_DETAIL_ID for Receivable. (SQL-5)'  ;--
+        as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (Clothing)'  ;--
+       -- PRJ-03018 - Commented
+       --IF vl_payment_id > 0 THEN
+       -- SET vs_identity_column = 'Placement ID / Payment ID';--
+       -- SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+       --ELSE
+         vs_identity_column := 'Placement ID';--
+         vs_identity_val := TO_CHAR(vl_placement_id);--
+       --END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+
+      SELECT a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+          vl_client_id,
+          vl_receivable_provider_id,
+          vd_service_start_dt,
+          vd_service_end_dt,
+          vdc_receivable_amount,
+          vs_change_type) a INTO
+          al_sqlcode,
+          as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Provider ID / Client ID';--
+        vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+        as_error := as_error || ' (SP-10)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_OVER_PAYMENT failed - CLOTHING PAYMENT. (SP-10)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+     END IF;--
+    END IF; -- Placement Structure <> Emergency Foster Home Care (13) - END
+    --INITIAL CLOTHING / CLOTHING - END
+
+    -- STIPEND - START
+    -- STEPEND LOGIC START ONLY FOR TFC OR IFC FOR chessie_mask PROVIDERS ONLY
+    -- 11 -- Intermediate Foster Care
+    -- 12 -- Treatment Foster Care
+    IF vl_placement_structure_id = 11 OR vl_placement_structure_id = 12 THEN
+
+     --- HOW MUCH WE WERE SUPPOSE TO PAY AS STIPEND - START 
+      vdc_stipend_amount_no := 0.00;--
+      vl_doc_level_id := 0;--
+   
+     -- New Logic for Stipend Calculation 12/07/2009 
+     IF vd_service_end_dt <= DATE('2010-01-31') THEN
+   
+      SELECT STIPEND_SERVICE_ID,
+          AMOUNT
+       INTO vl_doc_level_id,
+         vdc_stipend_amount_no
+      FROM TB_PLACEMENT_DOC
+      WHERE DELETE_SW = 'N'
+       AND PLACEMENT_ID = vl_placement_id
+       AND APPROVAL_STATUS_CD = '3047'
+       AND PLACEMENT_DOC_ID = (SELECT MAX(PLACEMENT_DOC_ID)
+             FROM TB_PLACEMENT_DOC
+             WHERE DELETE_SW = 'N'
+              AND PLACEMENT_ID = vl_placement_id
+              AND APPROVAL_STATUS_CD = '3047'
+              AND ((END_DT IS NULL) OR (END_DT >= vd_service_end_dt))
+              AND START_DT < vd_service_end_dt);--
+     ELSE
+      -- INTIAL VALUES
+       vdc_stipend_amount_no := NULL;--
+       vd_stipend_service_start_dt := NULL;--
+       vd_stipend_service_end_dt := NULL;--
+       vl_stipend_unit_no := NULL;--
+       vs_stipend_unit_type := NULL;--
+   
+      SELECT a.al_doc_level_id,
+ a.adc_stipend_amount_no,
+ a.ad_service_start_dt,
+ a.ad_service_end_dt,
+ a.al_unit_no,
+ a.as_unit_type,
+ a.al_sqlcode ,
+ a.as_error FROM SP_STIPEND_CALCULATION(vl_placement_id,
+         vl_placement_structure_id,
+         vd_place_entry_dt,
+         vd_place_exit_dt,
+         vd_placement_validation_start,
+         vd_placement_validation_end) a INTO
+         vl_doc_level_id,
+         vdc_stipend_amount_no,
+         vd_stipend_service_start_dt,
+         vd_stipend_service_end_dt,
+         vl_stipend_unit_no,
+         vs_stipend_unit_type,
+         al_sqlcode,
+         as_error;--
+   
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Placement ID';--
+        vs_identity_val := vl_placement_id;--
+        as_error := as_error || ' (SP-10A)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_STIPEND_CALCULATION failed. (SP-10A)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+     END IF;--
+   
+     IF vdc_stipend_amount_no IS NULL OR vdc_stipend_amount_no = 0.00 THEN
+
+      IF vl_doc_level_id IS NULL OR vl_doc_level_id = 0 THEN
+       -- no need to create record
+      ELSE -- check the rate in the rate table
+        vdc_perdiem_stipend_rate := 0.00; -- initial value
+        vdc_stipend_rate := 0.00; -- initial value
+    
+       -- New Logic for Stipend Calculation 12/07/2009  
+       IF vd_service_end_dt <= DATE('2010-01-31') THEN 
+        SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_doc_level_id,vl_age_of_child,
+           vd_service_start_dt,vd_service_end_dt,vs_rate_stipend_cd) a INTO
+           vdc_stipend_rate,vdc_perdiem_stipend_rate, al_sqlcode, as_error;--
+       ELSE
+        SELECT a.adc_gross_amount,a.adc_per_diem_rate,a.al_sqlcode,a.as_error from SP_GET_PLACEMENT_RATE (vl_doc_level_id,vl_age_of_child,
+           vd_stipend_service_start_dt,vd_stipend_service_end_dt,vs_rate_stipend_cd) a INTO
+           vdc_stipend_rate,vdc_perdiem_stipend_rate, al_sqlcode, as_error;--
+       END IF;--
+     
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Doc Level ID';--
+         vs_identity_val := TO_CHAR(vl_doc_level_id);--
+         as_error := as_error || ' (SP-11)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_GET_PLACEMENT_RATE failed - STIPEND. (SP-11)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+    
+       IF vdc_stipend_rate is NULL THEN
+         vdc_stipend_rate := 0; --
+       END IF;--
+       IF vdc_perdiem_stipend_rate is NULL THEN
+         vdc_perdiem_stipend_rate := 0;--
+       END IF;--
+    
+       -- New condition to pay Stipend  - CIS-19002 
+       IF vd_service_end_dt <= DATE('2009-08-31') THEN
+         vs_unit_type := '5611' ;  -- monthly for stipend
+         vl_unit_no := 1; -- monthly for stipend
+       ELSE
+         vs_unit_type := '5610' ;  -- Nightly for stipend
+        -- No need set vl_unit_no pay as per placement dates -- Nightly for stipend
+        -- New Logic for Stipend Calculation 12/07/2009 
+        IF vd_service_end_dt <= DATE('2010-01-31') THEN 
+          vdc_stipend_rate := vdc_perdiem_stipend_rate * vl_unit_no;--
+        ELSE
+          vdc_stipend_rate := vdc_perdiem_stipend_rate * vl_stipend_unit_no;--
+        END IF;--
+         vdc_perdiem_stipend_rate := COALESCE(vdc_perdiem_stipend_rate,0);--
+       END IF;--
+      END IF;--
+     ELSE
+       vdc_stipend_rate := vdc_stipend_amount_no;--
+       vdc_perdiem_stipend_rate := vdc_stipend_amount_no;--
+     END IF;--
+     --- HOW MUCH WE WERE SUPPOSE TO PAY AS STIPEND - END          
+
+     -- Need to create record if vl_doc_level_id > 0 - START 
+     IF  vl_doc_level_id IS NOT NULL AND vl_doc_level_id > 0 THEN 
+      --- CHECK CURRENT BALANCE FOR STIPEND - START
+       vdc_current_balance := 0;--
+       vl_linked_pymnt_hdr_id := NULL; -- INITIAL VALUE
+       vl_reference_payment_detail_id := NULL; -- INITIAL VALUE
+
+      SELECT a.al_linked_pymnt_hdr_id,a.al_reference_payment_detail_id,a.adc_current_balance,a.al_sqlcode,a.as_error FROM  SP_GET_CURRENT_BALANCE(vl_placement_id,
+        vd_service_start_dt,
+        vd_service_end_dt,
+        vs_stipend_cd,
+        vd_placement_validation_start,
+        vl_rate_structure_id) a INTO
+        vl_linked_pymnt_hdr_id,
+        vl_reference_payment_detail_id,
+        vdc_current_balance,
+        al_sqlcode,
+        as_error;--
+
+      IF al_sqlcode <> 0 THEN
+        vs_identity_column := 'Placement ID';--
+        vs_identity_val := TO_CHAR(vl_placement_id);--
+        as_error := as_error || ' (SP-12)' ;--
+       IF as_error is NULL OR as_error = '' THEN
+         as_error := 'SP_GET_CURRENT_BALANCE failed - FOR STIPEND. (SP-12)'  ;--
+       END IF;--
+       --SIGNAL p_sp_error  ;--
+      END IF ;--
+   
+      IF vl_linked_pymnt_hdr_id = 0 THEN
+        vl_linked_pymnt_hdr_id := NULL;--
+        vl_reference_payment_detail_id := NULL;--
+      END IF;--
+      --- CHECK CURRENT BALANCE FOR STIPEND - END  
+
+      -- PAYABLE / RECEIVABLE - START
+
+      -- IF To Pay and Current Balance are same, DO NOTHING  
+      IF vdc_stipend_rate = vdc_current_balance THEN
+       -- DO NOTHING
+      ELSEIF vdc_stipend_rate > vdc_current_balance THEN -- Payable
+   
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - START -- 05/13/2008   
+       IF vl_adjust_payment_id = 0 or vl_adjust_payment_id is NULL THEN
+        SELECT a.al_header_id,a.al_sqlcode,a.as_error from SP_PAYMENT_HEADER_INSERT(vl_provider_id,vs_payment_type,
+          vd_placement_validation_start,vd_placement_validation_end) a INTO
+          vl_payment_id, al_sqlcode, as_error;--
+  
+        IF al_sqlcode <> 0 THEN
+          vs_identity_column := 'Provider ID';--
+          vs_identity_val := TO_CHAR(vl_provider_id);--
+          as_error := as_error || ' (SP-13)' ;--
+         IF as_error is NULL OR as_error = '' THEN
+           as_error := 'SP_PAYMENT_HEADER_INSERT failed - Adjustment NOT CREATED. (SP-13)'  ;--
+         END IF;--
+         --SIGNAL p_sp_error  ;--
+        END IF ;--
+         vl_adjust_payment_id := vl_payment_id;--
+       END IF;--
+       -- CHECK ADJUSTMENT CREATED ON THAT DAY - END -- 05/13/2008  
+  
+        vdc_stipend_rate := vdc_stipend_rate - vdc_current_balance;--
+       -- New condition for Stipend Per Diem Rate- CIS-19002  
+       IF vd_service_end_dt <= DATE('2009-08-31') THEN
+         vdc_perdiem_stipend_rate := vdc_stipend_rate;--
+       END IF;--
+       -- Commented with CIS-19002  
+       -- SET vs_unit_type = '5611' ;  -- monthly for stipend
+       -- SET vl_unit_no = 1; -- monthly for stipend
+   
+       -- New Logic for Stipend Calculation 12/07/2009 
+       IF vd_service_end_dt <= DATE('2010-01-31') THEN 
+        SELECT   a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+                vl_payment_id,
+                vl_rate_structure_id,
+                vd_service_start_dt,
+                vd_service_end_dt,
+                vdc_stipend_rate,
+                vl_unit_no,
+                vs_unit_type,
+                vdc_perdiem_stipend_rate,
+                vs_draft_final_type,
+                vs_stipend_cd,
+                vl_linked_pymnt_hdr_id,
+                vl_reference_payment_detail_id,
+                vs_change_type) a INTO
+                al_sqlcode,
+                as_error;--
+       ELSE
+          SELECT   a.al_sqlcode, a.as_error from SP_PAYMENT_DETAIL_INSERT(vl_placement_id,
+                vl_payment_id,
+                vl_rate_structure_id,
+                vd_stipend_service_start_dt,
+                vd_stipend_service_end_dt,
+                vdc_stipend_rate,
+                vl_stipend_unit_no,
+                vs_unit_type,
+                vdc_perdiem_stipend_rate,
+                vs_draft_final_type,
+                vs_stipend_cd,
+                vl_linked_pymnt_hdr_id,
+                vl_reference_payment_detail_id,
+                vs_change_type) a INTO
+                al_sqlcode,
+                as_error;--
+       END IF;--
+    
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Placement ID';--
+         vs_identity_val := TO_CHAR(vl_placement_id);--
+         as_error := as_error || ' (SP-14)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_PAYMENT_DETAIL_INSERT failed - STIPEND. (SP-14)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+      ELSE -- Receivable
+      
+        vl_receivable_provider_id :=  vl_provider_id;--
+        vdc_receivable_amount := vdc_current_balance - vdc_stipend_rate ;--
+        vl_payment_detail_id := 0;-- INITIAL VALUE 
+  
+       IF vl_reference_payment_detail_id is NOT NULL AND vl_reference_payment_detail_id > 0 THEN
+         vl_payment_detail_id := vl_reference_payment_detail_id;--
+       END IF;--
+
+       IF vl_payment_detail_id = 0 OR vl_payment_detail_id is NULL THEN
+         as_error := 'No PAYMENT_DETAIL_ID found for Receivable. (Stipend)'  ;--
+        -- PRJ-03018 - Commented
+        --IF vl_payment_id > 0 THEN
+        -- SET vs_identity_column = 'Placement ID / Payment ID';--
+        -- SET vs_identity_val = CHAR(vl_placement_id) || '/ ' || CHAR(vl_payment_id);--
+        --ELSE
+          vs_identity_column := 'Placement ID';--
+          vs_identity_val := TO_CHAR(vl_placement_id);--
+        --END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+
+       -- New Logic for Stipend Calculation 12/07/2009 
+       IF vd_service_end_dt <= DATE('2010-01-31') THEN 
+        SELECT  a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+               vl_client_id,
+               vl_receivable_provider_id,
+               vd_service_start_dt,
+               vd_service_end_dt,
+               vdc_receivable_amount,
+               vs_change_type) a INTO
+               al_sqlcode,
+               as_error;--
+       ELSE
+        SELECT  a.al_sqlcode,a.as_error from SP_OVER_PAYMENT (vl_payment_detail_id,
+               vl_client_id,
+               vl_receivable_provider_id,
+               vd_stipend_service_start_dt,
+               vd_stipend_service_end_dt,
+               vdc_receivable_amount,
+               vs_change_type) a INTO
+               al_sqlcode,
+               as_error;--
+       END IF;--
+       
+       IF al_sqlcode <> 0 THEN
+         vs_identity_column := 'Provider ID / Client ID';--
+         vs_identity_val := TO_CHAR(vl_receivable_provider_id) || '/' || TO_CHAR(vl_client_id);--
+         as_error := as_error || ' (SP-15)' ;--
+        IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_OVER_PAYMENT failed - STIPEND PAYMENT. (SP-15)'  ;--
+        END IF;--
+        --SIGNAL p_sp_error  ;--
+       END IF ;--
+    
+      END IF;--
+      -- PAYABLE / RECEIVABLE - END
+     END IF;--
+     -- Need to create record if vl_doc_level_id > 0 - END
+    END IF;--
+    --STIPEND - END
+
+    -- UPDATING HEADER TABLE - START
+    IF vl_payment_id is NOT NULL AND vl_payment_id > 0 THEN
+      UPDATE TB_PAYMENT_HEADER
+         SET GROSS_AMOUNT_NO = (SELECT SUM(FINAL_AMOUNT_NO) FROM TB_PAYMENT_DETAIL WHERE
+          PAYMENT_ID = vl_payment_id and DELETE_SW = 'N' )
+      WHERE PAYMENT_ID = vl_payment_id;--
+
+      al_sqlcode := SQLCODE;--
+     IF al_sqlcode <> 0 THEN
+       as_error := 'Error in Updating PAYMENT HEADER - Gross Amount. (SQL-8)'  ;--
+       vs_identity_column := 'Payment ID';--
+       vs_identity_val := TO_CHAR(vl_payment_id);--
+      --SIGNAL p_sp_error  ;--
+     END IF ;--
+    END IF; --
+    -- UPDATING HEADER TABLE - END
+  
+    --COMMIT;--
+   END IF; -- CHECK FOR FINAL RUN - END
+  END IF; -- PRJ-04753 - To Exclude Placement Validation records out of range of Foster Care Rate Changes - END
+  
+  
+ END IF; -- To Exclude Placement Validation records out of range of Placement Dates - END
+--END FOR;--
+END LOOP; 
+ close CUR_VALIDATED_PLACEMENT_refcur;
+
+PERFORM SP_VOIDPLACEMENT_RECEIVABLE();--
+SELECT SP_PAYMENT_PLAN_INSERT (0) INTO vl_sql_code;--
+PERFORM SP_AR_TICKLER('PUB', 42 );--
+PERFORM SP_EFC_RFC_TICKLERS(420,'U',ad_run_dt,vd_null_dt );--
+-- CIS-18884
+SELECT a.al_sqlcode,a.as_error from SP_COUNTY_SPECIFIC_UNOV_FSS( ad_run_dt) a INTO vl_sql_code, as_error ;--
+
+--COMMIT;--
+RETURN 1;--
+
+END;
+
+$function$
+

@@ -1,0 +1,49 @@
+CREATE OR REPLACE FUNCTION getpersonprogramareabycase(v_objectid character varying, v_programkey character varying)
+ RETURNS TABLE(personprogramarea json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  l_programarea json;
+  l_casenumber character varying;
+  l_msg character varying;
+BEGIN
+
+select 
+(
+ CASE WHEN ppa.objecttypekey = 'adoptioncase' THEN (SELECT adoptioncasenumber from adoptioncase 
+  WHERE adoptioncaseid:: character varying = ppa.objectid and activeflag = 1 LIMIT 1 ) 
+ WHEN ppa.objecttypekey = 'servicecase' THEN (SELECT servicecasenumber from servicecase 
+  WHERE servicecaseid:: character varying = ppa.objectid and activeflag = 1 LIMIT 1 )
+ ELSE (SELECT servicerequestnumber from intakeservicerequest 
+  WHERE intakeserviceid::character varying = ppa.objectid and activeflag = 1 LIMIT 1 ) 
+ END
+)
+into l_casenumber
+FROM personprogramarea ppa where ppa.objectid = v_objectid;
+select * from createmappingrecord(v_objectid:: character varying,l_casenumber::character varying) INTO l_msg;
+
+SELECT json_agg(programarea) INTO l_programarea FROM 
+(
+ SELECT 
+    ppa.personprogramid, 
+    ppa.personid,
+    ppa.startdate, ppa.enddate,
+       ppa.objecttypekey, ppa.objectid,
+    ppa.endreasonkey, ppa.programkey, ppa.subprogramkey,
+    ppa.datavalidflag, ppa.clientmergeid,ppa.ifpsatriskflag,
+    ppa.entityid As casenumber 
+ FROM personprogramarea ppa      
+ WHERE ppa.activeflag = 1 AND ppa.objectid = v_objectid
+ AND ppa.programkey is not null
+ AND ppa.objectid is not null AND ppa.datatransferflag != 'C' and ppa.sourcetype = 'CW'
+ ORDER BY COALESCE(ppa.enddate, now()) DESC, ppa.startdate DESC
+) AS programarea;
+
+
+
+RETURN query select  l_programarea;      
+END;
+
+$function$
+

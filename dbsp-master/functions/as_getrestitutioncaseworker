@@ -1,0 +1,82 @@
+CREATE OR REPLACE FUNCTION as_getrestitutioncaseworker(i_intakeserviceid uuid, i_restitutionid uuid, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, intakeserreqrestitutionid uuid, restitutionnumber integer, caseid uuid, intakenumber character varying, casenumber character varying, amount numeric, duedate date, sources character varying, relation character varying, frequency character varying, focusperson json, victim json, liableperson json, installmentamount numeric, initialpaymentdate date, courtdeferredduedate date, balance numeric, areacode character varying, iscourtactiontypejoint boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+
+declare searchrestitutionid character varying;
+declare querytxt text;
+declare courtactionval int;
+declare courtactiontype boolean;
+declare v_restitutionno character varying;
+declare v_pagenumber int;
+declare v_pageoffset int;
+begin
+
+IF COALESCE(pagesize, 0) < 1 THEN                     
+ pagesize := 20;
+END IF;
+
+IF COALESCE(pagenumber, 0) < 1 
+THEN
+ pagenumber := 1; 
+end if;
+
+v_pagenumber := pagenumber - 1;
+v_pageoffset := v_pagenumber * pagesize;
+
+  select count(*) into courtactionval from intakeservicerequest ISR
+  inner join intakeservicerequestcourtaction ISREQ on ISREQ.intakenumber = ISR.intakenumber and ISR.activeflag = 1 and ISREQ.activeflag = 1
+  inner join intakeservicerequestcourtactiontype ISRT on ISRT.intakeservicerequestcourtactionid = ISREQ.intakeservicerequestcourtactionid
+  where  ISRT.courtactiontypekey = 'RestiOJS' and ISRT.activeflag = 1 and ISR.intakeserviceid = i_intakeserviceid;
+ 
+ RAISE NOTICE '%',courtactionval;
+  IF(courtactionval > 0) then
+   courtactiontype = true;
+  ELSE
+   courtactiontype = false;
+  END IF;
+  
+  select isrr.restitutionno into v_restitutionno from intakeserreqrestitution as isrr where isrr.intakeserreqrestitutionid = i_restitutionid and isrr.activeflag=1 limit 1;
+  
+ --filter based on restitution id
+  if(i_restitutionid :: character varying != '' and i_restitutionid is not null)
+ then  
+  --searchrestitutionid :=  ' AND inr.intakeserreqrestitutionid =  ''' || I_restitutionid || '''';
+         searchrestitutionid :=  ' AND inr.restitutionno =  ''' || v_restitutionno || '''';      
+    else
+         searchrestitutionid := '';
+ end if;
+    
+ --get restitution details for case worker
+  querytxt =
+   'select  count(1) over() totalcount, inr.intakeserreqrestitutionid, inr.restitutionno as restiutionnumber ,
+ inr.intakeserviceid as caseid,inr.intakenumber,ins.servicerequestnumber as casenumber,inr.payment as amount
+ ,inr.duedate ,inr.restitutiontype  as sources , inr.liablepersonrelationtypekey as relation ,inr.frequency,
+ (select row_to_json(x) from (select p.firstname,p.lastname,p.personid as pid,p.cjamspid from person p where p.personid=inr.youthpersonid limit 1) as x ) as focusperson,
+ (select row_to_json(x) from (select p.firstname,p.lastname,p.personid as pid,p.cjamspid from person p where p.personid=inr.victimpersonid limit 1) as x ) as victim,
+ (select row_to_json(x) from (
+ select p.firstname,p.lastname,p.personid as pid,inri.liablepersonrelationtypekey as relationship,rst.description as relationshipdescription ,p.cjamspid  
+ 
+ from person p 
+ join intakeserreqrestitution inri on inri.liablepersonid=p.personid
+ join relationshiptype rst on rst.relationshiptypekey=inri.liablepersonrelationtypekey 
+ where p.personid=inr.liablepersonid  limit 1
+ 
+ ) as x ) as liableperson,inr.installmentamount ,inr.paymentstartdate as initialpaymentdate,inr.courtdeferredduedate,--(inr.payment - coalesce(inr.paidamount,0)) as balance
+ --(coalesce(inr.payment, 0) - coalesce(inr.waivedamount, 0) + coalesce(inr.additionalamount, 0)) - coalesce(inr.paidamount, 0) as balance 
+(coalesce(inr.payment, 0)) - coalesce(inr.paidamount, 0) as balance,
+(select RPFFC.vakaccountnumber from restitutionpaymentflatfilecontent as RPFFC where RPFFC.customernumber = inr.restitutionno::character varying limit 1) as areacode,'||courtactiontype||' 
+ from
+(select restitutionno, max(updatedon) updatedon from intakeserreqrestitution where activeflag = 1 group by restitutionno) res
+JOin intakeserreqrestitution inr on inr.restitutionno = res.restitutionno and inr.updatedon = res.updatedon
+ left join intakeserreqrestitutionpayment inrp on inrp.intakeserreqrestitutionid=inr.intakeserreqrestitutionid and inrp.activeflag=1
+ left join intakeservicerequest ins on ins.intakeserviceid=inr.intakeserviceid 
+ where inr.intakeserviceid='''||i_intakeserviceid||''' and inr.activeflag=1 --and inr.status != ''Closed''
+ '||searchrestitutionid||'
+ order by inr.updatedon desc  LIMIT ' ||pagesize||' offset '|| v_pageoffset ;  
+  return query execute querytxt;
+  end;
+
+$function$
+

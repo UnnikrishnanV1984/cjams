@@ -1,0 +1,17 @@
+ CREATE OR REPLACE FUNCTION public.geteamuser()                                                                                                   
+  RETURNS TABLE(postioncode character varying, loadnumber character varying, displayname character varying)                                       
+  LANGUAGE plpgsql                                                                                                                                
+ AS $function$                                                                                                                                    
+                                                                                                                                                  
+ BEGIN                                                                                                                                            
+                                                                                                                                                  
+                                                                                                                                                  
+ RETURN QUERY                                                                                                                                     
+ Select t. positioncode, t.loadnumber, u.DisplayName   from teammember t inner join  teammemberassignment tma on tma.teammemberid = t.teammemberid
+ and  tma.activeflag =1                                                                                                                           
+ inner join userprofile u on u.SecurityUsersId = tma.SecurityUsersId and  tma.activeflag =1                                                       
+ where t.activeflag =1 group by  t.loadnumber, u.DisplayName,t. positioncode;                                                                     
+ END;                                                                                                                                             
+                                                                                                                                                  
+ $function$                                                                                                                                       
+

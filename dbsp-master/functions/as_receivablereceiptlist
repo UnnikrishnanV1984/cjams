@@ -1,0 +1,122 @@
+CREATE OR REPLACE FUNCTION as_receivablereceiptlist(v_paymentdetailid integer, v_providerid integer, v_lipagesize bigint, v_lipagenumber bigint)
+ RETURNS TABLE(totalcount bigint, type character varying, receipt_id bigint, receipt_dt date, receipttype character varying, payment_amount_no numeric, collected_amount_no numeric, referencenumber character varying, receivable_id bigint, receivable_detail_id integer, notes_tx character varying, enteredat timestamp without time zone, enteredby character varying, payment_method_cd character varying, payment_type_cd character varying, payee_cd character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select count(1) over(),receipts.* from
+(
+
+(select (select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N'
+AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd)) as type,tro.offset_id as receipt_id,
+tro.offset_dt as receipt_dt,null::character varying as receipttype,tro.offset_amount_no 
+as payment_amount_no,trl.collected_amount_no,tro.payment_id::character varying as
+referencenumber,trh.receivable_id,trd.receivable_detail_id,null::character varying  
+as notes_tx,tro.create_ts as enteredat,up.fullname as  enteredby,null::character varying as
+payment_method_cd,null::character varying as payment_type_cd,null::character varying as payee_cd from tb_payment_header tph
+join tb_payment_detail tpd on tpd.payment_id= tph.payment_id
+join as_tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id
+join as_tb_receivable_header trh on trd.receivable_id = trh.receivable_id
+left join  tb_RECEIVABLE_OFFSET tro on tro.payment_id = tph.payment_id
+left join as_tb_RECEIVABLE_LIQUIDATION trl on trl.offset_id = tro.offset_id
+left join  as_tb_receivable_collection_status trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+left join userprofile up on up.securityusersid = tro.create_user_id
+where
+ (
+  v_paymentdetailid is null
+  or tpd.payment_detail_id = v_paymentdetailid
+ ) -- tpd.payment_detail_id=null
+ and tph.provider_id = v_providerid
+ and trcs.collection_status_cd = '779'
+order by
+ tro.offset_id desc
+)
+
+union all
+
+(
+ select
+  (
+   select
+    value_tx
+   from
+    tb_picklist_values
+   where
+    PICKLIST_type_id = 52
+    AND delete_sw = 'N'
+    AND active_sw = 'Y'
+    AND TRIM(PICKLIST_VALUE_CD) = TRIM(trcs.collection_status_cd)
+  ) as type,
+  tpr.receipt_id,
+  tpr.receipt_dt,
+(
+   select
+    value_tx
+   from
+    tb_picklist_values
+   where
+    PICKLIST_type_id = 5
+    AND delete_sw = 'N'
+    AND active_sw = 'Y'
+    AND TRIM(PICKLIST_VALUE_CD) = TRIM(tpr.payment_method_cd)
+  ) as receipttype,
+  tpr.payment_amount_no,
+  trl.collected_amount_no,
+  tpr.payment_no_tx as referencenumber,
+  trd.receivable_id,
+  trd.receivable_detail_id,
+  tpr.notes_tx,
+  tpr.create_ts as enteredat,
+  up.fullname as enteredby,
+  tpr.payment_method_cd,
+  tpr.payment_type_cd,
+  tpr.payee_cd
+ from
+  tb_payment_detail tpd
+  join tb_payment_header tph on tpd.payment_id = tph.payment_id
+  join as_tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id
+  left join as_tb_RECEIVABLE_LIQUIDATION trl on trd.receivable_detail_id = trl.receivable_detail_id
+     join as_tb_payment_receipt tpr on tpr.receipt_id = trl.receipt_id
+  left join as_tb_receivable_collection_status trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+  left join userprofile up on up.securityusersid = tpr.create_user_id
+where 
+(v_paymentdetailid is null or tpd.payment_detail_id = v_paymentdetailid)
+and tph.provider_id=v_providerid
+and trcs.collection_status_cd in('780','776','777','778','775')
+order by tpr.receipt_id desc
+)
+)
+as receipts
+group by receipts.type,receipts.receipt_id,receipts.receipt_dt,receipts.receipttype,
+receipts.payment_amount_no,receipts.collected_amount_no,receipts.referencenumber,receipts.receivable_id,receipts.receivable_detail_id
+,receipts.notes_tx,receipts.enteredat,receipts.enteredby,receipts.payment_method_cd,receipts.payment_type_cd,receipts.payee_cd
+
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+$function$
+

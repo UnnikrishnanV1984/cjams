@@ -1,0 +1,1 @@
+CREATE INDEX supportlog_supportno_idx ON cjams.supportlog (supportno,effectivedate,frommailid,clientid,subject,notes);

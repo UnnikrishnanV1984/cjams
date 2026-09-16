@@ -1,0 +1,116 @@
+CREATE OR REPLACE FUNCTION prov_listprovideruir(v_assignedtouserid character varying, p_status character varying, pagenumber integer, pagelimit integer, uirno character varying, providerid integer, provider_name character varying, programname character varying, youthidentificationnumber character varying, childname character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, provider_uir_id uuid, incident_type character varying, uir_no character varying, childnm_identifierno json, provider_id integer, program_name character varying, site_id character varying, insertedon timestamp without time zone, inserted_by character varying, formatted_provider_nm character varying, updated_on timestamp without time zone, displayname character varying, routingstatustypeid character varying, provider_nm character varying, statusdesc character varying, assignments json)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+totalcount integer;
+v_uir_status character varying;
+orderbycolumn character varying;
+
+ BEGIN
+ v_limit= pagelimit;
+    v_pagenumber := pageNumber-1;
+    v_pageoffset = v_pagenumber * v_limit; 
+
+v_uir_status = p_status;
+
+IF(p_status='pa-pending')  then
+    v_uir_status='pending'; 
+  
+  ELSIF
+(p_status='pa-submitted')  then
+    v_uir_status='submitted'; 
+     
+  ELSIF
+(p_status='pa-approved')  then
+    v_uir_status='approved'; 
+     
+  ELSIF
+(p_status='pa-returned')  then
+    v_uir_status='returned'; 
+
+  ELSIF
+(p_status='pa-investigation')  then
+    v_uir_status='investigation'; 
+     
+  ELSIF
+(p_status='pa-closed')  then
+    v_uir_status='closed'; 
+  
+end if;
+raise notice 'v_uir_status%',v_uir_status;
+
+ RETURN QUERY 
+ 
+
+ select count(1)  over(), PU.provider_uir_id,
+(select puid.incident_type from provider_uir_incident_detail puid where pu.provider_uir_id = puid.provider_uir_id and activeflag=1 order by inserted_on desc limit 1),
+PU.uir_no,
+
+(select json_agg(x) from (select concat_ws(' ', PUAD.first_name ,puad.last_name)as child_name,PUAD.identifier_no from provider_uir_actor_detail PUAD  
+                              where PUAD.provider_id = PU.provider_id::character varying  and PUAD.active_flag=1
+                              and puad.provider_uir_id = pu.provider_uir_id) x ),
+PU.provider_id,tpl.license_type,tpl.site_id::CHARACTER VARYING,
+PU.inserted_on,PU.inserted_by,TB.formatted_provider_nm,PU.updated_on,
+(select UP.displayname from userprofile UP where UP.securityusersid=PU.inserted_by),PU.uir_status,TB.provider_nm,
+CASE  WHEN pu.uir_statusdesc is null THEN  'Pending'  ELSE pu.uir_statusdesc  end as statusdesc,
+(select json_agg(ass) from (select pa.toworkeridno,  upa.displayname
+                  from providerassignment pa 
+                  join userprofile upa on upa.securityusersid = pa.toworkeridno
+                   where pa.objecttypekey='UIROIG' and pa.objectid=  PU.uir_no
+                  and pa.activeflag = 1
+                  and (pa.enddate::date >= now()::date or pa.enddate is null)
+                  order by pa.insertedon desc limit 1
+) ass )::json as assignments          
+FROM  provider_uir PU
+inner join tb_provider TB on TB.provider_id=PU.provider_id and tb.delete_sw='N'
+left join tb_provider_licensing tpl on tpl.provider_id= pu.provider_id and tpl.active_sw='Y' and tpl.site_id = pu.site_id and tpl.delete_sw = 'N'
+
+where PU.active_flag=1
+and  case when providerid is not null then  PU.provider_id = providerid else 1=1 end 
+and  case when provider_name is not null then  lower(TB.provider_nm) like  '%' || lower(trim(provider_name)) ||'%' else 1=1 end 
+and 
+  CASE 
+    WHEN (v_uir_status = 'pending') THEN  ((PU.uir_status is null) or (PU.uir_status in ('49','502'))) 
+    WHEN (v_uir_status = 'submitted') THEN  (PU.uir_status in ('500')) 
+    WHEN (v_uir_status = 'returned') THEN  (PU.uir_status in ('502')) 
+    WHEN (v_uir_status = 'investigation') THEN  (PU.uir_status in ('503')) 
+    WHEN (v_uir_status = 'approved') THEN  (PU.uir_status in ('50')) 
+    WHEN (v_uir_status = 'closed') THEN  (PU.uir_status in ('501')) 
+    ELSE  TRUE
+  END 
+and case when uirno is null then true else PU.uir_no like '%' || trim(uirno) ||'%' end 
+and case when childname is null then true else 
+  exists (select 1 from provider_uir_actor_detail PUAD  
+                  where PUAD.provider_id = PU.provider_id::character varying  
+                      and puad.provider_uir_id = pu.provider_uir_id
+                      and concat_ws(' ', lower(PUAD.first_name) ,lower(puad.last_name)) like '%' || lower(childname) ||'%' 
+          )
+  END
+and case when v_assignedtouserid is null or v_assignedtouserid = '' then true else 
+  exists (select 1 from (select * from providerassignment pa 
+                   where pa.objecttypekey='UIROIG' and pa.objectid=  PU.uir_no
+                  and pa.activeflag = 1
+                  and (pa.enddate::date >= now()::date or pa.enddate is null)
+                  order by pa.insertedon desc limit 1) pa 
+                  where pa.toworkeridno::character varying =v_assignedtouserid 
+          )
+  END
+AND  (programname is  null or (COALESCE(lower(tpl.license_type) ,'') iLIKE '%'||COALESCE(lower(programname) ,'')||'%') )
+and case when youthidentificationnumber is null then true else 
+  exists (select 1 from provider_uir_actor_detail PUAD  
+                  where PUAD.provider_id = PU.provider_id::character varying  
+                      and puad.provider_uir_id = pu.provider_uir_id
+                      and lower(PUAD.identifier_no) like '%' || lower(youthidentificationnumber) ||'%' 
+          )
+  END
+order by PU.inserted_on::timestamp desc nulls last
+
+LIMIT v_limit OFFSET v_pageoffset ;            
+end;
+$function$
+

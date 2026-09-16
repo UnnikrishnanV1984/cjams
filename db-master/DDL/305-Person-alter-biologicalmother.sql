@@ -1,0 +1,1 @@
+ ALTER TABLE person ADD column if not exists biologicalmothermarriedsw int4 null;

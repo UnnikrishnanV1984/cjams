@@ -1,0 +1,179 @@
+CREATE OR REPLACE FUNCTION as_f_fm145r_maintenance(start_date date, end_date date)
+ RETURNS TABLE(provider_id integer, payment_id integer, child_name text, child_id bigint, amount numeric, mail_code character varying, tax_id numeric, final_service_start_dt date, final_service_end_dt date, offset_amount_no numeric, under_over_reason character varying, placement_structure_service text, program_nm character varying, case_worker text, case_worker_phone text, case_worker_county character varying, provider_name text, provider_address character varying, ldss_name character varying, location_address text, location_phone_tx text, county_cd character varying)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+(   
+    
+  SELECT 
+  TB_PAYMENT_HEADER.PROVIDER_ID       AS PROVIDER_ID,
+  TB_PAYMENT_DETAIL.PAYMENT_ID        AS PAYMENT_ID,
+  (SELECT (COALESCE(C.lastname, '')||' '||COALESCE(C.firstname,'')||COALESCE(','||(CASE WHEN C.middlename=' ' THEN NULL ELSE C.middlename END),'')) 
+      FROM PERSON C
+      WHERE C.CJAMSPID = TB_PAYMENT_DETAIL.CLIENT_ID) CHILD_NAME,
+  TB_PAYMENT_DETAIL.CLIENT_ID       AS CHILD_ID,
+  TB_PAYMENT_DETAIL.FINAL_AMOUNT_NO     AS AMOUNT,
+  TB_PROVIDER.MAIL_CODE_TX        AS MAIL_CODE,
+  TB_PROVIDER.TAX_ID_NO           AS TAX_ID,
+  TB_PAYMENT_DETAIL.FINAL_SERVICE_START_DT,
+  TB_PAYMENT_DETAIL.FINAL_SERVICE_END_DT,
+  TB_PAYMENT_HEADER.OFFSET_AMOUNT_NO,
+  F_GET_UNDER_OVER_REASON (TB_PAYMENT_DETAIL.PAYMENT_DETAIL_ID, '1008') AS UNDER_OVER_REASON,
+  F_SERVICENAME(TB_PAYMENT_DETAIL.FINAL_SERVICE_ID) ||' '|| COALESCE('-'|| F_PLVALUE(TB_PAYMENT_DETAIL.FINAL_RATE_TYPE_CD,82),'') AS PLACEMENT_STRUCTURE_SERVICE,
+  (SELECT TB_CONTRACT_PROGRAM.PROGRAM_NM 
+      FROM TB_CONTRACT_PROGRAM 
+      WHERE TB_CONTRACT_PROGRAM.PROGRAM_ID IN ( SELECT CONTRACT_PROGRAM_ID 
+                            FROM TB_PLACEMENT 
+                            WHERE PLACEMENT_ID = TB_PAYMENT_DETAIL.PLACEMENT_ID )) PROGRAM_NM,
+  COALESCE(
+  (SELECT (lastname || ' ' || firstname || COALESCE(',' || CASE WHEN middlename = ' ' THEN NULL ELSE middlename END,''))
+                           FROM userprofile WHERE securityusersid in (SELECT caseassignment.toworkeridno 
+  FROM caseassignment
+  WHERE caseassignment.activeflag = 1
+  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                            FROM SERVICECASE SC 
+                            WHERE SC.servicecasenumber = TB_PAYMENT_DETAIL.case_id ::CHARACTER VARYING )
+  AND caseassignment.responsibilitytypekey::text = 'child'::text
+  AND (caseassignment.enddate IS NULL OR caseassignment.enddate > START_DATE  and caseassignment.enddate < END_DATE  )
+  ORDER BY
+  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                 FETCH FIRST 1 ROWS ONLY
+                              ) AND activeflag = 1),
+  (SELECT (lastname || ' ' || firstname || COALESCE(',' || CASE WHEN middlename = ' ' THEN NULL ELSE middlename END,''))
+                           FROM userprofile WHERE securityusersid in (SELECT caseassignment.toworkeridno 
+  FROM caseassignment
+  WHERE caseassignment.activeflag = 1
+  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                            FROM SERVICECASE SC 
+                            WHERE SC.servicecasenumber = TB_PAYMENT_DETAIL.case_id ::CHARACTER VARYING)
+  AND caseassignment.responsibilitytypekey::text = 'family'::text
+  AND (caseassignment.enddate IS NULL OR caseassignment.enddate > START_DATE  and caseassignment.enddate < END_DATE  )
+  ORDER BY
+  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                 FETCH FIRST 1 ROWS ONLY
+                              ) AND activeflag = 1)
+  ) AS CASE_WORKER,
+  COALESCE(
+  (SELECT phonenumber ||' '||coalesce('-'||phoneextension,'')
+                           FROM userprofilephonenumber WHERE securityusersid in (SELECT caseassignment.toworkeridno 
+  FROM caseassignment
+  WHERE caseassignment.activeflag = 1
+  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                            FROM SERVICECASE SC 
+                            WHERE SC.servicecasenumber = TB_PAYMENT_DETAIL.case_id ::CHARACTER VARYING)
+  AND caseassignment.responsibilitytypekey::text = 'child'::text
+  AND (caseassignment.enddate IS NULL OR caseassignment.enddate > START_DATE  and caseassignment.enddate < END_DATE )
+  ORDER BY
+  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                 FETCH FIRST 1 ROWS ONLY
+                              ) AND activeflag = 1),
+  (SELECT phonenumber ||' '||coalesce('-'||phoneextension,'')
+                           FROM userprofilephonenumber WHERE securityusersid in (SELECT caseassignment.toworkeridno 
+  FROM caseassignment
+  WHERE caseassignment.activeflag = 1
+  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                            FROM SERVICECASE SC 
+                            WHERE SC.servicecasenumber = TB_PAYMENT_DETAIL.case_id  ::CHARACTER VARYING )
+  AND caseassignment.responsibilitytypekey::text = 'family'::text
+  AND (caseassignment.enddate IS NULL OR caseassignment.enddate > START_DATE  and caseassignment.enddate < END_DATE )
+  ORDER BY
+  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                 FETCH FIRST 1 ROWS ONLY
+                              ) AND activeflag = 1)
+  ) AS CASE_WORKER_PHONE,
+  COALESCE(
+  (SELECT county
+                           FROM userprofileaddress WHERE securityusersid in (SELECT caseassignment.toworkeridno 
+  FROM caseassignment
+  WHERE caseassignment.activeflag = 1
+  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                            FROM SERVICECASE SC 
+                            WHERE SC.servicecasenumber = TB_PAYMENT_DETAIL.case_id ::CHARACTER VARYING)
+  AND caseassignment.responsibilitytypekey::text = 'child'::text
+  AND (caseassignment.enddate IS NULL OR caseassignment.enddate > START_DATE  and caseassignment.enddate < END_DATE )
+  ORDER BY
+  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                 FETCH FIRST 1 ROWS ONLY
+                              ) AND activeflag = 1),
+  (SELECT county
+                           FROM userprofileaddress WHERE securityusersid in (SELECT caseassignment.toworkeridno 
+  FROM caseassignment
+  WHERE caseassignment.activeflag = 1
+  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                            FROM SERVICECASE SC 
+                            WHERE SC.servicecasenumber = TB_PAYMENT_DETAIL.case_id  ::CHARACTER VARYING)
+  AND caseassignment.responsibilitytypekey::text = 'family'::text
+  AND (caseassignment.enddate IS NULL OR caseassignment.enddate > START_DATE  and caseassignment.enddate < END_DATE )
+  ORDER BY
+  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                 FETCH FIRST 1 ROWS ONLY
+                              ) AND activeflag = 1)
+  ) AS CASE_WORKER_COUNTY,
+  (COALESCE(TB_PROVIDER.PROVIDER_FIRST_NM, '')||' '||COALESCE(TB_PROVIDER.PROVIDER_MIDDLE_NM || ' ', '') || COALESCE(TB_PROVIDER.PROVIDER_LAST_NM, '')) AS PROVIDER_NAME,
+  F_ADDRESS('TB_PROVIDER_ADDRESSES', TB_PAYMENT_HEADER.PROVIDER_ID, '3356') AS PROVIDER_ADDRESS,
+  (SELECT description_tx
+  FROM TB_PICKLIST_VALUES
+  WHERE PICKLIST_TYPE_ID = 104 AND
+  RTRIM(LTRIM(PICKLIST_VALUE_CD)) = TB_PAYMENT_DETAIL.COUNTY_CD AND
+  --RTRIM(LTRIM(PICKLIST_VALUE_CD)) = 1448 AND
+  DELETE_SW <> 'Y' AND ACTIVE_SW = 'Y' FETCH FIRST 1 ROWS ONLY) AS LDSS_NAME,
+  (SELECT    
+          ( COALESCE(formattypekey,'')||' '||               
+           COALESCE(streetnumber, NULL)||' '||                  
+           COALESCE(boxnumber, NULL)||' '||                 
+           COALESCE(F_PDESC(predirtypekey,69),'')||' '||          
+           COALESCE(streetname,'')||' '||                       
+           COALESCE(F_PDESC(streetsuffixtypekey,212),'')||' '||     
+           COALESCE(F_PDESC(postdirtypekey,69) ,'')||' '||         
+           COALESCE(F_PDESC(unittypekey,250),'')||' '||          
+           COALESCE(unitnumbertx ,'')||' '||                  
+           COALESCE(cityname ,'')||' '||                         
+           COALESCE(adrcountytypekey ,'')||' '||                  
+           COALESCE(F_PDESC(statetypekey,211) ,'')||' '||        
+           COALESCE(zip5no, NULL)||' '||                       
+           COALESCE(zip4no, NULL)||' '||                    
+           COALESCE(direction,'')||' '||                   
+           COALESCE(foreignaddress,'')||' '||                 
+           COALESCE(foreignstate,'')||' '||                  
+           COALESCE(country ,'')||' '||                     
+           COALESCE(postalcode ,''))                
+      FROM LDSSLOCATIONS
+      WHERE LDSSLOCATIONS.countytypekey = TB_PAYMENT_DETAIL.COUNTY_CD FETCH FIRST 1 ROWS ONLY) AS LOCATION_ADDRESS,
+  (SELECT    
+          workphone ||' '||coalesce('-'||workextn,'')               
+      FROM LDSSLOCATIONS
+      WHERE LDSSLOCATIONS.countytypekey = TB_PAYMENT_DETAIL.COUNTY_CD FETCH FIRST 1 ROWS ONLY) AS LOCATION_PHONE_TX,    
+  TB_PAYMENT_DETAIL.COUNTY_CD AS COUNTY_CD
+FROM TB_PAYMENT_HEADER,
+   TB_PAYMENT_DETAIL,
+   TB_PAYMENT_STATUS,
+   TB_PROVIDER
+WHERE TB_PAYMENT_HEADER.PAYMENT_ID = TB_PAYMENT_DETAIL.PAYMENT_ID AND TB_PAYMENT_HEADER.MANUAL_SW='N' AND
+    TB_PAYMENT_HEADER.PAYMENT_ID = TB_PAYMENT_STATUS.PAYMENT_ID  AND
+     TB_PAYMENT_STATUS.PAYMENT_STATUS_CD = '1636' AND TB_PAYMENT_STATUS.DELETE_SW = 'N' AND
+     TB_PAYMENT_DETAIL.DELETE_SW = 'N' AND
+     TB_PAYMENT_HEADER.PAYMENT_TYPE_CD = '3294' AND TB_PAYMENT_HEADER.DELETE_SW = 'N' AND      
+     TB_PAYMENT_HEADER.PROVIDER_ID = TB_PROVIDER.PROVIDER_ID AND 
+     (SELECT PICKLIST_VALUE_CD 
+    FROM TB_PROVIDER_PICKLIST
+    WHERE PICKLIST_VALUE_CD IN ('1782','1783','1785','3049','3274','3302')
+    AND TB_PROVIDER_PICKLIST.PROVIDER_ID = TB_PROVIDER.PROVIDER_ID
+    AND DELETE_SW = 'N') IN ('1782','3302','3049','3274','1783') AND
+        DATE(TB_PAYMENT_STATUS.PAYMENT_STATUS_DT) >  START_DATE  and DATE(TB_PAYMENT_STATUS.PAYMENT_STATUS_DT) <  END_DATE 
+       and  TB_PAYMENT_DETAIL.FINAL_SERVICE_START_DT >= START_DATE 
+       and  TB_PAYMENT_DETAIL.FINAL_SERVICE_END_DT <= END_DATE 
+        AND 
+    COALESCE(TB_PAYMENT_DETAIL.linked_pymnt_hdr_id, 0) NOT IN
+  (SELECT tb_payment_header.payment_id
+    FROM tb_payment_status
+    JOIN tb_payment_header ON tb_payment_status.payment_id = tb_payment_header.payment_id
+    WHERE payment_status_cd='1639'
+    AND tb_payment_header.delete_Sw = 'N'   
+    AND tb_payment_status.delete_sw = 'N'
+    AND tb_payment_header.payment_type_cd NOT IN ('6')
+  ) 
+  order by TB_PAYMENT_DETAIL.FINAL_SERVICE_START_DT desc ); 
+  END;
+  $function$
+

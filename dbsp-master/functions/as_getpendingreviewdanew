@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION as_getpendingreviewdanew(userid character varying, page integer, pagelimit integer)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, srtype character varying, srsubtype character varying, assignedto character varying, displayname character varying, assignedon timestamp without time zone, duedate timestamp without time zone, focusperson character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE v_pageoffset int;
+v_pagenumber int;
+searchstring character varying;
+DECLARE totalcount integer;
+ 
+BEGIN
+ 
+v_pagenumber := (page-1)*   10;
+ 
+ 
+ RETURN QUERY
+    
+
+ SELECT count(1)over(), ISR.intakeserviceid, ISR.ServiceRequestNumber,ISRT.IntakeServReqTypeKey ,SRST.ClassKey,
+ TM.PositionCode AS  Assignedto,
+ ( SELECT   UP.DisplayName                                 
+     FROM TeamMember TM1
+     left join as_teammemberassignment TMA on TM.TeamMemberId = TMA.TeamMemberId
+   
+  left join UserProfile up on tma.SecurityUsersId = up.SecurityUsersId
+     where tm1.PositionCode =TM.PositionCode
+           and tm.ActiveFlag = 1  limit 1  )     AssignedName,
+  ACT.AssignedOn,
+  ACT.duedate ,
+      cast( P.lastname|| ',' || P.firstname  as  character varying) 
+  FROM IntakeServiceRequest       AS ISR            
+    JOIN  IntakeSerReqStatusType   AS ISRS  ON  ISR.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId    
+    JOIN  IntakeServiceRequestType   AS ISRT  ON  ISR.IntakeServReqTypeId  = ISRT.IntakeServReqTypeId                                                            
+    JOIN  ServiceRequestSubType   AS SRST  ON  ISR.IntakeServiceRequestClassId = SRST.ServiceRequestSubTypeId                                                                                                   
+    JOIN  AreaTeamMemberServiceRequest  AS ATSR  ON ATSR.IntakeServiceId   = ISR.IntakeServiceId  AND ATSR.ActiveFlag = 1                                                                  
+    JOIN  TeamMember      AS TM  ON ATSR.TeamMemberId   = TM.TeamMemberId       
+    JOIN  servicerequesttypeconfig  as SRTYC   
+     on  SRTYC.intakeservreqtypeid =  ISR.intakeservreqtypeid                                                             
+          and SRTYC.servicerequestsubtypeid  = ISR.intakeservicerequestclassid 
+           and SRTYC.activeflag =1
+    JOIN (Select distinct objectid from investigationmapping as IVM
+          where IVM.activeflag =1 and IVM.isreviewactivity = true)  as IVM on IVM.objectid =SRTYC.servicerequesttypeconfigid 
+     
+    LEFT JOIN IntakeServiceRequestActor AS ISRA  ON isr.IntakeServiceId = isra.IntakeServiceId
+  and isra.IntakeServiceRequestPersonTypeKey = 'RA'
+ LEFT JOIN Actor AS A on ISRA.ActorId = A.ActorId
+    LEFT JOIN Person AS P on A.PersonId = p.PersonId 
+     AND P.activeflag =1
+    JOIN Investigation INV on ISR.IntakeServiceId = INV.IntakeServiceId
+     JOIN (SELECT ACT.ObjectId, max(at.DueDate) as duedate ,max(at.AssignedOn) as AssignedOn from  Activity ACT 
+    JOIN ammapping amp on amp.ammappingid = ACT.ammappingid 
+    and amp.isreviewactivity  = true and amp.activeflag =1 
+     JOIN  ActivityTask AT on ACT.ActivityId = AT.ActivityId
+  AND  ActivityTaskStatusTypeKey = 'InvOpen' 
+        and at.activeflag =1 
+ JOIN TeamMember TMS on AT.AssignedTo = TMS.LoadNumber
+    and TMS.activeflag =1 
+    JOIN as_teammemberassignment TMAS on TMS.TeamMemberId = TMAS.TeamMemberId
+  and TMAS.ActiveFlag = 1
+  WHERE ACT.activeflag =1   and TMAS.SecurityUsersId  = userid
+   GROUP   by ACT.ObjectId) as ACT  ON ACT.ObjectId = INV.investigationid
+  WHERE                      
+   ISRS.IntakeSerReqStatusTypeKey <> 'Cancelled'
+ 
+    order by ACT.DueDate desc  LIMIT 10  OFFSET v_pagenumber;
+     
+
+END; 
+
+$function$
+

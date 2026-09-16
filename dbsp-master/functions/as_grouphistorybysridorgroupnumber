@@ -1,0 +1,118 @@
+CREATE OR REPLACE FUNCTION as_grouphistorybysridorgroupnumber(p_isid character varying, p_groupnumber character varying, pagenumber integer, pagesize integer)
+ RETURNS TABLE(groupdetlid character varying, actiondate timestamp without time zone, action text, groupnumber character varying, typedescription character varying, servicerequestnumber character varying, displayname character varying, roletypekey character varying, positioncode character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+DECLARE
+ v_liPageNumber  INT;                              
+ v_liPageSize   INT;
+ v_pageoffset INT;
+ v_pagenumber INT;   
+BEGIN
+----*****
+--DECLARE @iSID VARCHAR(50)
+--SET @iSID = NULL --'336041E1-9F24-48BC-9324-389CC0BC4755'
+--DECLARE @GroupNumber VARCHAR(50)
+--SET @GroupNumber = 'G201305800114'
+----*****
+
+  v_liPageNumber=pagenumber;
+  v_liPageSize= pagesize;
+
+
+  v_pagenumber := v_liPageNumber-1;
+  v_pageoffset = v_pagenumber * v_liPageSize;
+
+CREATE TEMPORARY TABLE GroupId (GroupId uuid);
+
+INSERT INTO GroupId (GroupId)
+SELECT DISTINCT(GroupId)
+from IntakeServiceRequestGroupDetails
+where IntakeServiceId = p_iSID ::uuid;
+
+INSERT INTO GroupId (GroupId)
+SELECT DISTINCT(GroupId)
+from IntakeServiceRequestGroup isg
+where isg.GroupNumber = p_GroupNumber;
+
+CREATE TEMPORARY TABLE FullResults (
+GroupDetlId    VARCHAR(50),    
+ActionDate    TIMESTAMP(3), 
+Action     VARCHAR(50),
+GroupNumber    VARCHAR(50),
+TypeDescription   VARCHAR(50),
+ServiceRequestNumber VARCHAR(50),
+DisplayName    VARCHAR(50),
+RoleTypeKey    VARCHAR(50),
+PositionCode   VARCHAR(50)
+      );
+
+INSERT INTO  FullResults(
+GroupDetlId,
+ActionDate,
+Action,
+GroupNumber,
+TypeDescription,
+ServiceRequestNumber,
+DisplayName,
+RoleTypeKey,
+PositionCode
+     )
+SELECT ISRGD.GroupDetlId, ISRGD.insertedon, 'grouped', ISRG.GroupNumber, ISRGRT.TypeDescription, ISR.ServiceRequestNumber, UP.DisplayName, TM.RoleTypeKey, TM.PositionCode
+FROM GroupId GR
+JOIN IntakeServiceRequestGroupDetails ISRGD ON GR.GroupId = ISRGD.GroupId
+JOIN IntakeServiceRequest ISR on ISRGD.IntakeServiceId = ISR.IntakeServiceId
+JOIN IntakeServiceRequestGroupDetails ISRGD2 ON ISRGD.GroupId = ISRGD2.GroupId
+JOIN IntakeServiceRequestGroup ISRG ON ISRGD.GroupId = ISRG.GroupId
+JOIN IntakeServiceRequestGroupReasonType ISRGRT ON ISRG.GroupReasonTypeKey = ISRGRT.GroupReasonTypeKey
+LEFT JOIN UserProfile UP on ISRGD.insertedby = UP.SecurityUsersId
+LEFT JOIN as_teammemberassignment TMA on UP.SecurityUsersId = TMA.SecurityUsersId and ISRGD.insertedon between TMA.EffectiveDate and COALESCE(TMA.ExpirationDate, NOW())
+LEFT JOIN TeamMember TM ON TMA.TeamMemberId = TM.TeamMemberId
+
+UNION
+
+SELECT ISRGD.GroupDetlId, ISRGD.ExpirationDate, 'ungrouped', ISRG.GroupNumber, ISRGRT.TypeDescription, ISR.ServiceRequestNumber, UP.DisplayName, TM.RoleTypeKey, TM.PositionCode
+FROM GroupId GR
+JOIN IntakeServiceRequestGroupDetails ISRGD ON GR.GroupId = ISRGD.GroupId
+JOIN IntakeServiceRequest ISR on ISRGD.IntakeServiceId = ISR.IntakeServiceId
+JOIN IntakeServiceRequestGroupDetails ISRGD2 ON ISRGD.GroupId = ISRGD2.GroupId
+JOIN IntakeServiceRequestGroup ISRG ON ISRGD.GroupId = ISRG.GroupId
+JOIN IntakeServiceRequestGroupReasonType ISRGRT ON ISRG.GroupReasonTypeKey = ISRGRT.GroupReasonTypeKey
+LEFT JOIN UserProfile UP on ISRGD.insertedby = UP.SecurityUsersId
+LEFT JOIN as_teammemberassignment TMA on UP.SecurityUsersId = TMA.SecurityUsersId and ISRGD.updatedon between TMA.EffectiveDate and COALESCE(TMA.ExpirationDate, NOW())
+LEFT JOIN TeamMember TM ON TMA.TeamMemberId = TM.TeamMemberId
+WHERE ISRGD.ActiveFlag = 0;
+--
+UPDATE FullResults
+SET Action = 'Initial'
+FROM FullResults FR where 
+FR.Action <> 'ungrouped' 
+and FR.GroupDetlId in(
+                               SELECT INIT.GroupDetlId                                  
+     FROM FullResults  AS INIT                            
+     WHERE  INIT.GroupNumber     = FR.GroupNumber
+     and INIT.ServiceRequestNumber = FR.ServiceRequestNumber                                    
+     ORDER BY      init.ActionDate limit 1
+                               );  
+RETURN QUERY
+select 
+fr.GroupDetlId,
+fr.ActionDate,
+CASE WHEN fr.Action = 'Initial' THEN 'G'
+  WHEN fr.Action = 'ungrouped' THEN 'U'
+  WHEN fr.Action = 'grouped' THEN 'R'
+  END AS Action,
+fr.GroupNumber,
+fr.TypeDescription,
+fr.ServiceRequestNumber,
+fr.DisplayName,
+fr.RoleTypeKey,
+fr.PositionCode
+FROM FullResults fr
+ORDER BY GroupNumber DESC, ActionDate DESC LIMIT v_liPageSize OFFSET v_pageoffset;
+
+DROP TABLE GroupId;
+DROP TABLE FullResults;
+
+END;
+$function$
+

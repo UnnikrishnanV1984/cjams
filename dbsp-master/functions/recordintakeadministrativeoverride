@@ -1,0 +1,153 @@
+CREATE OR REPLACE FUNCTION recordintakeadministrativeoverride(request jsonb)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                                          
+ DECLARE                                                                                                                                                                                                                                     
+ v_intakeserviceid uuid;                                                                                                                                                                                                                     
+ v_servicecaseid uuid;
+ v_intakesnapshotid character varying;
+ l_status text;
+ v_fromsecurityusersid uuid;
+ v_intakenumber character varying;
+ v_msg character varying;
+ v_cpsstatus character varying;
+ v_intakeapproveddate timestamp;
+ v_notifystatus character varying;
+ v_reviewstatus jsonb;
+ v_tonotification character varying;
+ v_fromnotification character varying;
+                                                                                                                                                                                                                                                                         
+ begin
+  v_fromsecurityusersid := request ->> 'securityusersid';
+  v_intakenumber := request ->> 'intakeNumber';
+  
+ SELECT isr.intakeserviceid, isr.insertedon, isr.servicecaseid,
+ ( CASE isr.activeflag WHEN 2 THEN 'Closed At Intake' ELSE irst.intakeserreqstatustypekey END )
+ into v_intakeserviceid, v_intakeapproveddate, v_servicecaseid, v_cpsstatus
+ from intakeservicerequest isr
+ JOIN  intakeserreqstatustype  irst  on  irst.intakeserreqstatustypeid  =  isr.intakeserreqstatustypeid
+ where isr.intakenumber = v_intakenumber and isr.activeflag in (1, 2) order by isr.updatedon limit 1;
+
+ IF v_cpsstatus='Closed' THEN  
+  SELECT CASE ((jsondata->>'disposition')::json #>>'{0}')::json->>'DADisposition' 
+   WHEN 'screenout' THEN 'Closed At Intake'
+   WHEN 'OvrScrnout' THEN 'Closed At Intake'
+   WHEN 'ScreenOUT' THEN 'Closed At Intake'
+   ELSE  v_cpsstatus
+   END INTO v_cpsstatus
+  FROM intakesnapshot i WHERE intakenumber = v_intakenumber AND activeflag = 1 ORDER BY insertedon LIMIT 1;
+        
+  SELECT CASE ((jsondata->>'disposition')::json #>>'{0}')::json->>'supDisposition' 
+   WHEN 'screenout' THEN 'Closed At Intake'
+   WHEN 'OvrScrnout' THEN 'Closed At Intake'
+   WHEN 'ScreenOUT' THEN 'Closed At Intake'
+   ELSE  v_cpsstatus
+   END INTO v_cpsstatus
+  FROM intakesnapshot i WHERE intakenumber = v_intakenumber AND activeflag = 1 ORDER BY insertedon LIMIT 1;    
+ END IF;
+ 
+ if (v_cpsstatus='Closed' or v_cpsstatus='Completed') then 
+  l_status := 'invalid-cc';
+ elsif(v_servicecaseid is null) then
+  if(v_intakeserviceid is not null) then 
+   select intakesnapshotid into v_intakesnapshotid from intakesnapshot where intakeserviceid=v_intakeserviceid and activeflag = 1 order by updatedon limit 1;
+  
+   update intakesnapshot
+   set activeflag = 0,
+   updatedon = now(),
+   updatedby = v_fromsecurityusersid
+   where intakesnapshotid::character varying = v_intakesnapshotid;
+
+   update administrativeoverrides
+   set activeflag = 0,
+   updatedon = now(),
+   updatedby = v_fromsecurityusersid
+   where intakeserviceid = v_intakeserviceid;
+  
+   INSERT INTO administrativeoverrides (approvalid,entitytypekey,entityid,referralsnapshotid,overridereasontypekey,overridetypekey,overridedate,overridetimestamp,overridestaffid,"comments",insertedon,insertedby,updatedon,updatedby,activeflag,intakeserviceid,overridekeyid,intakeapproveddate) VALUES 
+   ('00000000-0000-0000-0000-000000000000','2530',v_intakenumber,v_intakesnapshotid,request ->> 'overrideReason','2530',(request ->> 'overrideDate')::timestamp,(request ->> 'overrideDate')::timestamp,v_fromsecurityusersid,request ->> 'overrideComment',now(),v_fromsecurityusersid,now(),v_fromsecurityusersid,1,v_intakeserviceid,1,v_intakeapproveddate);
+  
+   if((select count(*) from administrativeoverrides where entityid = v_intakenumber and activeflag=1) = 0) then
+    l_status := 'failure';
+   else
+    update intakeservicerequestsdm
+    set activeflag = 0,
+    updatedon = now(),
+    updatedby = v_fromsecurityusersid
+    where intakeserviceid = v_intakeserviceid;
+   
+    update intakeservicerequest
+    set activeflag = 0,
+    updatedon = now(),
+    updatedby = v_fromsecurityusersid    
+    where intakenumber = v_intakenumber;
+
+    update caseassignment 
+    set activeflag = 0, 
+    updatedon = now(), 
+    updatedby = v_fromsecurityusersid 
+    where objectid = v_intakeserviceid and activeflag = 1;
+
+   
+    select fromsecurityusersid into v_tonotification
+    from routing
+    where objectid = v_intakenumber ORDER BY insertedon LIMIT 1;
+    
+    update routing
+    set activeflag = 0,
+    eventcode = 'XXXX',
+    updatedon = now(),
+    updatedby = v_fromsecurityusersid
+    where objectid = v_intakenumber;
+   
+    update intakedastatus
+    set status = null,
+    updatedon = now(),
+    updatedby = v_fromsecurityusersid
+    where intakenumber = v_intakenumber and activeflag=1;
+       
+    select 
+    jsonb (jsondata->'reviewstatus')- 'ismanualrouting'-'assignsecurityuserid'-'status'-'appevent' || jsonb '{"status": "","appevent": "DRAFT"}'
+    into v_reviewstatus from intakedastaging where intakenumber = v_intakenumber and activeflag=1;
+  
+    update intakedastaging
+    set jsondata = (select jsonb (jsondata) - 'reviewstatus' || jsonb(json_build_object ('reviewstatus',v_reviewstatus)) from intakedastaging where intakenumber = v_intakenumber and activeflag = 1 limit 1),
+    status = 'pending',
+    updatedon = now(),
+    updatedby = v_fromsecurityusersid
+    where intakenumber = v_intakenumber and activeflag = 1;
+    
+    update intakedastaging
+    set jsondata =  (select jsonb (jsondata) - 'disposition' || jsonb(json_build_object ('disposition',null)) from intakedastaging where intakenumber = v_intakenumber and activeflag = 1 limit 1),
+    status = 'pending',
+    updatedon = now(), ispreintake = false,
+    updatedby = v_fromsecurityusersid
+    where intakenumber = v_intakenumber and activeflag = 1;
+
+    update personprogramarea
+    set activeflag = 0,
+    updatedon = now(),
+    updatedby = v_fromsecurityusersid
+    where objectid = v_intakeserviceid:: character varying;
+     
+    select fullname || ' overrode the decision on ' || v_intakenumber || ' and sent back the intake' into v_msg from userprofile where securityusersid = v_fromsecurityusersid::character varying;
+    
+    select send_notification into v_notifystatus from send_notification(
+     v_tonotification, v_fromsecurityusersid::character varying, v_tonotification, 'System', 'Normal', v_msg, v_msg, v_intakenumber
+     );
+     
+    l_status := 'success';
+   end if;
+  else 
+   l_status := 'failure';
+  end if;
+ else
+  l_status := 'invalid-sc';
+ end if;                                                                                                                                                                                                                                                              
+ RETURN l_Status;                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                         
+ END;                                                                                                                                                                                                                                                                    
+
+$function$
+

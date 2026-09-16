@@ -1,0 +1,3 @@
+delete from routing where objectid = '1750565'and routingstatustypeid = '62' and activeflag = '1' and routingid = '8e6a3fe4-c4d7-4bbc-b66c-8b97174ec8fb';
+delete from routing where objectid = '1750565'and routingstatustypeid = '62' and activeflag = '1' and routingid = '95596be1-6e0e-4244-b9ff-7c6d87962ea5';
+delete from routing where objectid = '1750565'and routingstatustypeid = '39' and activeflag = '1' and routingid = 'a84d63c4-b4e6-4a05-a1d1-5ee604ccf95b';

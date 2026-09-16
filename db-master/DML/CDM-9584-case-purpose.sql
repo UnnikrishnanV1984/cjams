@@ -1,0 +1,1 @@
+update intakeservicerequest set intakeservreqtypeid = '247a8b26-cdee-4ce8-b36e-b37e49fd0103', updatedby = 'CDM-9584'  where intakenumber = 'I202100421765';

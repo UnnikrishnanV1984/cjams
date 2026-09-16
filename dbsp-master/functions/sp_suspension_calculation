@@ -1,0 +1,159 @@
+CREATE OR REPLACE FUNCTION sp_suspension_calculation(as_type_flag character, al_key_id bigint, ad_subsidy_start_dt date, ad_subsidy_end_dt date, ad_service_month_start_dt date, ad_service_month_end_dt date, ad_rate_start_dt date, ad_rate_end_dt date, al_unit_no integer, OUT al_suspension_days integer)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$      \r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author      :  Vineet Tirodkar\r
+-- Date        :  09/10/2015\r
+-- Description :  PRJ-05327 - MD CHESSIE Fiscal Phases 2 \r
+--      To calculate No of days in suspension during specified period\r
+\r
+-- Arguments   : 1) IN as_type_flag CHAR(1) - 'A' for Adoption Subsidy and 'G' for GAP \r
+--     2) IN al_key_id BIGINT - ADOPTION_ID for Adoption Subsidy and GUARDIAN_SUBSIDY_ID for GAP\r
+--     3) IN ad_subsidy_start_dt DATE  \r
+--     4) IN ad_subsidy_end_dt DATE\r
+--     5) IN ad_service_month_start_dt DATE\r
+--      6) IN ad_service_month_end_dt DATE\r
+--     5) IN ad_rate_start_dt DATE\r
+--     6) IN ad_rate_end_dt DATE\r
+--     7) OUT al_suspension_days INTEGER \r
+-- Revision(s)\r
+-- 02/24/2016 Vineet Tirodkar - PRJ-05947 (IDEA-09155) Modify GAP Over Under Process\r
+-- Modification to consider the System Generated Suspensions in calculating no of days in suspension for GAP\r
+-- 06/02/2020 Vineet Tirodkar - Suspension calculation changes for subsidy final month payment (Subtract 1 extra night) \r
+-- 10/05/2020 Vineet Tirodkar - Fix to prevent payment batch failure for multiple adoptioncase records with same alternateid (Adoption_id)\r
+-- 04/13/2021 Vineet Tirodkar - Modifications to exclude Suspension with Start date same as End date (CDM-12062)\r
+------------------------------------------------------------------------\r
+DECLARE vl_suspesion_cnt INTEGER;\r
+DECLARE vd_calc_dt   DATE;\r
+DECLARE vl_ageout_unit_no  INTEGER;\r
+ \r
+BEGIN\r
+ IF ad_rate_end_dt is NULL OR ad_rate_end_dt > ad_service_month_end_dt THEN\r
+  ad_rate_end_dt := ad_service_month_end_dt;\r
+ END IF;\r
+\r
+ al_suspension_days := 0 ; -- INITIAL VALUE\r
+ vd_calc_dt := ad_rate_start_dt;\r
+ \r
+ CASE as_type_flag\r
+ WHEN 'A' THEN  -- Adoption Subsidy\r
+  -- Verify if Adoption subsidy final month payment\r
+  SELECT sp_subsidy_ageout_calculation\r
+   INTO vl_ageout_unit_no\r
+  FROM sp_subsidy_ageout_calculation('A', al_key_id::bigint, ad_rate_start_dt::date);\r
+  \r
+  IF vl_ageout_unit_no is null THEN\r
+   vl_ageout_unit_no := 0;\r
+  END IF;\r
+ \r
+  --WHILE (al_unit_no > 0 ) \r
+  loop EXIT WHEN al_unit_no <= 0::bigint ;\r
+   --DO\r
+   SELECT COUNT(*)\r
+    INTO vl_suspesion_cnt\r
+   -- FROM tb_ADOPTION_PAYMENT_SUSPENSION\r
+   FROM adoptioncasesuspension\r
+   -- WHERE ADOPTION_ID = al_key_id\r
+   WHERE adoptioncaseid = ( select adoptioncaseid \r
+           from adoptioncase \r
+          where alternateid = al_key_id\r
+           and activeflag = 1\r
+          order by insertedon desc\r
+          limit 1\r
+          -- select adoptioncaseid from adoptioncase where alternateid = al_key_id\r
+         )\r
+    AND suspensionbegindate <> coalesce(suspensionenddate, current_date + interval '1 day' ) -- CDM-12062      \r
+    AND (\r
+       ( suspensionenddate IS NULL AND suspensionbegindate::date <= vd_calc_dt  )\r
+        OR\r
+       ( suspensionenddate IS NOT NULL \r
+      AND vd_calc_dt BETWEEN suspensionbegindate::date AND suspensionenddate::date\r
+        )\r
+     )  \r
+    AND vd_calc_dt <> COALESCE(suspensionenddate, ( ad_rate_end_dt + interval '1 day') )\r
+    -- AND DELETE_SW = 'N'\r
+    AND activeflag = 1\r
+    AND COALESCE(approvalstatustypekey, '') = '3047';\r
+ \r
+   IF vl_suspesion_cnt > 0 THEN\r
+    al_suspension_days := al_suspension_days + 1;\r
+   END IF; \r
+\r
+   vd_calc_dt := vd_calc_dt + interval '1 day';\r
+  \r
+   -- IF ad_subsidy_end_dt::date = vd_calc_dt THEN\r
+   IF ( ( ad_subsidy_end_dt::date = vd_calc_dt AND vl_ageout_unit_no = 0 )\r
+     OR\r
+     ( ad_subsidy_end_dt::date + 1 = vd_calc_dt )\r
+    ) THEN\r
+    al_unit_no := -1; -- Exit\r
+   ELSE\r
+    al_unit_no := al_unit_no - 1;\r
+   END IF;\r
+  END loop;\r
+  --END WHILE;\r
+   \r
+ WHEN 'G' THEN  -- GAP\r
+  -- 33424 - Child entered Out of Home Placement (system generated)\r
+  -- 33427 - Death of child (case to be closed immediately)\r
+  \r
+  -- Verify if GAP final month payment\r
+  SELECT sp_subsidy_ageout_calculation\r
+   INTO vl_ageout_unit_no\r
+  FROM sp_subsidy_ageout_calculation('G', al_key_id::bigint, ad_rate_start_dt::date);\r
+  \r
+  IF vl_ageout_unit_no is null THEN\r
+   vl_ageout_unit_no := 0;\r
+  END IF;\r
+  \r
+  --WHILE (al_unit_no > 0 ) \r
+  --DO\r
+  loop EXIT WHEN al_unit_no <= 0::bigint ;\r
+   SELECT COUNT(*)\r
+    INTO vl_suspesion_cnt\r
+   -- FROM tb_GUARDIAN_SUBSIDY_SUSPENSION\r
+   FROM gapsuspension\r
+   WHERE gapid = ( select gapid \r
+        from tb_guardian_subsidy \r
+       where guardian_subsidy_id = al_key_id\r
+        and delete_sw = 'N'\r
+       order by create_ts desc\r
+       limit 1\r
+       -- select gapid from tb_guardian_subsidy where guardian_subsidy_id = al_key_id\r
+         )\r
+    AND startdate <> coalesce(enddate,current_date + interval '1 day' ) -- CDM-12062 \r
+    AND (\r
+       ( enddate IS NULL AND startdate::date <= vd_calc_dt  )\r
+        OR\r
+       ( enddate IS NOT NULL \r
+      AND vd_calc_dt BETWEEN startdate::date AND enddate::date\r
+        )\r
+     )  \r
+    AND vd_calc_dt <> COALESCE(enddate, ( ad_rate_end_dt + interval '1 day') )\r
+    -- AND DELETE_SW = 'N'\r
+    AND activeflag = 1\r
+    AND ( COALESCE(approvalstatustypekey, '') = '3047'\r
+      OR\r
+       suspensionreasontypekey IN ('COHP','DCHD','33427','33424') \r
+     );\r
+  \r
+   IF vl_suspesion_cnt > 0 THEN\r
+    al_suspension_days := al_suspension_days + 1;\r
+   END IF; \r
+\r
+   vd_calc_dt = vd_calc_dt + interval '1 day';\r
+   \r
+   IF ad_subsidy_end_dt::date = vd_calc_dt THEN\r
+    al_unit_no = -1; -- Exit\r
+   ELSE\r
+    al_unit_no := al_unit_no - 1;\r
+   END IF;\r
+  END loop;\r
+  --END WHILE;\r
+END CASE;\r
+\r
+END;\r
+$function$
+

@@ -1,0 +1,84 @@
+CREATE OR REPLACE FUNCTION as_closecommunitysupervision(v_intakeserviceid uuid, vintakeserreqstatustypeid uuid, vservicerequesttypeconfigdispostionid uuid)
+ RETURNS TABLE(placementstatus json, courtactionstatus json, restituionstatus json, alertstatus json, isstatusclosed boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+placementstatus json;
+courtactionstatus json;
+restituionstatus json;
+isstatusclosed boolean;
+ctscount bigint;
+vintakeserreqstatustypekey character varying;
+vdispositioncode character varying;
+vintakenumber character varying;
+vcourtordertypekey text[];
+alertstatus json;
+
+begin
+ 
+ select intakenumber into vintakenumber from intakeservicerequest where intakeserviceid = v_intakeserviceid and activeflag = 1;
+ 
+ select intakeserreqstatustypekey into vintakeserreqstatustypekey from intakeserreqstatustype where intakeserreqstatustypeid = vintakeserreqstatustypeid;
+
+ select dispositioncode into vdispositioncode from servicerequesttypeconfigdispositioncode where servicerequesttypeconfigiddispostionid = vservicerequesttypeconfigdispostionid;
+
+ select count(*) into ctscount from focuspersoncasestatus where focuspersonstatustypekey = 'CTS' and status = 'Open' and intakeserviceid = v_intakeserviceid;
+ 
+IF(ctscount > 0 and vintakeserreqstatustypekey = 'Review' and vdispositioncode = 'Closed') then
+ 
+ select json_agg(a) as placementstatus into placementstatus from
+ (select pl.placementid,p.providername,(case when pl.enddatetime is null then 'Open' else '' end) as placementstatus,pl.statustypekey 
+ from placement pl
+ join provider p on p.providerid = pl.providerid and p.activeflag = 1
+ where pl.activeflag = 1 and pl.enddatetime is null and pl.intakeserviceid = v_intakeserviceid) as a;
+ 
+ select json_agg(b) as courtactionstatus into courtactionstatus from
+ (select isrh.intakeservicerequestcourthearingid,isrh.courthearingstatustypekey,isrh.hearingtypekey,isrh.hearingdatetime,
+ isra.terminationdatetime,isra.conditiontypecompletiondatetime as completiondate
+ from intakeservicerequestcourthearing isrh
+ join intakeservicerequestcourtaction isra on isra.intakeservicerequestcourthearingid = isrh.intakeservicerequestcourthearingid
+ where isrh.activeflag = 1 and  isra.activeflag = 1 and isrh.courthearingstatustypekey = 'Pending' and isrh.intakenumber = vintakenumber) as b;
+ 
+ select array_agg(isrcc.courtordertypekey) into vcourtordertypekey
+ from Intakeservicerequestcourtordertypeconfig isrcc
+ join intakeservicerequestcourtaction isrca on isrca.intakeservicerequestcourtactionid = isrcc.intakeservicerequestcourtactionid and isrca.activeflag = 1
+ join courtactionallegationconfig caac on caac.courtactionallegationconfigid = isrcc.courtactionallegationconfigid and caac.activeflag = 1
+ where caac.adjudicateddecisiontypekey = 'S' and isrca.intakenumber = vintakenumber;
+ 
+ if('TROJ' != any(vcourtordertypekey )) then
+ 
+  select json_agg(c) as restituionstatus into restituionstatus from (
+  select intakeserreqrestitutionid,restitutiontype,restitutionno,status from intakeserreqrestitution 
+  where approvestatus = 'RSTAPR' and activeflag = 1 and status = 'Active' and intakeserviceid = v_intakeserviceid) c;
+ 
+ end if;
+ 
+ select json_agg(d) as alertstatus into alertstatus from
+ (select distinct pa.personid,pa.alerttype,pa.status,pa.notes from personalert pa 
+ join personalerttype pat on pat.personalerttypekey = pa.alerttype
+ join intakeservicerequestactor isra on isra.personid = pa.personid
+ where pat.manualdeleteflag is null and pa.status = 'Active' 
+ and pa.enddatetime is null and pa.activeflag = 1
+ and isra.intakeserviceid = v_intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' )  as d;
+ 
+ if(placementstatus is null and courtactionstatus is null and restituionstatus is null and alertstatus is null) then
+  isstatusclosed := true;
+ else 
+  isstatusclosed := false;
+ end if;
+ 
+else 
+
+ isstatusclosed := true;
+
+end if;
+
+return query
+
+ select placementstatus,courtactionstatus,restituionstatus,alertstatus,isstatusclosed;
+ 
+end;
+$function$
+

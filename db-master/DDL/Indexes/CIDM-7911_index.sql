@@ -1,0 +1,14 @@
+--INDEX (CIDM-7911)
+create index Xie1_tb_PAYMENT_HEADER on tb_PAYMENT_HEADER(PAYMENT_START_DT,PAYMENT_END_DT,PROVIDER_ID,PAYMENT_TYPE_CD,DELETE_SW);
+create index Xie1_tb_provider_details_checklist on tb_provider_details_checklist(PROVIDER_ID,delete_sw);
+create index Xie1_tb_ADOPTION_PAYMENT_SUSPENSION on tb_ADOPTION_PAYMENT_SUSPENSION(adoption_id,DELETE_SW);
+create index Xie1_tb_GUARDIAN_SUBSIDY_SUSPENSION on tb_GUARDIAN_SUBSIDY_SUSPENSION(GUARDIAN_SUBSIDY_ID,DELETE_SW);
+create index Xie1_tb_placement_void_checklist on tb_placement_void_checklist(placement_id,DELETE_SW);
+create index Xie1_gapratesrevision on gapratesrevision(guardiansubsidyid,ratestartdate,rateenddate,activeflag);
+create index Xie2_gapratesrevision on gapratesrevision(gaprateid,activeflag);
+create index Xie1_adoptioncaserevision on adoptioncaserevision(adoptionagreementrateid,activeflag);
+create index Xie2_adoptioncaserevision on adoptioncaserevision(adoptionagreementid,startdate,enddate,activeflag);
+create index Xie1_adoptioncaseagreement on adoptioncaseagreement(alternateid,activeflag);
+create index Xie1_adoptioncasesuspension on adoptioncasesuspension(adoptioncaseid,activeflag);
+create index Xie1_adoptioncase on adoptioncase(alternateid,activeflag);
+create index Xie1_tb_FISCAL_AUDIT_TRAIL on tb_FISCAL_AUDIT_TRAIL(EVENT_ID,EVENT_TYPE_CD,delete_sw);

@@ -1,0 +1,255 @@
+DROP  FUNCTION IF EXISTS cjams.getldsscasetransferlist(v_securityuserid character varying, v_servicecasenumber character varying, v_teamid uuid, v_toworkerid character varying, v_countycode character varying, v_startdate date, v_enddate date, v_status character varying, v_localdeptid uuid, pageno integer, pagesize integer, v_casetype character varying, v_sortcol character varying, v_sortorder character varying);
+CREATE OR REPLACE FUNCTION cjams.getldsscasetransferlist(v_securityuserid character varying, v_servicecasenumber character varying, v_teamid uuid, v_toworkerid character varying, v_countycode character varying, v_startdate date, v_enddate date, v_status character varying, v_localdeptid uuid, pageno integer, pagesize integer, v_casetype character varying, v_sortcol character varying, v_sortorder character varying)
+ RETURNS TABLE(totalcount bigint, responsibilitytypekey character varying, caseassignmentid uuid, casetype character varying, countyname character varying, teamname character varying, startdate timestamp without time zone, enddate timestamp without time zone, statustypekey character varying, remarks character varying, toteamid uuid, toworkeridno character varying, servicecasenumber character varying, servicecaseid uuid, assignedby character varying, assignedto character varying, cjamspid character varying, localdepartment character varying, actiontype character varying, personname character varying, program json, subprogram json, fromlocaldepartment character varying, legalguardian json)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE l_toldssid  uuid;
+BEGIN
+
+	--GET AUTHENTICATED USER LDSS
+	SELECT t.countyid::uuid INTO l_toldssid FROM teammemberassignment tma, teammember tm, team t WHERE tm.teammemberid = tma.teammemberid AND tm.teamid = t.teamid
+	AND tma.securityusersid = v_securityuserid;
+	
+	RETURN QUERY 
+   SELECT COUNT(1) over(),*
+	, (select getcasepersonname as legalguardian from getcasepersonname (CA.casetype,CA.servicecaseid::character varying))::json
+   FROM (
+	SELECT 
+			
+			CA.responsibilitytypekey,
+			CA.caseassignmentid,
+			CA.objecttypekey as casetype,
+			c.countyname ::character varying countyname,
+			T.teamname,
+			CA.startdate,
+			CA.enddate,
+			case when COALESCE(tma.issupervisor,0) = 1 then 'Pending' when ca.enddate is null then 'Open' else 'Closed' end :: character varying as statustypekey,
+			--CA.statustypekey,
+			CA.remarks,
+			CA.toteamid,
+			CA.toworkeridno,
+			COALESCE(SC.servicecasenumber) servicecasenumber ,
+			COALESCE(SC.servicecaseid)servicecaseid,
+			(SELECT CAST(UP2.firstname || ' ' || UP2.lastname AS character varying) 
+			FROM  userprofile UP2  
+			WHERE UP2.securityusersid = CA.fromworkeridno AND UP2.activeflag =1 LIMIT 1) assignedby,		
+			(SELECT	CAST(UP.firstname || ' ' || UP.lastname AS character varying)  
+			FROM   userprofile UP 
+			WHERE UP.securityusersid = CA.toworkeridno AND UP.activeflag =1 LIMIT 1) assignedto,
+			(SELECT UP.cjamspid FROM   userprofile UP WHERE UP.securityusersid = CA.toworkeridno AND UP.activeflag =1 LIMIT 1)::character varying  AS cjamspid ,		  
+			c.countyname  ::character varying parentteamname,
+			--T.teamname ::character varying parentteamname,
+			SC.actiontype ::character varying,
+			(case
+				v_sortcol
+				when 'legalguardian' then  (SELECT    concat_ws (' ',coalesce(p.firstname,''),coalesce(p.middlename,''),coalesce(p.lastname,''),coalesce(p.suffix,'') ):: character varying as personname
+				FROM  intakeservicerequestactor ISRA  
+					INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1  
+				WHERE	ISRA.activeflag =1  
+				AND		ISRA.intakeservicerequestpersontypekey = 'LG'  
+				AND		CASE lower(CA.objecttypekey) WHEN 'servicecase'  THEN  ISRA.servicecaseid  = objectid ELSE ISRA.intakeserviceid   = objectid END ORDER BY coalesce(p.firstname,'')  LIMIT 1 )
+			ELSE
+				''
+			END):: character varying legalguard1,
+			(
+				SELECT json_agg(t) FROM (
+					SELECT  apa.programname, apa.programkey 
+					FROM agencyprogramarea apa 
+					INNER JOIN servicecaserequest scr ON scr.servicecaseid=sc.servicecaseid AND scr.activeflag=1
+					WHERE apa.programkey = scr.programkey AND apa.activeflag =1 
+				) AS t
+				),
+			(
+				SELECT json_agg(e) FROM (
+					SELECT  rv.description subprogramname, rv.ref_key subprogramkey 
+					FROM referencevalues rv 
+					INNER JOIN servicecaserequest scr ON scr.servicecaseid=sc.servicecaseid AND scr.activeflag=1
+					WHERE  rv.ref_key=scr.subprogramkey AND rv.activeflag=1 AND referencetypeid =12 ) AS e
+			),
+		c1.countyname  ::character varying fromcounty
+		FROM 	caseassignment CA 
+				INNER JOIN   
+			(
+				SELECT sc.servicecaseid,  sc.servicecasenumber, 'Service Case'::character varying AS actiontype  
+				FROM servicecase sc WHERE sc.activeflag =1 AND 
+				CASE COALESCE(v_casetype,'') WHEN 'servicecase' THEN TRUE WHEN '' THEN TRUE ELSE 1=2 END 
+				UNION ALL
+				SELECT ac.adoptioncaseid caseid,  ac.adoptioncasenumber, 'Adoption Case'::character varying AS actiontype 
+				FROM adoptioncase ac WHERE ac.activeflag =1 AND 
+				CASE COALESCE(v_casetype,'') WHEN 'adoptioncase' THEN TRUE WHEN '' THEN TRUE ELSE 1=3 END
+				UNION ALL 
+				SELECT isr.intakeserviceid,  isr.servicerequestnumber,
+					case isr.actiontype when   'IR' then 'CPS-IR' when  'AR' then 'CPS-AR' else 'Non-CPS'  end  actiontype 	
+				FROM intakeservicerequest isr WHERE isr.activeflag =1 
+					AND teamtypekey ='CW' 
+					AND 	CASE v_casetype 
+							WHEN 'intake' THEN false
+							WHEN 'IR' THEN isr.actiontype = 'IR' 
+							WHEN 'AR' THEN isr.actiontype = 'AR' 
+							WHEN 'noncps' THEN COALESCE(isr.actiontype,'') = ''  
+							WHEN 'servicecase' THEN false
+							WHEN 'adoptioncase' THEN false
+						ELSE true end
+				) sc  ON  sc.servicecaseid = ca.objectid 
+		--LEFT JOIN team DT on DT.teamid = CA.toldssid AND DT.activeflag =1
+		LEFT JOIN county c on c.countyid::uuid = CA.toldssid AND C.activeflag =1
+	LEFT JOIN county c1 on c1.countyid::uuid = CA.fromldssid AND C1.activeflag =1
+		LEFT JOIN team T on T.teamid = CA.fromldssid AND T.activeflag =1
+		LEFT JOIN 
+			(SELECT tma_inner.securityusersid, 1 issupervisor
+			FROM teammemberassignment tma_inner 
+			INNER JOIN teammember tm ON tm.teammemberid = tma_inner.teammemberid AND tm.activeflag= 1
+			INNER JOIN teammemberroletype tmrt ON tmrt.roletypekey = tm.roletypekey AND tmrt.activeflag= 1 
+				AND tmrt.isupervisor= true AND tma_inner.activeflag =1  
+			) tma ON tma.securityusersid = ca.toworkeridno
+		WHERE	 CA.activeflag=1
+				AND (CA.expungementflag = null or CA.expungementflag = 0)
+				AND CA.assignmenttype ='T'
+			--AND ca.enddate IS   NULL 
+			--AND objecttypekey='servicecase' 
+			AND	CASE WHEN v_servicecasenumber IS NOT NULL THEN (SC.servicecasenumber= v_servicecasenumber) ELSE true END
+			AND CASE WHEN v_teamid IS NOT NULL THEN (CA.fromldssid= v_teamid ) ELSE true END
+			--AND CASE WHEN v_localdeptid IS NOT NULL THEN (t.parentteamid= v_localdeptid OR T.teamid = v_localdeptid ) ELSE true END
+			AND CASE WHEN v_localdeptid IS NOT NULL THEN (t.countyid::uuid= v_localdeptid ) ELSE true END -- FROM COUNTY ID
+			--AND CASE WHEN v_toworkerid IS NOT NULL THEN (CA.toworkeridno= v_toworkerid ) ELSE true END
+			AND CASE WHEN v_startdate IS NOT null THEN CASE when CA.startdate is not null THEN CA.startdate::date >= v_startdate ELSE false END 
+					ELSE true END
+			AND CASE WHEN v_enddate IS NOT null THEN CASE when CA.enddate is not null THEN CA.enddate::date <= v_enddate ELSE false END
+					ELSE true end
+			and CASE WHEN v_status is not null THEN 
+						CASE v_status
+							WHEN 'all' THEN true
+							WHEN 'pending' THEN CA.enddate is null
+							WHEN 'assigned' THEN CA.enddate is not null
+						ELSE true END
+					ELSE true end
+			AND	CA.toldssid = l_toldssid --TO COUNTY ID
+	UNION ALL			
+SELECT 
+		
+		CA.responsibilitytypekey,
+		CA.caseassignmentid,
+		CA.objecttypekey as casetype,
+		c.countyname ::character varying countyname,
+		T.teamname,
+		CA.startdate,
+		CA.enddate,
+		case when COALESCE(tma.issupervisor,0) = 1 then 'Pending' when ca.enddate is null then 'Open' else 'Closed' end :: character varying as statustypekey,
+		--CA.statustypekey,
+		CA.remarks,
+		CA.toteamid,
+		CA.toworkeridno,
+		COALESCE(IDS.intakenumber) servicecasenumber ,
+		COALESCE(IDS.intakedastatusid)servicecaseid,
+		(SELECT CAST(UP2.firstname || ' ' || UP2.lastname AS character varying) 
+		FROM  userprofile UP2  
+		WHERE UP2.securityusersid = CA.fromworkeridno AND UP2.activeflag =1 LIMIT 1) assignedby,		
+		(SELECT	CAST(UP.firstname || ' ' || UP.lastname AS character varying)  
+		FROM   userprofile UP 
+		WHERE UP.securityusersid = CA.toworkeridno AND UP.activeflag =1 LIMIT 1) assignedto,
+		(SELECT UP.cjamspid FROM   userprofile UP WHERE UP.securityusersid = CA.toworkeridno AND UP.activeflag =1 LIMIT 1)::character varying  AS cjamspid ,		  
+		--T.teamname ::character varying parentteamname,
+		c.countyname parentteamname,
+		'Intake' ::character varying,
+		'' :: character varying legalguard1,
+		null ::json ,
+		null ::json ,
+		c1.countyname fromcounty
+	FROM 	caseassignment CA 
+			INNER JOIN   intakedastatus IDS ON IDS.intakedastatusid = CA.objectid AND IDS.activeflag =1
+			LEFT JOIN team T on T.teamid = CA.toldssid AND T.activeflag =1
+			--LEFT JOIN team T on T.teamid = CA.fromldssid AND T.activeflag =1
+			LEFT join    county c on c.countyid = t.countyid::uuid and c.activeflag = 1
+			LEFT join    county c1 on c1.countyid::uuid = ca.fromldssid and c1.activeflag = 1
+			LEFT JOIN 
+				(SELECT tma_inner.securityusersid, 1 issupervisor
+				FROM teammemberassignment tma_inner 
+				INNER JOIN teammember tm ON tm.teammemberid = tma_inner.teammemberid AND tm.activeflag= 1
+				INNER JOIN teammemberroletype tmrt ON tmrt.roletypekey = tm.roletypekey AND tmrt.activeflag= 1 
+					AND tmrt.isupervisor= true AND tma_inner.activeflag =1  
+				) tma ON tma.securityusersid = ca.toworkeridno
+	WHERE	 CA.activeflag=1
+			AND (CA.expungementflag = null or CA.expungementflag = 0)
+			AND CA.assignmenttype ='T'
+			AND LOWER(objecttypekey)='intake' 
+			AND	CASE WHEN v_servicecasenumber IS NOT NULL THEN (IDS.intakenumber= v_servicecasenumber) ELSE true END
+			AND CASE WHEN v_teamid IS NOT NULL THEN (CA.fromldssid= v_teamid ) ELSE true END
+			--AND CASE WHEN v_localdeptid IS NOT NULL THEN (t.parentteamid= v_localdeptid OR T.teamid = v_localdeptid ) ELSE true END
+			AND CASE WHEN v_localdeptid IS NOT NULL THEN (t.countyid::uuid= v_localdeptid ) ELSE true END
+			AND CASE WHEN v_toworkerid IS NOT NULL THEN (CA.toworkeridno= v_toworkerid ) ELSE true END
+			AND CASE WHEN v_startdate IS NOT null THEN CASE when CA.startdate is not null THEN CA.startdate::date >= v_startdate ELSE false END 
+					ELSE true END
+			AND CASE WHEN v_enddate IS NOT null THEN CASE when CA.enddate is not null THEN CA.enddate::date <= v_enddate ELSE false END
+					ELSE true end
+			and CASE WHEN v_status is not null THEN 
+						CASE v_status
+							WHEN 'all' THEN true
+							WHEN 'pending' THEN CA.enddate is null
+							WHEN 'assigned' THEN CA.enddate is not null
+						ELSE true END
+					ELSE true end
+			AND	CA.toldssid = l_toldssid
+			AND CASE v_casetype 
+					WHEN 'intake' THEN true
+					WHEN 'IR' THEN false 
+					WHEN 'AR' THEN false
+					WHEN 'noncps' THEN false
+					WHEN 'servicecase' THEN false
+					WHEN 'adoptioncase' THEN false
+				ELSE true end
+			
+ 	) CA
+    ORDER BY 
+    (
+	case
+		v_sortorder
+		when 'asc' then
+		case
+			v_sortcol
+			when 'legalguardian' then   COALESCE(CA.legalguard1  ,'')
+			when 'servicecasenumber' then CA.servicecasenumber 
+			when 'localdepartment' then   COALESCE(CA.parentteamname ,'')
+			when 'fromlocaldepartment' then   COALESCE(CA.fromcounty ,'')
+			when 'assignedby' then   COALESCE(CA.assignedby ,'')
+			when 'assignedto' then   COALESCE(CA.assignedto ,'')
+			when 'responsibilitytypekey' then  COALESCE(CA.responsibilitytypekey ,'') 
+			when 'actiontype' then COALESCE(CA.actiontype,'')
+			when 'statustypekey' then CA.statustypekey
+			when 'teamname' then  COALESCE(CA.teamname ,'')  
+			when 'startdate' then  COALESCE(cast( CA.startdate as character varying),'')
+			when 'enddate' then  COALESCE(cast( CA.enddate as character varying),'')
+			else CA.servicecasenumber 
+		end
+		else  NULL 
+	end) ASC,
+	(
+	case
+		v_sortorder
+		when 'desc' then
+		case
+			v_sortcol
+			when 'legalguardian' then   COALESCE(CA.legalguard1  ,'')
+			when 'servicecasenumber' then CA.servicecasenumber 
+			when 'localdepartment' then   COALESCE(CA.parentteamname ,'')
+			when 'fromlocaldepartment' then   COALESCE(CA.fromcounty ,'')
+			when 'assignedby' then   COALESCE(CA.assignedby ,'')
+			when 'assignedto' then   COALESCE(CA.assignedto ,'')
+			when 'responsibilitytypekey' then COALESCE(CA.responsibilitytypekey ,'') 
+			when 'actiontype' then COALESCE(CA.actiontype,'')
+			when 'statustypekey' then CA.statustypekey
+			when 'teamname' then  COALESCE(CA.teamname ,'')  
+			when 'startdate' then  COALESCE(cast( CA.startdate as character varying),'')
+			when 'enddate' then  COALESCE(cast( CA.enddate as character varying),'')
+			else CA.servicecasenumber 
+		end
+		else NULL
+	end ) DESC
+    
+	LIMIT pagesize OFFSET (pageno - 1) * pagesize;
+
+
+
+
+END;
+
+$function$;

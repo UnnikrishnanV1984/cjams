@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION as_gpsequiprequest(i_intakenumber character varying, i_intakeserviceid uuid, i_secid character varying)
+ RETURNS TABLE(youthname character varying, youthid character varying, address character varying, phone character varying, dob character varying, race character varying, provider_name character varying, provider_number character varying, cw_name character varying, cw_email character varying, cw_phone character varying, sup_email character varying, sup_phone character varying)
+ LANGUAGE plpgsql
+AS $function$
+   BEGIN           
+ RETURN QUERY    
+ (        select distinct
+             cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+             CAST(p.cjamspid as character varying) as youthid,
+   (select CAST(personaddress.address||' '||personaddress.zipcode||' '||personaddress.city||' '||personaddress.state||' '||personaddress.country as character varying)
+            from personaddress where personaddress.activeflag=1  and personid=p.personid
+   group by 1 order by max(personaddress.insertedon) desc limit 1)  as address,
+    ( select CAST(personphonenumber.phonenumber as character varying) 
+      from personphonenumber where activeflag=1 and personid=p.personid
+      group by 1 order by max(personphonenumber.insertedon) desc limit 1
+    ) as phone,
+             cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as DOB,
+    (select distinct typedescription from racetype where racetypekey=p.racetypekey) as race,
+    cast(pr.providername as character varying)  as provider_name,
+    cast(pcinfo.phonenumber as character varying) as provider_number,
+    cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = i_secid) as character varying) as  cw_name,
+    cast((select distinct up.email from userprofile up where securityusersid = i_secid) as character varying) as cw_email,
+    cast((select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as character varying) as cw_phone,
+    cast(sup.supemail as character varying) as sup_email,
+    cast(sup.supphone as character varying) as sup_phone
+             from  intakeservicerequest INTSR  JOIN routing as R 
+             ON R.objectid = INTSR.intakenumber 
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1  and INSRA.intakeservicerequestpersontypekey='Youth'
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1  
+             join person p on ACC.personid=p.personid and p.activeflag=1
+    left join placement pl on INTSR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+    LEFT JOIN providercontactinfo pcinfo ON pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1
+   join (select objectid,up.email as supemail,upp.phonenumber as supphone from routing  join userprofile up
+                  on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP' 
+                   left join userprofilephonenumber upp on routing.tosecurityusersid=upp.securityusersid and upp.activeflag=1 and upp.userprofiletypekey='office'  ) sup
+                  on INTSR.intakenumber=sup.objectid
+             where  (INTSR.intakeserviceid =NULL or INTSR.intakeserviceid =i_intakeserviceid) or
+                (INTSR.intakenumber =NULL or INTSR.intakenumber=i_intakenumber) 
+             union
+             select distinct
+             cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+             cast(coalesce(obj->>'cjamspid','') as character varying) as youthid,
+    CAST(coalesce(obj->>'Address','')||' '||coalesce(obj->>'zipcode','')||' '||coalesce(obj->>'city','')||' '||coalesce(obj->>'state','')||' '||coalesce(obj->>'country','') as character varying) as address,
+    CAST(coalesce(obj->>'phoneNumber','') as character varying) as phone,
+             cast(obj->>'Dob' as character varying) as DOB,
+             (select distinct typedescription from racetype where racetypekey=p.racetypekey) as race,
+             cast(pr.providername as character varying)  as provider_name,
+    cast(pcinfo.phonenumber as character varying) as provider_number,
+    cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = i_secid) as character varying) as  cw_name,
+    cast((select distinct up.email from userprofile up where securityusersid = i_secid) as character varying) as cw_email,
+    cast((select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as character varying) as cw_phone,
+    cast(sup.supemail as character varying) as sup_email,
+    cast(sup.supphone as character varying) as sup_phone
+             from    intakedastaging ida  
+    left join placement pl on ida.intakenumber =pl.intakenumber and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+    LEFT JOIN providercontactinfo pcinfo ON pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1
+   left join (select objectid,up.email as supemail,upp.phonenumber as supphone from routing  join userprofile up
+                  on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP' 
+                   left join userprofilephonenumber upp on routing.tosecurityusersid=upp.securityusersid and upp.activeflag=1 and upp.userprofiletypekey='office'  ) sup
+                  on ida.intakenumber=sup.objectid
+                ,jsonb_array_elements(ida.jsondata->'persons') obj        
+              left join person p on cast(p.cjamspid  as character varying)=cast(coalesce(obj->>'cjamspid','') as character varying)
+               where 
+               ida.activeflag=1  and obj->>'Role' ='Youth' and  obj->>'cjamspid' is not null and
+                (ida.intakenumber =NULL or ida.intakenumber=i_intakenumber)
+                limit 1) ;     
+   end;
+ $function$
+

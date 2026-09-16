@@ -1,0 +1,81 @@
+CREATE OR REPLACE FUNCTION as_intakesummarypage(i_intakenumber character varying, i_intakeserviceid uuid, i_caseworkerid character varying)
+ RETURNS TABLE(youthname character varying, folderid character varying, youthpid character varying, petitionnumber character varying, cw_name character varying, currentdate character varying, detained boolean, notdetained boolean, sheltercare boolean, electronicmonitering boolean, communitydetention boolean, disapproved boolean, resolved boolean, precourt boolean, authorisedpetetion boolean, trafficoffence boolean)
+ LANGUAGE plpgsql
+AS $function$
+declare detentionstat boolean;
+declare dispositionstat character varying;
+
+
+BEGIN
+
+
+select  jsonb_array_elements(jsondata->'evaluationFields')->> 'isdetention' into detentionstat
+from intakedastaging
+where intakenumber=i_intakenumber and activeflag=1 and jsonb_typeof(jsondata->'evaluationFields')!='null';
+
+select  jsonb_array_elements(jsondata->'disposition')->> 'dispositioncodedesc' into dispositionstat
+from intakedastaging
+where intakenumber=i_intakenumber and activeflag=1 and jsonb_typeof(jsondata->'disposition')!='null';
+
+
+
+     RETURN QUERY (
+ select distinct 
+       cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+   isr.intakenumber as folderid,
+   cast(p.cjamspid as  character varying) youthpid,
+             cast(inve.complaintid as character varying) as petitionnumber,
+    (select cast(lastname||', '||firstname as character varying) from userprofile where securityusersid = i_caseworkerid) as cw_name,
+      CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+     cast(CASE WHEN (inve.isdetention =true) then  true end as boolean) as detained,
+     cast(CASE WHEN (inve.isdetention =false) then  true end as boolean) as notdetained,
+           cast(null as boolean) as sheltercare,
+     cast(null as boolean) as electronicmonitering,
+           cast(null as boolean) as communitydetention,
+     (select cast(CASE WHEN (description like '%disapprove%') then  true end as boolean) from dispositioncode where dispositioncode =srtcdc.dispositioncode) as disapproved,
+      (select cast(CASE WHEN (description like '%Resolved%' or description like '%resolved%') then  true end as boolean) from dispositioncode where dispositioncode =srtcdc.dispositioncode) as resolved,
+            (select cast(CASE WHEN ( description='Informal Adjustment') then  true end as boolean) from dispositioncode where dispositioncode =srtcdc.dispositioncode) as precourt,
+      (select cast(CASE WHEN ( description in ('For Authorization of Formal Petition','For Authorization of Formal Petition with Recommendation for Informal Adjustment')) then  true end as boolean) from dispositioncode where dispositioncode =srtcdc.dispositioncode) as authorisedpetetion,
+           cast(null as boolean) as trafficoffence
+ from  
+ intakeservicerequest isr
+   join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+   join actor a on a.actorid = isra.actorid and a.activeflag = 1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join intakeservicerequestpetition isrp on isrp.intakenumber = isr.intakenumber and isrp.activeflag = 1
+         left join intakeservicerequestevaluation inve on inve.intakenumber=isr.intakenumber and inve.activeflag=1
+        left join  intakeservicerequestdispositioncode isrdc ON isr.intakeserviceid = isrdc.intakeserviceid AND isrdc.activeflag = 1
+             left join  servicerequesttypeconfigdispositioncode srtcdc ON isrdc.servicerequesttypeconfigiddispostionid = srtcdc.servicerequesttypeconfigiddispostionid AND srtcdc.activeflag = 1 
+  where 
+ (isr.intakeserviceid =NULL or isr.intakeserviceid =i_intakeserviceid) or
+                (isr.intakenumber =NULL or isr.intakenumber=i_intakenumber) 
+ UNION
+ select 
+       cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+    CAST(ida.intakenumber  as character varying) as folderid ,
+    cast(coalesce(obj->>'cjamspid','') as character varying) as youthid,
+     cast(inve.complaintid as character varying) as petitionnumber,
+    (select cast(lastname||', '||firstname as character varying) from userprofile where securityusersid = i_caseworkerid) as cw_name,
+     CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+    cast(CASE WHEN (detentionstat =true) then  true end as boolean) as detained,
+     cast(CASE WHEN (detentionstat =false) then  true end as boolean) as notdetained,
+     cast(CASE WHEN ida.jsondata->'detentionOpened'->'atdDetentionType'->>'text' ='Shelter' then  true end as boolean) as sheltercare,
+     cast(null as boolean) as electronicmonitering,
+           cast(case when ida.jsondata->'detentionOpened'->'atdDetentionType'->>'text' ='Community Detention'  then  true end as boolean) as communitydetention,
+      cast(CASE WHEN (dispositionstat like '%disapproved%') then  true end as boolean)  as disapproved,
+      cast(CASE WHEN (dispositionstat like '%Resolved%') then  true end as boolean)  as resolved,
+            cast(CASE WHEN (dispositionstat='Informal Adjustment') then  true end as boolean)  as precourt,
+      cast(CASE WHEN dispositionstat in ('For Authorization of Formal Petition','For Authorization of Formal Petition with Recommendation for Informal Adjustment') then  true end as boolean)  as authorisedpetetion,
+           cast(null as boolean) as trafficoffence
+    from
+ intakedastaging ida
+ left join intakeservicerequestpetition pe on  pe.intakenumber=ida.intakenumber and pe.activeflag=1
+  left join intakeservicerequestevaluation inve on inve.intakenumber=ida.intakenumber and inve.activeflag=1
+  , jsonb_array_elements(ida.jsondata->'persons') obj 
+  where  ida.activeflag=1  and obj->>'Role' ='Youth'   and
+          (ida.intakenumber=i_intakenumber) and obj->>'cjamspid' is not null) limit 1; 
+
+  
+END;
+$function$
+

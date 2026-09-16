@@ -1,0 +1,150 @@
+CREATE OR REPLACE FUNCTION as_placementapproval_bk(v_placementid character varying, userid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+v_intakeservicerequestactorid uuid;
+v_entryddate timestamp without time zone;
+v_exitdate timestamp without time zone;
+v_intakeservreqchildremovalid uuid;
+v_servicecaseid uuid;
+v_tbplacementid int;
+v_providerid int;
+v_placement_structureid int;
+v_rate_structureid int;
+v_clientid bigint;
+v_caseid character varying;
+v_removalid bigint;
+v_contract_program_id bigint;
+v_isapproval int;
+v_isapprovaldate timestamp without time zone;
+v_placement_revision_id integer;
+v_totalcount bigint;
+v_isvoided  int;
+l_response   character varying;
+l_personid uuid;
+l_assignedto character varying;
+BEGIN
+/*Get Placement information to process financial tables */
+
+ SELECT pl.alternateid, pl.intakeservicerequestactorid,
+     pl.startdatetime, pl.enddatetime,pl.intakeservreqchildremovalid,
+     pl.servicecaseid,pl.service_id ,pl.service_id,
+     pr.cjamspid ,irl.removalid,contract_id,
+     pl.isssaapproval,pl.ifcapprovaldate, sc.servicecasenumber,
+               pl.altproviderid,pl.isvoided,pr.personid,pl.insertedby
+ INTO   v_tbplacementid,v_intakeservicerequestactorid,
+     v_entryddate,v_exitdate,v_intakeservreqchildremovalid, 
+     v_servicecaseid,v_placement_structureid,v_rate_structureid,
+     v_clientid,v_removalid,v_contract_program_id,
+     v_isapproval,v_isapprovaldate,v_caseid,
+     v_providerid,v_isvoided,l_personid,l_assignedto
+ FROM placement pl  
+ INNER JOIN servicecase sc ON sc.servicecaseid  =pl.servicecaseid AND sc.activeflag =1
+ INNER JOIN  intakeservicerequestactor isra ON  pl.intakeservicerequestactorid = isra.intakeservicerequestactorid AND isra.activeflag =1
+ INNER JOIN person pr ON pr.personid = isra.personid AND pr.activeflag =1
+ INNER JOIN  Intakeservreqchildremoval irl ON irl.intakeservreqchildremovalid =pl.intakeservreqchildremovalid AND irl.activeflag =1
+ LEFT JOIN tb_provider_contracts tbpc ON  tbpc.provider_id = pl.altproviderid AND tbpc.delete_sw ='N'
+ WHERE pl.placementid::  character varying = v_placementid  AND pl.activeflag =1 LIMIT 1;
+ 
+ 
+ SELECT count(1) over() INTO v_totalcount
+ FROM tb_placement 
+ WHERE placement_id = v_tbplacementid  AND  delete_sw = 'N';
+
+  IF v_providerid IS NOT NUll  THEN /*placement data added only for provider placemeent */
+ SELECT createoohchecklist INTO l_response FROM as_createoohchecklist(v_servicecaseid,userid,l_assignedto,l_personid);
+ IF Coalesce( v_totalcount,0) =0 THEN 
+  INSERT INTO tb_placement(placement_id,case_id,client_id,
+        removal_id,provider_id,entry_dt,
+        entry_tm, approval_status_cd,placement_structure_id,
+        rate_structure_id,contract_program_id,intakeservicerequestactorid,
+        create_ts,create_user_id,update_ts,
+        update_user_id,delete_sw)
+  VALUES(v_tbplacementid,(v_caseid :: bigint),v_clientid,
+      v_removalid,v_providerid,(v_entryddate :: date),
+      (v_entryddate :: time),'3047',v_placement_structureid,
+      v_rate_structureid,v_contract_program_id,v_intakeservicerequestactorid, 
+      now(),userid,now(),
+      userid,'N');      
+
+  INSERT INTO Tb_placement_providers(placement_id,provider_id,contract_program_id,
+            accepted_cd,service_id,rate_structure_id,
+            entry_dt,entry_tm,ssa_ifc_approval_sw,
+            ssa_ifc_approval_dt,create_ts,create_user_id,
+            update_ts,update_user_id,delete_sw,
+            info_sent_dt)
+  VALUES(v_tbplacementid,v_providerid,v_contract_program_id,
+     '4612',v_placement_structureid,v_rate_structureid,
+     (v_entryddate :: date),(v_entryddate :: time),v_isapproval:: character varying,
+      v_isapprovaldate, now(),userid,
+     now(),userid,'N',
+     now());
+     
+  INSERT INTO tb_placement_revision(placement_id,entry_dt,entry_tm,
+            exit_dt,exit_tm,approval_status_cd, 
+          approval_dt,create_ts,create_user_id,
+          update_ts,update_user_id,delete_sw)
+  VALUES (v_tbplacementid,(v_entryddate :: date),(v_entryddate :: time),
+       (v_exitdate :: date),(v_exitdate :: time),'3047',
+     v_isapprovaldate,now(),userid,
+     now(),userid,'N');
+ ELSE
+   
+  SELECT placement_revision_id INTO v_placement_revision_id 
+  FROM tb_placement_revision 
+  WHERE placement_id = v_tbplacementid 
+  ORDER BY create_ts DESC LIMIT 1;
+
+  UPDATE tb_placement_revision 
+  SET entry_dt=(v_entryddate :: date),
+   entry_tm=(v_entryddate :: time),
+   exit_dt=(v_exitdate :: date),
+   exit_tm=(v_exitdate :: time),
+   approval_status_cd='3047',
+   approval_dt=v_isapprovaldate,
+   update_ts = now()
+  WHERE placement_revision_id=v_placement_revision_id;
+
+  UPDATE tb_placement 
+            SET entry_dt=(v_entryddate :: date),
+                entry_tm=(v_entryddate :: time),
+                exit_dt=(v_exitdate :: date),
+                exit_tm=(v_exitdate :: time),
+                removal_id = v_removalid ,
+                approval_status_cd = '3047',
+                provider_id = v_providerid,
+                placement_structure_id = v_placement_structureid,
+                rate_structure_id = v_rate_structureid,
+                contract_program_id = v_contract_program_id,
+                intakeservicerequestactorid = v_intakeservicerequestactorid,
+                case_id = (v_caseid :: bigint),
+                client_id = v_clientid, 
+                void_sw = CASE COALESCE(v_isvoided,0) WHEN   1  THEN 'Y' END,
+                update_ts = now()
+  WHERE placement_id =v_tbplacementid;
+   
+  UPDATE tb_placement_providers 
+  SET provider_id = v_providerid,
+   contract_program_id = v_contract_program_id,
+   accepted_cd = '4612',
+   service_id = v_placement_structureid,
+   rate_structure_id = v_rate_structureid,
+   entry_dt = (v_entryddate :: date),
+   entry_tm = (v_entryddate :: time),
+   ssa_ifc_approval_sw = v_isapproval:: character varying,
+   update_ts = now()
+  WHERE placement_id =v_tbplacementid;
+ 
+    
+ END IF;     
+
+END IF;     
+     
+RETURN 'Success';
+  
+END;
+
+$function$
+

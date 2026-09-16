@@ -1,0 +1,129 @@
+CREATE OR REPLACE FUNCTION checkvpa(v_persionid uuid, v_county character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE agestatus character varying;
+DECLARE countystatus character varying;
+DECLARE exitstatus character varying;
+DECLARE placementstatus character varying;
+
+
+DECLARE countyname character varying; 
+DECLARE personage DECIMAL;
+DECLARE exitdate character varying; 
+DECLARE exitreasontype character varying;
+DECLARE v_intakeservicerequestactorid uuid;
+
+ 
+declare returnvalue json;
+
+BEGIN
+ 
+select 
+ CAST((EXTRACT(year FROM age(current_date,p.dob)) :: character varying  || '.' ||
+ EXTRACT(month FROM age(current_date,p.dob)) :: character varying ) as DECIMAL )as age 
+  into personage
+ from person p  where p.personid=v_persionid;
+
+ SELECT 
+  pla.enddatetime AS exitdate,
+  exitreasontypekey AS exitreasontype,
+  intakeservicerequestactorid
+ INTO
+  exitdate,
+  exitreasontype,
+  v_intakeservicerequestactorid
+ FROM placement pla 
+ WHERE 
+  personid = v_persionid and placementtypekey = 'PRPL'
+ ORDER BY pla.insertedon DESC LIMIT 1;
+
+ -- Get the latest county of the case in which the child was placed
+ SELECT 
+  c.countyname
+ INTO
+  countyname
+ FROM 
+  intakeservicerequestactor isra
+  JOIN actor ac ON ac.actorid = isra.actorid
+  JOIN servicecase sc ON sc.servicecaseid = ac.servicecaseid
+  JOIN caseassignment ca ON ca.objectid = sc.servicecaseid
+  JOIN county c ON c.countyid = ca.toldssid
+ WHERE intakeservicerequestactorid = v_intakeservicerequestactorid
+ ORDER BY ca.insertedon DESC LIMIT 1;
+  
+
+  IF(personage >=18 and personage <=20.6)  THEN 
+  agestatus := true; 
+ ELSE
+  agestatus:= false;   
+  END IF;
+ 
+ IF(v_county = countyname) THEN 
+  countystatus := true; 
+ ELSE
+  countystatus:= false;  
+ END IF;
+ 
+ 
+ 
+ IF(agestatus = 'true' AND (exitdate!='' || exitdate is not null) ) THEN 
+  placementstatus := true; 
+ ELSE
+  placementstatus:= false;   
+  END IF;
+  
+  
+  -- Reunification, Adoption, Guardianship, Marriage or Military
+ --  SELECT * FROM referencevalues WHERE referencetypeid = 84
+ -- CIPAD 84 Adoption Disruption
+ -- CIPA 84 Permanency Step: Adoptive or pre-adoptive Placement
+ -- 
+ -- SELECT * FROM referencevalues WHERE referencetypeid = 85
+ -- PLCCAD 85 Adoption Disruption
+ -- PLCCGNR 85 Custody/Guardianship – Non-Relative **
+ -- PLCCGR 85 Custody/Guardianship – Relative **
+ -- PLCCGSNR 85 Guardianship Non-Relative **
+ -- PLCCMRG 85 Marriage
+ -- PLCCM 85 Military
+ -- PLCCR 85 Reunification
+ -- PLCCAF 85 Adoption Finalization 
+ -- 
+ -- SELECT * FROM referencevalues WHERE referencetypeid = 87
+ -- AD 87 Adoption Disruption
+ -- PSAP 87 Permanency Step: Adoptive or pre-adoptive Placement
+ -- ADP 87 Adoption Disruption
+ -- AF 87 Adoption Finalization (when selected the Removal and Program Assignment will automatically end date)
+ -- CGNR 87 Custody/Guardianship – Non-Relative
+ -- CGR 87 Custody/Guardianship – Relative
+ -- GNR 87 Guardianship Non-Relative
+ -- MRG 87 Marriage
+ -- MILY 87 Military
+ -- RUF 87 Reunification
+
+  IF (exitreasontype IN ('PLCCMRG', 'PLCCAF', 'PLCCM', 'PLCCGNR', 'PLCCGR','PLCCAD','PLCCGSNR','PLCCR','CIPAD','CIPA',
+   'RUF','MILY','MRG','GNR','CGR','CGNR','AF','ADP','PSAP','AD')) THEN
+   exitstatus := FALSE;
+  ELSE
+   exitstatus := TRUE;
+  END IF;
+ 
+ select json_agg( vpa) into returnvalue from (
+ 
+  select 'age' as conditionname,agestatus as status ,'Youth between 18-20 years 6 months' as description
+  union
+ select 'county' as conditionname,countystatus as status ,'Youth must be applying in the county from which they exited'  as description
+ union
+ select 'permanency' as conditionname,exitstatus as status ,'Youth did not exit care for: Reunification, Adoption, Guardianship, Marriage or Military' as description
+  union 
+ select 'placement' as conditionname,placementstatus as status,'Youth is former CINA or VPA foster child who exited care after 18'  as description
+ 
+ ) as vpa;
+
+  RETURN returnvalue; 
+end;
+
+
+$function$
+

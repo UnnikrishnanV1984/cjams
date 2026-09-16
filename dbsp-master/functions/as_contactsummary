@@ -1,0 +1,56 @@
+CREATE OR REPLACE FUNCTION as_contactsummary(i_personid uuid, pagenumber bigint, pagesize bigint, i_searchtext character varying, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, staffname character varying, contactdate timestamp without time zone, contacttype text, contactstatus boolean, locationname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+   
+ v_pageoffset int;
+    v_pagenumber int;
+
+BEGIN
+
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+ 
+ IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+  pagenumber := 1; 
+ END IF;
+ 
+
+ RETURN QUERY
+ 
+  SELECT COUNT(1) over() as totalcount,ISR.intakeserviceid,ISR.servicerequestnumber,ISR.intakenumber,up.    displayname,PN.contactdate,PNT.description as contacttype,PN.contactstatus,PN.locationname
+        FROM IntakeServiceRequest AS ISR                           
+  INNER JOIN ProgressNote AS PN ON CAST(ISR.IntakeServiceId AS VARCHAR(50)) = PN.EntityTypeId   
+  LEFT OUTER JOIN DocumentProperties DP On DP.DocumentPropertiesId = PN.DocumentPropertiesId
+  INNER JOIN ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId AND PND.ActiveFlag = 1   
+  INNER JOIN ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId         
+  INNER JOIN UserProfile up on pn.insertedby = up.SecurityUsersId                       
+  LEFT JOIN AreaTeamMemberServiceRequest atmsr on isr.IntakeServiceId = atmsr.IntakeServiceId AND atmsr.ActiveFlag = 1                 
+  LEFT JOIN TeamMember tm on atmsr.TeamMemberId = tm.TeamMemberId                
+  LEFT JOIN Team te on tm.TeamId = te.TeamId
+  LEFT JOIN Progressnoteroletype AS PNRT ON PN.ProgressNoteId = PNRT.ProgressNoteId AND PNRT.ActiveFlag = 1
+  LEFT JOIN progressnotepurposetype AS PNPT ON PNPT.progressnotepurposetypekey = PN.progressnotepurposetypekey AND PNRT.ActiveFlag = 1           
+  WHERE PN.savemode=true and ISR.IntakeServiceId 
+      IN (
+   SELECT INTSR.intakeserviceid from intakeservicerequest INTSR 
+   INNER JOIN intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   INNER JOIN actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+   INNER JOIN person p on Acc.personid=p.personid and p.activeflag=1
+   INNER JOIN focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+   WHERE ACC.personid  = i_personid
+   AND  CASE WHEN  (i_searchtext  != ''  AND i_searchtext  IS NOT NULL ) THEN 
+             fp.focuspersonstatustypekey = i_searchtext  
+             ELSE 
+           1=1 END)
+  LIMIT   CASE WHEN v_nolimit = false  THEN pagesize END offset 
+                CASE WHEN v_nolimit = false  THEN v_pageoffset END;       
+  END;
+
+$function$
+

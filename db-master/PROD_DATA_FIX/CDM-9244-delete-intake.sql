@@ -1,0 +1,1 @@
+update intakedastatus set activeflag = 0, updatedby = 'CDM-9244',  updatedon = now() where intakenumber = 'I202100418945';

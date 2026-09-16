@@ -1,0 +1,150 @@
+CREATE OR REPLACE FUNCTION as_sp_receivable_offset_providers(ad_prev_month_start date, ad_prev_month_end date)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+--By          :  Vineet Tirodkar
+--Date        :  06/27/2007
+--Purpose     :  This Store procedure is to get providers to Adjust Offset Amount
+--Request #   :
+--Comments    :
+-- 07/10/2007 Vineet Tirodkar - commit statement has been added inside the for loop
+-- 12/08/2008 Vineet Tirodkar - Changes to pass new Argument for SP_PAYMENT_OFFSET - CIS-18254
+------------------------------------------------------------------------
+
+DECLARE vl_sqlcode INT DEFAULT 0;--
+
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vl_provider_id bigint;--
+DECLARE vl_payment_header_id bigint;--
+DECLARE vdc_total_gross_amount decimal(10,2);--
+DECLARE vdc_offset_amount decimal(10,2);--
+
+--Log Error
+
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_RECEIVABLE_OFFSET_PROVIDERS';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+cur_providers record;
+ cur_providers_refcur REFCURSOR;
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+BEGIN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+ --   SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_RECEIVABLE_OFFSET_PROVIDERS' ,
+           NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+    
+     as_error = '';    --
+END;--
+--Log error
+
+--  Get the last month start date and end date
+ vd_previous_month_start_dt := ad_prev_month_start;--
+ vd_previous_month_end_dt := ad_prev_month_end;--
+   
+--FOR cur_providers AS
+
+--cur1 CURSOR WITH HOLD FOR
+OPEN cur_providers_refcur FOR
+       SELECT PH.PAYMENT_ID,
+              PH.PROVIDER_ID,
+              PH.GROSS_AMOUNT_NO
+        FROM TB_PAYMENT_HEADER PH,
+             TB_PAYMENT_STATUS PS
+       WHERE PH.PAYMENT_ID = PS.PAYMENT_ID AND
+             PAYMENT_START_DT = vd_previous_month_start_dt AND
+             PAYMENT_END_DT = vd_previous_month_end_dt AND
+             PAYMENT_TYPE_CD = '6' AND
+             PS.PAYMENT_STATUS_CD = '1634'AND
+             PH.DELETE_SW = 'N' AND
+             PS.DELETE_SW = 'N' AND
+             F_PRVPCKLST_CAT(PH.PROVIDER_ID,'PLACEMENT') IN ('3049','3274','3302');
+
+--DO
+loop
+ fetch cur_providers_refcur into cur_providers;
+           exit when not found;
+
+     vl_payment_header_id := cur_providers.PAYMENT_ID;--
+     vl_provider_id := cur_providers.PROVIDER_ID;--
+     vdc_total_gross_amount := cur_providers.GROSS_AMOUNT_NO;--
+
+    -- Check any offset amount for this provider
+     vdc_offset_amount := 0;--
+    IF vdc_total_gross_amount > 0 THEN
+       SELECT SP_PAYMENT_OFFSET (vl_provider_id, vdc_total_gross_amount) INTO vdc_offset_amount;--
+
+       IF vdc_offset_amount Is NULL THEN
+           vdc_offset_amount := 0.00;--
+       END IF;--
+ 
+       IF vdc_offset_amount > 0 THEN
+   IF vdc_total_gross_amount <= vdc_offset_amount  THEN
+       vdc_offset_amount := vdc_total_gross_amount;--
+   END IF;--
+  
+   SELECT SP_RECEIVABLE_OFFSET_AMOUNT ( vdc_offset_amount,
+         vl_provider_id,
+         vl_payment_header_id
+         ) INTO vl_sqlcode;--
+   IF vl_sqlcode <> 0 THEN
+       vs_Procedure_nm  :=  'SP_RECEIVABLE_OFFSET_AMOUNT'; --
+       vs_identity_column := 'Provider ID/ Payment ID';--
+       vs_identity_val := TO_CHAR(vl_provider_id) || '/ ' || TO_CHAR(vl_payment_header_id) ;--
+       as_error := as_error  ;--
+      IF as_error is NULL OR as_error = '' THEN
+          as_error := 'SP_RECEIVABLE_OFFSET_AMOUNT failed'  ;--
+      END IF;--
+      --SIGNAL p_sp_error  ;--
+   END IF ;--
+ ELSE
+    vdc_offset_amount := null;--
+ END IF;--
+    ELSE
+       vdc_offset_amount := null;--
+    END IF;--
+
+    UPDATE TB_PAYMENT_HEADER
+       SET  OFFSET_AMOUNT_NO = vdc_offset_amount
+    WHERE PAYMENT_ID = vl_payment_header_id ;--
+
+     al_sqlcode := SQLCODE;--
+    IF al_sqlcode <> 0 THEN
+        as_error := 'Error in Updating Gross Amount - TB_PAYMENT_HEADER'  ;--
+        vs_identity_column := 'Payment ID';--
+        vs_identity_val := TO_CHAR(vl_payment_header_id);--
+      -- SIGNAL p_sp_error  ;--
+    END IF ;--
+
+--COMMIT;--
+--END FOR ;--
+END LOOP;
+
+END 
+;
+
+$function$
+

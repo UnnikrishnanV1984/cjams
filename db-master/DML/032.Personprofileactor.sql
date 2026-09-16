@@ -1,0 +1,16 @@
+   update referencevalues set ref_key='ADV',mdmcode='ADV' where value_text='Advocate' and referencetypeid='176';
+     update referencevalues set ref_key='AV',mdmcode='AV' where value_text='Alleged Victim' and referencetypeid='176';
+     update referencevalues set ref_key='CASAWRKER',mdmcode='CASAWRKER' where value_text='CASA worker' and referencetypeid='176';
+    update referencevalues set ref_key='CDCP',mdmcode='CDCP' where value_text='Child Day Care Provider' and referencetypeid='176';
+  update referencevalues set ref_key='COURTTERAPST',mdmcode='COURTTERAPST' where value_text='Court Therapist' and referencetypeid='176';
+  update referencevalues set ref_key='FN',mdmcode='FN' where value_text='Friend/Neighbour' and referencetypeid='176';
+ update referencevalues set ref_key='LE',mdmcode='LE' where value_text='Law Enforcement' and referencetypeid='176';
+ update referencevalues set ref_key='LG',mdmcode='LG' where value_text='Legal Guardian' and referencetypeid='176';
+ update referencevalues set ref_key='LR',mdmcode='LR' where value_text='Legal Representative' and referencetypeid='176';
+ update referencevalues set ref_key='MP',mdmcode='MP' where value_text='Medical professional' and referencetypeid='176';
+ update referencevalues set ref_key='MHP',mdmcode='MHP' where value_text='Mental health Professional' and referencetypeid='176';
+ update referencevalues set ref_key='OtherADULT',mdmcode='OtherADULT' where value_text='Other Adult' and referencetypeid='176';
+ update referencevalues set ref_key='OTHERCHILD',mdmcode='OTHERCHILD' where value_text='Other Child' and referencetypeid='176';
+ update referencevalues set ref_key='PARENT',mdmcode='PARENT' where value_text='Parent' and referencetypeid='176';
+ update referencevalues set ref_key='RELATIVE',mdmcode='RELATIVE' where value_text='Relative' and referencetypeid='176';
+ update referencevalues set ref_key='SSP',mdmcode='SSP' where value_text='Residential facility Staff' and referencetypeid='176';

@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION as_datafix_correct_actorids()
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE 
+ v_actorid uuid;
+ v_record record;
+ v_updaterecord record;
+
+BEGIN 
+ DROP TABLE IF EXISTS tmp_datafix_correct_actorids; 
+ CREATE TEMP TABLE tmp_datafix_correct_actorids( intakeservicerequestactorid uuid, actorid uuid, personid uuid, intakeserviceid uuid, incorrectintakeserviceid uuid); 
+
+ INSERT INTO tmp_datafix_correct_actorids(intakeservicerequestactorid, actorid, personid, intakeserviceid, incorrectintakeserviceid) 
+ SELECT isra.intakeservicerequestactorid, ac.actorid, isra.personid, isra.intakeserviceid, ac.intakeserviceid FROM intakeservicerequestactor isra 
+ INNER JOIN actor ac ON ac.actorid = isra.actorid 
+ WHERE isra.activeflag = 1 AND isra.objecttype ILIKE 'as%' AND isra.intakeserviceid <> ac.intakeserviceid AND 
+ isra.intakeserviceid IS NOT NULL AND ac.intakeserviceid IS NOT NULL; 
+
+ FOR v_record IN (SELECT intakeserviceid, actorid, personid, incorrectintakeserviceid FROM tmp_datafix_correct_actorids GROUP BY intakeserviceid, actorid, personid, incorrectintakeserviceid)
+ LOOP 
+  v_actorid = gen_random_uuid();
+ 
+  INSERT INTO actor (actorid, activeflag, personid, intakeserviceid, actortype, insertedby, insertedon, updatedby, updatedon, objecttype)  
+  SELECT v_actorid, activeflag, personid, v_record.intakeserviceid, actortype, 'CDM-12551', now(),'CDM-12551', now(), 'as_intakeserviceid'
+  FROM actor WHERE actorid = v_record.actorid;
+
+  INSERT INTO personrole (activeflag, personid, ishouseholdmember, iscollateralcontact, drugexposednewbornflag, drugexposedtypekey,
+  otherdrugs, safehavenbabyflag, probationsearchconductedflag, sexoffenderregisteredflag, dangertoself, dangertoselfreason, isdangertoworker, 
+  dangertoworkerreason, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, updatedby, updatedon, intakeserviceid, islivingalone,livingwithfocusperson)
+  SELECT activeflag, personid, ishouseholdmember, iscollateralcontact, drugexposednewbornflag, drugexposedtypekey,
+  otherdrugs, safehavenbabyflag, probationsearchconductedflag, sexoffenderregisteredflag, dangertoself, dangertoselfreason, isdangertoworker, 
+  dangertoworkerreason, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, 'CDM-12551', now(), v_record.intakeserviceid, islivingalone,livingwithfocusperson
+  FROM personrole 
+  WHERE personid = v_record.personid AND intakeserviceid = v_record.incorrectintakeserviceid AND activeflag = 1 ORDER BY insertedon DESC LIMIT 1;
+  
+  UPDATE tmp_datafix_correct_actorids
+  SET actorid = v_actorid
+  WHERE actorid = v_record.actorid AND incorrectintakeserviceid = v_record.incorrectintakeserviceid;
+ END LOOP;
+
+ FOR v_updaterecord IN (SELECT * FROM tmp_datafix_correct_actorids)
+ LOOP
+  UPDATE intakeservicerequestactor 
+  SET actorid = v_updaterecord.actorid 
+  WHERE intakeservicerequestactorid = v_updaterecord.intakeservicerequestactorid;
+ END LOOP;
+ DROP TABLE IF EXISTS tmp_datafix_correct_actorids; 
+
+RETURN 'Sucess';
+END
+$function$
+

@@ -1,0 +1,315 @@
+CREATE OR REPLACE FUNCTION createservicecase(v_intakeserviceid uuid, v_servicecaseid character varying, isnewcase integer, v_userid character varying, v_subtypekey character varying DEFAULT ''::character varying, v_source character varying DEFAULT ''::character varying)
+ RETURNS TABLE(servicecaseno character varying, caseid uuid, message character varying, progrmkey character varying, subprogrmkey character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_personid uuid;
+ l_personname character varying(100);
+ l_servicecaseid uuid;
+ l_servicecasenumber character varying(20) ;
+ l_response text;
+ l_supervisor character varying(100);
+ l_servreqtypeid uuid;
+ l_servreqsubtypeid uuid;
+ l_status character varying;
+ l_programkey character varying;
+ l_subprogramkey character varying;
+ l_ihsprogramkey character varying;
+ l_ihssubprogramkey character varying;
+ l_crpersonid uuid;
+ l_dispositionstatus character varying;
+ v_collateralmsg CHARACTER VARYING;
+ v_intakenumber character varying;
+ l_documentpropertiesid uuid;
+ currentRow record;
+ l_servicecasedispositionid uuid;
+ l_record RECORD;
+ l_action_type character varying;
+ l_isfinalscreenin boolean;
+ l_isIr boolean;
+ l_isAr boolean;
+
+BEGIN
+
+     IF (COALESCE(v_subtypekey,'') ='') THEN 
+  v_subtypekey:='default';
+     END IF;
+     IF (COALESCE(lower(v_source),'') in ('intake','cps')) THEN 
+  l_status:='OPEN';
+     END IF;
+ 
+ CREATE TEMP TABLE IF NOT EXISTS
+ Temp_insert_person_program_area (
+ personprogramid uuid
+ );
+
+  /*DA Type and Sub type taken for Servicecase */
+     SELECT  intakeservreqtypeid INTO l_servreqtypeid  FROM intakeservicerequesttype WHERE LOWER(intakeservreqtypekey) ='servicecase' AND activeflag =1 LIMIT 1;  
+  SELECT  servicerequestsubtypeid INTO l_servreqsubtypeid FROM servicerequestsubtype  WHERE LOWER(classkey) =LOWER(v_subtypekey) AND activeflag =1 AND intakeservreqtypeid = l_servreqtypeid LIMIT 1;
+  
+     /*Get Program area and Sub program Area*/
+   SELECT programkey, subprogramkey INTO l_programkey, l_subprogramkey FROM programareaconfig WHERE LOWER(servicerequestsubtypekey) = LOWER(v_subtypekey) AND isdefault =1 ;
+ 
+     /*Get InHome service Program area and Sub program Area*/
+     IF (v_subtypekey='ohm') THEN
+        SELECT ISRA.personid INTO l_crpersonid 
+        FROM Intakeservreqchildremoval cr INNER JOIN intakeservicerequestactor ISRA ON ISRA.intakeservicerequestactorID = CR.intakeservicerequestactorid AND ISRA.activeflag =1 
+        WHERE cr.activeflag =1 AND CR.intakeserviceid =   v_intakeserviceid LIMIT 1;
+
+        SELECT programkey, subprogramkey INTO l_ihsprogramkey, l_ihssubprogramkey FROM programareaconfig WHERE LOWER(servicerequestsubtypekey) =   'ihm'  AND isdefault =1 ;
+ ELSE 
+  SELECT l_programkey, l_subprogramkey INTO l_ihsprogramkey, l_ihssubprogramkey;
+    END IF;
+
+    IF (isnewcase=1) THEN  
+  SELECT fromsecurityusersid::CHARACTER VARYING  INTO l_supervisor 
+  FROM routing  r
+  WHERE eventcode ='INVT' AND r.routingstatustypeid = 4
+  AND r.objectid = v_intakeserviceid::character varying AND r.activeflag =1
+  ORDER BY insertedon DESC LIMIT 1;
+  
+        INSERT INTO servicecase 
+                    (caseheadname, 
+                     caseheadid, 
+                     startdate, 
+                     statustypekey, 
+                     insertedby, 
+      insertedon,
+      updatedon,      
+                     updatedby, 
+                     intakeservreqtypeid) 
+        VALUES     (l_personname, 
+                    l_personid, 
+                    Now(), 
+                    l_status, 
+                    v_userid, 
+     now(),
+     now(),
+                    v_userid, 
+                    l_servreqtypeid) 
+        returning "servicecaseid"  INTO l_servicecaseid; 
+        SELECT servicecasenumber INTO l_servicecasenumber FROM servicecase WHERE servicecaseid =l_servicecaseid;
+
+  /*Request info added */
+        INSERT INTO servicecaserequest 
+                    (servicecaseid, 
+                     intakeservreqtypeid, 
+                     servicerequestsubtypeid, 
+                     programkey, 
+                     subprogramkey, 
+                     insertedby, 
+      insertedon,
+      updatedon,       
+                     updatedby) 
+        VALUES (l_servicecaseid, 
+                     l_servreqtypeid, 
+                     l_servreqsubtypeid, 
+                     l_programkey, 
+                     l_subprogramkey, 
+                     v_userid, 
+      now(), 
+      now(),      
+                     v_userid);            
+      
+        /*Map person into  Service case*/
+        UPDATE actor SET servicecaseid = l_servicecaseid WHERE intakeserviceid = v_intakeserviceid AND activeflag =1 ; 
+        
+  UPDATE intakeservicerequestactor SET servicecaseid = l_servicecaseid 
+        WHERE intakeserviceid = v_intakeserviceid AND actorid IN (SELECT actorid FROM actor  WHERE intakeserviceid = v_intakeserviceid ); 
+  
+  UPDATE personrole SET servicecaseid = l_servicecaseid  WHERE intakeserviceid = v_intakeserviceid AND activeflag =1 ;
+  SELECT routingintake INTO l_response 
+        FROM routingintake(l_servicecaseid:: character varying ,v_userid,'SRVC',2,'Servicecase Created',v_userid, true,false,false, 
+  'Servicecase Created','Servicecase Created', l_servicecaseid:: character varying,'' , 1);
+ 
+     SELECT createfcchecklist INTO   l_response 
+        FROM   Createfcchecklist(l_servicecaseid, l_servreqtypeid, l_servreqsubtypeid, v_userid , 'CW'); 
+       
+  SELECT intakenumber into v_intakenumber from intakeservicerequest where intakeserviceid = v_intakeserviceid :: uuid order by insertedon desc limit 1;
+
+  FOR  currentRow  in ( Select  *   FROM documentproperties where intakenumber=v_intakenumber )
+  LOOP 
+   INSERT INTO documentproperties
+   ( objecttypekey, objectid, documenttypekey, documentdate, clientid, servicerequestid, 
+   thirdpartysourceid, filename, tag, title, description, mime, meta, "encoding", numberofbytes, updatedby, updatedon,
+   insertedby, insertedon, activeflag, expirationdate, old_id, "timestamp", voidedby, voidedon, voidreasonid, 
+   rootobjectid, rootobjecttypekey, s3bucketpathname, intakenumber, originalfilename, ecmsdocumentid, servicecaseid)
+   SELECT  'Servicecase', objectid, documenttypekey, documentdate, clientid, servicerequestid, 
+   thirdpartysourceid, filename, tag, title, description, mime, meta, "encoding", numberofbytes, updatedby, now(),
+   insertedby, now(), 1, expirationdate, old_id, "timestamp", voidedby, voidedon, voidreasonid,
+   rootobjectid, rootobjecttypekey, s3bucketpathname, intakenumber, originalfilename, ecmsdocumentid, l_servicecaseid
+   FROM documentproperties where documentpropertiesid=currentRow.documentpropertiesid  returning "documentpropertiesid"  INTO l_documentpropertiesid; 
+
+   INSERT INTO documentattachment
+   ( documentpropertiesid, attachmenttypekey, attachmentclassificationtypekey,
+   attachmentid, attachmentdate, sourceauthor, sourceposition, sourcephonenumber, sourceaddress, 
+   attachmentsubject, attachmentpurpose, acquisitionmethod, locationoforiginal, note, updatedby, 
+   updatedon, insertedby, insertedon, activeflag, expirationdate, old_id, "timestamp", assessmenttemplateid, 
+   attachmentclassificationsubtypekey)
+   SELECT  l_documentpropertiesid, attachmenttypekey, attachmentclassificationtypekey,
+   attachmentid, attachmentdate, sourceauthor, sourceposition, sourcephonenumber, sourceaddress,
+   attachmentsubject, attachmentpurpose, acquisitionmethod, locationoforiginal, note, updatedby,
+   now(), insertedby, now(), 1, expirationdate, old_id, "timestamp", assessmenttemplateid, 
+   attachmentclassificationsubtypekey
+   FROM documentattachment where documentpropertiesid = currentRow.documentpropertiesid;
+  END  LOOP; 
+
+  INSERT INTO servicecasedisposition
+  (servicecaseid, statusdate, intakeserreqstatustypekey, dispositioncode, "comments", effectivedate, activeflag, insertedby, insertedon, updatedby, updatedon)
+  VALUES(l_servicecaseid, now(), 'Open', 'Inprogress','Case Accepted', now(), 1, v_userid,now(),v_userid,now())
+  RETURNING servicecasedispositionid into l_servicecasedispositionid;
+
+  INSERT INTO routing(routingstatustypeid, objectid, eventcode, fromsecurityusersid, activeflag, insertedby, insertedon, updatedby, updatedon)
+  VALUES(16,l_servicecasedispositionid,'SCDR',v_userid, 1, v_userid, now(), v_userid, now());
+      
+  ELSE 
+ 
+  l_servicecaseid =v_servicecaseid::uuid;
+
+  SELECT servicecasenumber INTO l_servicecasenumber FROM servicecase WHERE servicecaseid =l_servicecaseid;
+  SELECT intakeserreqstatustypekey INTO l_dispositionstatus FROM servicecasedisposition WHERE servicecaseid =l_servicecaseid ORDER BY statusdate DESC, insertedon DESC LIMIT 1;
+  /*Map person into Existing Service case*/
+  UPDATE intakeservicerequestactor
+  SET servicecaseid = l_servicecaseid ,
+  updatedby = v_userid,
+  updatedon = now()
+  WHERE intakeserviceid = v_intakeserviceid 
+  AND actorid IN (SELECT actorid FROM actor  WHERE intakeserviceid = v_intakeserviceid )-- AND ishouseholdmember =1
+  AND personid NOT IN ( SELECT personid FROM intakeservicerequestactor WHERE  servicecaseid = l_servicecaseid AND activeflag =1 );
+
+  UPDATE actor set servicecaseid = l_servicecaseid,updatedby = v_userid,updatedon = now()  
+  FROM intakeservicerequestactor ISR 
+  WHERE ISR.actorid = actor.actorid AND ISR.servicecaseid =l_servicecaseid AND actor.servicecaseid IS  NULL; 
+  /*case reopened where case is closed*/
+
+  UPDATE personrole SET servicecaseid = l_servicecaseid, updatedby = v_userid, updatedon = now() WHERE intakeserviceid = v_intakeserviceid AND activeflag =1 ;
+
+  SELECT intakenumber into v_intakenumber from intakeservicerequest where intakeserviceid = v_intakeserviceid :: uuid order by insertedon desc limit 1;
+
+  UPDATE documentproperties SET objecttypekey = 'Servicecase',updatedby = v_userid, updatedon = now(), servicecaseid = l_servicecaseid
+  where documentpropertiesid in ( Select  documentpropertiesid   FROM documentproperties where intakenumber=v_intakenumber );
+  
+  IF (LOWER(l_dispositionstatus) IN ('completed','closed')) THEN 
+   /*D-20943&D-20942 - UPDATE CASE REOPEN DATE IN STARTDATE */
+   UPDATE servicecase SET statustypekey ='OPEN', dispositioncode = NULL, updatedby = v_userid,updatedon = now(), enddate = null, startdate =now() WHERE servicecaseid = l_servicecaseid  ;
+
+   INSERT INTO servicecasedisposition
+   (servicecaseid, statusdate, intakeserreqstatustypekey, dispositioncode, "comments", effectivedate, activeflag, insertedby, insertedon, updatedby, updatedon)
+   VALUES(l_servicecaseid, now(), 'Open', 'Inprogress','Case Reopened', now(), 1, v_userid,now(),v_userid,now());
+
+   SELECT routingintake INTO l_response 
+   FROM routingintake(l_servicecaseid:: character varying ,v_userid,'SRVC',2,'Servicecase Re-opened',v_userid,
+   true,false,false, 'Servicecase Re-opened','Servicecase Re-opened', l_servicecaseid:: character varying,'' , 1);
+  END IF;
+
+  /*Request info added */
+  IF NOT EXISTS (
+   SELECT 1 FROM servicecaserequest 
+   WHERE servicecaseid = l_servicecaseid 
+   AND intakeservreqtypeid= l_servreqtypeid 
+   AND servicerequestsubtypeid= l_servreqsubtypeid
+  ) THEN
+   INSERT INTO servicecaserequest 
+   (servicecaseid, 
+   intakeservreqtypeid, 
+   servicerequestsubtypeid, 
+   programkey, 
+   subprogramkey, 
+   insertedby, 
+   updatedby,
+   insertedon,
+   updatedon) 
+   VALUES (l_servicecaseid, 
+   l_servreqtypeid, 
+   l_servreqsubtypeid, 
+   l_programkey, 
+   l_subprogramkey, 
+   v_userid, 
+   v_userid,
+   now(),
+   now()); 
+
+   SELECT createfcchecklist INTO l_response FROM createfcchecklist(l_servicecaseid,l_servreqtypeid,l_servreqsubtypeid,v_userid, 'CW');
+     END IF; 
+  
+ END IF; 
+
+   /*Insert program Area and Sub programarea
+     # INSERT PROGRAM ASSIGNMENT FOR CHILD REMOVAL WITH ACTIVEFLAG=2 TO AVOID SHOWING IN PERSON CARD
+     # ON SUPERVISOR APPROVAL UPDATE THE ACTIVEFLAG = 1
+   */
+ IF (LOWER(l_programkey) = 'ooh') THEN 
+  WITH temp_ids AS (INSERT INTO personprogramarea (
+   personid, 
+   programkey, 
+   subprogramkey, 
+   objecttypekey, 
+   objectid, 
+   startdate, 
+   insertedby, 
+   updatedby,
+   entityid, datatransferflag,
+   activeflag,
+   sourcetype
+  ) SELECT 
+   personid, 
+   l_programkey, 
+   l_subprogramkey, 
+   'servicecase', 
+   l_servicecaseid, 
+   Now() :: DATE, 
+   v_userid, 
+   v_userid,
+   l_servicecasenumber, 'A',
+   CASE LOWER(l_programkey) WHEN 'ooh' THEN 2 ELSE 1 END,
+   'CW'
+  FROM actor 
+  WHERE intakeserviceid = v_intakeserviceid AND activeflag = 1 AND personid :: CHARACTER VARYING   IN (COALESCE(l_crpersonid :: CHARACTER VARYING,''))
+  RETURNING personprogramid)
+  INSERT INTO Temp_insert_person_program_area SELECT personprogramid from temp_ids;
+
+  FOR l_record IN (select * from Temp_insert_person_program_area)
+  LOOP
+   INSERT INTO auditlog(referenceid, logtypekey, description, metadata, insertedon, insertedby)
+   VALUES(l_record.personprogramid,'PRGMAREA','systemupdate06',
+      (SELECT row_to_json(personprogramarea) FROM personprogramarea WHERE personprogramid = l_record.personprogramid), now(), v_userid);
+  END LOOP;
+
+  DROP TABLE Temp_insert_person_program_area;
+   
+ END IF;
+ 
+ /*Map Existing Transaction to  Servicecase*/      
+ UPDATE intakeservicerequest SET servicecaseid = l_servicecaseid, updatedby = v_userid, updatedon = now() 
+ WHERE intakeserviceid = v_intakeserviceid;
+ 
+ UPDATE intakeservreqchildremoval SET servicecaseid = l_servicecaseid, updatedby = v_userid, updatedon = now()  
+ WHERE intakeserviceid = v_intakeserviceid;
+ 
+ UPDATE assessment SET servicecaseid = l_servicecaseid, updatedby = v_userid, updatedon = now() 
+ WHERE objectid = v_intakeserviceid  ;
+ 
+ SELECT actiontype,COALESCE(sdm.isfinalscreenin,false), COALESCE(sdm.isAr,false), COALESCE(sdm.isIr,false) INTO l_action_type,l_isfinalscreenin,l_isAr,l_isIr FROM intakeservicerequest ir
+    LEFT OUTER JOIN intakeservicerequestsdm sdm ON sdm.intakeserviceid = ir.intakeserviceid
+    WHERE ir.intakeserviceid = v_intakeserviceid;
+ 
+ IF ( (l_action_type IS NULL OR l_action_type = '' OR v_subtypekey = 'IHM') AND (l_isfinalscreenin = false or (l_isAr = false and l_isIr = false)) ) THEN 
+    UPDATE intakeservicerequest SET activeflag=0, updatedby = v_userid, updatedon = now() 
+    WHERE intakeserviceid = v_intakeserviceid;
+ END IF;
+
+/*           
+ UPDATE personprogramarea SET enddate=now()::date, datatransferflag='U', updatedon = now(), updatedby =v_userid 
+ WHERE objectid in (Select intakeserviceid:: character varying from intakeservicerequest 
+ WHERE servicecaseid =l_servicecaseid and activeflag =1 )
+ AND enddate IS NULL AND programkey NOT IN ('CPS');
+*/      
+ -- Add collaterals to case on approval
+ select * from addcollateralsfromintaketocase(v_intakeserviceid::CHARACTER VARYING, l_servicecaseid::CHARACTER VARYING, v_userid) INTO v_collateralmsg;
+    
+ RETURN QUERY SELECT l_servicecasenumber, l_servicecaseid,'Success':: character varying, l_ihsprogramkey, l_ihssubprogramkey;
+ 
+ END;
+
+$function$
+

@@ -1,0 +1,1 @@
+update cjams.permanencyplan set enddate = '2020-06-02 00:00:00' where permanencyplanid = 'f707915b-da85-4645-8177-9ff9136594f3';

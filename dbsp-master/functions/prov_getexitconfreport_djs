@@ -1,0 +1,167 @@
+CREATE OR REPLACE FUNCTION prov_getexitconfreport_djs(v_ec_number character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_provider_info json;
+v_exit_conf json;
+v_provider_id integer;
+v_site_id integer;
+v_site_details json;
+v_monitor_info json;
+v_site_list json;
+v_officers_info json;
+v_child_questions json;
+v_activity_info json;
+v_personsign json;
+v_monitoring json;
+v_pminfo_info json;
+v_sofficers_info json;
+v_license_info json;
+v_exit_conf_details json;
+v_exit_conf_details_old json;
+v_exit_conf_details_cnt json;
+v_corp_info json;
+v_incident_info json;
+v_monitoring_st_dt date;
+v_child_interview json;
+v_staff_interview json;
+v_monitoring_end_dt date;
+v_prgram character varying;
+v_records_type character varying;
+v_reporting_start_date timestamp without time zone;
+v_reporting_end_date timestamp without time zone;
+v_license_signature json;
+v_site_staff json;
+v_site_assignments json;
+
+
+begin
+ raise notice 'exit conf: %', v_ec_number;
+select provider_id,site_id into v_provider_id,v_site_id from prov_monitoring_exit_conf where exit_conf_number = v_ec_number limit 1;
+
+select jsonb_agg(a) into v_license_signature from (
+select ta.*, (select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) from userprofilephonenumber u where
+  u.securityusersid in (select securityusersid from muser 
+where username = ta.signature ->>'name' and activeflag = '1' limit 1)) as staffcell from prov_signature_capture ta where ta.object_id = v_ec_number and ta.delete_sw = 'N'
+)a;
+
+select json_agg(site_assignments) into v_site_assignments from 
+    ( select distinct m.username,m.email,
+        (select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) ) 
+        as phonenumber,r.name, r.description 
+        from muser m 
+        left join userprofilephonenumber u on u.securityusersid =m.securityusersid 
+        join rolemapping r2 on r2.principalid = m.id and r2.activeflag = '1' and r2.teamtypekey not in ('CW','ASPROV','AS')
+        join role r on r.id = r2.roleid
+        join providerassignment pa on pa.toworkeridno = m.securityusersid and pa.activeflag  = 1 and pa.enddate is null
+        and pa.objectid = v_site_id 
+    ) site_assignments ;
+            
+select json_agg(site_staff) into v_site_staff from 
+    (select distinct tps.first_nm,tps.last_nm,tps.staff_email ,tps.staff_phone_no, tps.employee_type , p2.object_id as site_id
+         from providerstaff tps 
+        join providerstaffconfig p2 on tps.provider_staff_id = p2.provider_staff_id 
+        join prov_monitoring_exit_conf pmec on pmec.site_id = p2.object_id 
+        where tps.object_id = v_provider_id and pmec.exit_conf_number = v_ec_number
+    ) site_staff ;
+        
+select json_agg(providerinfo) into v_provider_info from (
+  select pi.agency as agency_1,(select agency from tb_provider where provider_id = v_provider_id) as agency,(select json_agg(a)  from(select tps.first_nm,tps.last_nm,tps.staff_email ,tps.staff_phone_no from providerstaff tps where tps.object_id = pi.provider_id  
+   and tps.employee_type='Program Administrator')a)as providerstaff ,pi.adm_contact_first_nm,pi.adm_contact_last_nm ,pi.provider_nm, (select * from prov_get_formatted_addresses(pi.provider_id)) as address
+     from tb_provider pi where pi.provider_id=v_site_id
+ )providerinfo;
+
+
+
+ select json_agg(exit_conf_details) into v_exit_conf_details from (select distinct tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,prq.displayorder,
+                  (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                  (case when tp.provider_nm is null then (select * from prov_get_formatted_applicantaddresses(pv.applicant_id))  else (select * from prov_get_formatted_addresses_exit_conf_djs(tp.provider_id)) end) as site_address,
+                  (case when tp.provider_id::character varying is null then pv.applicant_id else tp.provider_id::character varying end) as site_id,
+                  pv.reference_value_id,
+                  pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+                  pv.referencetype,
+                  pv.reference_id,
+                  pv.violation_id,
+                  pv.deficiency_number,
+                  mec.cap_number_djs,
+                  pv.comments,
+                  pv.isdraft,
+                  pv.cap_status,
+                  pv.cap_status_description,
+                  pv.planofcorrection,
+                  pv.personresponsible,
+                  pv.title,
+                  pv.disputecomarcitation,
+                  pv.targetdate,
+                  pv.isdispute,
+                  pv.isacknowledged,
+                  pv.isnotificationsent,
+                  pv.duedate,
+                  pv.cap_needed,
+                  pv.cap_resolved,
+                  pv.rationale,
+                  mec.exit_conf_number, 
+                  mec.summary, 
+                  mec.program_changes, 
+                  mec.exit_dt, 
+                  mec.ec_comments, 
+                  mec.rationale_comments,
+                  mec.ec_status ,
+                  mec.ec_isacknowledged,
+                  mec.ec_isnotificationsent,
+                  mec.ec_prv_signimage,
+                  mec.ec_prv_signdate,
+                  mec.cap_submitted_by, 
+                  mec.cap_submitted_dt,
+                  mec.cap_created_dt,
+                  mec.provider_id,
+                  prq.type_of_regulation,
+                  prq.object_id as question_object_id,
+                  prq.object_type as question_object_type,
+                  prq.question_comments,
+                  pv.adhoc_regulation_sw,
+      mu.username,
+                  mm.monitoring_id
+              from  prov_violation pv
+                inner join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+                left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+                left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = mec.site_id and tp.delete_sw = 'N'
+                left join prov_monitoring mm                  on mm.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and mm.delete_sw = 'N'
+    left join muser mu                         on mu.securityusersid = mec.cap_submitted_by
+                where  pv.delete_sw = 'N'
+                    and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+                    and (case when pv.referencetype = 'Monitoring' then mm.delete_sw = 'N' else true end)
+    and (prq.monitoring_id is null or prq.monitoring_id = mm.monitoring_id)
+    and mec.exit_conf_number = v_ec_number )exit_conf_details;
+
+   select json_agg(exit_conf_details_cnt) into v_exit_conf_details_cnt from ( select prq.question ,count(1) as cnt
+    from  prov_violation pv
+                inner join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+                left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+                left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = pv.site_id and tp.delete_sw = 'N'
+                left join prov_monitoring mm                  on mm.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and mm.delete_sw = 'N'
+                where  pv.delete_sw = 'N'
+                    and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+                    and (case when pv.referencetype = 'Monitoring' then mm.delete_sw = 'N' else true end)
+    and (prq.monitoring_id is null or prq.monitoring_id = mm.monitoring_id)
+    and mec.exit_conf_number = v_ec_number group by prq.question )exit_conf_details_cnt;
+
+
+return (json_build_object(
+'license_info',v_license_info,
+'site_staff', v_site_staff,
+'site_assignments', v_site_assignments,
+'license_signature',v_license_signature,
+'exit_conf_details', v_exit_conf_details,
+'exit_conf_details_cnt',v_exit_conf_details_cnt,
+'provider_info', v_provider_info
+));
+
+END;
+$function$
+

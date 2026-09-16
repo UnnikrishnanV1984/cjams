@@ -1,0 +1,36 @@
+DROP FUNCTION  IF EXISTS getcasereviewlist();
+
+CREATE OR REPLACE FUNCTION getcasereviewlist()
+ RETURNS TABLE(totalcount bigint, casereviewid uuid, reviewtypekey character varying,
+                reviewdate timestamp, reviewtime timestamp, nextreviewdate timestamp, 
+                panelworkerid integer, panelsupervisorid integer, otherpanelmembers character varying,
+	            caseid uuid, otherparticipants character varying, 
+                continuedneedtypekey character varying, carequalitytypekey character varying,
+	            permanencyplantypekey character varying, recommendations character varying,
+	            crbrecmdtypekey character varying, crbresponsetypekey character varying,
+                comments character varying, fk_id character varying, insertedby character varying,
+	            insertedon timestamp, updatedby character varying, updatedon timestamp,
+                activeflag integer, placementplantypekey character varying,
+	            waiverreuinontypekey character varying, tprtypekey character varying,
+	            adequacyprogresstypekey character varying, safetyassessmenttypekey character varying,
+	            datavalidflag integer, clientmergeid uuid, old_id character varying, personid uuid)
+ LANGUAGE plpgsql
+AS $function$
+	
+BEGIN 
+
+RETURN QUERY 
+    SELECT  count(1) over(), cr.casereviewid, cr.reviewtypekey, cr.reviewdate, cr.reviewtime,
+            cr.nextreviewdate, cr.panelworkerid, cr.panelsupervisorid, cr.otherpanelmembers,
+            cr.caseid, cr.otherparticipants, cr.continuedneedtypekey, cr.carequalitytypekey,
+            cr.permanencyplantypekey, cr.recommendations, cr.crbrecmdtypekey,
+            cr.crbresponsetypekey, cr.comments, cr.fk_id, cr.insertedby, cr.insertedon,
+        	cr.updatedby, cr.updatedon, cr.activeflag, cr.placementplantypekey,
+            cr.waiverreuinontypekey, cr.tprtypekey, cr.adequacyprogresstypekey,
+            cr.safetyassessmenttypekey, cr.datavalidflag, cr.clientmergeid, cr.old_id, cr.personid
+    FROM casereview cr where cr.activeflag=1;
+    
+END;
+
+$function$
+

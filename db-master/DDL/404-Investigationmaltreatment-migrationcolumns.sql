@@ -1,0 +1,9 @@
+ALTER TABLE investigationmaltreatment ADD COLUMN IF NOT EXISTS fk_am_id character varying;
+ALTER TABLE investigationmaltreatmentactor ADD COLUMN IF NOT EXISTS  fk_am_id character varying;
+ALTER TABLE investigationallegation ADD COLUMN IF NOT EXISTS  fk_am_id character varying;
+ALTER TABLE investigationallegationmaltreators ADD COLUMN IF NOT EXISTS  fk_am_id character varying;
+ALTER TABLE investigationallegationcharacterstics ADD COLUMN IF NOT EXISTS  fk_am_id character varying;
+ALTER TABLE investigationallegationinjury ADD COLUMN IF NOT EXISTS  fk_am_id character varying;
+ALTER TABLE investigationallegationinjurycharacterstics ADD COLUMN IF NOT EXISTS  fk_am_id character varying;
+ALTER TABLE investigationfinding ADD COLUMN IF NOT EXISTS  fk_r_id character varying;
+ALTER TABLE investigationfinding ADD COLUMN IF NOT EXISTS  fk_am_id character varying;

@@ -1,0 +1,122 @@
+CREATE OR REPLACE FUNCTION prov_searchcontractprograms(reqjson json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_contract_id character varying;
+v_current_contract_id character varying;
+v_provider_id character varying;
+v_contract_number character varying;
+v_program_id character varying;
+v_program_nm character varying;
+v_sort_dir character varying;
+v_sort_column character varying;
+v_search_column character varying;
+v_is_csa boolean default false;
+v_is_djs boolean default false;
+v_skip numeric;
+jsondata  json;
+wherejson json;
+
+BEGIN
+
+v_contract_id := reqjson->>'contract_id';
+v_current_contract_id := reqjson->>'current_contract_id';
+v_provider_id := reqjson->>'provider_id';
+v_contract_number := reqjson->>'contract_number';
+v_program_id := reqjson->>'program_id';
+v_program_nm := reqjson->>'program_nm';
+
+v_program_nm = lower(trim(v_program_nm));
+v_program_id = lower(trim(v_program_id));
+v_provider_id = lower(trim(v_provider_id));
+v_contract_id = lower(trim(v_contract_id));
+v_contract_number = lower(trim(v_contract_number));
+
+v_sort_dir := reqjson->>'sort_dir';
+v_sort_column := reqjson->>'sort_column';
+v_search_column := reqjson->>'search_column';
+v_is_csa := reqjson->>'is_csa';
+v_is_djs := reqjson->>'is_djs';
+v_skip := reqjson->>'skip';
+
+SELECT  Json_agg(a)  INTO  jsondata  FROM  (
+
+SELECT  count(1) over() as totalcount,  atemp.*, 
+        (select json_agg(s) from (
+          SELECT cps.site_id, tp.provider_nm as site_name,
+          (select json_agg(l) from (
+            SELECT tpl.license_no, tpl.license_level, tpl.license_type, tpl.license_application_id, tpl.license_status_cd, tpl.license_issue_dt, tpl.license_expiry_dt
+            FROM tb_provider_licensing tpl 
+            WHERE tpl.site_id = cps.site_id and tpl.active_sw = 'Y'
+            AND tpl.delete_sw = 'N'
+            ) l ) as licenses
+          FROM tb_prov_program_sites cps 
+          INNER JOIN tb_provider tp on tp.provider_id = cps.site_id 
+            and tp.delete_sw = 'N'
+          WHERE cps.program_id = atemp.program_id
+            and cps.delete_sw='N'
+        ) s ) as site_list
+        FROM (
+        SELECT distinct tpc.contract_number, cp.contract_id, cp.is_csa, cp.is_djs,  tp.provider_nm,
+              cp.program_nm as program_name, tp.provider_id, cp.start_dt::character varying as start_dt,
+                cp.end_dt::character varying as end_dt,
+                cp.program_id::character varying as program_id
+        FROM tb_contract_program cp
+        LEFT JOIN tb_provider_contracts tpc  
+        on cp.contract_id = tpc.contract_id
+        and cp.delete_sw = 'N'
+        INNER JOIN tb_provider tp on tp.provider_id = tpc.provider_id and tp.delete_sw='N'
+        WHERE 
+        tpc.delete_sw = 'N'
+        and cp.contract_id not in (v_current_contract_id)
+        and cp.program_status_cd = 3625 
+        and case 
+            when v_is_csa = true then cp.is_csa = v_is_csa 
+            when v_is_csa = false then cp.is_csa = false or cp.is_csa is null 
+            else true end
+        and case 
+            when v_is_djs = true then cp.is_djs = v_is_djs 
+            when v_is_djs = false then cp.is_djs = false or cp.is_djs is null 
+            else true end
+
+        and case 
+            when v_contract_id is not null then cp.contract_id like '%'||v_contract_id||'%'
+            else true end
+        and case 
+            when v_provider_id is not null then tpc.provider_id like '%'||v_provider_id||'%' 
+            else true end
+        and case 
+            when v_contract_number is not null then tpc.contract_number ilike '%'||v_contract_number||'%' 
+            else true end
+        and case 
+            when v_program_id is not null then cp.program_id like '%'||v_program_id||'%' 
+            else true end
+        and case 
+            when v_program_nm is not null then cp.program_nm ilike '%'||v_program_nm||'%' 
+            else true end
+        ) atemp
+        order by (case v_sort_dir when 'asc' then 
+         case v_sort_column 
+             when 'start_dt' then atemp.start_dt
+             when 'end_dt' then atemp.end_dt
+         else atemp.program_id
+         end
+    END) ASC NULLS LAST,
+    (case v_sort_dir when 'desc' then 
+         
+         case v_sort_column 
+             when 'start_dt' then atemp.start_dt
+             when 'end_dt' then atemp.end_dt
+         else atemp.program_id
+         end
+    END) DESC NULLS LAST
+        LIMIT 10  OFFSET v_skip
+)  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

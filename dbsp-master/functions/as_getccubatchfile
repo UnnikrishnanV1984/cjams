@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION as_getccubatchfile()
+ RETURNS TABLE(totalcount bigint, intakeserreqrestitutionid uuid, restitutionno integer, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, youthpersonid uuid, youthpersonname character varying, djsyouthpersonname character varying, victimpersonid uuid, victimpersonname character varying, djsvictimpersonname character varying, restitutiontype character varying, payment numeric, paidamount numeric, balanceamount numeric, liablepersonid uuid, liablepersonname text, relationship character varying, relationshipdescription text, duedate character varying, courtdeferredduedate character varying, status character varying, frequency character varying, installmentamount numeric, initialpaymentdate character varying, inactivereasontype character varying, isccu boolean, isccusent boolean, createdby character varying, insertedon timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+fromdate timestamp without time zone;
+todate timestamp without time zone;
+
+begin
+
+--fromdate:= now():: date - interval '1 month';
+--todate:=  now():: date - interval '1 day';
+
+ fromdate:= '2019-05-01';
+ todate:= '2019-05-31';
+
+RETURN query
+select count(1) over() totalcount, inr.intakeserreqrestitutionid, inr.restitutionno ,
+  inr.intakeserviceid ,ISR.servicerequestnumber , inr.intakenumber , inr.youthpersonid,cast(INITCAP(TRIM(coalesce(yp.lastname,''))|| CASE WHEN yp.suffix is not null THEN '' ELSE '' END  || TRIM(coalesce(yp.suffix,'')) || ', ' ||TRIM(coalesce(yp.firstname,''))) as  character varying) as youthpersonname,
+  cast(INITCAP(TRIM(coalesce(yp.lastname,''))|| CASE WHEN yp.suffix is not null THEN '' ELSE '' END  || TRIM(coalesce(yp.suffix,'')) || ',' ||TRIM(coalesce(yp.firstname,''))) as  character varying) as DJSyouthpersonname,
+  inr.victimpersonid ,cast(INITCAP(TRIM(coalesce(vp.lastname,''))|| CASE WHEN vp.suffix is not null THEN '' ELSE '' END  || TRIM(coalesce(vp.suffix,'')) || ',' ||TRIM(coalesce(vp.firstname,''))) as  character varying) as  victimpersonname ,
+  cast(INITCAP(TRIM(coalesce(vp.lastname,''))|| CASE WHEN vp.suffix is not null THEN '' ELSE '' END  || TRIM(coalesce(vp.suffix,'')) || ', ' ||TRIM(coalesce(vp.firstname,''))) as  character varying) as DJSvictimpersonname,
+  inr.restitutiontype ,
+  
+  coalesce(inr.payment, 0) as payment,
+  coalesce(inr.paidamount,0) as paidamount,
+  coalesce(inr.payment,0)-coalesce(inr.paidamount,0) as balanceamount,
+  inr.liablepersonid ,lp.lastname || '' || lp.firstname as  liablepersonname ,
+  inr.liablepersonrelationtypekey as relationship,rst.description as relationshipdescription ,
+  cast(TO_CHAR(inr.duedate,'MM-DD-YYYY' ) as character varying),
+  cast(TO_CHAR(inr.courtdeferredduedate,'MM-DD-YYYY') as character varying ),
+  inr.status,inr.frequency,
+  inr.installmentamount , 
+  cast(TO_CHAR(inr.paymentstartdate,'MM-DD-YYYY' ) as character varying ) as initialpaymentdate,inr.inactivereasontype,inr.isccu, inr.isccusent,
+  up.fullname as createdby,inr.insertedon as createdon
+  from
+  (select irn.restitutionno, max(irn.insertedon) insertedon from intakeserreqrestitution irn where irn.activeflag = 1 group by irn.restitutionno) res
+  Join intakeserreqrestitution as inr 
+    on inr.restitutionno = res.restitutionno and inr.insertedon = res.insertedon
+  Join person yp 
+    on yp.personid=inr.youthpersonid 
+  Join person vp 
+    on vp.personid=inr.victimpersonid
+  left Join person lp 
+    on lp.personid=inr.liablepersonid 
+  left join relationshiptype rst 
+    on rst.relationshiptypekey =inr.liablepersonrelationtypekey 
+  Join userprofile up 
+    on up.securityusersid=inr.insertedby  
+  join intakeservicerequest as ISR
+    on ISR.intakeserviceid = inr.intakeserviceid and ISR.activeflag=1
+        Join routing as r 
+    on r.objectid = inr.restitutionno::character varying and r.activeflag = 1 and r.routingstatustypeid = 64     
+  where inr.isccusent = true and inr.activeflag=1 and inr.status!='Inactive' 
+  and to_date(cast(inr.ccuapprovedate::date as text), 'YYYY-MM-DD') 
+  BETWEEN to_date(cast(fromdate::date as TEXT), 'YYYY-MM-DD') and to_date(cast(todate::date as text), 'YYYY-MM-DD')
+   ORDER BY inr.updatedon desc;
+end;
+
+$function$
+

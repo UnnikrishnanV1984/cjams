@@ -1,0 +1,780 @@
+CREATE OR REPLACE FUNCTION as_sp_batch_prov_checklist(as_activity character, ad_run_dt date)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- 03/06/2008 Vineet Tirodkar\r
+--\r
+-- Batch process for the Provider Checklist Stored procedure for\r
+-- various types of payments based on the argument.\r
+-- IF as_activity is 'D'\r
+-- For\r
+--     Draft payments for private and public providers.\r
+--     Adoption Subsidy payments.\r
+--     Guardianship Subsidy payments.\r
+--\r
+-- IF as_activity is 'F'\r
+-- For\r
+--     Draft payments for private and public providers.\r
+--\r
+-- IF as_activity is 'U'\r
+-- For\r
+--     Under Over payments for private and public providers.\r
+-- 03/19/2008 Vineet Tirodkar - Changes in SQL for PVT Prov in Under Over payments\r
+-- 03/20/2008 Vineet Tirodkar - To add code to track PROGRAM STARTED / ENDED Into PAYMENT log\r
+-- 05/02/2008 Vineet Tirodkar - To add SQL of SP_FOSTER_CARE_BEDRETAINER for activity 'D' and 'F' \r
+-- 05/29/2008 Vineet Tirodkar - Changes in SQLs as per logic change for Provider Checklist.\r
+-- 06/02/2008 Vineet Tirodkar - To Update WITHHOLD_PAYMENT_SW, REASON_CHANGED and INFO_DATE_CHANGED\r
+--            in table TB_PROVIDER in case of missing info.  \r
+-- 09/23/2008 Vineet Tirodkar - CIS-17815 New Argument ‘ad_run_dt’,\r
+--            use of this argument instead of CURRENT DATE. So CHESSIE can run this SP on any day for any day.\r
+------------------------------------------------------------------------\r
+\r
+DECLARE vs_cursor_sql VARCHAR(12000) ;--\r
+\r
+DECLARE vl_row_cnt BIGINT DEFAULT 0;--\r
+DECLARE vl_provider_id BIGINT DEFAULT 0;--\r
+\r
+DECLARE vl_outcode INT DEFAULT 0;--\r
+\r
+DECLARE vd_previous_month_start_dt DATE;--\r
+DECLARE vd_previous_month_end_dt DATE;--\r
+\r
+DECLARE  VTS_PREVIOUS_RUN_TS TIMESTAMP;--\r
+DECLARE  VTS_CURRENT_RUN_TS TIMESTAMP ;--\r
+DECLARE  VL_ROWCOUNT INTEGER DEFAULT  0;--\r
+DECLARE  VS_USER_ID VARCHAR(10) DEFAULT 'finance';--\r
+\r
+DECLARE  vs_WITHHOLD_PAYMENT_SW VARCHAR(1)DEFAULT NULL;--\r
+DECLARE  vs_REASON_CHANGED VARCHAR(200) DEFAULT NULL;--\r
+DECLARE  vd_INFO_DATE_CHANGED DATE DEFAULT NULL;--\r
+\r
+DECLARE  vs_reason VARCHAR(200) DEFAULT NULL;--\r
+DECLARE  vl_find INT DEFAULT NULL;--\r
+\r
+-- Log Error\r
+ \r
+DECLARE SQLCODE INT DEFAULT 0;--\r
+DECLARE al_sqlcode INT DEFAULT 0;--\r
+DECLARE as_error VARCHAR(3000);--\r
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--\r
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--\r
+ p_sp_error CHAR(5);--\r
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--\r
+DECLARE vl_ret_status INTEGER DEFAULT 0;--\r
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_BATCH_PROV_CHECKLIST';--\r
+DECLARE vs_identity_column VARCHAR(100);--\r
+DECLARE vs_identity_val VARCHAR(100);--\r
+ \r
+--DECLARE CUR_PROVIDERS CURSOR WITH HOLD FOR s1;--\r
+DECLARE CUR_PROVIDERS REFCURSOR;\r
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION\r
+BEGIN\r
+ RAISE NOTICE '>>>>>>>>>sp_batch_prov_checklist>>>>>>>>>>';\r
+\r
+ \r
+ RAISE NOTICE '>>>>>>>>>Start---Exception block start>>>>>>>>>>';\r
+ \r
+ BEGIN \r
+ EXCEPTION WHEN OTHERS THEN\r
+ RAISE NOTICE '>>>>>>>>>sp_batch_prov_checklist---Inside the exception block>>>>>>>>>>';\r
+ \r
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--\r
+ GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;\r
+ --vs_message_text :=  MESSAGE_TEXT;\r
+--    SET al_sqlcode = -1 ;--\r
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--\r
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--\r
+     as_error := as_error || COALESCE(vs_message_text ,'');--\r
+\r
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_BATCH_PROV_CHECKLIST'::character varying ,\r
+                           NULL::bigint,\r
+                           NULL::bigint,\r
+                           NULL::character varying,\r
+                           NULL::INTEGER,\r
+            NULL::character varying,\r
+            SQLSTATE::character varying,\r
+                           as_error::character varying,\r
+                           'finance'::character varying) INTO\r
+                           vl_ret_status;\r
+RAISE NOTICE '>>>>>vl_ret_status %',vl_ret_status;\r
+     as_error := '';--\r
+ RETURN 0;\r
+ END;\r
+ RAISE NOTICE '>>>>>>>>>End---Exception block end>>>>>>>>>>';\r
+--Log error\r
+\r
+--  Insert PROGRAM STARTED Into PAYMENT log - START\r
+     VTS_PREVIOUS_RUN_TS := CURRENT_TIMESTAMP;--\r
+     VTS_CURRENT_RUN_TS := CURRENT_TIMESTAMP;--\r
+\r
+    --  get the last run timestamp\r
+    --  if first run, i.e., no rows in log, then leave as initialized\r
+\r
+       SELECT COUNT(*)\r
+           INTO VL_ROWCOUNT\r
+       FROM TB_PAYMENT_RUNTIMES_LOG\r
+           WHERE PAYMENT_TX   = 'BATCH_PROV_CHECKLIST';--\r
+\r
+       IF  VL_ROWCOUNT > 0 THEN\r
+            SELECT MAX(PAYMENT_CURRENT_RUN_TS)\r
+                INTO VTS_PREVIOUS_RUN_TS\r
+            FROM TB_PAYMENT_RUNTIMES_LOG\r
+                WHERE PAYMENT_TX   = 'BATCH_PROV_CHECKLIST';--\r
+        END IF;--\r
+\r
+        ---  Insert Into PAYMENT log\r
+          INSERT INTO TB_PAYMENT_RUNTIMES_LOG   (PAYMENT_RUNTIMES_LOG_ID,\r
+      PAYMENT_TX,\r
+      PAYMENT_CURRENT_RUN_TS,\r
+      PAYMENT_PREVIOUS_RUN_TS,\r
+      PAYMENT_BATCH_NO,\r
+      PAYMENT_SUCCESSFUL_SW,\r
+      CREATE_TS,\r
+      CREATE_USER_ID,\r
+      UPDATE_TS,\r
+      UPDATE_USER_ID,\r
+      DELETE_SW,\r
+      PAYMENT_OTHER_TX)\r
+            SELECT   NEXTVAL('SQ_PAYMENT_RUNTIMES_LOG'),\r
+      'BATCH_PROV_CHECKLIST',\r
+      VTS_CURRENT_RUN_TS,\r
+      VTS_PREVIOUS_RUN_TS,\r
+      '',\r
+      '',\r
+      CURRENT_TIMESTAMP,\r
+      VS_USER_ID,          \r
+      CURRENT_TIMESTAMP,\r
+      VS_USER_ID,\r
+      'N',\r
+      'SP_BATCH_PROV_CHECKLIST -->  PROGRAM STARTED';\r
+      --FROM sysibm.sysdummy1 ;--\r
+      \r
+  al_sqlcode := SQLCODE;   --\r
+ IF al_sqlcode <> 0 THEN\r
+      as_error := 'Error in inserting PAYMENT RUNTIMES LOG --> BATCH_PROV_CHECKLIST PROGRAM STARTED'  ;--\r
+      vs_identity_column := '';--\r
+      vs_identity_val := '';--\r
+   --  SIGNAL p_sp_error  ;--\r
+ END IF ;--\r
+--  Insert PROGRAM STARTED Into PAYMENT log - END\r
+\r
+--  get the last month start date and end date\r
+--SELECT  ( DATE(SUBSTR(CHAR(CURRENT DATE  -  DAY(CURRENT DATE) DAYS,ISO),1,8)||'01')),\r
+--             ( CURRENT DATE  -  DAY(CURRENT DATE) DAYS )\r
+--INTO vd_previous_month_start_dt,\r
+--     vd_previous_month_end_dt\r
+--FROM sysibm.sysdummy1;--*/\r
+SELECT (date_trunc('month', now()) - interval '1 month')::date,\r
+       (date_trunc('month', now())::date - 1)::date\r
+INTO    vd_previous_month_start_dt,\r
+        vd_previous_month_end_dt;\r
+  \r
+IF as_activity = 'D' THEN\r
+   -- SQL for Cursor (DRAFT & SUBSIDY PAYMENTS) - START \r
+       vs_cursor_sql :=\r
+   ' SELECT DISTINCT PROVIDER_ID '||\r
+   '         FROM  TB_PLACEMENT '||\r
+   '       WHERE PROVIDER_ORGANIZATION_ID  IS NULL AND '||\r
+   '  CONTRACT_PROGRAM_ID IS NULL AND '||\r
+   '   PLACEMENT_STRUCTURE_ID IS NOT NULL AND '||\r
+   '  PROVIDER_ID IS NOT NULL AND '||\r
+   '  PLACEMENT_STRUCTURE_ID <> 8 AND '||\r
+   '  PLACEMENT_STRUCTURE_ID <> 76 AND '||\r
+   '  APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '  ((VOID_SW IS NULL) OR (VOID_SW = ''N'')) AND '||\r
+   '  ENTRY_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '   ( (EXIT_DT IS NULL) OR (EXIT_DT > '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' )) AND '||\r
+   '            ( EXIT_DT IS NULL OR ENTRY_DT <> EXIT_DT ) AND '||\r
+   '   DELETE_SW = ''N'' AND '||\r
+   '  CONVERSION_SW IS NULL  '||\r
+   ' UNION '||\r
+   ' SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = ''3368'' THEN '||\r
+   '              PL.PROVIDER_ORGANIZATION_ID '||\r
+   '                ELSE '||\r
+   '                    PL.PROVIDER_ID '||\r
+   '                END ) AS PROVIDER_ID '||\r
+   '        FROM TB_PLACEMENT PL,  '||\r
+   '      TB_PROVIDER  PR '||\r
+   '   WHERE PL.PROVIDER_ID = PR.PROVIDER_ID AND '||\r
+   '  PL.PROVIDER_ORGANIZATION_ID  IS NOT NULL AND '||\r
+   '  PL.CONTRACT_PROGRAM_ID IS NOT NULL AND '||\r
+   '   PL.PROVIDER_ID IS NOT NULL AND '||\r
+   '  PL.ENTRY_DT  IS NOT NULL AND '||\r
+   '  PL.PLACEMENT_STRUCTURE_ID <> 8 AND '||\r
+   '  PL.PLACEMENT_STRUCTURE_ID <> 76 AND '||\r
+   '  PL.ENTRY_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '  PL.APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '  ((PL.VOID_SW IS NULL) OR (PL.VOID_SW = ''N'')) AND '||\r
+   '  ( (PL.EXIT_DT  IS NULL) OR  (PL.EXIT_DT > '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' )) AND '||\r
+   '            ( PL.EXIT_DT IS NULL OR PL.ENTRY_DT <> PL.EXIT_DT ) AND '||\r
+   '  PL.DELETE_SW = ''N'' AND '||\r
+   '  PR.DELETE_SW = ''N'' AND '||\r
+   '  PL.CONVERSION_SW IS NULL  '||\r
+   ' UNION '||\r
+   '  SELECT DISTINCT TA.PROVIDER_ID '||\r
+   '       FROM TB_ADOPTION  TA, '||\r
+   '            TB_ADOPTION_SUBSIDY_AGREEMENT TAS '||\r
+   '  WHERE TA.ADOPTION_ID = TAS.ADOPTION_ID AND '||\r
+   '   TA.DELETE_SW = ''N'' AND '||\r
+   '     TAS.DELETE_SW = ''N'' AND '||\r
+   '   TA.PROVIDER_ID IS NOT NULL AND '||\r
+   '   TAS.APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '   TA.SUBSIDY_START_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '   ( (TA.SUBSIDY_END_DT IS NULL) OR  (TA.SUBSIDY_END_DT > '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' )) AND '||\r
+   '    (TAS.SUBSIDY_AGREEMENT_ID =  '||\r
+   '   (SELECT MAX(TAS1.SUBSIDY_AGREEMENT_ID) '||\r
+   '    FROM TB_ADOPTION_SUBSIDY_AGREEMENT TAS1 '||\r
+   '   WHERE TAS1.ADOPTION_ID = TA.ADOPTION_ID AND '||\r
+   '         TAS1.APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '         TAS1.AGREEMENT_START_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '         TAS1.AGREEMENT_END_DT > '''||TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' ))  '||  \r
+   ' UNION '||\r
+   ' SELECT DISTINCT PROVIDER_ID '||\r
+   '        FROM  TB_GUARDIAN_SUBSIDY '||\r
+   ' WHERE DELETE_SW = ''N'' AND '||\r
+   '   PROVIDER_ID IS NOT NULL AND '||\r
+   '   SUSBSIDY_APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '   SUBSIDY_START_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '   ( (SUBSIDY_END_DT IS NULL) OR  (SUBSIDY_END_DT > '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' )) '||\r
+   ' UNION '||\r
+   ' SELECT DISTINCT TB_PROVIDER_SERVICES.PROVIDER_ID '||\r
+   '            FROM TB_PROVIDER_SERVICES, '||\r
+   '          TB_PROVIDER '||\r
+   ' WHERE TB_PROVIDER_SERVICES.PROVIDER_ID =  TB_PROVIDER.PROVIDER_ID  '||\r
+   '     AND TB_PROVIDER_SERVICES.SERVICE_ID = 13  '||\r
+   '      AND TB_PROVIDER_SERVICES.START_DT <= '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||'''  '||\r
+   '      AND (TB_PROVIDER_SERVICES.END_DT >= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' OR TB_PROVIDER_SERVICES.END_DT IS NULL)   '||\r
+   '      AND TB_PROVIDER_SERVICES.DELETE_SW = ''N''  '||\r
+   '      AND F_PRVPCKLST_CAT(TB_PROVIDER_SERVICES.PROVIDER_ID,''PLACEMENT'') = ''1783'' '||\r
+   '      AND TB_PROVIDER.PROVIDER_STATUS_CD = ''1791'' '||\r
+   '      AND TB_PROVIDER.DELETE_SW = ''N''  '   ;--\r
+   -- SQL for Cursor (DRAFT & SUBSIDY PAYMENTS) - END \r
+\r
+   -- Take count to run a loop for cursor (DRAFT & SUBSIDY PAYMENTS) - START \r
+   SELECT COUNT(*)\r
+          INTO vl_row_cnt\r
+        FROM (\r
+    SELECT DISTINCT PROVIDER_ID\r
+            FROM  TB_PLACEMENT\r
+          WHERE PROVIDER_ORGANIZATION_ID  IS NULL AND\r
+         CONTRACT_PROGRAM_ID IS NULL AND\r
+         PLACEMENT_STRUCTURE_ID IS NOT NULL AND\r
+         PROVIDER_ID IS NOT NULL AND\r
+         PLACEMENT_STRUCTURE_ID <> 8 AND\r
+         PLACEMENT_STRUCTURE_ID <> 76 AND\r
+         APPROVAL_STATUS_CD = '3047' AND\r
+         ((VOID_SW IS NULL) OR (VOID_SW = 'N')) AND\r
+         ENTRY_DT <=  vd_previous_month_end_dt AND\r
+         ( (EXIT_DT IS NULL) OR (EXIT_DT > vd_previous_month_start_dt)) AND\r
+         ( EXIT_DT IS NULL OR ENTRY_DT <> EXIT_DT ) AND\r
+         DELETE_SW = 'N' AND\r
+         CONVERSION_SW IS NULL\r
+   UNION\r
+    SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = '3368' THEN\r
+            PL.PROVIDER_ORGANIZATION_ID\r
+                ELSE\r
+         PL.PROVIDER_ID\r
+              END ) AS PROVIDER_ID\r
+               FROM TB_PLACEMENT PL,\r
+            TB_PROVIDER  PR\r
+              WHERE PL.PROVIDER_ID = PR.PROVIDER_ID AND\r
+            PL.PROVIDER_ORGANIZATION_ID  IS NOT NULL AND\r
+            PL.CONTRACT_PROGRAM_ID IS NOT NULL AND\r
+            PL.PROVIDER_ID IS NOT NULL AND\r
+            PL.ENTRY_DT  IS NOT NULL AND\r
+            PL.PLACEMENT_STRUCTURE_ID <> 8 AND\r
+            PL.PLACEMENT_STRUCTURE_ID <> 76 AND\r
+            PL.ENTRY_DT <= vd_previous_month_end_dt AND\r
+            PL.APPROVAL_STATUS_CD = '3047' AND\r
+            ((PL.VOID_SW IS NULL) OR (PL.VOID_SW = 'N')) AND\r
+            ( (PL.EXIT_DT  IS NULL) OR  (PL.EXIT_DT > vd_previous_month_start_dt)) AND\r
+            ( PL.EXIT_DT IS NULL OR PL.ENTRY_DT <> PL.EXIT_DT ) AND\r
+            PL.DELETE_SW = 'N' AND\r
+            PR.DELETE_SW = 'N' AND\r
+            PL.CONVERSION_SW IS NULL\r
+   UNION\r
+     SELECT DISTINCT TA.PROVIDER_ID\r
+             FROM TB_ADOPTION  TA,\r
+                  TB_ADOPTION_SUBSIDY_AGREEMENT TAS\r
+            WHERE TA.ADOPTION_ID = TAS.ADOPTION_ID AND\r
+                  TA.DELETE_SW = 'N' AND\r
+                  TAS.DELETE_SW = 'N' AND\r
+                  TA.PROVIDER_ID IS NOT NULL AND\r
+                  TAS.APPROVAL_STATUS_CD = '3047' AND\r
+                  TA.SUBSIDY_START_DT <= vd_previous_month_end_dt AND\r
+                  ( (TA.SUBSIDY_END_DT IS NULL) OR  (TA.SUBSIDY_END_DT > vd_previous_month_start_dt)) AND\r
+                  (TAS.SUBSIDY_AGREEMENT_ID =\r
+       (SELECT MAX(TAS1.SUBSIDY_AGREEMENT_ID)\r
+        FROM TB_ADOPTION_SUBSIDY_AGREEMENT TAS1\r
+       WHERE TAS1.ADOPTION_ID = TA.ADOPTION_ID AND\r
+                 TAS1.APPROVAL_STATUS_CD = '3047'AND\r
+              TAS1.AGREEMENT_START_DT <= vd_previous_month_end_dt AND\r
+             TAS1.AGREEMENT_END_DT > vd_previous_month_start_dt ))   \r
+   UNION\r
+    SELECT DISTINCT PROVIDER_ID\r
+           FROM  TB_GUARDIAN_SUBSIDY\r
+      WHERE DELETE_SW = 'N' AND\r
+   PROVIDER_ID IS NOT NULL AND\r
+      SUSBSIDY_APPROVAL_STATUS_CD = '3047' AND\r
+      SUBSIDY_START_DT <= vd_previous_month_end_dt AND\r
+      ( (SUBSIDY_END_DT IS NULL) OR  (SUBSIDY_END_DT >  vd_previous_month_start_dt ))\r
+   UNION\r
+    SELECT DISTINCT TB_PROVIDER_SERVICES.PROVIDER_ID\r
+               FROM TB_PROVIDER_SERVICES,\r
+         TB_PROVIDER\r
+    WHERE TB_PROVIDER_SERVICES.PROVIDER_ID =  TB_PROVIDER.PROVIDER_ID\r
+        AND TB_PROVIDER_SERVICES.SERVICE_ID = 13\r
+         AND TB_PROVIDER_SERVICES.START_DT <= vd_previous_month_start_dt\r
+         AND (TB_PROVIDER_SERVICES.END_DT >= vd_previous_month_end_dt OR TB_PROVIDER_SERVICES.END_DT IS NULL)\r
+         AND TB_PROVIDER_SERVICES.DELETE_SW = 'N'\r
+         AND F_PRVPCKLST_CAT(TB_PROVIDER_SERVICES.PROVIDER_ID,'PLACEMENT') = '1783'\r
+         AND TB_PROVIDER.PROVIDER_STATUS_CD = '1791'\r
+      AND TB_PROVIDER.DELETE_SW = 'N'\r
+  ) AS DUMMY ;--\r
+   -- Take count to run a loop for cursor (DRAFT & SUBSIDY PAYMENTS) - END \r
+ELSEIF as_activity = 'F' THEN\r
+   -- SQL for Cursor (FINAL PAYMENTS) - START \r
+    vs_cursor_sql :=\r
+   '   SELECT DISTINCT PROVIDER_ID '||\r
+   '     FROM  TB_PLACEMENT '||\r
+   '     WHERE PROVIDER_ORGANIZATION_ID  IS NULL AND '||\r
+   '  CONTRACT_PROGRAM_ID IS NULL AND '||\r
+   '  PLACEMENT_STRUCTURE_ID IS NOT NULL AND '||\r
+   '  PROVIDER_ID IS NOT NULL AND '||\r
+   '  PLACEMENT_STRUCTURE_ID <> 8 AND '||\r
+   '  PLACEMENT_STRUCTURE_ID <> 76 AND '||\r
+   '  APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '  ((VOID_SW IS NULL) OR (VOID_SW = ''N'')) AND '||\r
+   '  ENTRY_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '  ( (EXIT_DT IS NULL) OR (EXIT_DT > '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' )) AND '||\r
+   '            ( EXIT_DT IS NULL OR ENTRY_DT <> EXIT_DT ) AND '||\r
+   '  DELETE_SW = ''N'' AND '||\r
+   '  CONVERSION_SW IS NULL  '||\r
+   ' UNION '||\r
+   '   SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = ''3368'' THEN '||\r
+   '    PL.PROVIDER_ORGANIZATION_ID '||\r
+   '      ELSE '||\r
+   '    PL.PROVIDER_ID '||\r
+   '      END ) AS PROVIDER_ID '||\r
+   '    FROM  TB_PLACEMENT PL,'||\r
+   '   TB_PROVIDER  PR '||\r
+   '     WHERE PL.PROVIDER_ID = PR.PROVIDER_ID AND '||\r
+   '  PL.PROVIDER_ORGANIZATION_ID IS NOT NULL AND '||\r
+   '  PL.CONTRACT_PROGRAM_ID IS NOT NULL AND '||\r
+   '  PL.PROVIDER_ID IS NOT NULL AND '||\r
+   '  PL.ENTRY_DT  IS NOT NULL AND '||\r
+   '  PL.PLACEMENT_STRUCTURE_ID <> 8 AND '||\r
+   '  PL.PLACEMENT_STRUCTURE_ID <> 76 AND '||\r
+   '  PL.ENTRY_DT <= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' AND '||\r
+   '  PL.APPROVAL_STATUS_CD = ''3047'' AND '||\r
+   '  ((PL.VOID_SW IS NULL) OR (PL.VOID_SW = ''N'')) AND '||\r
+   '  ( (PL.EXIT_DT  IS NULL) OR  (PL.EXIT_DT > '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' )) AND '||\r
+   '            ( PL.EXIT_DT IS NULL OR PL.ENTRY_DT <> PL.EXIT_DT ) AND '||\r
+   '  PL.DELETE_SW = ''N'' AND '||\r
+   '  PR.DELETE_SW = ''N'' AND '||\r
+   '  PL.CONVERSION_SW IS NULL '||\r
+   ' UNION '||\r
+   ' SELECT DISTINCT TB_PROVIDER_SERVICES.PROVIDER_ID '||\r
+   '            FROM TB_PROVIDER_SERVICES, '||\r
+   '          TB_PROVIDER '||\r
+   ' WHERE TB_PROVIDER_SERVICES.PROVIDER_ID =  TB_PROVIDER.PROVIDER_ID  '||\r
+   '     AND TB_PROVIDER_SERVICES.SERVICE_ID = 13  '||\r
+   '      AND TB_PROVIDER_SERVICES.START_DT <= '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||'''  '||\r
+   '      AND (TB_PROVIDER_SERVICES.END_DT >= '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' OR TB_PROVIDER_SERVICES.END_DT IS NULL)   '||\r
+   '      AND TB_PROVIDER_SERVICES.DELETE_SW = ''N''  '||\r
+   '      AND F_PRVPCKLST_CAT(TB_PROVIDER_SERVICES.PROVIDER_ID,''PLACEMENT'') = ''1783'' '||\r
+   '      AND TB_PROVIDER.PROVIDER_STATUS_CD = ''1791'' '||\r
+   '      AND TB_PROVIDER.DELETE_SW = ''N''  '   ;--\r
+   -- SQL for Cursor (FINAL PAYMENTS) - END\r
+\r
+   -- Take count to run a loop for cursor (FINAL PAYMENTS) - START \r
+     SELECT COUNT(*)\r
+         INTO vl_row_cnt\r
+     FROM (\r
+      SELECT DISTINCT PROVIDER_ID\r
+         FROM  TB_PLACEMENT\r
+       WHERE PROVIDER_ORGANIZATION_ID  IS NULL AND\r
+      CONTRACT_PROGRAM_ID IS NULL AND\r
+      PLACEMENT_STRUCTURE_ID IS NOT NULL AND\r
+      PROVIDER_ID IS NOT NULL AND\r
+      PLACEMENT_STRUCTURE_ID <> 8 AND\r
+      PLACEMENT_STRUCTURE_ID <> 76 AND\r
+      APPROVAL_STATUS_CD = '3047' AND\r
+      ((VOID_SW IS NULL) OR (VOID_SW = 'N')) AND\r
+      ENTRY_DT <=  vd_previous_month_end_dt AND\r
+      ( (EXIT_DT IS NULL) OR (EXIT_DT > vd_previous_month_start_dt )) AND\r
+      ( EXIT_DT IS NULL OR ENTRY_DT <> EXIT_DT ) AND\r
+      DELETE_SW = 'N' AND\r
+      CONVERSION_SW IS NULL\r
+     UNION\r
+     SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = '3368' THEN\r
+          PL.PROVIDER_ORGANIZATION_ID\r
+            ELSE\r
+            PL.PROVIDER_ID\r
+            END ) AS PROVIDER_ID\r
+               FROM TB_PLACEMENT PL,\r
+         TB_PROVIDER  PR\r
+           WHERE PL.PROVIDER_ID = PR.PROVIDER_ID AND\r
+    PL.PROVIDER_ORGANIZATION_ID  IS NOT NULL AND\r
+      PL.CONTRACT_PROGRAM_ID IS NOT NULL AND\r
+      PL.PROVIDER_ID IS NOT NULL AND\r
+      PL.ENTRY_DT  IS NOT NULL AND\r
+      PL.PLACEMENT_STRUCTURE_ID <> 8 AND\r
+      PL.PLACEMENT_STRUCTURE_ID <> 76 AND\r
+      PL.ENTRY_DT <= vd_previous_month_end_dt AND\r
+      PL.APPROVAL_STATUS_CD = '3047' AND\r
+      ((PL.VOID_SW IS NULL) OR (PL.VOID_SW = 'N')) AND\r
+      ( (PL.EXIT_DT  IS NULL) OR  (PL.EXIT_DT > vd_previous_month_start_dt )) AND\r
+      ( PL.EXIT_DT IS NULL OR PL.ENTRY_DT <> PL.EXIT_DT ) AND\r
+      PL.DELETE_SW = 'N' AND\r
+      PR.DELETE_SW = 'N' AND\r
+     PL.CONVERSION_SW IS NULL\r
+    UNION\r
+    SELECT DISTINCT TB_PROVIDER_SERVICES.PROVIDER_ID\r
+               FROM TB_PROVIDER_SERVICES,\r
+         TB_PROVIDER\r
+    WHERE TB_PROVIDER_SERVICES.PROVIDER_ID =  TB_PROVIDER.PROVIDER_ID\r
+        AND TB_PROVIDER_SERVICES.SERVICE_ID = 13\r
+         AND TB_PROVIDER_SERVICES.START_DT <= vd_previous_month_start_dt\r
+         AND (TB_PROVIDER_SERVICES.END_DT >= vd_previous_month_end_dt OR TB_PROVIDER_SERVICES.END_DT IS NULL)\r
+         AND TB_PROVIDER_SERVICES.DELETE_SW = 'N'\r
+         AND F_PRVPCKLST_CAT(TB_PROVIDER_SERVICES.PROVIDER_ID,'PLACEMENT') = '1783'\r
+         AND TB_PROVIDER.PROVIDER_STATUS_CD = '1791'\r
+      AND TB_PROVIDER.DELETE_SW = 'N'     \r
+     ) AS DUMMY ;--\r
+     -- Take count to run a loop for cursor (FINAL PAYMENTS) - END \r
+\r
+ELSEIF as_activity = 'U' THEN\r
+   -- CURRENT DATE to ad_run_dt\r
+   -- SQL for Cursor (UNDER OVER PAYMENTS) - START \r
+    vs_cursor_sql :=\r
+   ' SELECT DISTINCT P.PROVIDER_ID '||\r
+   ' FROM TB_PLACEMENT_VALIDATION PV, '||\r
+   '      TB_PLACEMENT P, '||\r
+   '         TB_PROVIDER PR, '||\r
+   '         TB_CLIENT C '||\r
+   ' WHERE P.CLIENT_ID = C.CLIENT_ID '||\r
+   '       AND P.PROVIDER_ID = PR.PROVIDER_ID '||\r
+   '       AND C.DELETE_SW = ''N'' '||\r
+   '    AND PR.DELETE_SW = ''N'' '||\r
+   '    AND P.PLACEMENT_ID = PV.PLACEMENT_ID '||\r
+   '    AND PV.VALIDATION_STATUS_CD = ''1750'' '||\r
+   '    AND PV.DELETE_SW = ''N'' '||\r
+   '    AND P.DELETE_SW = ''N'' '||\r
+   '    AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = ''N'')) '||\r
+   '    AND DATE(PV.UPDATE_TS) = '''|| TO_CHAR(ad_run_dt:: DATE, 'mm/dd/yyyy') ||''' '||\r
+   '    AND P.CONVERSION_SW IS NULL '||\r
+   '    AND P.PROVIDER_ORGANIZATION_ID IS NULL '||\r
+   '    AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)  '||\r
+   ' UNION '||\r
+   ' SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = ''3368'' THEN '||\r
+   '         P.PROVIDER_ORGANIZATION_ID '||\r
+   '            ELSE '||\r
+   '            P.PROVIDER_ID '||\r
+   '         END ) AS PROVIDER_ID '||\r
+   '  FROM TB_PLACEMENT_VALIDATION PV, '||\r
+   '        TB_PLACEMENT P, '||\r
+   '        TB_PROVIDER PR, '||\r
+   '       TB_CLIENT C '||\r
+   ' WHERE P.CLIENT_ID = C.CLIENT_ID '||\r
+   '     AND P.PROVIDER_ID = PR.PROVIDER_ID '||\r
+   '    AND C.DELETE_SW = ''N'' '||\r
+   '    AND PR.DELETE_SW = ''N'' '||\r
+   '      AND P.PLACEMENT_ID = PV.PLACEMENT_ID '||\r
+   '    AND PV.VALIDATION_STATUS_CD = ''1750'' '||\r
+   '    AND PV.DELETE_SW = ''N'' '||\r
+   '    AND P.DELETE_SW = ''N'' '||\r
+   '    AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = ''N'')) '||\r
+   '    AND DATE(PV.UPDATE_TS) = '''|| TO_CHAR(ad_run_dt:: DATE, 'mm/dd/yyyy') ||''' '||\r
+   '    AND P.CONVERSION_SW IS NULL '||\r
+   '    AND P.PROVIDER_ORGANIZATION_ID IS NOT NULL '||\r
+   '    AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)  '||\r
+   ' UNION '||\r
+   ' SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = ''3368'' THEN '||\r
+   '         P.PROVIDER_ORGANIZATION_ID '||\r
+   '            ELSE '||\r
+   '            P.PROVIDER_ID '||\r
+   '         END ) AS PROVIDER_ID '||\r
+   '    FROM TB_PLACEMENT_VALIDATION PV, '||\r
+   '         TB_PLACEMENT P, '||\r
+   '         TB_PROVIDER PR, '||\r
+   '         TB_CLIENT C '||\r
+   '  WHERE P.CLIENT_ID = C.CLIENT_ID '||\r
+   '     AND P.PROVIDER_ID = PR.PROVIDER_ID '||\r
+   '     AND C.DELETE_SW = ''N'' '||\r
+   '     AND PR.DELETE_SW = ''N'' '||\r
+   '     AND P.PLACEMENT_ID = PV.PLACEMENT_ID '||\r
+   '     AND PV.VALIDATION_STATUS_CD = ''1750'' '||\r
+   '     AND PV.DELETE_SW = ''N'' '||\r
+   '     AND P.DELETE_SW = ''N'' '||\r
+   '     AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = ''N'')) '||\r
+   '     AND DATE(PV.UPDATE_TS) <> '''|| TO_CHAR(ad_run_dt:: DATE, 'mm/dd/yyyy') ||''' '||\r
+   '     AND P.CONVERSION_SW IS NULL '||\r
+   '     AND P.PROVIDER_ORGANIZATION_ID IS NOT NULL '||\r
+   '     AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT) '||\r
+   '     AND P.CONTRACT_PROGRAM_ID IN ( SELECT A.PROGRAM_ID '||\r
+   '     FROM TB_PROV_PROGRAM_SITES A '||\r
+   '           WHERE A.SITE_ID IN '||\r
+   '              ( SELECT SITE_ID '||\r
+   '                  FROM TB_PROV_PROGRAM_SITES '||\r
+   '         WHERE DELETE_SW = ''N'' '||\r
+   '        AND PROGRAM_ID IN '||\r
+   '             ( SELECT PROGRAM_ID '||\r
+   '             FROM TB_PROV_PROGRAM_RATES '||\r
+   '        WHERE DELETE_SW = ''N'' '||\r
+   '               AND DATE(UPDATE_TS) = '''|| TO_CHAR(ad_run_dt:: DATE, 'mm/dd/yyyy') ||''' ))) ';--\r
+        \r
+   -- SQL for Cursor (UNDER OVER PAYMENTS) - END \r
+      \r
+   -- Take count to run a loop for cursor (UNDER OVER PAYMENTS) - START\r
+   SELECT COUNT(*)\r
+      INTO vl_row_cnt\r
+       FROM (\r
+ SELECT DISTINCT P.PROVIDER_ID\r
+    FROM TB_PLACEMENT_VALIDATION PV,\r
+  TB_PLACEMENT P,\r
+  TB_PROVIDER PR,\r
+  TB_CLIENT C\r
+    WHERE P.CLIENT_ID = C.CLIENT_ID\r
+   AND P.PROVIDER_ID = PR.PROVIDER_ID\r
+   AND C.DELETE_SW = 'N'\r
+   AND PR.DELETE_SW = 'N'\r
+   AND P.PLACEMENT_ID = PV.PLACEMENT_ID\r
+   AND PV.VALIDATION_STATUS_CD = '1750'\r
+   AND PV.DELETE_SW = 'N'\r
+   AND P.DELETE_SW = 'N'\r
+   AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))\r
+   AND DATE(PV.UPDATE_TS) = ad_run_dt\r
+   AND P.CONVERSION_SW IS NULL\r
+   AND P.PROVIDER_ORGANIZATION_ID IS NULL\r
+   AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)\r
+ UNION\r
+ SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = '3368' THEN\r
+          P.PROVIDER_ORGANIZATION_ID\r
+     ELSE\r
+            P.PROVIDER_ID\r
+     END ) AS PROVIDER_ID\r
+     FROM TB_PLACEMENT_VALIDATION PV,\r
+    TB_PLACEMENT P,\r
+    TB_PROVIDER PR,\r
+   TB_CLIENT C\r
+    WHERE P.CLIENT_ID = C.CLIENT_ID\r
+   AND P.PROVIDER_ID = PR.PROVIDER_ID\r
+   AND C.DELETE_SW = 'N'\r
+   AND PR.DELETE_SW = 'N'\r
+   AND P.PLACEMENT_ID = PV.PLACEMENT_ID\r
+   AND PV.VALIDATION_STATUS_CD = '1750'\r
+   AND PV.DELETE_SW = 'N'\r
+   AND P.DELETE_SW = 'N'\r
+   AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))\r
+   AND DATE(PV.UPDATE_TS) = ad_run_dt\r
+   AND P.CONVERSION_SW IS NULL\r
+   AND P.PROVIDER_ORGANIZATION_ID IS NOT NULL\r
+   AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)\r
+ UNION\r
+ SELECT DISTINCT ( CASE WHEN PR.PAY_TO_AFFILIATE_CD = '3368' THEN\r
+          P.PROVIDER_ORGANIZATION_ID\r
+     ELSE\r
+            P.PROVIDER_ID\r
+     END ) AS PROVIDER_ID\r
+       FROM TB_PLACEMENT_VALIDATION PV,\r
+     TB_PLACEMENT P,\r
+     TB_PROVIDER PR,\r
+     TB_CLIENT C\r
+     WHERE P.CLIENT_ID = C.CLIENT_ID\r
+    AND P.PROVIDER_ID = PR.PROVIDER_ID\r
+    AND C.DELETE_SW = 'N'\r
+    AND PR.DELETE_SW = 'N'\r
+    AND P.PLACEMENT_ID = PV.PLACEMENT_ID\r
+    AND PV.VALIDATION_STATUS_CD = '1750'\r
+    AND PV.DELETE_SW = 'N'\r
+    AND P.DELETE_SW = 'N'\r
+    AND ((P.VOID_SW IS NULL) OR (P.VOID_SW = 'N'))\r
+    AND DATE(PV.UPDATE_TS) <> ad_run_dt\r
+    AND P.CONVERSION_SW IS NULL\r
+    AND P.PROVIDER_ORGANIZATION_ID IS NOT NULL\r
+    AND (P.EXIT_DT IS NULL OR P.ENTRY_DT <> P.EXIT_DT)\r
+    AND P.CONTRACT_PROGRAM_ID IN ( SELECT A.PROGRAM_ID\r
+      FROM TB_PROV_PROGRAM_SITES A\r
+            WHERE A.SITE_ID IN\r
+        ( SELECT SITE_ID\r
+            FROM TB_PROV_PROGRAM_SITES\r
+          WHERE DELETE_SW = 'N'\r
+         AND PROGRAM_ID IN\r
+              ( SELECT PROGRAM_ID\r
+           FROM TB_PROV_PROGRAM_RATES\r
+         WHERE DELETE_SW = 'N'\r
+               AND DATE(UPDATE_TS) = ad_run_dt  )))\r
+           ) AS DUMMY ;--\r
+    -- Take count to run a loop for cursor (UNDER OVER PAYMENTS) - END     \r
+\r
+END IF;--\r
+--PREPARE s1 FROM vs_cursor_sql;--\r
+--OPEN CUR_PROVIDERS;--\r
+OPEN CUR_PROVIDERS FOR EXECUTE vs_cursor_sql;--\r
+\r
+--PROVIDER_CHECKLIST:\r
+loop EXIT WHEN vl_row_cnt = 0::bigint ;\r
+--WHILE vl_row_cnt > 0  DO\r
+     vl_provider_id := 0; -- INITIAL VALUE\r
+\r
+    FETCH CUR_PROVIDERS INTO vl_provider_id;--\r
+\r
+    IF vl_row_cnt = 0 THEN\r
+     --  LEAVE PROVIDER_CHECKLIST;--\r
+    END IF;--\r
+    IF vl_provider_id > 0 THEN\r
+        vl_outcode := 0; -- INITIAL VALUE\r
+  RAISE NOTICE '>>>>>>>>>before SP_FINANCIAL_EDITS---vl_provider_id>>>>>>>>>>%',vl_provider_id;\r
+\r
+    SELECT SP_FINANCIAL_EDITS (vl_provider_id,\r
+                                  'finance',\r
+                                  'Y') a into \r
+                                 vl_outcode;--\r
+  RAISE NOTICE '>>>>>>>>>Output>>> SP_FINANCIAL_EDITS---vl_outcode>>>>>>>>>>%',vl_outcode;\r
+\r
+     IF vl_outcode NOT IN ( 1, -1) THEN\r
+ RAISE NOTICE '>>>>>>>>>Inside---IF vl_outcode NOT IN ( 1, -1) THEN';\r
+\r
+         as_error := 'SP_FINANCIAL_EDITS failed for the Provider';--\r
+         vs_identity_column := 'Provider ID';--\r
+         vs_identity_val := TO_CHAR(vl_provider_id);--\r
+       -- SIGNAL p_sp_error  ;--\r
+     END IF ;--\r
+\r
+ -- 06/02/2008 To Update WITHHOLD_PAYMENT_SW, REASON_CHANGED and INFO_DATE_CHANGED - START\r
+ IF vl_outcode = -1 THEN\r
+     vs_WITHHOLD_PAYMENT_SW := NULL; -- INITIAL VALUE \r
+     vs_REASON_CHANGED := NULL; -- INITIAL VALUE \r
+     vd_INFO_DATE_CHANGED := NULL; -- INITIAL VALUE \r
+     vl_find := NULL; -- INITIAL VALUE \r
+ \r
+    SELECT WITHHOLD_PAYMENT_SW,\r
+           REASON_CHANGED,\r
+           INFO_DATE_CHANGED,\r
+          -- POSSTR( REASON_CHANGED, 'Withhold Payment (Returned Check)' ) AS POS \r
+     POSITION( REASON_CHANGED IN 'Withhold Payment (Returned Check)' ) AS POS \r
+      INTO vs_WITHHOLD_PAYMENT_SW,\r
+           vs_REASON_CHANGED,\r
+           vd_INFO_DATE_CHANGED,\r
+           vl_find\r
+      FROM TB_PROVIDER\r
+    WHERE PROVIDER_ID = vl_provider_id\r
+         AND DELETE_SW = 'N' ;   --\r
+\r
+     al_sqlcode := SQLCODE;   --\r
+    IF al_sqlcode <> 0 THEN\r
+        as_error := 'Error in selecting Provider Details, withhold sw and fields updated info'  ;--\r
+        vs_identity_column := 'Provider ID';--\r
+        vs_identity_val := TO_CHAR(vl_provider_id);--\r
+       --SIGNAL p_sp_error  ;--\r
+    ELSE\r
+       IF vs_WITHHOLD_PAYMENT_SW is NULL THEN\r
+           vs_WITHHOLD_PAYMENT_SW := 'N'; --\r
+       END IF;--\r
+    \r
+             IF vs_WITHHOLD_PAYMENT_SW = 'N' THEN\r
+       UPDATE TB_PROVIDER\r
+          SET WITHHOLD_PAYMENT_SW = 'Y'\r
+       WHERE ( PROVIDER_ID = vl_provider_id OR AFFILIATE_PROVIDER_ID = vl_provider_id )\r
+            AND TB_PROVIDER.DELETE_SW = 'N' ;--\r
+\r
+        al_sqlcode := SQLCODE;--\r
+       IF al_sqlcode <> 0 THEN\r
+           as_error := 'Error in Updating TB_PROVIDER for WITHHOLD_PAYMENT_SW. (SQL-1)'  ;--\r
+           vs_identity_column := 'Provider ID';--\r
+       vs_identity_val := TO_CHAR(vl_provider_id);--\r
+      --SIGNAL p_sp_error  ;--\r
+       ELSE\r
+           vs_reason := NULL; -- INITIAL VALUE \r
+        \r
+          IF vl_find is NULL THEN\r
+              vl_find := 0;--\r
+      END IF;--\r
+  \r
+      IF vd_INFO_DATE_CHANGED = CURRENT_DATE THEN\r
+              vs_reason := vs_REASON_CHANGED;--\r
+         IF vs_reason is NULL THEN\r
+             vs_reason := '';--\r
+             END IF; --\r
+              vs_reason := vs_reason || ', ';--\r
+      ELSE\r
+          vs_reason := '';--\r
+          END IF;--\r
+ \r
+          IF vl_find = 0 THEN\r
+          vs_reason := vs_reason || 'Withhold Payment (Returned Check)' ;--\r
+      END IF; --\r
+  \r
+      UPDATE TB_PROVIDER\r
+           SET REASON_CHANGED = vs_reason ,\r
+           INFO_DATE_CHANGED = CURRENT_DATE\r
+          WHERE TB_PROVIDER.PROVIDER_ID = vl_provider_id\r
+           AND TB_PROVIDER.DELETE_SW = 'N' ;--\r
+ \r
+       al_sqlcode = SQLCODE;--\r
+          IF al_sqlcode <> 0 THEN\r
+              as_error := 'Error in Updating TB_PROVIDER for Fields Updated info. (SQL-2)'  ;--\r
+          vs_identity_column := 'Provider ID';--\r
+          vs_identity_val := TO_CHAR(vl_provider_id);--\r
+        -- SIGNAL p_sp_error  ;--\r
+         END IF ;--\r
+       END IF ;--\r
+       END IF;--\r
+    END IF ;--\r
+ END IF;--\r
+ -- 06/02/2008 To Update WITHHOLD_PAYMENT_SW, REASON_CHANGED and INFO_DATE_CHANGED - END\r
+    END IF;--\r
+\r
+     vl_row_cnt := vl_row_cnt  - 1; --\r
+--END WHILE ;--\r
+END loop;\r
+CLOSE CUR_PROVIDERS ;--\r
+\r
+--  Insert PROGRAM ENDED Into PAYMENT log - START\r
+          INSERT INTO TB_PAYMENT_RUNTIMES_LOG   (PAYMENT_RUNTIMES_LOG_ID,\r
+      PAYMENT_TX,\r
+      PAYMENT_CURRENT_RUN_TS,\r
+      PAYMENT_PREVIOUS_RUN_TS,\r
+      PAYMENT_BATCH_NO,\r
+      PAYMENT_SUCCESSFUL_SW,\r
+      CREATE_TS,\r
+      CREATE_USER_ID,\r
+      UPDATE_TS,\r
+      UPDATE_USER_ID,\r
+      DELETE_SW,\r
+      PAYMENT_OTHER_TX)\r
+\r
+             SELECT\r
+      NEXTVAL('SQ_PAYMENT_RUNTIMES_LOG'),\r
+      'BATCH_PROV_CHECKLIST',\r
+      CURRENT_TIMESTAMP,\r
+      CURRENT_TIMESTAMP,\r
+      '',\r
+      '',\r
+      CURRENT_TIMESTAMP,\r
+      VS_USER_ID,          \r
+      CURRENT_TIMESTAMP,\r
+      VS_USER_ID,\r
+      'N',\r
+      'SP_BATCH_PROV_CHECKLIST -->  PROGRAM ENDED';\r
+      --FROM sysibm.sysdummy1 ;--\r
+      \r
+   al_sqlcode := SQLCODE;--\r
+  IF al_sqlcode <> 0 THEN\r
+       as_error := 'Error in inserting PAYMENT RUNTIMES LOG --> BATCH_PROV_CHECKLIST PROGRAM ENDED'  ;--\r
+       vs_identity_column := '';--\r
+       vs_identity_val := '';--\r
+      --SIGNAL p_sp_error  ;--\r
+  END IF ;--\r
+--  Insert PROGRAM ENDED Into PAYMENT log - END  \r
+\r
+--COMMIT;--\r
+Return 1;\r
+END;--\r
+\r
+$function$
+

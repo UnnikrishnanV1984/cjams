@@ -1,0 +1,7 @@
+INSERT INTO cjams.servicecasedisposition
+(servicecasedispositionid,servicecaseid, statusdate, intakeserreqstatustypekey, dispositioncode, "comments", effectivedate, activeflag, insertedby, insertedon, updatedby, updatedon, expirationdate, old_id, etl_userid, etl_load_date)
+VALUES('a551de12-8616-4aaf-8d62-0f4456ff70a5','713392d8-6996-4f0e-867e-083a53445ed2', '11/4/2020', 'Closed', 'Closed', 'On 11/4/2020 the Department initiated contact and learned that a childless couple had a dispute in a basement apartment. The female sought assistance from the teenagers who were present at the home above, however they are unrelated to this individual and not her children Departmental interventions needed at this time.', '11/4/2020', 1, 'f54a55fd-9720-443e-a3a0-ff8ebbdb2841', now(), 'CDM-7037', now(), NULL, NULL, NULL, NULL);
+
+INSERT INTO cjams.routing
+(eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES('SCDR', 'f54a55fd-9720-443e-a3a0-ff8ebbdb2841', NULL, NULL, NULL, NULL, 'a551de12-8616-4aaf-8d62-0f4456ff70a5', 16, 1, 'f54a55fd-9720-443e-a3a0-ff8ebbdb2841', now(), 'CDM-7037', now(), false, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);

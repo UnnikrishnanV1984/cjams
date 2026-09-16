@@ -1,0 +1,93 @@
+CREATE OR REPLACE FUNCTION prov_listprovidercomplaintsearch(userid character varying, p_status character varying, pagenumber integer, pagelimit integer, searchcolumn character varying, searchvalue character varying, v_teamtype character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, teamtype_key character varying, provider_complaintid uuid, narrative text, complaint_number character varying, complaint_status character varying, provider_id integer, source_type character varying, complainant_title character varying, draft text, insertedon timestamp without time zone, inserted_by character varying, formatted_provider_nm character varying, updated_on timestamp without time zone, complaint_date timestamp without time zone, displayname character varying, status character varying, statusdesc text, providerlist json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+totalcount integer;
+v_status character varying;
+v_userid character varying;
+ 
+ BEGIN
+ v_limit=10;
+ v_pagenumber := pageNumber-1;
+ v_pageoffset = v_pagenumber * v_limit;  
+
+   
+RETURN QUERY 
+ 
+select count(1)  over(), TPC.teamtype_key, TPC.provider_complaintid,  TPC.narrative,  
+TPC.complaint_number,TPC.complaint_status,  TPC.provider_id,tpc.source_type,tpc.complainant_title,
+CASE  TPC.is_draft   WHEN  1 THEN  'Completed'  ELSE 'Draft'  end as draft, 
+TPC.inserted_on, TPC.inserted_by,
+(CASE WHEN (tb.provider_nm is null OR tb.provider_nm='') THEN CONCAT(tb.provider_first_nm,' ',tb.provider_last_nm) ELSE tb.provider_nm END)  as formatted_provider_nm,
+TPC.updated_on, TPC.complaint_date, UP.displayname,
+CASE WHEN RTs.routingstatustypekey is null THEN  'Draft' ELSE RTs.routingstatustypekey  end as status,
+CASE WHEN RTs.typedescription is null THEN  'Pending' ELSE RTs.typedescription  end as statusdesc,
+(select json_agg(providerdetails)
+from (select tbp.provider_nm as organization_nm, tbp1.provider_id as site_id, tbp1.provider_nm as site_nm from prov_complaint_mapping pcm 
+left join tb_provider tbp on tbp.provider_id = pcm.provider_id 
+left join tb_provider tbp1 on tbp1.provider_id = pcm.site_id 
+where pcm.complaint_number = TPC.complaint_number and pcm.delete_sw <>'Y') providerdetails) as providerslist
+FROM  tb_provider_complaint TPC 
+ left join tb_provider TB on TB.provider_id=TPC.provider_id
+ left join userprofile UP on UP.securityusersid=TPC.inserted_by
+ LEFT  JOIN  routing  r  ON  r.objectid  = TPC.complaint_number /* AND  (r.activeflag  =1)*/  and  r.eventcode in ('PRCM')
+ LEFT  JOIN  routingstatustype  RTs  ON  RTs.sequencenumber::character varying  =  TPC.complaint_status and  rts.activeflag  =1  
+ LEFT  JOIN  teammemberroletype  rt  on  rt.roletypekey  =  r.toroleid  AND  rt.activeflag  =1
+where TPC.activeflag=1 AND
+CASE WHEN p_status is null then (TPC.complaint_status in ('28','31','91','93','94')) 
+when p_status in ('refferel_rejected', 'complaint_approval_rejected') then   (TPC.complaint_status in ('29','95','96')) 
+WHEN p_status = 'pending' THEN (TPC.is_draft = 0 or TPC.complaint_status='27' or TPC.complaint_status='29')
+when p_status = 'refferalsubmit'  then   (TPC.complaint_status = '27') 
+when p_status = 'closed'  then   (TPC.complaint_status = '32') 
+ELSE (TPC.complaint_status = v_status::character varying) END  
+
+and case when searchcolumn = 'TPC.complaint_number' then
+TPC.complaint_number ilike  '%'||searchvalue||'%' else true end
+
+and case when searchcolumn = 'TPC.provider_nm' then
+tb.provider_nm ilike  concat('%', lower(searchvalue), '%') else true end
+
+and case when searchcolumn = 'TPC.complaint_date' then
+TPC.complaint_date = searchvalue::date else true end
+
+
+
+--and TPC.complaint_number ilike  '%' ||compliantno||'%'
+--and case when $6 is not null then lower(tb.provider_nm) like concat('%', lower($6), '%') else true end
+--and case when $7 is not null then date(TPC.complaint_date) = date($7) else true end
+group by TPC.provider_complaintid,TPC.narrative,TPC.provider_id,
+TPC.is_draft,TPC.inserted_on,TPC.inserted_by,tb.provider_nm,tb.provider_first_nm,tb.provider_last_nm,
+TPC.updated_on,UP.displayname,RTs.routingstatustypekey,RTs.typedescription
+order by  
+ ( CASE sortorder when 'asc' then 
+  CASE sortcolumn 
+  when 'complaint_date' then 
+          cast( TPC.complaint_date as character varying)      
+        when 'complaint_number' then 
+          cast( TPC.complaint_number as character varying)  
+         when 'provider_nm' then 
+          cast( tb.provider_nm as character varying) 
+        
+  else cast( TPC.inserted_on as character varying) end end) asc,
+ ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'complaint_date' then 
+          cast( TPC.complaint_date as character varying)    
+        when 'complaint_number' then 
+          cast( TPC.complaint_number as character varying) 
+        when 'provider_nm' then 
+          cast( tb.provider_nm as character varying) 
+        
+  else cast( TPC.inserted_on as character varying) end end) desc
+ 
+ LIMIT v_limit OFFSET v_pageoffset ;  
+          RAISE  NOTICE  'v_userid%',v_userid;              
+end;
+$function$
+

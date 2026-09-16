@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION getrestitutionpaymentlist(v_restitutionno integer, v_youthpersonid uuid, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, restitutionno integer, intakeserreqrestitutionid uuid, intakeserviceid uuid, installmentamount numeric, intakenumber character varying, youthpersondetails json, victimpersondetails json, liablepersondetails json, restitutiontype character varying, countyname character varying, ismultipleinvolvedpersons boolean, payment numeric, duedate timestamp without time zone, frequency character varying, courtdeferredduedate timestamp without time zone, status character varying, inactivereasontype character varying, paymentstartdate timestamp without time zone, transfernotes text, paidamount numeric, paymentdetails jsonb, balanceamount numeric)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  v_pagenumber int;
+ v_pageoffset int;
+ 
+
+ 
+BEGIN 
+ 
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select count(1) over() as totalcount, ir.restitutionno,ir.intakeserreqrestitutionid,ir.intakeserviceid,ir.installmentamount,ir.intakenumber,
+json_build_object('youthpersonid',youthpersonid,'youthfirstname',pp.firstname,
+  'youthlastname', pp.lastname ,'youthcjamspid', pp.cjamspid, 'youthdob',pp.dob, 'youthgendertypekey',pp.gendertypekey ) as youthpersondetails,
+   json_build_object('victimpersonid',victimpersonid,'victimfirstname',pv.firstname,
+  'victimlastname', pv.lastname ,'victimcjamspid', pv.cjamspid, 'victimdob',pv.dob, 'victimgendertypekey',pv.gendertypekey ) as victimpersondetails,
+   json_build_object('liablepersonid',liablepersonid,'liablefirstname',pl.firstname,
+  'liablelastname', pl.lastname ,'liablecjamspid', pl.cjamspid, 'liabledob',pl.dob, 'liablegendertypekey',pl.gendertypekey,'liablepersonrelationtypekey',liablepersonrelationtypekey) as liablepersondetails,
+   ir.restitutiontype,ct.countyname,ir.ismultipleinvolvedpersons,ir.payment,ir.duedate,
+   ir.frequency,ir.courtdeferredduedate,ir.status,
+   ir.inactivereasontype,ir.paymentstartdate,ir.transfernotes,ir.paidamount,(SELECT Json_agg(actor) FROM (select intakeserreqrestitutionpaymentid,irp.intakeserreqrestitutionid,irp.paymentamount,irp.paymentnumber,irp.paymentdate,irp.paymenttype,
+irp.checknumber, irp.payerfirstname,irp.payerlastname,irp.payeraddress,irp.payercity,irp.payerstatekey,irp.payerzipcode,
+irp.depositnumber,irp.accountarea,irp.memofirstname,irp.memolastname,irp.restitutionstatus from intakeserreqrestitutionpayment irp where irp.intakeserreqrestitutionid = ir.intakeserreqrestitutionid )actor) :: jsonb as paymentdetails,
+coalesce(ir.payment,0)-coalesce(ir.paidamount,0) as balanceamount
+from intakeserreqrestitution ir
+   join county ct on ct.countyid = ir.countyid 
+   join person pp on pp.personid= ir.youthpersonid
+   join person pv on pv.personid = ir.victimpersonid 
+   join person pl on pl.personid = ir.liablepersonid
+where 
+(v_restitutionno is null or ir.restitutionno = v_restitutionno::int)
+and (v_youthpersonid is null or ir.youthpersonid = v_youthpersonid::uuid)
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+$function$
+

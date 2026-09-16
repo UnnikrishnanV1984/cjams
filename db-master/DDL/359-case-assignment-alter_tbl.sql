@@ -1,0 +1,1 @@
+alter table caseassignment add column fk_id character varying(12);

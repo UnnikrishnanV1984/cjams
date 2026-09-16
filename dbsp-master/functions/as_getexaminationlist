@@ -1,0 +1,38 @@
+CREATE OR REPLACE FUNCTION as_getexaminationlist(person_id uuid, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, providerinfoflag integer, personexaminationid uuid, parentexaminationid uuid, uploadpath json, appointment json, physician json, covidimpacted boolean, exposedtocovid character varying, covidtestconducted character varying, typeoftest character varying, covidtestresults character varying, covidtestdate date, updatedon timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+v_pagenumber int;
+
+v_pageoffset int;
+
+
+
+BEGIN
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select count(1) over() as totalcount,x.* from (select  pe.providerinfoflag,pe.personexaminationid,pe.parentexaminationid,pe.uploadpath,(select json_agg(x) from (select ep.appoinmentdate as "apptDate",ep.nextappointmentdate as "nextApptDate",ep.examinationtypekey as "natureofexamkey",(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trim(ep.examinationtypekey) and picklist_type_id=320 limit 1) as "natureofexamdesc",ep.labtesttypekey::character  varying as "labtestkey",(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trim(ep.labtesttypekey::character  varying ) and picklist_type_id=319 limit 1) as "labtestdesc",ep.specialityexamtypekey as "specialityexamkey",
+(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trim(ep.specialityexamtypekey) and picklist_type_id=318 limit 1) as "specialitydesc",
+ep.nextappointmentreason,ep.hivconsentflag as "hivtestreceived",ep.notkeptreason,ep.appointkeptflag as "apptkept",ep.otherspeciality  from personexamination ep
+where ep.activeflag=1 and ep.personid=person_id and ep.personexaminationid = pe.personexaminationid -- and ep.parentexaminationid=pe.parentexaminationid
+order by ep.insertedon desc) x)::json as appointment,
+json_build_object('speciality',pe.physicianspeciality,'affilication',pe.affiliateorg,'physicianname',pe.physicianname,
+'recommendations',pe.recommendations,'comments',pe.comments,'address1',pe.address1,'address2',pe.address2,'city',pe.cityname,
+'state',pe.statetypekey,'county',pe.countytypekey,'zip',pe.zip5no,'phone',pe.workphone,'email',pe.email,'followupneeded',pe.followupneeded,'medicalreferrals',pe.medicalreferrals) as physician,
+pe.covidimpacted, pe.exposedtocovid, pe.covidtestconducted, pe.typeoftest, pe.covidtestresults, pe.covidtestdate, (case when pe.updatedon is null then pe.insertedon else pe.updatedon end) as updatedon
+from personexamination pe
+where pe.activeflag=1 and pe.personid=person_id
+order by pe.insertedon desc
+) as x
+LIMIT v_liPageSize OFFSET v_pageoffset;
+END;
+
+$function$
+

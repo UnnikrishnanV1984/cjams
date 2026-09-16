@@ -1,0 +1,19 @@
+DROP function if exists getpapaymentdetails(integer); 
+CREATE OR REPLACE FUNCTION cjams.getpapaymentdetails(v_auth_id integer)
+ RETURNS TABLE(report_1099_sw character, type_1099_cd character varying, store_receipt_id character varying,gross_amount_no numeric,payment_id integer ,payment_method_cd character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+begin 
+
+return query 
+
+select tpd.report_1099_sw,tpd.type_1099_cd,tph.store_receipt_id,tph.gross_amount_no :: numeric(10,2),tph.payment_id
+,tph.payment_method_cd as paymentval
+from tb_payment_header tph 
+join tb_payment_detail tpd on tph.payment_id = tpd.payment_id 
+where tph.authorization_id = v_auth_id;
+
+ end;
+ $function$
+;

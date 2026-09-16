@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION as_listauditmodifiedlogs(referenceid uuid, logtypekey character varying, filtercol character varying, pagenumber bigint, pagesize bigint, intakeserviceid uuid, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, metadata json, modifieddata json, insertedon timestamp without time zone, insertedby character varying, inserteduser json)
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                  
+                                                                                                                                                                                               
+                                                                                                                                                                                               
+ 
+DECLARE
+ v_referenceid uuid;
+ v_logtypekey character varying;
+ V_intakeserviceid uuid;
+ v_pageoffset  int;
+ v_pagenumber  int;
+
+BEGIN
+ v_referenceid := referenceid;
+ v_logtypekey := logtypekey;
+ v_intakeserviceid := intakeserviceid;
+ v_pagenumber  :=  pagenumber-1;
+ v_pageoffset  =  v_pagenumber  *  pagesize;
+ 
+ IF COALESCE(pagesize, 0) < 1 THEN                     
+ pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+ pagenumber := 1; 
+ END IF;
+
+
+ RETURN  QUERY
+ SELECT COUNT(1) OVER() totalcount, al.metadata,
+ -- al.modifieddata, 
+ CASE WHEN filtercol IS NOT NULL THEN (al.modifieddata ->> filtercol)::json ELSE al.modifieddata END AS modifieddata
+ ,
+ al.insertedon, al.insertedby
+ , (SELECT JSON_AGG(E) AS inserteduser FROM (
+  SELECT up.firstname, up.lastname, up.displayname, up.cjamspid 
+  FROM userprofile up WHERE up.securityusersid = al.insertedby AND activeflag = 1 
+ ) e)::JSON
+ FROM auditlog al 
+ WHERE al.referenceid = v_referenceid AND al.logtypekey = v_logtypekey
+ AND (al.modifieddata IS NOT NULL AND al.modifieddata::jsonb != '{}'::jsonb) 
+ AND CASE WHEN v_intakeserviceid IS NOT NULL THEN al.intakeserviceid = v_intakeserviceid ELSE TRUE END
+ AND CASE when filtercol is not null then al.modifieddata::jsonb ? filtercol ELSE TRUE END
+ ORDER BY al.insertedon DESC 
+ LIMIT case when v_nolimit = false  then pagesize end offset case when v_nolimit = false  then v_pageoffset end;
+
+END;
+                                                                                                                                                                          
+                                                                                                                                                                                               
+  $function$
+

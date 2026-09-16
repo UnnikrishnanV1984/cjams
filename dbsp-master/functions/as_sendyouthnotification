@@ -1,0 +1,63 @@
+CREATE OR REPLACE FUNCTION as_sendyouthnotification(youthpersonid uuid, currentuserid character varying, objid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+---------Sending Youth notification-----------------
+
+declare 
+
+v_name character varying;
+v_subject character varying;
+v_body text;
+v_intakeworkers record;
+v_caseworkers record;
+v_send_notification character varying;
+v_allegations character varying;
+v_complaintid character varying;
+v_firstname character varying;
+v_lastname character varying;
+v_cjamspid bigint;
+
+
+begin
+
+ FOR v_caseworkers   in
+
+select distinct RA.tosecurityusersid, ISR.intakenumber from intakeservicerequestactor ISRA 
+join routing RA on ISRA.intakeserviceid::character varying = RA.objectid 
+join intakeservicerequest ISR on ISRA.intakeserviceid = ISR.intakeserviceid
+join intakeserreqstatustype ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid
+where RA.routingstatustypeid = 4 and RA.activeflag = 1  and ISRA.activeflag =1
+and ISRA.personid = youthpersonid
+and ISRA.intakeservicerequestpersontypekey = 'Youth' and ISRST.intakeserreqstatustypekey != 'Closed'
+and ISR.intakenumber != objid and ISRST.activeflag = 1
+ 
+ loop 
+
+  select firstname, lastname, cjamspid into v_firstname, v_lastname, v_cjamspid  from person where personid = youthpersonid;
+
+  v_allegations = (select  (select string_agg(AL.name, ',') from allegation AL
+  where AL.allegationid in (select ISREC.allegationid from intakeservicerequestevaluationconfig ISREC
+  where ISREC.intakeservicerequestevaluationid = ISRE.intakeservicerequestevaluationid)) 
+   from intakeservicerequestevaluation ISRE 
+   where ISRE.intakenumber = objid);
+   
+
+   
+   v_complaintid = (select string_agg(ISRE.complaintid:: character varying, ',') from intakeservicerequestevaluation ISRE 
+where ISRE.intakenumber = objid); 
+  v_body  =  concat('A New Referral (',objid,') has been submitted for ',v_firstname,', ',v_lastname ,' (CJAMSID#', v_cjamspid,') with following allegations - (Complaint# ',v_complaintid,') - ', v_allegations);
+  v_subject = concat(v_firstname,', ', v_lastname,'/',v_cjamspid,' - New referral added.');
+  select displayname INTO v_name from userprofile where securityusersid = currentuserid;
+
+ select send_notification into v_send_notification from as_send_notification(v_caseworkers.tosecurityusersid, currentuserid::character varying, v_caseworkers.tosecurityusersid ,'System'::character varying,'High'::character varying,v_subject::character varying,v_body::character varying,'Youth Notification',false);
+
+END  LOOP;
+ 
+return 'Success';
+ 
+end;
+
+$function$
+

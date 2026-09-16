@@ -1,0 +1,173 @@
+CREATE OR REPLACE FUNCTION as_fostercareprivateprovidersearch(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, provider_id integer, providername character varying, programname character varying, preferred character varying, vacancy integer, placementstructure character varying, provider_category_cd character varying, provider_category_name character varying, comar_sw character, contract_program_id integer, placement_service_id integer, providerdetails json, rate json, childcharacteristicsdetails json, ssnno character varying, dob_dt date, affiliate_provider_id integer, countyname character varying, service_status text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+ v_servicetype character varying;    
+ v_service_id_bundledplacementservices character varying;     
+ v_prov_tax_type_cd_taxid VARCHAR(30);
+ v_adr_zip5_no_zipcode numeric; 
+ v_localdepartmenthomecaregiver boolean; 
+ v_provider_id INTEGER;   
+ v_lvService VARCHAR(50);                        
+ v_lvServiceSubType VARCHAR(50);                         
+ v_lvPaymentType VARCHAR(50);     
+ v_lvChildCharacter json;                                                     
+ v_liZipCode INT;       
+ v_liCounty uuid;
+ v_lvProvider VARCHAR(50);
+ v_liCount INT;                              
+ v_lvSortCol VARCHAR(50);                              
+ v_lvSortDir VARCHAR(10); 
+ v_pagenumber int;
+ v_pageoffset int;
+ v_fname VARCHAR(50);
+ v_mname VARCHAR(50);
+ v_lname VARCHAR(50);
+ v_pname VARCHAR(100);
+ v_gender VARCHAR(50);
+ v_otherLocalDeptmntTypeId VARCHAR;
+ v_statewideonly VARCHAR;
+ v_tax_id_no numeric;
+  --v_fromproviderplacement  VARCHAR(50) ; 
+  
+ 
+BEGIN 
+v_servicetype := searchobj ->> 'servicetype';
+v_adr_zip5_no_zipcode := searchobj ->> 'zipcode';
+v_provider_id := searchobj ->> 'providerid';
+v_otherLocalDeptmntTypeId := searchobj ->> 'county';
+v_statewideonly := searchobj ->> 'statewide';
+/*
+v_service_id_bundledplacementservices := searchobj ->> 'bundledplacementservices'; 
+v_prov_tax_type_cd_taxid := searchobj ->> 'taxid';*/
+v_fname := searchobj ->> 'firstname';
+v_mname := searchobj ->> 'middlename';
+v_lname := searchobj ->> 'lastname';
+--v_gender := searchobj ->> 'gender';
+v_pname := searchobj ->> 'providername';
+v_tax_id_no := searchobj ->> 'taxId';
+--v_fromproviderplacement := searchobj ->> 'fromproviderplacement';
+
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+  RETURN query
+    SELECT COUNT(1) OVER() totalcount,* from ( 
+  (SELECT  TBP.provider_id ,
+  (CASE WHEN (TBP.provider_nm is null OR TBP.provider_nm in ('','DATA IS REPLACED')) 
+  THEN CONCAT(TBP.provider_first_nm,' ',TBP.provider_last_nm)::character varying ELSE TBP.provider_nm END),
+  TBS.service_nm, ''::character varying,0,
+  TBPC.contract_type_new_value,
+        TBP.provider_category_cd,
+  'Service Provider'::character varying,/*
+  (
+     SELECT  
+   CASE WHEN piclist.PICKLIST_VALUE_CD = '1783' THEN 'Local Department Home' 
+   WHEN piclist.PICKLIST_VALUE_CD = '1782' THEN 'CPA Home'
+   WHEN piclist.PICKLIST_VALUE_CD = '1785' THEN 'ICPC Home Study'
+   WHEN piclist.PICKLIST_VALUE_CD = '3049' THEN 'Private Organization'
+   WHEN piclist.PICKLIST_VALUE_CD = '3274' THEN 'RCC Facility' 
+   WHEN piclist.PICKLIST_VALUE_CD = '3302' THEN 'CPA Office' 
+   ELSE ''::character varying END 
+   FROM TB_PROVIDER_PICKLIST piclist WHERE piclist.PICKLIST_TYPE_ID=155 
+      AND piclist.PICKLIST_VALUE_CD IN ('3274','3302') 
+       AND piclist.PROVIDER_ID = TBP.PROVIDER_ID AND piclist.DELETE_SW = 'N'
+       order by piclist.update_ts desc limit 1
+  ), */
+  'Y'::character as comar_sw ,9999999 as contract_program_id ,TBS.service_id,
+  (select json_agg(x) from (
+  select a.provider_id , a.prov_tax_type_cd, a.tax_id_no, a.affiliate_provider_id as provider_organization_id,(CASE WHEN (a.provider_nm = null OR a.provider_nm='') 
+  THEN CONCAT(a.provider_first_nm,' ',a.provider_last_nm)::character varying ELSE a.provider_nm END) as provider_organization_name, '' as contract_program_id, '' as programname,
+  a.adr_work_phone_tx as phonenumber,
+  (select concat_ws(' ',tpa.adr_street_tx,(select coalesce(tpv.value_tx,'') from tb_picklist_values tpv where trim(tpv.picklist_value_cd) in (trim(tpa.adr_pre_dir_cd)) and tpv.picklist_type_id='69'),(case when tpa.adr_format_cd = 'P' then 'PO Box ' else '' end ), tpa.adr_box_no,tpa.adr_unit_no_tx,tpa.adr_street_nm,tpa.adr_street_suffix_cd,tpa.adr_city_nm,(select cnty.countyname from county cnty where cnty.statecountycode = tpa.adr_county_cd and cnty.activeflag = 1),tpa.adr_state_cd,tpa.adr_zip5_no)
+        from tb_provider_addresses tpa where   tpa.parent_key_id = TBP.provider_id ::character varying and adr_default_sw = 'Y' ORDER BY tpa.update_ts DESC Limit 1)::character varying as address,
+  TBS.service_id , TBS.service_nm as placementstructure , 0::integer as bundled_service_id,'' as bundledplacementstructure, TBS.service_id,
+  (select json_agg(x) from (select concat(up.firstname,' ',up.lastname) as license_cordinator from userprofile up where up.securityusersid=a.create_user_id and up.activeflag=1) as x) as license_cordinators
+  from tb_provider as a where a.provider_id = TBP.provider_id and a.delete_sw = 'N') as x) as providerdetails,
+  (select json_agg(x) from (select atsr.as_tb_service_rates_id as rateid, atsr.contract_id as contractid, atsr.service_id as serviceid, atsr.hourly_rate as hourlyrate)x) as rate,
+  (select json_agg(x) from ( select TBP.provider_id, TBPLV.picklist_value_cd as childcharacteristics_picklist_value_cd, 
+  TBPLV.description_tx as childcharacteristics_description from tb_provider_picklist as TBPPL  
+  JOIN tb_picklist_values as TBPLV ON TBPLV.picklist_value_cd = TBPPL.picklist_value_cd and TBPLV.delete_sw = 'N' and TBPLV.picklist_type_id = 43 
+  Where TBPPL.provider_id = TBP.affiliate_provider_id and TBPPL.delete_sw = 'N') as x) as childcharacteristicsdetails 
+  ,TBP.tax_id_no :: character varying,TBP.dob_dt,TBP.affiliate_provider_id 
+  ,(case (select county_id from as_tb_contract_county atcc where atcc.contract_id = TBPC.contract_id order by create_ts desc limit 1) when '00000000-0000-0000-0000-000000000000' then 'State' else (select c.countyname from county c where trim(c.statecountycode)=trim(TBP.county_cd) limit 1) end) as countyname,
+  ''::text AS service_status
+  FROM tb_provider as TBP
+  LEFT JOIN tb_provider_contracts as TBPC on COALESCE(TBP.affiliate_provider_id, TBP.provider_id) = TBPC.provider_id and TBPC.delete_sw = 'N'
+  LEFT JOIN as_tb_service_rates ATSR ON atsr.contract_id = TBPC.contract_id 
+     LEFT JOIN tb_services as TBS ON  TBS.service_id =  ATSR.service_id and TBS.delete_sw = 'N' 
+  WHERE TBP.provider_status_cd = '1791'  -- Provider Status Active
+  AND TBP.delete_sw = 'N' 
+  AND TBP.provider_id in (
+  SELECT tpcl1.provider_id FROM TB_PROVIDER_PICKLIST tpcl1 WHERE tpcl1.PICKLIST_TYPE_ID=155 
+  AND tpcl1.PICKLIST_VALUE_CD IN ('1787') --1782','1785','3049'
+  AND tpcl1.PROVIDER_ID = TBP.PROVIDER_ID AND tpcl1.DELETE_SW = 'N')
+  /*AND ( -- Licence is ACTIVE 
+    --1. 3263 License Issued
+    --2. 3266 License Issued Under CAP
+    --3. 3260 License Sanctioned - Allow Placement Referrals
+         SELECT trim(TPL.license_status_cd) IN ('3263', '3266', '3260') FROM
+               tb_provider_licensing as TPL 
+            WHERE
+            TPL.site_id = TBP.provider_id AND
+            TPL.provider_id = TBP.affiliate_provider_id AND
+              trim(TPL.license_status_cd) IN ('3263', '3266', '3260') AND
+      TPL.license_expiry_dt >= now ():: date AND
+            TPL.delete_sw = 'N' ORDER BY TPL.license_application_id DESC LIMIT 1
+  )*/
+  AND (CASE WHEN v_fname IS NOT NULL THEN lower(TBP.provider_first_nm) % lower(v_fname) ELSE TRUE END)
+  AND (CASE WHEN v_mname IS NOT NULL THEN lower(TBP.provider_middle_nm) % lower(v_mname) ELSE TRUE END)
+  AND (CASE WHEN v_lname IS NOT NULL THEN lower(TBP.provider_last_nm) % lower(v_lname) ELSE TRUE END)
+  AND (CASE WHEN v_pname IS NOT NULL THEN 
+    CASE WHEN (TBP.provider_nm = null OR TBP.provider_nm in ('','DATA IS REPLACED')) 
+  THEN lower(CONCAT(TBP.provider_first_nm,' ',TBP.provider_last_nm))::character varying like '%' || lower(v_pname) || '%'
+  ELSE
+  lower(TBP.provider_nm) like '%' || lower(v_pname) || '%' END ELSE TRUE END)
+  AND 
+  (v_servicetype is null OR 
+  TBPC.contract_type_new_value ::text in (select * from unnest(string_to_array(v_servicetype, ',')))
+  )
+  AND 
+  (v_otherLocalDeptmntTypeId is null OR 
+  TBP.county_cd in (select * from unnest(string_to_array(v_otherLocalDeptmntTypeId, ',')))
+  )/*
+  AND 
+  (v_gender is null OR 
+    EXISTS(
+         select TPA.gender_cd from 
+               tb_provider_licensing as TPL 
+            LEFT JOIN tb_prov_accomodation as TPA on TPA.license_application_id = TPL.license_application_id and TPA.delete_sw = 'N'
+            where TPA.gender_cd=v_gender and TPL.provider_id = TBP.affiliate_provider_id and TPL.delete_sw = 'N'
+    )
+  
+  )*/
+  AND 
+  (v_adr_zip5_no_zipcode is null OR 
+    EXISTS(
+         SELECT TBPA.adr_zip5_no FROM 
+               tb_provider_addresses AS TBPA 
+            WHERE TBPA.adr_zip5_no = v_adr_zip5_no_zipcode::numeric
+            AND TBPA.parent_key_id::integer=TBP.provider_id
+    )
+  )/*
+  AND 
+  (v_service_id_bundledplacementservices is null OR 
+    EXISTS(
+         SELECT TBS1.service_id  FROM 
+                tb_services as TBS1 WHERE  TBS1.service_id =  TBPS.service_id 
+                and TBS1.paid_non_paid_cd in ('3334','3335') and TBS1.delete_sw = 'N' 
+            and TBS1.service_id::character varying in (select * from unnest(string_to_array(v_service_id_bundledplacementservices, ',')))
+    )
+  )*/
+  --AND (CASE WHEN v_prov_tax_type_cd_taxid IS NOT NULL THEN TBP.prov_tax_type_cd = v_prov_tax_type_cd_taxid ELSE TRUE END)
+  AND (CASE WHEN v_provider_id IS NOT NULL THEN TBP.provider_id = v_provider_id ELSE TRUE END)
+  AND (CASE WHEN v_tax_id_no IS NOT NULL THEN TBP.tax_id_no = v_tax_id_no ELSE TRUE END)
+  AND (CASE WHEN v_statewideonly = 'true' THEN (select county_id::character varying = '00000000-0000-0000-0000-000000000000' from as_tb_contract_county atcc where atcc.contract_id = TBPC.contract_id) ELSE TRUE END)
+  )
+ ) as providerlist LIMIT v_liPageSize OFFSET v_pageoffset;        
+END;
+$function$
+

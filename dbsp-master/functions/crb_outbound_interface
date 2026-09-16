@@ -1,0 +1,4543 @@
+CREATE OR REPLACE FUNCTION crb_outbound_interface(vdt_date character varying, OUT vs_success_sw character varying, OUT vl_output_sqlcode character varying, OUT vs_message character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Description: To create CRB Interface data
+
+-- Revision(s)
+-- 02/24/2021 Vineet Tirodkar
+-- Modifications to exclude special characters from person name and hyphens from social (CIDM-2200)
+-- 05/10/2021 Vineet Tirodkar - Modifications to add missing joins of intakeservicerequest table (Performance Issue fix) 
+-- 11/30/2021 Vineet Tirodkar - Modifications To Send FACTS Codes to CRB system instead of CJAMS reference values (B-119348)
+-- 01/24/2021 Vineet Tirodkar - To fix query for "VS_APPROVE_CURR" - Number of placements in the current episode (CIDM-4187)
+-- 04/10/2022 Vineet Tirodkar - Modifications For new Flat File Format (B-119348)
+-- 04/15/2022 Vineet Tirodkar - Modifications to fix (CIDM-4437)
+--      VDT_PET_DATE Date Time value out of range error 
+--      VL_WORKER_ID less than 9 digit error   
+------------------------------------------------------------------------
+DECLARE
+ CRB_CNT                     INTEGER;
+ VS_OUTPUT_STATE             VARCHAR(5) DEFAULT '00000';
+ VL_STAFF_ID                 INTEGER DEFAULT 0;
+ -- TABLE VARIABLES            
+ VL_CLIENT_ID                INTEGER DEFAULT 0;
+ VL_CASE_ID                  VARCHAR DEFAULT '';
+ VS_DISTRICT_OFFICE          VARCHAR(50); -- v1.3
+ VS_FST_NAME                 VARCHAR(15); -- VARCHAR(50);
+ VS_MID_INAL                 VARCHAR(1); -- VARCHAR(50);
+ VS_LST_NAME                 VARCHAR(20); -- VARCHAR(50);
+ VDT_BIRTH_DATE              VARCHAR(10);
+ VS_AMF_CASE_NO              VARCHAR(8) DEFAULT '        ';
+ VS_SEX                      VARCHAR(1); -- VARCHAR(5);
+ VS_RACE                     VARCHAR(1); -- VARCHAR(5);
+ VS_SS_NO                    VARCHAR(9);
+ VS_CURR_STR_NO              VARCHAR(6); -- VARCHAR(10);
+ VS_CURR_STR_DIR             VARCHAR(2); -- VARCHAR(5);
+ VS_CURR_STR_NM              VARCHAR(20); -- VARCHAR(50);
+ VS_CURR_STR_TYPE_CD         VARCHAR(4); -- VARCHAR(5);
+ VS_CURR_APT_NUM             VARCHAR(5);
+ VS_CURR_ADDL_ADDR           VARCHAR(5); -- CRBC is 22
+ VS_CURR_CITY                VARCHAR(22); -- VARCHAR(50);
+ VS_CURR_ST                  VARCHAR(2); -- VARCHAR(5);
+ VS_CURR_ZIP                 VARCHAR(5);
+ VS_MAIL_CASE_NAME           VARCHAR(31) DEFAULT '';
+ VS_MAIL_STR_NO              VARCHAR(6) DEFAULT ''; -- VARCHAR(10) DEFAULT '';
+ VS_MAIL_STR_DIR             VARCHAR(2) DEFAULT ' '; -- VARCHAR(5) DEFAULT '';
+ VS_MAIL_STR_NM              VARCHAR(20) DEFAULT ''; -- VARCHAR(50) DEFAULT '';
+ VS_MAIL_STR_TYPE_CD         VARCHAR(4) DEFAULT ''; -- VARCHAR(5) DEFAULT '';
+ VS_MAIL_APT_NUM             VARCHAR(5) DEFAULT '';
+ VS_MAIL_ADDL_ADDR           VARCHAR(22) DEFAULT ''; -- VARCHAR(5) DEFAULT '';
+ VS_MAIL_CITY                VARCHAR(22) DEFAULT ''; -- VARCHAR(50) DEFAULT '';
+ VS_MAIL_ST                  VARCHAR(2) DEFAULT ' '; -- VARCHAR(5) DEFAULT '';
+ VS_MAIL_ZIP                 VARCHAR(5) DEFAULT '00000';
+ VS_CURR_STATUS              VARCHAR(1);
+ VS_CURR_PROJ_CAT            VARCHAR(4) DEFAULT '    '; -- VARCHAR(5) DEFAULT '     ';
+ VS_CURR_STATE_USE_CD        VARCHAR(1) DEFAULT ' ';   -- VARCHAR(8) DEFAULT '        ';  
+ VS_CURR_LOCAL_USE_CD        VARCHAR(2) DEFAULT '  '; -- VARCHAR(8) DEFAULT '        ';
+ VS_CURR_WORKER_ID           VARCHAR;
+ VDT_CURR_APPL_DATE          VARCHAR(3) DEFAULT '000'; -- VARCHAR(10) DEFAULT '       ';
+ VDT_CURR_ACCP_DATE          VARCHAR(6); -- VARCHAR(10);
+ VDT_CURR_CLOSE_DATE         VARCHAR(10);
+ VS_CURR_CLOSE_CD            VARCHAR(3) DEFAULT '   '; -- VARCHAR(8);
+ VDT_CURR_RECON_DATE         VARCHAR(6) DEFAULT '000000'; -- VARCHAR(10);
+ VDT_CURR_REDET_DATE         VARCHAR(6) DEFAULT '000000'; -- VARCHAR(10);
+ VS_CURR_ELIG_CODE           VARCHAR(3); -- VARCHAR(5);
+ VS_FCRB_DOWNLOAD            VARCHAR(1) DEFAULT 'Y';                               
+ VS_BALCITY_DOWNLOAD         VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_AA_DOWNLOAD              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_NEW_CDE                  VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        '; 
+ VS_FACTS_CHG                VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_CDB_CHG                  VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        '; X or Y??????
+ VS_FACTS_PCAT_CTR           VARCHAR(2) DEFAULT '00'; -- VARCHAR(8) DEFAULT '        ';
+ VDT_PREV_RUN_DATE           VARCHAR(6); -- VARCHAR(10);
+ VDT_PREV_TRANS_DATE         VARCHAR(6) DEFAULT '000000'; -- VARCHAR(10);               
+ VDT_CURR_RUN_DATE           VARCHAR(6); -- VARCHAR(10);
+ VS_MG_DOWNLOAD              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_PG_DOWNLOAD              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_BALT_CNTY_DOWNLOAD       VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_SE_A                VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);
+ VS_RACE_SE_B                VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);VARCHAR(5);
+ VS_RACE_SE_C                VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);VARCHAR(5);
+ VS_RACE_SE_N                VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);VARCHAR(5);
+ VS_RACE_SE_P                VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);VARCHAR(5);
+ VS_RACE_SE_U                VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);VARCHAR(5);
+ VS_ETHNICITY_SE             VARCHAR(1);
+ VS_WASHCNTY_DOWNLOAD        VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_CALVCOUNTY_DOWNLOAD      VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_FILLER                   VARCHAR(9); -- CIS CLIENT ID
+ VS_EDUC_CODE                VARCHAR(4); -- VARCHAR(5);
+ VS_RELIGION_CODE            VARCHAR(5);
+ VS_ORIGIN_CODE              VARCHAR(2) DEFAULT '  '; -- VARCHAR(50);--v1.3
+ VS_SP_NEED_l                VARCHAR(2) DEFAULT '  '; -- VARCHAR(5);
+ VS_SP_NEED_2                VARCHAR(2) DEFAULT '  '; -- VARCHAR(5);
+ VS_SP_NEED_3                VARCHAR(2) DEFAULT '  '; -- VARCHAR(5);
+ VS_SP_NEED_4                VARCHAR(2) DEFAULT '  '; -- VARCHAR(5);
+ VDT_MARE_DATE               VARCHAR(10);
+ VDT_NEXT_REVIEW_DATE        VARCHAR(10);
+ VS_PRIOR                    VARCHAR(1);
+ VDT_SIGN_DATE               VARCHAR(6); -- VARCHAR(20);
+ VDT_SIGN_DATE1              DATE; 
+ VS_APPROVE_BEFORE           VARCHAR(2);
+ VS_APPROVE_CURR             VARCHAR(2);
+ VS_TIMES_HOME               VARCHAR(2);
+ VS_LEGAL_STAT               VARCHAR(2) DEFAULT '00'; -- VARCHAR(10);
+ VDT_LS_EFF_DATE             VARCHAR(10);
+ VS_COURT                    VARCHAR(2) DEFAULT '00';  -- VARCHAR(8) DEFAULT '        ';
+ VS_DOCKET                   VARCHAR(20); -- VARCHAR(50);
+ VS_PERM_PLAN                VARCHAR(1); -- VARCHAR(5);
+ VDT_PLAN_DATE               VARCHAR(10);
+ VS_PLAN_LA                  VARCHAR(2); -- VARCHAR(25);
+ VS_PLAN_LS                  VARCHAR(2); -- VARCHAR(5);
+ VDT_PRJ_ACH_DATE            VARCHAR(10);
+ VDT_ACH_DATE                VARCHAR(10);
+ VDT_SVC_AGR_DATE            VARCHAR(10);
+ VS_ENT_REASON               VARCHAR(2) DEFAULT '  '; -- VARCHAR(8) DEFAULT '        ';
+ VDT_PLCMT_DATE              VARCHAR(10);
+ VDT_LA_BEG_DATE             VARCHAR(10);
+ VDT_LA_CAN_DATE             VARCHAR(10);
+ VS_LA_TYPE                  VARCHAR(5);
+ VS_LA_PROVIDER              VARCHAR(100);
+ VS_4E_STATUS                VARCHAR(5);
+ VS_FUND_SOURCE              VARCHAR(5);
+ VDT_FC_EXIT_DATE            VARCHAR(20);
+ VS_FC_EXIT_REASON           VARCHAR(5);
+ VS_CASE_OPENED              VARCHAR(8);
+ VDT_FCRB_DATE               VARCHAR(10);
+ VDT_PANEL_DATE              VARCHAR(10);
+ VDT_DISP_DATE               VARCHAR(10);
+ VDT_DISP_DUE_DATE           VARCHAR(10);
+ VDT_ADOPT_PLCMT_DATE        VARCHAR(10);
+ VS_FC_ADOPT_PLCMT_NO        VARCHAR(2) DEFAULT '  ';    
+ VS_SIBS_NO                  VARCHAR(2) DEFAULT '  ';
+ VS_SIBS_ADOPT_NO            VARCHAR(2) DEFAULT '  ';
+ VS_RACE_MOTHER              VARCHAR(5);
+ VS_RACE_FATHER              VARCHAR(5);
+ VDT_AD_TRANSFER_DATE        VARCHAR(4) DEFAULT '0000'; -- VARCHAR(10) DEFAULT '        ';
+ VDT_DSS_ATTY_DATE           VARCHAR(4) DEFAULT '0000'; -- VARCHAR(10);                      
+ VDT_PET_DATE                VARCHAR(10);
+ VDT_SERVED_DATE             VARCHAR(10);
+ VDT_HEAR_DATE               VARCHAR(10);
+ VDT_DENIED_DATE             VARCHAR(10);
+ VS_CONSENT                  VARCHAR(1);
+ VS_CONTESTED                VARCHAR(1);
+ VS_POSTPONED                VARCHAR(1);
+ VDT_LAST_TRANS_DATE         VARCHAR(6) DEFAULT '000000'; -- VARCHAR(10) DEFAULT '        ';
+ VS_PARENT_CASE_NO           VARCHAR(8) DEFAULT '00000000'; --VARCHAR(8) DEFAULT '        ';
+ VS_RECORD_ID                VARCHAR(2) DEFAULT '  '; -- VARCHAR(8) DEFAULT '        ';
+ VS_NEXT_TYPE_REVIEW         VARCHAR(4);
+ VS_NLA_INDICATOR            VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';          
+ VS_ENT_REASON_2             VARCHAR(2) DEFAULT '  '; -- VARCHAR(8) DEFAULT '        ';
+ VS_PRIM_CARETAKER           VARCHAR(2); -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_l       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(8) DEFAULT '        ';             
+ VS_FA_PARENT_FACTOR_l       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(8) DEFAULT '        ';
+ VS_OT_PARENT_FACTOR_l       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_2       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_FA_PARENT_FACTOR_2       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_OT_PARENT_FACTOR_2       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_3       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_FA_PARENT_FACTOR_3       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_OT_PARENT_FACTOR_3       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_4       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_FA_PARENT_FACTOR_4       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_OT_PARENT_FACTOR_4       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_5       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_FA_PARENT_FACTOR_5       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_OT_PARENT_FACTOR_5       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_6       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_FA_PARENT_FACTOR_6       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT'    ';
+ VS_OT_PARENT_FACTOR_6       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_MO_PARENT_FACTOR_7       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_FA_PARENT_FACTOR_7       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5) DEFAULT '    ';
+ VS_OT_PARENT_FACTOR_7       VARCHAR(1) DEFAULT ' ';  -- VARCHAR(5);
+ VS_CLIENT_ID                VARCHAR(9);
+ VS_SU_ID                    VARCHAR(15);
+ VS_PARENT_CLIENT_ID         VARCHAR(9);
+ VDT_4E_RECON_DATE           VARCHAR(6) DEFAULT '000000'; -- VARCHAR(10) DEFAULT '        ';
+ VS_SSI_CODE                 VARCHAR(1); -- VARCHAR(5);
+ VS_BASIS_SPECIAL_NEEDS      VARCHAR(1); -- VARCHAR(5);
+ VS_LEGAL_STATUS_AT_ENTRY    VARCHAR(2) DEFAULT '00'; -- VARCHAR(10);
+ VS_ENTRY_REASON_3           VARCHAR(2) DEFAULT '  '; -- VARCHAR(8) DEFAULT '        ';
+ VS_ENTRY_REASON_4           VARCHAR(2) DEFAULT '  '; -- VARCHAR(8) DEFAULT '        ';
+ VS_ADOPTION_FAMILY_STRUCTURE   VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_ADOPTION_CHILD_PLACED_FROM  VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_ADOPTION_CHILD_PLACED_BY    VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_REL_TO_CHILD_ADOP_MOTHER    VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_REL_TO_CHILD_ADOP_FATHER    VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_BIRTH_MOTHER_YEAR_OF_BIRTH  VARCHAR(4) DEFAULT '    '; -- VARCHAR(8) DEFAULT '        ';
+ VS_BIRTH_FATHER_YEAR_OF_BIRTH  VARCHAR(4) DEFAULT '    '; -- VARCHAR(8) DEFAULT '        ';
+ VS_YEAR_OR_BIRTH_ADOPT_MOTHER  VARCHAR(4) DEFAULT '    '; -- VARCHAR(8) DEFAULT '        ';
+ VS_YEAR_OR_BIRTH_ADOPT_FATHER  VARCHAR(4) DEFAULT '    '; -- VARCHAR(8) DEFAULT '        ';
+ VS_BIRTH_MOTHER_MARITAL_STATUS VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VDT_BIRTH_MOTHER_TPR_DATE      VARCHAR(6) DEFAULT '      '; -- VARCHAR(10) DEFAULT '        ';
+ VDT_BIRTH_FATHER_TPR_DATE      VARCHAR(6) DEFAULT '      '; -- VARCHAR(10) DEFAULT '        ';
+ VS_CHILD_FACTOR_1              VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);
+ VS_CHILD_FACTOR_2              VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);
+ VS_CHILD_FACTOR_3              VARCHAR(1) DEFAULT ' '; -- VARCHAR(5);
+ VS_PREV_ADOP                VARCHAR(1);
+ VS_ADOPTION_AGE             VARCHAR(5);
+ VS_MONTHLY_SUBSIDY          VARCHAR(5) DEFAULT '     '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_A              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_B              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_C              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_N              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_P              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_U              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADMO_I              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_ETHNICITY_ADMO           VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_A              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_B              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_C              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_N              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_P              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_U              VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_RACE_ADFA_I              VARCHAR(1) DEFAULT ' '; --  VARCHAR(8) DEFAULT '        ';
+ VS_ETHNICITY_ADFA           VARCHAR(1) DEFAULT ' '; -- VARCHAR(8) DEFAULT '        ';
+ VS_FILLER_2                 VARCHAR(77);
+ VS_SEGMENT_CNT              VARCHAR(2) DEFAULT '00'; -- VARCHAR(8);
+ VS_MOTHER_ID                VARCHAR(9) DEFAULT '000000000';
+ VS_FATHER_ID                VARCHAR(9) DEFAULT '000000000';
+ VL_CNT                      INTEGER DEFAULT 0;
+ VAR_CNT                     INTEGER DEFAULT 0;
+ VL_PICKLIST_CNT             INTEGER DEFAULT 0;
+ VS_PICKLIST_VALUE_CD        VARCHAR(5);
+ I                           INTEGER DEFAULT 0;
+ VDT_CURRENT_DT              VARCHAR(10);
+ VL_PROV_ID                  INTEGER DEFAULT 0;
+ -- MAIN CURSOR VARIABLES
+ VL_MAIN_CUR_CNT             INTEGER DEFAULT 0;
+ VL_CLIENT_PROGRAM_ID        INTEGER DEFAULT 0;
+ VDT_START_DT                VARCHAR(10) ;
+ VDT_END_DT                  VARCHAR(10);
+ VL_PREV_CLIENT_ID           INTEGER DEFAULT 0;
+ VL_PROGRAM_AREA_ID          INTEGER DEFAULT 0;
+ VL_STATUS_CNT               INTEGER  DEFAULT 0;
+ VL_PROVIDER_ID              INTEGER;
+ VS_FIRST_NM                 VARCHAR(20);
+ VS_LAST_NM                  VARCHAR(20);
+ VS_FID                      VARCHAR(9);
+ VS_MID                      VARCHAR(9);
+ VL_LENGTH                   INTEGER DEFAULT 0;
+ VS_PHYSICAL                 VARCHAR(5);
+ VS_EMOTIONAL                VARCHAR(5);
+ VS_LEARNING                 VARCHAR(5);
+ VS_HEARING                  VARCHAR(5);
+ VS_VISUAL                   VARCHAR(5);
+ VS_MENTAL                   VARCHAR(5);
+ VS_OTHER                    VARCHAR(5);
+ CNT                         INTEGER DEFAULT 0;
+ CNT1                        VARCHAR(5) DEFAULT  '';
+ CNT2                        VARCHAR(5) DEFAULT  '';
+ CNT3                        VARCHAR(5) DEFAULT  '';
+ CNT4                        VARCHAR(5) DEFAULT  '';
+ CNT5                        VARCHAR(5) DEFAULT  '';
+ CNT6                        VARCHAR(5) DEFAULT  '';
+ CNT7                        VARCHAR(5) DEFAULT  '';
+ prev_timestamp              timestamp;
+ VL_RUN_ID                   INTEGER DEFAULT 0;
+ VL_INTERFACES_ERROR_LOG_ID  INTEGER DEFAULT 0;
+ VL_EXCEP_FLAG               INTEGER DEFAULT 0;
+ VL_EXCEP_MESSAGE            VARCHAR DEFAULT '';
+ VL_CSWORKER_COUNTY    varchar;
+ VL_WORKER_ID    VARCHAR(9); -- varchar;
+ VL_STAFF_OLD_ID             INTEGER DEFAULT 0;
+ V_PRIMARY_COUNTY_CD   character varying;
+ v_last_batchrun_ts   TIMESTAMP;
+ v_updt_cnt     INTEGER DEFAULT 0;
+ vu_personid     uuid;
+ v_pgm_createdate   Date;
+ 
+MAIN_CUR CURSOR FOR
+ SELECT distinct TC.cjamspid, 
+  SC.servicecasenumber,
+  -- CAST(PGM.startdate AS VARCHAR(10)), 
+  PGM.startdate::date,
+  -- CAST(PGM.enddate AS VARCHAR(10)),
+  PGM.enddate::date,
+  case when PGM.programkey = 'OOH' then 2 end, 
+  -- PGM.clientmergeid
+  PGM.alternateid,
+  PGM.insertedon::date as pgm_createdate 
+ FROM personprogramarea PGM
+  INNER JOIN person TC ON TC.personid = PGM.personid 
+   AND TC.activeflag = 1 
+   AND COALESCE(TC.firstname,'') <> '' 
+   AND COALESCE(TC.lastname,'') <> '' 
+   AND COALESCE(TC.gendertypekey,'') <> ''
+ -- INNER JOIN actor CC ON CC.personid = PGM.personid 
+ --  AND actortype = 'CHILD'  
+  INNER JOIN servicecase SC ON SC.servicecaseid = PGM.objectid::UUID 
+ --  AND SC.startdate IS NOT NULL
+   AND SC.activeflag = 1
+  inner join intakeservicerequestactor isr on isr.servicecaseid = sc.servicecaseid
+   and isr.personid = pgm.personid
+   and isr.intakeservicerequestpersontypekey in ('BIOCHILD','OTHERCHILD','AV', 'CHILD')
+   and isr.activeflag = 1  
+ WHERE PGM.startdate IS NOT NULL
+  AND PGM.programkey = 'OOH' 
+ -- AND PGM.objecttypekey = 'servicecase'
+  AND PGM.activeflag = 1
+ -- AND CC.activeflag = 1
+ -- AND SC.activeflag = 1
+ -- AND TC.activeflag = 1
+ -- Vineet for pre-test in Fin-batch
+ --  and tc.cjamspid in (200799719, 200799808, 200806863)
+ -- and tc.cjamspid = 3463999
+ and ( PGM.enddate is null
+   or 
+    ( PGM.enddate is not null and PGM.updatedon >= v_last_batchrun_ts) -- current_date - 1 ) 
+  )  
+ ORDER BY TC.cjamspid,
+  PGM.startdate::date desc,
+  -- CAST(PGM.startdate AS VARCHAR(10)),           
+  -- SC.servicecasenumber,
+  -- CAST(PGM.enddate AS VARCHAR(10)),
+  -- case when PGM.programkey = 'OOH' then 2 end,
+  -- PGM.clientmergeid  
+  PGM.alternateid DESC;
+
+-- 128  REMOVAL CURSOR
+-- Picklist ID: 27 Caregiver Factors at Entry 
+/*
+RLQ - 278   Relinquishment for Adoption (incl. Safe Haven)
+AAP - 279   Alcohol Abuse (Parent)
+CIIO - 280  Caregiver's Inability to Cope Due to Illness or Other Reason
+DP - 281 Death of Parent(s)
+DAP - 282 Drug Abuse (Parent)
+IP - 283 Incarceration of Parent(s)
+?? - 284 No Caregivers
+*/
+REMOVAL_CUR CURSOR FOR
+ SELECT (case when btrim(ISCR.removalreasontypekey) = 'RLQ' then 'R' --Relinquishment
+   when btrim(ISCR.removalreasontypekey) = 'AAP' then 'A' -- Alcohol Abuse
+   when btrim(ISCR.removalreasontypekey) = 'CIIO' then 'P' -- Caregivers Inability to Cope due to Illness 
+   when btrim(ISCR.removalreasontypekey) = 'DP' then 'Z' -- Death of Parent 
+   when btrim(ISCR.removalreasontypekey) = 'DAP' then 'D' -- Drug Abuse
+   when btrim(ISCR.removalreasontypekey) = 'IP' then 'I' -- Incarceration of Parent 
+   end)
+   -- CRBV.chessiecode
+  FROM intakeservreqchildremoval icr, 
+   person pp, 
+  -- intakeservicerequestactor isa, 
+   servicecase SC, 
+   intakeservreqchildremovalreason ISCR 
+  -- crbreferencevalues CRBV
+ WHERE icr.servicecaseid = SC.servicecaseid 
+  and icr.personid = pp.personid
+ -- and isa.servicecaseid = SC.servicecaseid 
+ -- and isa.personid = pp.personid
+  and ISCR.intakeservreqchildremovalid = icr.intakeservreqchildremovalid
+ -- and ISCR.removalreasontypekey IN ('AAP', 'DAP', 'DAC', 'AAC', 'DP', 'IP', 'CIIO', 'RLQ')
+  and ISCR.removalreasontypekey IN ('RLQ', 'AAP', 'CIIO', 'DP', 'DAP', 'IP')
+ --  and icr.removaltypekey = CRBV.cjamscode
+ -- and btrim(ISCR.removalreasontypekey) = btrim(CRBV.cjamscode)
+ -- and CRBV.referencetype = 'removaltype'
+ -- and CRBV.referencetype = 'removalreasontype'
+  AND icr.returndate IS null
+  AND icr.activeflag = 1
+  and pp.cjamspid = VL_CLIENT_ID
+  and SC.servicecasenumber =  VL_CASE_ID;
+
+   
+--168 CHILD_FACTOR_CURSOR
+-- Picklist ID: 44 Child Factors at Entry 
+/*
+PA - 4330 Physical abuse 
+SA - 4331 Sexual Abuse
+HG - 4332 Neglect
+AAC - 4333 Alcohol Abuse (Child)
+DAC - 4334 Drug Abuse (Child)
+CD - 4335 Child’s Disabilities
+CBP - 4336 Child’s Behavior Problem
+ADT - 4337 Abandonment
+IDH - 4338 Inadequate Housing
+*/
+CHILD_FACTOR_CUR  CURSOR FOR
+ SELECT (case when btrim(ISCR.removalreasontypekey) = 'PA' then '0' -- Physical abuse 
+   when btrim(ISCR.removalreasontypekey) = 'SA' then '1' -- Sexual Abuse
+   when btrim(ISCR.removalreasontypekey) = 'HG' then '2' -- Neglect
+   when btrim(ISCR.removalreasontypekey) = 'AAC' then '3' -- Alcohol Abuse (Child)
+   when btrim(ISCR.removalreasontypekey) = 'DAC' then '4' -- Drug Abuse
+   when btrim(ISCR.removalreasontypekey) = 'CD' then '5' -- Child's Disabilities
+   when btrim(ISCR.removalreasontypekey) = 'CBP' then '6' -- Child's Behavior Problem  
+   when btrim(ISCR.removalreasontypekey) = 'ADT' then '7' -- Abandonment
+   when btrim(ISCR.removalreasontypekey) = 'IDH' then '8'-- Inadequate Housing 
+   end)
+  -- DISTINCT CRBV.chessiecode
+  from intakeservreqchildremoval icr, 
+   person pp, 
+  -- intakeservicerequestactor isa,
+   servicecase SC, 
+   intakeservreqchildremovalreason ISCR
+  -- crbreferencevalues CRBV
+ WHERE icr.servicecaseid = SC.servicecaseid
+  and icr.personid = pp.personid
+ -- and isa.servicecaseid = SC.servicecaseid
+ -- and isa.personid = pp.personid
+  and ISCR.intakeservreqchildremovalid = icr.intakeservreqchildremovalid
+ --  and ISCR.removalreasontypekey IN ('ADT', 'DAP', 'CD', 'AAC', 'CBP', 'SA', 'HG', 'AAC', 'DAC', 'AAP', 'PA',  'IDH')
+  and ISCR.removalreasontypekey IN ( 'PA', 'SA', 'HG', 'AAC', 'DAC', 'CD', 'CBP', 'ADT', 'IDH' )
+ -- and btrim(ISCR.removalreasontypekey) = btrim(CRBV.cjamscode)
+ -- and CRBV.referencetype = 'removalreasontype'
+  AND icr.returndate IS null
+  AND icr.activeflag = 1
+  and pp.cjamspid = VL_CLIENT_ID
+  and SC.servicecasenumber =  VL_CASE_ID; 
+ 
+-- EMPTY INTERFACECRBOUTBOUND
+BEGIN
+ RAISE NOTICE 'Start Time % ', now() ;
+ vl_output_sqlcode:='';
+ VL_EXCEP_FLAG  := 0;
+ VL_EXCEP_MESSAGE := '';
+ CRB_CNT := (SELECT CAST(COUNT(*) AS INTEGER) FROM INTERFACECRBOUTBOUND);
+ 
+ IF CRB_CNT > 0 THEN
+  BEGIN
+   DELETE FROM INTERFACECRBOUTBOUND;
+   
+  EXCEPTION WHEN OTHERS THEN
+   VS_OUTPUT_STATE := SQLSTATE;
+   VL_OUTPUT_SQLCODE :=SQLERRM;
+   VS_MESSAGE := 'DELETE FAILED FROM INTERFACECRBOUTBOUND';    
+   VL_EXCEP_FLAG := 1;
+
+   RAISE NOTICE 'INTERFACECRBOUTBOUND delete';    
+  END;  
+ END IF;
+ 
+ select max(start_ts)::timestamp 
+  into v_last_batchrun_ts 
+  from tb_batch_log 
+    where batch_master_id = 39
+  and success_sw = 'Y' ;
+
+ Raise notice 'v_last_batchrun_ts % ', v_last_batchrun_ts ;
+ 
+ -- MAIN CURSOR
+ prev_timestamp := CURRENT_TIMESTAMP;
+ BEGIN
+  select count(*) 
+   INTO VL_MAIN_CUR_CNT 
+  from ( SELECT distinct TC.cjamspid, 
+     SC.servicecasenumber,
+     -- CAST(PGM.startdate AS VARCHAR(10)), 
+     PGM.startdate::date,
+     -- CAST(PGM.enddate AS VARCHAR(10)),
+     PGM.enddate::date,
+     case when PGM.programkey = 'OOH' then 2 end, 
+     -- PGM.clientmergeid
+     PGM.alternateid,
+     PGM.insertedon::date as pgm_createdate 
+    FROM personprogramarea PGM
+     INNER JOIN person TC ON TC.personid = PGM.personid 
+      AND TC.activeflag = 1 
+      AND COALESCE(TC.firstname,'') <> '' 
+      AND COALESCE(TC.lastname,'') <> '' 
+      AND COALESCE(TC.gendertypekey,'') <> ''
+    -- INNER JOIN actor CC ON CC.personid = PGM.personid 
+    --  AND actortype = 'CHILD'  
+     INNER JOIN servicecase SC ON SC.servicecaseid = PGM.objectid::UUID 
+    --  AND SC.startdate IS NOT NULL
+      AND SC.activeflag = 1
+     inner join intakeservicerequestactor isr on isr.servicecaseid = sc.servicecaseid
+      and isr.personid = pgm.personid
+      and isr.intakeservicerequestpersontypekey in ('BIOCHILD','OTHERCHILD','AV', 'CHILD')
+      and isr.activeflag = 1   
+    WHERE PGM.startdate IS NOT NULL
+     AND PGM.programkey = 'OOH' 
+    -- AND PGM.objecttypekey = 'servicecase'
+     AND PGM.activeflag = 1
+    -- AND CC.activeflag = 1
+    -- AND SC.activeflag = 1
+    -- AND TC.activeflag = 1
+    -- Vineet for pre-test in Fin-batch
+    -- and tc.cjamspid in (200799719, 200799808, 200806863)
+    -- and tc.cjamspid = 3463999
+     and ( PGM.enddate is null
+       or 
+       ( PGM.enddate is not null and PGM.updatedon >= v_last_batchrun_ts ) -- current_date - 1 ) 
+      )  
+    ORDER BY TC.cjamspid,
+     PGM.startdate::date desc,
+     -- CAST(PGM.startdate AS VARCHAR(10)),           
+     -- SC.servicecasenumber,
+     -- CAST(PGM.enddate AS VARCHAR(10)),
+     -- case when PGM.programkey = 'OOH' then 2 end,
+     -- PGM.clientmergeid  
+     PGM.alternateid DESC
+   )b ;
+
+  -- RAISE NOTICE 'VL_MAIN_CUR_CNT';      
+             
+  EXCEPTION WHEN OTHERS THEN
+   VS_OUTPUT_STATE := SQLSTATE;
+   VL_OUTPUT_SQLCODE :=SQLERRM;
+   VS_MESSAGE := 'SELECT COUNT(*) FAILED FOR MAIN CURSOR';
+   VL_EXCEP_FLAG := 1;
+ END;
+ 
+ OPEN MAIN_CUR ;
+ <<MAINCURSOR>>
+ WHILE VL_MAIN_CUR_CNT  >0 LOOP
+               
+  BEGIN  
+   FETCH MAIN_CUR INTO VL_CLIENT_ID,
+        VL_CASE_ID,
+        VDT_START_DT,
+        VDT_END_DT ,
+        VL_PROGRAM_AREA_ID,
+        VL_CLIENT_PROGRAM_ID,
+        v_pgm_createdate ;
+     
+   RAISE NOTICE 'MAINCURSOR -  VL_MAIN_CUR_CNT % ', VL_MAIN_CUR_CNT ; 
+   RAISE NOTICE 'VL_CLIENT_ID % ', VL_CLIENT_ID;
+   RAISE NOTICE 'VL_CASE_ID % ', VL_CASE_ID;
+   -- RAISE NOTICE 'VDT_START_DT % ', VDT_START_DT;
+   -- RAISE NOTICE 'VDT_END_DT % ', VDT_END_DT;
+   -- RAISE NOTICE 'VL_PROGRAM_AREA_ID % ', VL_PROGRAM_AREA_ID;
+   RAISE NOTICE 'VL_CLIENT_PROGRAM_ID % ', VL_CLIENT_PROGRAM_ID;
+       
+  EXCEPTION
+   WHEN OTHERS THEN
+   VS_OUTPUT_STATE := SQLSTATE;
+   VL_EXCEP_FLAG := 1;
+   VL_OUTPUT_SQLCODE :=SQLERRM;
+   VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR MAIN CURSOR -->'|| CAST(VL_CLIENT_ID as VARCHAR) ;
+
+  END;
+  
+  IF VL_CLIENT_ID = VL_PREV_CLIENT_ID  THEN
+   VL_MAIN_CUR_CNT := VL_MAIN_CUR_CNT -1;
+   CONTINUE MAINCURSOR ;
+  END IF;
+  
+  -- New Logic to get the updated records 
+  /*
+  Gender, Race, Ethinicity - Person 
+  Disability - persondisability
+  -- Special Needs - personmedicalinfo
+  Education - personeducation
+  Legal Custody - legalcustody
+  Eligibility IV-E, SSI/SSA - tb_client_eligibility
+  Permancy Plan - permanencyplan
+  Placement - Placement
+  Removal - intakeservreqchildremoval
+  */
+  v_updt_cnt := 0 ;
+  
+  select sum(updt_cnt)
+   into v_updt_cnt
+  from (
+   select count(1) as updt_cnt
+    from personprogramarea
+   where personid = (select personid from person where cjamspid = VL_CLIENT_ID)
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+   union all 
+   select count(1) as updt_cnt
+    from person
+   where cjamspid = VL_CLIENT_ID
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+   union all
+   select count(1) as updt_cnt
+    from persondisability
+   where personid = (select personid from person where cjamspid = VL_CLIENT_ID)
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+   union all
+   select count(1) as updt_cnt
+    from personeducation
+   where personid = (select personid from person where cjamspid = VL_CLIENT_ID)
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+   union all
+   select count(1) as updt_cnt
+    from legalcustody
+   where personid = (select personid from person where cjamspid = VL_CLIENT_ID)
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+   union all
+   select count(1) as updt_cnt
+    from tb_client_eligibility
+   where client_id = VL_CLIENT_ID
+    and delete_sw = 'N'
+    and update_ts > v_last_batchrun_ts 
+   union all 
+   select count(1) as updt_cnt
+    from permanencyplan pp,
+     intakeservicerequestactor isr
+   where pp.intakeservicerequestactorid = isr.intakeservicerequestactorid
+    and isr.personid = (select personid from person where cjamspid = VL_CLIENT_ID )
+    and pp.updatedon > v_last_batchrun_ts 
+    and pp.activeflag = 1
+   union all 
+   select count(1) as updt_cnt
+    from placement
+   where personid = (select personid from person where cjamspid = VL_CLIENT_ID)
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+   union all  
+   select count(1) as updt_cnt
+    from intakeservreqchildremoval
+   where personid = (select personid from person where cjamspid = VL_CLIENT_ID)
+    and updatedon > v_last_batchrun_ts 
+    and activeflag = 1
+  ); 
+  
+  IF v_updt_cnt > 0 THEN
+   
+   BEGIN
+    -- To Send FACTS Code (B-119348)
+    -- SELECT f_prim_county_crb(VL_CASE_ID) INTO VS_DISTRICT_OFFICE;
+    select f_prim_county(VL_CASE_ID::bigint,'NULL') 
+     into V_PRIMARY_COUNTY_CD ;
+    
+    RAISE NOTICE 'V_PRIMARY_COUNTY_CD %', V_PRIMARY_COUNTY_CD; 
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR DISTRICT_OFFICE -->'|| CAST(VL_CLIENT_ID as VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C1N'||CAST(VL_OUTPUT_SQLCODE as VARCHAR)||'T'|| VS_OUTPUT_STATE ; 
+   END;
+    
+   select (CASE WHEN V_PRIMARY_COUNTY_CD = '1427' THEN '010' -- Allegany
+     WHEN V_PRIMARY_COUNTY_CD = '1428' THEN '020' -- Anne Arundel
+     WHEN V_PRIMARY_COUNTY_CD = '1430' THEN '030'  -- Baltimore County
+     WHEN V_PRIMARY_COUNTY_CD = '1431' THEN '040'  -- Calvert County
+     WHEN V_PRIMARY_COUNTY_CD = '1432' THEN '050'  -- Caroline County
+     WHEN V_PRIMARY_COUNTY_CD = '1433' THEN '060'  -- Carroll County
+     WHEN V_PRIMARY_COUNTY_CD = '1434' THEN '070'  -- Cecil County
+     WHEN V_PRIMARY_COUNTY_CD = '1435' THEN '080'  -- Charles County
+     WHEN V_PRIMARY_COUNTY_CD = '1436' THEN '090'  -- Dorchester County
+     WHEN V_PRIMARY_COUNTY_CD = '1437' THEN '100'  -- Frederick County
+     WHEN V_PRIMARY_COUNTY_CD = '1438' THEN '110'  -- Garrett County
+     WHEN V_PRIMARY_COUNTY_CD = '1439' THEN '120'  -- Harford County
+     WHEN V_PRIMARY_COUNTY_CD = '1440' THEN '130'  -- Howard County
+     WHEN V_PRIMARY_COUNTY_CD = '1441' THEN '140'  -- Kent County
+     WHEN V_PRIMARY_COUNTY_CD = '1442' THEN '150'  -- Montgomery County
+     WHEN V_PRIMARY_COUNTY_CD = '1443' THEN '160'  -- Prince Georges County
+     WHEN V_PRIMARY_COUNTY_CD = '1444' THEN '170'  -- Queen Annes County
+     WHEN V_PRIMARY_COUNTY_CD = '1446' THEN '180'  -- St. Marys County
+     WHEN V_PRIMARY_COUNTY_CD = '1445' THEN '190'  -- Somerset County
+     WHEN V_PRIMARY_COUNTY_CD = '1447' THEN '200'  -- Talbot County
+     WHEN V_PRIMARY_COUNTY_CD = '1448' THEN '210'  -- Washington County
+     WHEN V_PRIMARY_COUNTY_CD = '1449' THEN '220'  -- Wicomico County
+     WHEN V_PRIMARY_COUNTY_CD = '1450' THEN '230'  -- Worcester County
+     WHEN V_PRIMARY_COUNTY_CD = '1429' THEN '300'  -- Baltimore City
+     -- WHEN V_PRIMARY_COUNTY_CD = '3824' THEN '00' -- DHR/SSA
+     ELSE '' -- ERROR
+     END)
+  into VS_DISTRICT_OFFICE ; 
+    
+   IF VS_DISTRICT_OFFICE IS NULL OR VS_DISTRICT_OFFICE = '' THEN
+    -- VS_DISTRICT_OFFICE := LPAD('',5,CHR(32));
+    VS_DISTRICT_OFFICE := LPAD('',3,CHR(32));
+   END IF ;
+
+   BEGIN  
+    -- CLIENT DETAILS  #3- #9, #60, #65,#147,#171, #172
+    SELECT substring(regexp_replace(TC.firstname, '[^\\w\\space(1)]+','', 'g'),1,15) as firstname,
+     substring(regexp_replace(TC.middlename, '[^\\w\\space(1)]+','', 'g'),1,1) as middlename,
+     substring(regexp_replace(TC.lastname, '[^\\w\\space(1)]+','', 'g'),1,20) as lastname,
+     -- To Send FACTS Code (B-119348)
+     TO_CHAR(TC.dob, 'mmddyy'),
+     -- TO_CHAR(TC.dob, 'mmddyyyy'),
+     CASE WHEN TC.gendertypekey = 'M' THEN 'M'
+      WHEN TC.gendertypekey = 'F' THEN 'F'
+      ELSE 'U' 
+     END,
+     /*
+     CASE WHEN TC.gendertypekey = 'M' THEN '1282'
+      WHEN TC.gendertypekey = 'F' THEN '1281'
+      WHEN TC.gendertypekey = 'U' THEN '1283'          
+      WHEN TC.gendertypekey = 'O' THEN '3297'
+      ELSE '1283'
+     END,
+     */
+     -- To Send FACTS Code (B-119348)
+     ( CASE WHEN TC.racetypekey like '%"BA"%' or TC.racetypekey  = 'BA' THEN 'B' -- Black/African-American
+      WHEN TC.racetypekey like '%"WH"%' or TC.racetypekey  = 'WH' THEN 'C' -- White/Caucasian
+      WHEN TC.racetypekey like '%"AS"%' or TC.racetypekey  = 'AS' THEN 'A' -- Asian
+      WHEN TC.racetypekey like '%"AN"%' or TC.racetypekey  = 'AN' THEN 'N' -- Alaskan Native
+      WHEN TC.racetypekey like '%"AI"%' or TC.racetypekey  = 'AI' THEN 'N' -- American Indian
+      WHEN TC.racetypekey like '%"PI"%' or TC.racetypekey  = 'PI' THEN 'P' -- Native Hawaiian/Pacific Islander
+      ELSE 'U' -- Unable To Determine
+     END),  
+     /*
+     CASE WHEN TC.racetypekey = '2028-9' THEN '6310'
+      WHEN TC.racetypekey = '2054-5' THEN '1801'
+      WHEN TC.racetypekey = '2106-3' THEN '1806'
+      WHEN TC.racetypekey = '1002-5' THEN '1802'
+      WHEN TC.racetypekey = '3005' THEN '1803'
+      WHEN TC.racetypekey = '2076-8' THEN '6311'
+      WHEN TC.racetypekey = '2008-9' THEN '6312'
+      WHEN TC.racetypekey LIKE '%AI%' THEN '1803'
+      WHEN TC.racetypekey LIKE '%AN%' THEN '1802'
+      WHEN TC.racetypekey LIKE '%AS%' THEN '6310'
+      WHEN TC.racetypekey LIKE '%BA%' THEN '1801'
+      WHEN TC.racetypekey LIKE '%PI%' THEN '6311'
+      WHEN TC.racetypekey LIKE '%WH%' THEN '1806'
+      WHEN TC.racetypekey LIKE '%UN%' THEN '6312' 
+      WHEN TC.racetypekey LIKE '%LA%' THEN '6312' 
+      WHEN TC.racetypekey IN  ('99', '88') THEN '6312' 
+      WHEN TC.racetypekey LIKE '%DC%' THEN '6314' 
+      WHEN TC.racetypekey LIKE '%[]%' THEN '    ' 
+      WHEN TC.racetypekey LIKE '%OT%' THEN '6312' 
+      ELSE '6312'
+     END,
+     */
+     regexp_replace(TA.personidentifiervalue,'[^0-9]+','','g') as personidentifiervalue, -- CIDM-2200
+     CRBR.chessiecode,
+     RTRIM(cisclientid),
+     -- (case when TC.everbeenadoptedflag > 0 then 'Y' else 'N' end), -- 1.4
+     (case when TC.everbeenadoptedflag = 1 then '1' else '2' end), 
+     -- TC.previousadoptionagetypekey,
+     (case when TC.everbeenadoptedflag = 1 then
+      (case when preadoptiondate::date is null then '51' --Unable to determine
+       when f_age(dob::date, preadoptiondate::date)::integer < 2 then '49' -- Less than 2
+       when f_age(dob::date, preadoptiondate::date)::integer >= 2 and 
+        f_age(dob::date, preadoptiondate::date)::integer <= 5 then '47' -- 2 to 5    
+       when f_age(dob::date, preadoptiondate::date)::integer >= 6 and 
+        f_age(dob::date, preadoptiondate::date)::integer <= 12 then '48' -- 6 to 12
+       when f_age(dob::date, preadoptiondate::date)::integer >= 13 then '46' -- 13 and older
+       else '51' --Unable to determine
+      end)
+     end),
+     coalesce(
+      ( case when TC.ethnicgrouptypekey not in ( 'H', 'X' ) then 'U' -- Unable to Determine
+       else TC.ethnicgrouptypekey
+       end
+      ),'U') 
+     , TC.personid 
+    INTO
+     VS_FST_NAME,
+     VS_MID_INAL,
+     VS_LST_NAME,
+     VDT_BIRTH_DATE,
+     VS_SEX,
+     VS_RACE,
+     VS_SS_NO,
+     VS_RELIGION_CODE,
+     VS_CLIENT_ID,
+     VS_PREV_ADOP,
+     VS_ADOPTION_AGE,
+     VS_ETHNICITY_SE,
+     vu_personid
+    FROM person TC
+     LEFT JOIN crbreferencevalues CRBR on TC.religiontypekey = CRBR.cjamscode 
+      AND CRBR.activeflag = 1 
+      AND CRBR.referencetype = 'religiontype'
+     -- To Send FACTS Code (B-119348) 
+     -- LEFT JOIN crbreferencevalues CRBV on TC.ethnicgrouptypekey = CRBV.cjamscode 
+     -- AND CRBV.activeflag = 1 
+     -- AND CRBV.referencetype = 'ethnictype'
+     LEFT JOIN  personidentifier TA on  TC.personid = TA.personid 
+      AND TA.activeflag = 1 
+      AND TA.personidentifiertypekey = 'SSN'
+    WHERE TC.cjamspid =  VL_CLIENT_ID
+     AND TC.activeflag = 1;
+     
+    -- RAISE NOTICE 'person'; 
+    
+    -- VS_RELIGION_CODE := substring(VS_RELIGION_CODE, 1,1) ;
+    VS_RELIGION_CODE := ' ';
+      
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+
+     VS_MESSAGE := 'SQLSTATE:' ||  VS_OUTPUT_STATE || '. SELECT FAILED FOR CLIENT_DETAILS -->'|| CAST(VL_CLIENT_ID AS VARCHAR);
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C3N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+      
+   END;
+   
+   -- VS_SS_NO := CHAR(INTEGER(SUBSTRING(VS_SS_NO,LOCATE('.',(VS_SS_NO))+1)))  ;
+   IF VS_SS_NO = '0' OR VS_SS_NO is NULL OR RTRIM(LTRIM(VS_SS_NO)) = '' THEN
+    -- VS_SS_NO := LPAD('',9,' ');
+    VS_SS_NO := LPAD('',9,'0');
+   ELSIF LENGTH(ltrim(RTRIM(VS_SS_NO)))< 9 THEN
+    -- VS_SS_NO := VS_SS_NO || SUBSTRING('        ',1,9 - LENGTH(LTRIM(RTRIM(VS_SS_NO))))  ;
+    VS_SS_NO := LPAD(VS_SS_NO,9,'0'); 
+   END IF;
+   
+   IF  VDT_BIRTH_DATE IS NULL OR VDT_BIRTH_DATE = '' THEN
+    -- B-119348
+    -- VDT_BIRTH_DATE := LPAD('',8,' ');
+    VDT_BIRTH_DATE := LPAD('',6,'0'); 
+   --  ELSE                         
+   --  VDT_BIRTH_DATE := SUBSTRING(VDT_BIRTH_DATE,1,2)||SUBSTRING(VDT_BIRTH_DATE,4,2)||SUBSTRING(VDT_BIRTH_DATE,7,4);
+   END IF;
+   
+   -- CURRENT STATUS #29
+   IF VDT_END_DT IS NULL THEN
+    VS_CURR_STATUS := 'A' ;
+   ELSE
+    VS_CURR_STATUS := 'C';
+   END IF;
+   
+   
+   -- RECENT PROGRAM AREA CODE   #30
+   -- To Send FACTS Code (B-119348)
+   VS_CURR_PROJ_CAT := 'OHPS' ; -- Out of Home
+   -- VS_CURR_PROJ_CAT := RTRIM(CAST(VL_PROGRAM_AREA_ID as VARCHAR));
+   
+   IF VS_CURR_PROJ_CAT IS NULL OR VS_CURR_PROJ_CAT = '' THEN
+    -- VS_CURR_PROJ_CAT := LPAD('',5,' ');
+    VS_CURR_PROJ_CAT := LPAD('',4,' ');
+   END IF ;
+   
+   -- Revisit the logic ???
+   BEGIN
+    SELECT F_PRIM_WORKER_ID(VL_CASE_ID, 'servicecase'::VARCHAR) INTO VL_STAFF_ID;
+     
+    select Up.old_id::integer
+     into VL_STAFF_OLD_ID
+    FROM securityusers SU
+     INNER JOIN userprofile UP ON UP.securityusersid = SU.securityusersid
+     INNER JOIN muser M ON M.securityusersid = SU.securityusersid
+    where M.id = VL_STAFF_ID 
+     AND UP.activeflag = 1
+     AND SU.activeflag = 1
+     AND up.old_id ~ '^[0-9\\.]+$' = true ;
+
+     
+    Select CASE WHEN primary_county_cd = '1427' THEN '01'
+     WHEN primary_county_cd = '1428' THEN '02'
+     WHEN primary_county_cd = '1430' THEN '03' 
+     WHEN primary_county_cd = '1431' THEN '04'  
+     WHEN primary_county_cd = '1432' THEN '05'   
+     WHEN primary_county_cd = '1433' THEN '06'   
+     WHEN primary_county_cd = '1434' THEN '07'   
+     WHEN primary_county_cd = '1435' THEN '08' 
+     WHEN primary_county_cd = '1436' THEN '09'  
+     WHEN primary_county_cd = '1437' THEN '10'   
+     WHEN primary_county_cd = '1438' THEN '11' 
+     WHEN primary_county_cd = '1439' THEN '12' 
+     WHEN primary_county_cd = '1440' THEN '13' 
+     WHEN primary_county_cd = '1441' THEN '14'   
+     WHEN primary_county_cd = '1442' THEN '15'   
+     WHEN primary_county_cd = '1443' THEN '16'   
+     WHEN primary_county_cd = '1444' THEN '17'  
+     WHEN primary_county_cd = '1446' THEN '18'  
+     WHEN primary_county_cd = '1445' THEN '19'   
+     WHEN primary_county_cd = '1447' THEN '20'   
+     WHEN primary_county_cd = '1448' THEN '21'   
+     WHEN primary_county_cd = '1449' THEN '22'  
+     WHEN primary_county_cd = '1450' THEN '23'   
+     WHEN primary_county_cd = '1429' THEN '30'   
+     ELSE
+     '99'  
+     END 
+      into VL_CSWORKER_COUNTY
+    From TB_staff 
+    Where staff_id = VL_STAFF_OLD_ID;
+     
+    select substring (upper(regexp_replace(first_nm, '[^\\w\\space(1)]+','', 'g')) , 1, 1 ) || 
+     substring (upper (regexp_replace(last_nm, '[^\\w\\space(1)]+','', 'g')) , 1 , 2) || 
+     -- ssn_no::varchar ||  
+     (lpad(ssn_no, 4, 0))::VARCHAR ||
+     VL_CSWORKER_COUNTY
+    into VL_WORKER_ID
+     from tb_staff
+     where staff_id = VL_STAFF_OLD_ID;
+
+     
+    If VL_WORKER_ID is null then 
+
+     SELECT substring (upper(regexp_replace(UP.firstname, '[^\\w\\space(1)]+','', 'g')), 1, 1) || 
+      substring (upper (regexp_replace(UP.lastname, '[^\\w\\space(1)]+','', 'g')) , 1, 2 ) || 
+      (lpad(M.id, 6, 0))::VARCHAR -- M.id ::VARCHAR
+     into VL_WORKER_ID
+     FROM securityusers SU
+      INNER JOIN userprofile UP ON UP.securityusersid = SU.securityusersid
+      INNER JOIN muser M ON M.securityusersid = SU.securityusersid
+     where M.id = VL_STAFF_ID 
+      AND UP.activeflag = 1
+      AND SU.activeflag = 1;
+
+    End If;
+    
+    IF VL_WORKER_ID is not null and length(btrim(VL_WORKER_ID)) > 9 THEN
+     VL_WORKER_ID := substring(VL_WORKER_ID,1,9);
+    END IF; 
+
+    -- RAISE NOTICE 'F_PRIM_WORKER_ID';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR CURRENT WORKER ID FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C33N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+     
+   BEGIN  
+    --RECENT REMOVAL  DATE  #35
+    -- To Send FACTS Code (B-119348)
+    SELECT TO_CHAR(icr.removaldate, 'mmddyy') -- distinct ??
+     -- icr.removaldate :: VARCHAR(10) 
+     INTO VDT_CURR_ACCP_DATE
+    FROM intakeservreqchildremoval icr,  
+     intakeservicerequestactor tpa, 
+     person tp, 
+     servicecase SC
+    WHERE icr.servicecaseid = tpa.servicecaseid
+     AND tpa.personid = tp.personid
+     AND SC.servicecaseid = icr.servicecaseid
+     AND icr.returndate IS null
+     AND icr.activeflag = 1
+     and tp.activeflag =1
+     and tpa.activeflag = 1
+     and icr.intakeservicerequestactorid is not null
+     and tp.cjamspid = VL_CLIENT_ID
+     and SC.servicecasenumber = VL_CASE_ID; 
+
+    -- RAISE NOTICE 'VDT_CURR_ACCP_DATE';
+       
+    --   VDT_CURR_ACCP_DATE := VDT_START_DT;
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' ||VS_OUTPUT_STATE || '. SELECT FAILED FOR REMOVAL  DATE  #35 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C35N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   -- To Send FACTS Code (B-119348)
+   IF COALESCE(VDT_CURR_ACCP_DATE, '') = '' or VDT_CURR_ACCP_DATE is null THEN
+    -- VDT_CURR_ACCP_DATE := LPAD('',8,' ');
+    VDT_CURR_ACCP_DATE := LPAD('',6,'0');
+   ELSE                                      
+    -- VDT_CURR_ACCP_DATE :=  to_char(to_date(VDT_CURR_ACCP_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    -- Not Required
+   END IF;
+   
+   -- RECENT END DATE #36
+   -- To Send FACTS Code (B-119348)
+   VDT_CURR_CLOSE_DATE := VDT_END_DT;  
+   IF VDT_CURR_CLOSE_DATE  IS NULL OR  LTRIM(RTRIM(VDT_CURR_CLOSE_DATE)) = '' THEN
+    -- VDT_CURR_CLOSE_DATE := LPAD('',8,' ');
+    VDT_CURR_CLOSE_DATE := LPAD('',6,'0');
+   ELSE                                
+    -- VDT_CURR_CLOSE_DATE := to_char(to_date(VDT_CURR_CLOSE_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_CURR_CLOSE_DATE := to_char(to_date(VDT_CURR_CLOSE_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;   
+   
+   BEGIN  
+    --#40  #95 #GET THE RECENT RECORD
+    -- CURRENT ELIGIBILITY CODE
+    -- To Send FACTS Code (B-119348)
+    
+    
+    SELECT (case when btrim(ELIGIBILITY_TYPE_CD) = '2931' then '009' -- IV-E Foster Care
+       when btrim(ELIGIBILITY_TYPE_CD) = '2934' then '009'  -- IV-E Adoption Care
+       else '002' -- SSI/SSA currently excluded 
+      end), 
+        (case when btrim(ELIGIBILITY_STATUS_CD) = '2909' then 'T' -- Pending
+       when btrim(ELIGIBILITY_STATUS_CD) = '3597' then 'T' -- Pending (Incomplete)
+       when btrim(ELIGIBILITY_STATUS_CD) = '2912' then 'H' -- Eligible Non-Reimbursable
+       when btrim(ELIGIBILITY_STATUS_CD) = '2913' then 'A' -- Eligible Reimbursable
+       when btrim(ELIGIBILITY_STATUS_CD) = '2914' then 'N' -- Ineligible
+       else 'T' -- Pending
+      end) 
+    INTO VS_CURR_ELIG_CODE,
+      VS_4E_STATUS
+    from tb_client_eligibility
+    where delete_sw = 'N'
+     and client_id = VL_CLIENT_ID
+     and case_id = VL_CASE_ID
+     and end_dt is null
+     and eligibility_id in
+      (select max(eligibility_id)
+       from tb_client_eligibility
+      where delete_sw = 'N'
+       and client_id = VL_CLIENT_ID
+       and case_id = VL_CASE_ID
+       and end_dt is null
+       and eligibility_type_cd in ('2931', '2934')
+       and delete_sw = 'N' 
+      ) ;
+       
+      
+    /*   
+    SELECT ELIGIBILITY_TYPE_CD,
+     ELIGIBILITY_STATUS_CD
+    INTO VS_CURR_ELIG_CODE,
+     VS_4E_STATUS
+    FROM TB_CLIENT_ELIGIBILITY
+    WHERE DELETE_SW = 'N'
+     AND CLIENT_ID = VL_CLIENT_ID
+     --AND CASE_ID :: VARCHAR = VL_CASE_ID  v1.1
+     --and REMOVAL_ID in(SELECT REMOVAL_ID FROM TB_PLACEMENT WHERE CLIENT_ID = VL_CLIENT_ID AND CASE_ID :: VARCHAR = VL_CASE_ID)
+     AND REMOVAL_ID 
+      IN ( select iscr.removalid 
+        from intakeservreqchildremoval iscr, 
+         person pr ,
+         servicecase sc,
+         intakeservicerequestactor isra 
+       where  iscr.intakeserviceid = isra.intakeserviceid 
+        and isra.servicecaseid = sc.servicecaseid 
+        and pr.personid = isra.personid
+        and pr.cjamspid = VL_CLIENT_ID 
+        and sc.servicecasenumber = VL_CASE_ID 
+       )
+
+     AND END_DT IS NULL
+     AND ELIGIBILITY_ID IN
+      ( SELECT MAX(ELIGIBILITY_ID)
+        FROM TB_CLIENT_ELIGIBILITY
+       WHERE DELETE_SW = 'N'
+        AND CLIENT_ID = VL_CLIENT_ID
+        --AND CASE_ID ::VARCHAR = VL_CASE_ID v1.3
+        and REMOVAL_ID in
+         ( select iscr.removalid 
+          from intakeservreqchildremoval iscr, 
+           person pr ,
+           servicecase sc,
+           intakeservicerequestactor isra 
+         where  iscr.intakeserviceid = isra.intakeserviceid 
+          and isra.servicecaseid = sc.servicecaseid 
+          and pr.personid = isra.personid
+          and pr.cjamspid = VL_CLIENT_ID 
+          and sc.servicecasenumber = VL_CASE_ID
+         )
+        AND END_DT IS NULL
+        --AND ELIGIBILITY_TYPE_CD IN ('2931', '2934') v1.3
+        AND ELIGIBILITY_TYPE_CD not in  ('3609','2935')
+        AND DELETE_SW= 'N' 
+      ) ;
+    */
+    
+    -- RAISE NOTICE 'VS_CURR_ELIG_CODE,VS_4E_STATUS ';         
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR CURR_ELIG_CODE #40, 4E_STATUS #95 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C40N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- #49  PREVIOUS RUN DATE
+    -- CONVERT AS VARCHAR DATE
+    --SELECT SUBSTRING(VDT_DATE,1,2)||'/'||SUBSTRING(VDT_DATE,3,2)||'/'||SUBSTRING(VDT_DATE,5,4) INTO VDT_CURRENT_DT ;
+    VDT_CURRENT_DT:= VDT_DATE ::VARCHAR(10) ;
+
+    RAISE NOTICE 'VDT_CURRENT_DT % ' , VDT_CURRENT_DT; 
+    
+    IF VDT_CURRENT_DT IS NULL OR  LTRIM(RTRIM(VDT_CURRENT_DT)) = '' THEN
+     VDT_CURRENT_DT := LPAD('',6,'0');
+    END IF; 
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. CONVERT DATE AS VARCHAR FAILED  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C49N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- FIND PREVIOUS DATE
+    -- SELECT to_char(to_date(VDT_CURRENT_DT,'mmddyyyy')-1,'mmddyyyy')  INTO Vdt_PREV_RUN_DATE;
+    SELECT to_char(to_date(VDT_CURRENT_DT,'mmddyyyy')-1,'mmddyy')  INTO Vdt_PREV_RUN_DATE;
+    
+    -- RAISE NOTICE 'Vdt_PREV_RUN_DATE %', Vdt_PREV_RUN_DATE; 
+    -- VDT_prev_RUN_DATE := SUBSTRING(VDT_PREV_RUN_DATE,1,2) || SUBSTRING(VDT_PREV_RUN_DATE,4,2) || SUBSTRING(VDT_PREV_RUN_DATE,7,4);
+    
+    IF Vdt_PREV_RUN_DATE is null or btrim(Vdt_PREV_RUN_DATE) = '' THEN
+     Vdt_PREV_RUN_DATE := LPAD('',6,'0');
+    END IF;
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' ||  VS_OUTPUT_STATE || '. CONVERT DATE TO PREVIOUS DATE FAILED FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR);
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C49N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- #50             
+    -- SELECT VDT_DATE INTO VDT_CURR_RUN_DATE;
+    SELECT to_char(to_date(VDT_DATE,'mmddyyyy'),'mmddyy')  INTO VDT_CURR_RUN_DATE;
+
+    IF VDT_CURR_RUN_DATE is null or btrim(VDT_CURR_RUN_DATE) = '' THEN
+     VDT_CURR_RUN_DATE := LPAD('',6,'0');
+    END IF;
+    
+    -- RAISE NOTICE 'VDT_CURR_RUN_DATE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. CONVERT DATE TO CURRENT DATE  FAILED  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR);
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C50N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- ASIAN     #54 --#59
+    -- To Send FACTS Code (B-119348)
+    IF EXISTS ( select 1
+        from person tp 
+       where tp.cjamspid = VL_CLIENT_ID
+        and tp.activeflag = 1
+        and (tp.racetypekey like '%"AS"%' or tp.racetypekey = 'AS') 
+        ) THEN
+     VS_RACE_SE_A := 'A' ; -- Asian   
+     -- VS_RACE_SE_A := '6310' ;
+    ELSE
+     -- VS_RACE_SE_A := LPAD('',5,' ') ;
+     VS_RACE_SE_A := LPAD('',1,' ') ;
+     -- RAISE NOTICE 'VS_RACE_SE_A';
+    END IF;
+    /*
+    SELECT 1 
+    FROM referencevalues tpv ,
+     person tp 
+    WHERE tp.cjamspid = VL_CLIENT_ID
+     AND tpv.referencetypeid = 171
+     AND tpv.ref_key = 'AS'
+     and tp.racetypekey like '%AS%'
+     AND tp.activeflag = 1 AND tpv.activeflag = 1
+    */ 
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR ASIAN #54 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C54N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    -- BLACK
+    -- To Send FACTS Code (B-119348)
+    IF EXISTS ( select 1
+        from person tp 
+       where tp.cjamspid = VL_CLIENT_ID
+        and tp.activeflag = 1
+        and (tp.racetypekey like '%"BA"%' or tp.racetypekey = 'BA') 
+        ) THEN
+     VS_RACE_SE_B := 'B' ; -- Black/African-American  
+     -- VS_RACE_SE_B := '1801';
+    ELSE
+     -- VS_RACE_SE_B := LPAD('',5,' ') ;
+     VS_RACE_SE_B := LPAD('',1,' ') ;
+     -- RAISE NOTICE 'VS_RACE_SE_B';
+    END IF;
+    /*
+    SELECT 1 
+    FROM referencevalues tpv ,
+     person tp  
+    WHERE tp.cjamspid = VL_CLIENT_ID
+     AND tpv.referencetypeid = 171
+     AND tpv.ref_key = 'BA'
+     and tp.racetypekey like '%BA%'
+     AND tp.activeflag = 1 AND tpv.activeflag = 1) THEN
+    */    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR BLACK #55 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C55N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    -- WHITE
+    -- To Send FACTS Code (B-119348)
+    IF EXISTS ( select 1
+        from person tp 
+       where tp.cjamspid = VL_CLIENT_ID
+        and tp.activeflag = 1
+        and (tp.racetypekey like '%"WH"%' or tp.racetypekey = 'WH') 
+        ) THEN
+     VS_RACE_SE_C := 'C' ; -- White/Caucasian
+     -- VS_RACE_SE_C := '1806' ;
+    ELSE
+     -- VS_RACE_SE_C := LPAD('',5, ' ') ;
+     VS_RACE_SE_C := LPAD('',1, ' ') ;
+     -- RAISE NOTICE 'VS_RACE_SE_C';
+    END IF;
+    /*
+    SELECT 1 FROM referencevalues tpv ,
+     person tp  
+    WHERE tp.cjamspid = VL_CLIENT_ID
+     AND tpv.referencetypeid = 171
+     AND tpv.ref_key = 'WH'
+     and tp.racetypekey like '%WH%'
+     AND tp.activeflag = 1 AND tpv.activeflag = 1
+    */
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR WHITE #56 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C56N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    -- NATIVE AMERICAN  CHANGED LOGIC
+    -- To Send FACTS Code (B-119348)
+    IF EXISTS ( select 1
+        from person tp 
+       where tp.cjamspid = VL_CLIENT_ID
+        and tp.activeflag = 1
+        and ( tp.racetypekey like '%"AN"%' or tp.racetypekey = 'AN'
+           or tp.racetypekey like '%"AI"%' or tp.racetypekey = 'AI' 
+         ) 
+        ) THEN
+     VS_RACE_SE_N := 'N' ; -- Alaskan Native or American Indian
+     -- VS_RACE_SE_N := '1802';
+     -- VS_RACE_SE_N := '1803';   
+    ELSE
+     -- VS_RACE_SE_N := LPAD('',5, ' ');
+     VS_RACE_SE_N := LPAD('',1, ' ');
+     -- RAISE NOTICE 'VS_RACE_SE_N';
+    END IF;
+    /*
+    SELECT 1 
+    FROM referencevalues tpv ,
+     person tp 
+    WHERE tp.cjamspid = VL_CLIENT_ID
+     AND tpv.referencetypeid = 171
+     AND tpv.ref_key = 'AI'
+     and tp.racetypekey like '%AI%'
+     AND tp.activeflag = 1 AND tpv.activeflag = 1
+    
+    ELSIF  EXISTS( SELECT 1 
+        FROM referencevalues tpv ,
+         person tp  
+        WHERE tp.cjamspid = VL_CLIENT_ID
+         AND tpv.referencetypeid = 171
+         AND tpv.ref_key = 'AN'
+         and tp.racetypekey like '%AN%'
+         AND tp.activeflag = 1 AND tpv.activeflag = 1) THEN
+    */  
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR NATIVE AMERICAN #57 FOR -->'|| CAST(VL_CLIENT_ID AS VAARCHAR);
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C57N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    -- PACIFIC
+    -- To Send FACTS Code (B-119348)
+    IF EXISTS ( select 1
+        from person tp 
+       where tp.cjamspid = VL_CLIENT_ID
+        and tp.activeflag = 1
+        and (tp.racetypekey like '%"PI"%' or tp.racetypekey = 'PI') 
+        ) THEN
+     VS_RACE_SE_P := 'P' ; -- Native Hawaiian/Pacific Islander
+     -- VS_RACE_SE_P := '6311'  ;
+    ELSE
+     -- VS_RACE_SE_P := LPAD('',5, ' ') ;
+     VS_RACE_SE_P := LPAD('',1, ' ') ;
+     -- RAISE NOTICE 'VS_RACE_SE_P';   
+    END IF;
+    /*
+    SELECT 1 
+    FROM referencevalues tpv ,
+     person tp  
+    WHERE tp.cjamspid = VL_CLIENT_ID
+     AND tpv.referencetypeid = 171
+     AND tpv.ref_key = 'PI'
+     and tp.racetypekey like '%PI%'
+     AND tp.activeflag = 1 AND tpv.activeflag = 1
+    */
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR PACIFIC #58 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C58N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    --UNABLE TO DETERMNE
+    IF EXISTS ( select 1
+        from person tp 
+       where tp.cjamspid = VL_CLIENT_ID
+        and tp.activeflag = 1
+        and tp.racetypekey not in ( 'BA', 'WH', 'AS', 'AN', 'AI', 'PI' )
+        and tp.racetypekey not like '%"BA"%' 
+        and tp.racetypekey not like '%"WH"%'
+        and tp.racetypekey not like '%"AS"%'
+        and tp.racetypekey not like '%"AN"%'
+        and tp.racetypekey not like '%"AI"%'
+        and tp.racetypekey not like '%"PI"%'
+        ) THEN
+     VS_RACE_SE_U := 'U' ; -- Unable To Determine
+     -- VS_RACE_SE_U := '6312' ;
+    ELSE
+     -- VS_RACE_SE_U := LPAD('',5, ' ') ;
+     VS_RACE_SE_U := LPAD('',1, ' ') ;
+     -- RAISE NOTICE 'VS_RACE_SE_U'; 
+    END IF;
+    /*
+    SELECT 1 
+    FROM referencevalues tpv ,
+     person tp  
+    WHERE tp.cjamspid = VL_CLIENT_ID
+     AND tpv.referencetypeid = 171
+     AND tpv.ref_key = 'UN'
+     and tp.racetypekey like '%UN%'
+     AND tp.activeflag = 1 AND tpv.activeflag = 1
+    */
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR UNABLE TO DETERMINE #59 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C59N'||VL_OUTPUT_SQLCODE||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   --MD CHESSIE CLIENT_ID #63
+   -- VS_FILLER := RTRIM(CAST(VL_CLIENT_ID AS VARCHAR));
+   VS_FILLER := LPAD(VL_CLIENT_ID,9,'0'); 
+   
+   BEGIN
+    --EDUCATION_CODE  #64
+    -- To Send FACTS Code (B-119348)
+    SELECT ( case when CRBV.chessiecode = '1204' then 'R' -- GED
+       when CRBV.chessiecode = '1205' then 'V' -- Vocational/ Technical Training 
+       when CRBV.chessiecode = '7811' then 'C' -- College / University
+       when CRBV.chessiecode = '7812' then 'X' -- Not in School
+       when CRBV.chessiecode = '7813' then 'U' -- Other (Specify) 
+       when CRBV.chessiecode = '7814' then 'R' -- Regular 
+       when CRBV.chessiecode = '7815' then 'S' -- Special Ed S (1 if need number)
+       when CRBV.chessiecode = '7816' then 'V' -- Trade School 
+       when CRBV.chessiecode = '7817' then 'U' -- Unknown 
+       end
+      ) 
+     INTO VS_EDUC_CODE
+    FROM personeducation PEA, 
+     person PGA, 
+     crbreferencevalues CRBV
+    WHERE PEA.personid = PGA.personid
+     AND PEA.educationtypekey = CRBV.cjamscode
+     AND CRBV.referencetype = 'educationtype'
+     AND PGA.cjamspid = VL_CLIENT_ID
+     AND PEA.activeflag = 1
+     AND PGA.activeflag = 1
+    ORDER BY PEA.insertedon desc 
+    -- ORDER BY educationtypekey
+    limit 1;
+  
+    -- RAISE NOTICE 'VS_EDUC_CODE'; 
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR EDUC_CODE #64 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C64N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- ORIGIN CODE #66
+    -- To Send FACTS Code (B-119348)
+    select CASE WHEN UPA.county like '%Allegany%' THEN '01'
+      WHEN UPA.county like '%Anne Arundel%' THEN '02'
+      WHEN UPA.county like '%Baltimore County%' THEN '03'
+      WHEN UPA.county like '%Calvert%' THEN '04'
+      WHEN UPA.county like '%Caroline%' THEN '05' 
+      WHEN UPA.county like '%Carroll%' THEN '06'
+      WHEN UPA.county like '%Cecil%' THEN '07'
+      WHEN UPA.county like '%Charles%' THEN '08'
+      WHEN UPA.county like '%Dorchester%' THEN '09'
+      WHEN UPA.county like '%Frederick%' THEN '10'
+      WHEN UPA.county like '%Garrett%' THEN '11' 
+      WHEN UPA.county like '%Harford%' THEN '12'
+      WHEN UPA.county like '%Howard%' THEN '13'
+      WHEN UPA.county like '%Kent%' THEN '14'
+      WHEN UPA.county like '%Montgomery%' THEN '15'
+      WHEN UPA.county like '%Prince George%' THEN '16'
+      WHEN UPA.county like '%Queen Anne%' THEN '17' 
+      WHEN UPA.county like '%St. Mary%' THEN '18'
+      WHEN UPA.county like '%Somerset%' THEN '19'
+      WHEN UPA.county like '%Talbot%' THEN '20'
+      WHEN UPA.county like '%Washington%' THEN '21'
+      WHEN UPA.county like '%Wicomico%' THEN '22'
+      WHEN UPA.county like '%Worcester%' THEN '23'
+      WHEN UPA.county like '%Baltimore City%' THEN '30'
+      -- WHEN UPA.county like '%DHR%' THEN '3824' -- DHR/SSA
+      ELSE '  ' -- ERROR'
+     END
+     /*
+     CASE WHEN UPA.county like '%Allegany%' THEN '010'
+      WHEN UPA.county like '%Anne Arundel%' THEN '020'
+      WHEN UPA.county like '%Baltimore County%' THEN '030'
+      WHEN UPA.county like '%Calvert%' THEN '040'
+      WHEN UPA.county like '%Caroline%' THEN '050' 
+      WHEN UPA.county like '%Carroll%' THEN '060'
+      WHEN UPA.county like '%Cecil%' THEN '070'
+      WHEN UPA.county like '%Charles%' THEN '080'
+      WHEN UPA.county like '%Dorchester%' THEN '090'
+      WHEN UPA.county like '%Frederick%' THEN '100'
+      WHEN UPA.county like '%Garrett%' THEN '110' 
+      WHEN UPA.county like '%Harford%' THEN '120'
+      WHEN UPA.county like '%Howard%' THEN '130'
+      WHEN UPA.county like '%Kent%' THEN '140'
+      WHEN UPA.county like '%Montgomery%' THEN '150'
+      WHEN UPA.county like '%Prince George%' THEN '160'
+      WHEN UPA.county like '%Queen Anne%' THEN '170' 
+      WHEN UPA.county like '%St. Mary%' THEN '180'
+      WHEN UPA.county like '%Somerset%' THEN '190'
+      WHEN UPA.county like '%Talbot%' THEN '200'
+      WHEN UPA.county like '%Washington%' THEN '210'
+      WHEN UPA.county like '%Wicomico%' THEN '220'
+      WHEN UPA.county like '%Worcester%' THEN '230'
+      WHEN UPA.county like '%Baltimore City%' THEN '300'
+      -- WHEN UPA.county like '%DHR%' THEN '3824' -- DHR/SSA
+      ELSE '  ' -- ERROR'
+     END
+     */
+     /*
+     CASE WHEN UPA.county like '%Allegany%' THEN '1427' -- Allegany   
+      WHEN UPA.county like '%Anne Arundel%' THEN '1428' -- Anne Arundel
+      WHEN UPA.county like '%Baltimore County%' THEN '1430' -- Baltimore County
+      WHEN UPA.county like '%Calvert%' THEN '1431' -- CALVERT COUNTY
+      WHEN UPA.county like '%Caroline%' THEN '1432' -- CAROLINE COUNTY
+      WHEN UPA.county like '%Carroll%' THEN '1433' -- CARROLL COUNTY
+      WHEN UPA.county like '%Cecil%' THEN '1434' -- CECIL COUNTY
+      WHEN UPA.county like '%Charles%' THEN '1435' -- CHARLES COUNTY
+      WHEN UPA.county like '%Dorchester%' THEN '1436' -- DORCHESTER COUNTY
+      WHEN UPA.county like '%Frederick%' THEN '1437' -- FREDERICK COUNTY
+      WHEN UPA.county like '%Garrett%' THEN '1438' -- GARRETT COUNTY
+      WHEN UPA.county like '%Harford%' THEN '1439' -- HARFORD COUNTY
+      WHEN UPA.county like '%Howard%' THEN '1440' -- HOWARD COUNTY
+      WHEN UPA.county like '%Kent%' THEN '1441' -- KENT COUNTY
+      WHEN UPA.county like '%Montgomery%' THEN '1442' -- MONTGOMERY COUNTY
+      WHEN UPA.county like '%Prince George%' THEN '1443' -- PRINCE GEORGES COUNTY
+      WHEN UPA.county like '%Queen Anne%' THEN '1444' -- QUEEN ANNES COUNTY
+      WHEN UPA.county like '%St. Mary%' THEN '1446' -- ST. MARYS COUNTY
+      WHEN UPA.county like '%Somerset%' THEN '1445' -- SOMERSET COUNTY
+      WHEN UPA.county like '%Talbot%' THEN '1447' -- TALBOT COUNTY
+      WHEN UPA.county like '%Washington%' THEN '1448' -- WASHINGTON COUNTY
+      WHEN UPA.county like '%Wicomico%' THEN '1449' -- WICOMICO COUNTY
+      WHEN UPA.county like '%Worcester%' THEN '1450' -- WORCESTER COUNTY
+      WHEN UPA.county like '%Baltimore City%' THEN '1429' -- BALTIMORE CITY
+      WHEN UPA.county like '%DHR%' THEN '3824' -- DHR/SSA
+     END
+     */
+    INTO VS_ORIGIN_CODE
+     /* from userprofileaddress UPA, caseassignment CA, servicecase SC
+     where UPA.securityusersid = CA.fromworkeridno 
+     and SC.servicecaseid = CA.objectid 
+     and CA.objecttypekey = 'servicecase'
+     and SC.servicecasenumber = VL_CASE_ID
+     and SC.activeflag = 1
+     and UPA.activeflag = 1
+     and CA.activeflag = 1
+     order by CA.updatedon desc limit 1;
+     INTO VS_ORIGIN_CODE */ --v1.3
+    FROM servicecase SC, 
+     caseassignment CA
+     LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = CA.fromworkeridno 
+      and UPA.activeflag = 1
+    where SC.servicecasenumber = VL_CASE_ID
+     and SC.servicecaseid = CA.objectid
+     and CA.objecttypekey = 'servicecase'
+     and SC.activeflag = 1
+     and CA.activeflag = 1
+    order by CA.updatedon desc limit 1;
+
+    -- RAISE NOTICE 'VS_ORIGIN_CODE'; 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR ORIGIN CODE #66 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C66N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+   END;   
+   
+   BEGIN
+    -- NEXT_REVIEW_DATE  #72 CHANGES IF THE VALUE IS LESS THAN VDT_START_DT THEN SPACES
+    SELECT (MIN(CR.nextreviewdate :: VARCHAR(10)))
+     INTO VDT_NEXT_REVIEW_DATE
+    FROM casereview CR, 
+     person PGA, 
+     intakeservicerequest ISR, 
+     intakeservicerequestactor TA, 
+     servicecase SC
+    WHERE PGA.cjamspid = VL_CLIENT_ID
+     and TA.personid = PGA.personid
+     and TA.intakeserviceid = ISR.intakeserviceid
+     AND SC.servicecaseid = ISR.servicecaseid 
+     AND CR.caseid = ISR.intakeserviceid
+     and SC.servicecasenumber = VL_CASE_ID
+     AND cr.activeflag = 1
+     and pga.activeflag =1
+     and TA.activeflag = 1
+     and ISR.activeflag =1;
+
+    -- RAISE NOTICE 'VDT_NEXT_REVIEW_DATE'; 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR NEXT_REVIEW_DATE  #72 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C72N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END; 
+   
+   IF VDT_NEXT_REVIEW_DATE  IS NULL OR LTRIM(RTRIM(VDT_NEXT_REVIEW_DATE)) = '' OR  (date(VDT_NEXT_REVIEW_DATE) < date(VDT_START_DT)) THEN
+    -- VDT_NEXT_REVIEW_DATE = LPAD('',8,' ');
+    VDT_NEXT_REVIEW_DATE = LPAD('',4,'0'); -- ???
+   ELSE
+    -- VDT_NEXT_REVIEW_DATE :=  to_char(to_date(VDT_NEXT_REVIEW_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_NEXT_REVIEW_DATE :=  to_char(to_date(VDT_NEXT_REVIEW_DATE,'yyyy-mm-dd'), 'yyyy'); -- ???
+   END IF;
+  
+   BEGIN
+    -- 73 PROIR
+    IF EXISTS ( SELECT 1 
+        FROM personprogramarea PGA, 
+         person PP, 
+         servicecase SC
+       where PP.personid = PGA.personid
+        and PP.cjamspid = VL_CLIENT_ID
+        and SC.servicecaseid = PGA.objectid::UUID
+        AND PGA.objecttypekey = 'servicecase'
+        AND SC.servicecasenumber = VL_CASE_ID
+        AND PGA.programkey = 'OOH'
+        AND PGA.STARTDATE < VDT_START_DT::DATE
+        AND pga.ACTIVEFLAG = 1
+       ) THEN 
+     VS_PRIOR := 'Y' ;
+    ELSE
+     VS_PRIOR := 'N';
+    END IF;
+
+    -- RAISE NOTICE 'VS_PRIOR'; 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR PRIOR  #73 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C73N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    -- #74    SIGN_DATE
+    SELECT to_char(MIN(SP.effectivedate), 'mmddyy')
+    -- MIN(SP.effectivedate :: varchar)
+    INTO VDT_SIGN_DATE
+    FROM serviceplan SP, 
+     person PR, 
+     servicecase SC,
+     intakeservicerequestactor ISR
+    where ISR.personid = PR.personid
+     AND SC.servicecaseid = ISR.servicecaseid
+     and PR.cjamspid = VL_CLIENT_ID
+     and SC.servicecasenumber = VL_CASE_ID
+     AND SP.objectid::UUID = SC.servicecaseid
+     AND SP.effectivedate >= VDT_START_DT :: DATE
+     AND SP.activeflag = 1 
+     AND PR.activeflag = 1
+     AND SC.activeflag = 1
+     AND ISR.activeflag = 1;
+
+
+    -- RAISE NOTICE 'VDT_SIGN_DATE'; 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR SIGN_DATE  #74 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C74N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF  VDT_SIGN_DATE  IS NULL OR  LTRIM(RTRIM(VDT_SIGN_DATE))  = '' THEN
+    -- VDT_SIGN_DATE   := LPAD('',8,' ');
+    VDT_SIGN_DATE   := LPAD('',6,'0');
+   ELSE
+    -- VDT_SIGN_DATE  := SUBSTRING( VDT_SIGN_DATE ,1,2)||SUBSTRING(VDT_SIGN_DATE ,4,2)||SUBSTRING( VDT_SIGN_DATE ,7,4);-- v1.4
+    -- VDT_SIGN_DATE  := SUBSTRING( VDT_SIGN_DATE ,6,2)||SUBSTRING(VDT_SIGN_DATE ,9,2)||SUBSTRING( VDT_SIGN_DATE ,1,4);-- v1.4
+    -- Not Required
+   END IF;
+   
+   BEGIN
+    --#75
+    /*    SELECT RTRIM(COUNT(*)::VARCHAR)
+    INTO VS_APPROVE_BEFORE
+    FROM TB_PLACEMENT
+    WHERE ENTRY_DT IS NOT NULL
+    AND EXIT_DT IS NOT NULL
+    AND (VOID_SW = 'N'  OR VOID_SW IS NULL)
+    AND DELETE_SW = 'N'
+    AND APPROVAL_STATUS_CD = '3047'
+    AND CLIENT_ID = VL_CLIENT_ID
+    AND CASE_ID :: VARCHAR = VL_CASE_ID
+    AND ENTRY_DT < VDT_START_DT :: DATE;
+
+    */
+
+    WITH aggregates AS ( select approval_status_cd , count(*) pl_cnt
+          FROM TB_PLACEMENT
+          WHERE ENTRY_DT IS NOT NULL
+           AND EXIT_DT IS NOT NULL
+           AND (VOID_SW = 'N'  OR VOID_SW IS NULL)
+           AND DELETE_SW = 'N'
+           AND CASE_ID :: VARCHAR = VL_CASE_ID
+           AND CLIENT_ID = VL_CLIENT_ID
+           AND ENTRY_DT < VDT_START_DT :: DATE
+          group by approval_status_cd  ) 
+
+    select pl_cnt ::VARCHAR
+     INTO VS_APPROVE_BEFORE 
+    FROM aggregates 
+    where approval_status_cd = '3047' ;
+
+
+    IF VS_APPROVE_BEFORE is null or btrim(VS_APPROVE_CURR) = '' THEN
+     VS_APPROVE_BEFORE := LPAD('',2,'0');
+    ELSE
+     VS_APPROVE_BEFORE := LPAD(VS_APPROVE_BEFORE,2,'0');
+    END IF;
+    /*
+    WITH aggregates AS (  select approval_status_cd , count(*) cnt
+    FROM TB_PLACEMENT
+    WHERE ENTRY_DT IS NOT NULL
+    AND EXIT_DT IS NOT NULL
+    AND (VOID_SW = 'N'  OR VOID_SW IS NULL)
+    AND DELETE_SW = 'N'
+    AND CASE_ID :: VARCHAR = VL_CASE_ID
+    AND CLIENT_ID = VL_CLIENT_ID
+
+    AND ENTRY_DT < VDT_START_DT :: DATE
+    group by approval_status_cd 
+
+    ) 
+    select cnt ::VARCHAR
+    INTO VS_APPROVE_BEFORE 
+    FROM aggregates 
+    where approval_status_cd = '3047' ;
+
+    */
+
+    -- RAISE NOTICE 'VS_APPROVE_BEFORE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR APPROVE_BEFORE   #75 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C75N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    --#76
+    /* SELECT RTRIM(COUNT(*)::VARCHAR)
+    INTO VS_APPROVE_CURR
+    FROM TB_PLACEMENT
+    WHERE ENTRY_DT IS NOT NULL
+    AND (VOID_SW = 'N' OR VOID_SW IS NULL)
+    AND DELETE_SW = 'N'
+    AND APPROVAL_STATUS_CD = '3047'
+    AND CLIENT_ID = VL_CLIENT_ID
+    AND CASE_ID :: VARCHAR = VL_CASE_ID
+    AND ENTRY_DT >= VDT_START_DT ::DATE; */
+          
+          
+    SELECT RTRIM(COUNT(distinct pl.alternateid)::VARCHAR) -- CIDM-4187
+     INTO VS_APPROVE_CURR
+    FROM PLACEMENT pl
+     JOIN servicecase sc ON sc.servicecaseid = pl.servicecaseid 
+      AND sc.activeflag = 1
+     JOIN person pr ON pr.personid = pl.personid 
+      AND pr.activeflag = 1
+     join routing rt on rt.objectid::character varying = pl.placementid::character varying  
+      and rt.routingstatustypeid = 16 
+      AND rt.eventcode::character varying = 'PLTR'::character varying  
+      AND rt.activeflag = 1
+    WHERE pl.startdatetime IS NOT NULL
+     AND ((CASE COALESCE(pl.isvoided, 0)  WHEN 1 THEN 'Y'::text  ELSE NULL::text END::character) = 'N'
+     OR
+     (CASE COALESCE(pl.isvoided, 0) WHEN 1 THEN 'Y'::text ELSE NULL::text END::character) IS NULL)
+     AND pl.activeflag = 1
+     AND pr.cjamspid = VL_CLIENT_ID
+     AND sc.servicecasenumber::bigint = VL_CASE_ID::bigint
+     AND pl.startdatetime >= VDT_START_DT::DATE;
+    
+    IF VS_APPROVE_CURR is null or btrim(VS_APPROVE_CURR) = '' THEN
+     VS_APPROVE_CURR := LPAD('',2,'0');
+    ELSE
+     VS_APPROVE_CURR := LPAD(VS_APPROVE_CURR ,2,'0');
+    END IF;
+    
+    -- RAISE NOTICE 'VS_APPROVE_CURR';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR APPROVE_CURR   #76 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C76N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    --#77  OUT OF HOME ASSIGNMENT ##9765 --08/28/06 COUNT ONLY CLOSED ASSIGNMENTS  - END_DT IS NOT NULL
+    SELECT RTRIM(COUNT(*)::VARCHAR)
+     INTO VS_TIMES_HOME
+    FROM personprogramarea pga,  
+     person P, 
+     servicecase SC
+    WHERE pga.personid = P.personid
+     and pga.objectid::UUID = SC.servicecaseid
+     and pga.objecttypekey = 'servicecase'
+     AND p.cjamspid = VL_CLIENT_ID
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND pga.enddate IS NOT NULL
+     AND pga.activeflag = 1;  
+
+    -- RAISE NOTICE 'VS_TIMES_HOME';
+    
+    IF VS_TIMES_HOME is null THEN
+     VS_TIMES_HOME := LPAD('',2,'0');
+    ELSE
+     VS_TIMES_HOME := LPAD(VS_TIMES_HOME,2,'0');
+    END IF; 
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR TIMES_HOME   #77 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C77N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- LEGAL_STATUS #78 AND #79
+    SELECT --CRBV.chessiecode
+     ( case when CRBV.chessiecode = '3964' then '04' --  Committed to DSS
+      when CRBV.chessiecode = '3965' then '07' -- Co-Committed to DSS & DDA
+      when CRBV.chessiecode = '3966' then '07' -- Co-Committed to DSS & DHMH
+      when CRBV.chessiecode = '3967' then '05' -- Co-Committed to DSS & DJJ
+      when CRBV.chessiecode = '3968' then '05' -- Co-Committed to DSS, DJJ, & DHMH
+      when CRBV.chessiecode = '6030' then '15' -- Committed to Another State Agency
+      when CRBV.chessiecode = '6031' then '08' -- Guardianship to DSS
+      when CRBV.chessiecode = '6029' then '05' -- DJJ & DHMH
+      when CRBV.chessiecode = '8143' then '01' -- Order of Protective Supervision
+      when CRBV.chessiecode = '8144' then '12' -- Final Decree of Adoption
+      when CRBV.chessiecode = '8145' then '13' -- Rescission
+      when CRBV.chessiecode = '8146' then '15' -- Committed to DHMH
+      when CRBV.chessiecode = '6032' then '10' -- Caretaker Custody
+      when CRBV.chessiecode = '6033' then '11' -- Caretaker Guardianship
+      when CRBV.chessiecode = '6034' then '10' -- Custody to Relative
+      when CRBV.chessiecode = '6035' then '10' -- Custody to Mother
+      when CRBV.chessiecode = '6036' then '10' -- Custody to Father
+      when CRBV.chessiecode = '6037' then '10' -- Parental Custody
+      when CRBV.chessiecode = '6229' then '06' -- Delinquent - Committed to DJJ
+      when CRBV.chessiecode = '6230' then '06' -- Delinquent - Committed to DSS and DJJ
+      when CRBV.chessiecode = '8140' then '03' -- Shelter Care Order to DSS DSS
+      when CRBV.chessiecode = '8141' then '03' -- Shelter Care Order to Other
+      when CRBV.chessiecode = '8142' then '02' -- Voluntary Placement Agreement to DSS
+      when CRBV.chessiecode = '6038' then '02' -- Voluntary Placement Agreement to Caregiver 
+      when CRBV.chessiecode = '12741' then '99' -- Other
+      else
+       '99' -- Other
+      end ), 
+     CAST(CAST(lc.effectivedate AS VARCHAR(10)) AS DATE)::varchar(10) 
+    INTO VS_LEGAL_STAT,
+     VDT_LS_EFF_DATE
+    FROM legalcustody lc, 
+     person p, 
+     intakeservicerequestactor isa,  
+     servicecase SC, 
+     crbreferencevalues CRBV
+    WHERE lc.activeflag = 1
+     and isa.personid = p.personid
+     and CRBV.cjamscode = lc.legalcustodytypekey
+     and CRBV.referencetype = 'legalcustodytype'
+     and lc.servicecaseid = SC.servicecaseid
+     AND SC.servicecasenumber = VL_CASE_ID
+     and isa.intakeservicerequestactorid = lc.intakeservicerequestactorid
+     AND p.cjamspid = VL_CLIENT_ID  
+    ORDER BY lc.effectivedate DESC
+    limit 1;
+
+    -- RAISE NOTICE 'VS_LEGAL_STAT';
+    IF VS_LEGAL_STAT is null THEN
+     VS_LEGAL_STAT := LPAD('',2,'0');
+    END IF;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR LEGAL_STAT #78, LS_EFF_DATE  #79  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C78N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;  
+   
+   IF VDT_LS_EFF_DATE  IS NULL OR LTRIM(RTRIM(VDT_LS_EFF_DATE)) = '' THEN
+    -- VDT_LS_EFF_DATE := LPAD('',8,' ');
+    VDT_LS_EFF_DATE := LPAD('',6,'0');
+   ELSE                                     
+    -- VDT_LS_EFF_DATE :=  to_char(to_date(VDT_LS_EFF_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_LS_EFF_DATE :=  to_char(to_date(VDT_LS_EFF_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+   BEGIN
+    -- #81 DOCKET -----> need to check
+    SELECT --TRIM(otherhearingtypenotes) v1.3
+     substring(courtcasenumber, 1, 20)
+    INTO VS_DOCKET
+    FROM intakeservicerequestactor hc, 
+     person p, 
+     intakeservicerequestcourthearing ich
+    WHERE ich.intakeserviceid = hc.intakeserviceid
+     and  hc.personid = p.personid
+     AND p.cjamspid = VL_CLIENT_ID 
+     AND hc.activeflag = 1
+     AND hc.updatedon 
+      IN (SELECT MAX(hc.updatedon)
+        FROM intakeservicerequestactor hc,
+         person p, 
+         intakeservicerequestcourthearing ich
+       WHERE ich.intakeserviceid = hc.intakeserviceid
+        and  hc.personid = p.personid
+        AND p.cjamspid = VL_CLIENT_ID 
+        AND hc.activeflag = 1
+       ) ;
+
+    -- RAISE NOTICE 'VS_DOCKET';         
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR  DOCKET #81  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C81N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN
+    -- RAISE NOTICE '#82 VL_CLIENT_ID % ',VL_CLIENT_ID;
+    -- RAISE NOTICE '#82 VL_CASE_ID % ', VL_CASE_ID;
+    -- RAISE NOTICE '#82 VDT_START_DT % ', VDT_START_DT;
+    
+    --PERMANENCY_PLAN     #82 -- #87
+    SELECT -- CRBV.chessiecode,
+     (case when CRBV.chessiecode = '1644' then '3' -- Adoption
+      when CRBV.chessiecode = '1645' then '4' -- APPLA - Independent Living Services 
+      when CRBV.chessiecode = '1646' then '5' -- APPLA - Child Requires Long Term Care
+      when CRBV.chessiecode = '1647' then '1' -- Reunification
+      when CRBV.chessiecode = '1648' then '2' -- Live with Other Relative(s)
+      when CRBV.chessiecode = '1649' then '7' -- Guardianship
+     end),
+     CAST(pp.establisheddate AS VARCHAR(10)),
+     -- CRBVpat.chessiecode,
+     (case when CRBVpat.chessiecode = '10560' then '03' -- Other Relative
+      when CRBVpat.chessiecode = '10561' then '01' -- Parents
+      when CRBVpat.chessiecode = '1753' then '26' -- Appropriate Adoptive Family
+     end ), 
+     -- pp.primarylegalstatustypekey,
+     (case when pp.primarylegalstatustypekey = '1751' then '12' -- Adoption
+      when pp.primarylegalstatustypekey = '1752' then '11' -- Relative with Guardianship or Adoption 
+      when pp.primarylegalstatustypekey = '6675' then '10' -- Reunificaiton
+     end), 
+     CAST(pp.projecteddate AS VARCHAR(10)),
+     CAST (pp.achieveddate AS VARCHAR(10))
+    INTO VS_PERM_PLAN,
+     VDT_PLAN_DATE,
+     VS_PLAN_LA,
+     VS_PLAN_LS,
+     VDT_PRJ_ACH_DATE,
+     VDT_ACH_DATE
+    FROM permanencyplan pp, 
+     intakeservicerequestactor isa, 
+     person p, 
+     servicecase SC, 
+     crbreferencevalues CRBV, 
+     crbreferencevalues CRBVpat
+    where SC.servicecaseid = pp.servicecaseid 
+     and pp.intakeservicerequestactorid = isa.intakeservicerequestactorid
+     and isa.personid = p.personid
+     and CRBV.cjamscode = pp.primarypermanencytype
+     and CRBV.referencetype = 'permanencytype'
+     and CRBVpat.cjamscode = pp.primaryarrangetype
+     and CRBVpat.referencetype = 'arrangetype'
+     AND p.cjamspid = VL_CLIENT_ID
+     and SC.servicecasenumber = VL_CASE_ID
+     AND pp.activeflag = 1
+     AND pp.establisheddate >= VDT_START_DT ::DATE
+     AND pp.updatedon 
+      IN (SELECT MAX(pp.updatedon) 
+       FROM permanencyplan pp, 
+        intakeservicerequestactor isa, 
+        person p, 
+        servicecase SC
+       where SC.servicecaseid = pp.servicecaseid
+        and pp.intakeservicerequestactorid = isa.intakeservicerequestactorid
+        and isa.personid = p.personid
+        AND p.cjamspid = VL_CLIENT_ID
+        and SC.servicecasenumber = VL_CASE_ID
+        AND pp.activeflag = 1
+       ) ;
+
+
+    
+    -- RAISE NOTICE 'VDT_PLAN_DATE';    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR  PERMANENCY_PLAN #82 -#87 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C82N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VS_PERM_PLAN is null THEN
+    VS_PERM_PLAN := LPAD('',1,'0');
+   END IF;
+   
+   IF VS_PLAN_LA is null THEN
+    VS_PLAN_LA := LPAD('',2,'0');
+   END IF;
+   
+   IF VS_PLAN_LS is null THEN
+    VS_PLAN_LS := LPAD('',2,'0');
+   END IF;
+   
+   -- VDT_PLAN_DATE,    
+   IF VDT_PLAN_DATE  IS NULL OR LTRIM(RTRIM(VDT_PLAN_DATE)) = '' THEN
+    -- VDT_PLAN_DATE := LPAD('',8,' ');
+    VDT_PLAN_DATE := LPAD('',4,'0'); -- ???
+   ELSE                              
+    -- VDT_PLAN_DATE := to_char(to_date(VDT_PLAN_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_PLAN_DATE := to_char(to_date(VDT_PLAN_DATE,'yyyy-mm-dd'), 'yyyy'); -- ???
+   END IF;
+   
+   --VDT_PRJ_ACH_DATE,   
+   IF VDT_PRJ_ACH_DATE  IS NULL OR LTRIM(RTRIM(VDT_PRJ_ACH_DATE)) = '' THEN
+    -- VDT_PRJ_ACH_DATE := LPAD('',8,' ');
+    VDT_PRJ_ACH_DATE := LPAD('',4,'0'); -- ???
+   ELSE                              
+    -- VDT_PRJ_ACH_DATE := to_char(to_date(VDT_PRJ_ACH_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_PRJ_ACH_DATE := to_char(to_date(VDT_PRJ_ACH_DATE,'yyyy-mm-dd'), 'yyyy'); -- ??
+   END IF;
+   
+   --VDT_ACH_DATE   
+   IF VDT_ACH_DATE  IS NULL OR LTRIM(RTRIM(VDT_ACH_DATE)) = '' THEN
+    VDT_ACH_DATE := LPAD('',4,'0'); -- ???
+   ELSE                            
+    -- VDT_ACH_DATE := to_char(to_date(VDT_ACH_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_ACH_DATE := to_char(to_date(VDT_ACH_DATE,'yyyy-mm-dd'), 'yyyy'); -- ??
+   END IF;
+   
+   BEGIN  
+    --SERVICE AGREEMENT_DT #88  IF 74 IS BLANK THEN 88 = '';
+    SELECT MAX(SP.effectivedate :: VARCHAR(10))
+     INTO VDT_SVC_AGR_DATE
+    FROM serviceplan SP, 
+     person PR, 
+     intakeservicerequestactor isr, 
+     servicecase SC
+    where ISR.personid = PR.personid
+     AND SC.servicecaseid = ISR.servicecaseid
+     and PR.cjamspid = VL_CLIENT_ID
+     and SC.servicecasenumber = VL_CASE_ID
+     AND SP.objectid::UUID = SC.servicecaseid
+     AND SP.effectivedate >= VDT_START_DT :: DATE
+     AND SP.activeflag = 1 
+     AND PR.activeflag = 1
+     AND SC.activeflag = 1
+     AND ISR.activeflag = 1;
+
+    -- RAISE NOTICE 'VDT_SVC_AGR_DATE'; 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR SVC_AGR_DATE #88 FOR -->'|| VL_CLIENT_ID:: VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C88N'||VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;     
+   
+   IF  VDT_SVC_AGR_DATE  IS NULL OR  LTRIM(RTRIM(VDT_SVC_AGR_DATE))  = '' OR LTRIM(RTRIM(VDT_SIGN_DATE)) = '' THEN
+    -- VDT_SVC_AGR_DATE := LPAD('',8,' ');
+    VDT_SVC_AGR_DATE := LPAD('',6,'0');
+   ELSE                                         
+    -- VDT_SVC_AGR_DATE := to_char(to_date(VDT_SVC_AGR_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_SVC_AGR_DATE := to_char(to_date(VDT_SVC_AGR_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+   BEGIN
+    --FIRST PLACEMENT ENTRY  #90
+    /*     SELECT ENTRY_DT::VARCHAR(10)
+    INTO VDT_PLCMT_DATE 
+    FROM TB_PLACEMENT
+    where CLIENT_ID =  VL_CLIENT_ID
+    AND CASE_ID ::VARCHAR = VL_CASE_ID
+    AND (VOID_SW = 'N' OR VOID_SW IS NULL )
+    AND DELETE_SW = 'N'
+    AND ENTRY_DT IS NOT NULL
+    AND ENTRY_DT >= VDT_START_DT::DATE
+    AND APPROVAL_STATUS_CD = '3047'
+    ORDER BY ENTRY_DT
+    limit 1; */
+     
+
+    SELECT pl.startdatetime::VARCHAR(10) 
+     INTO VDT_PLCMT_DATE
+    FROM PLACEMENT pl
+     JOIN servicecase sc ON sc.servicecaseid = pl.servicecaseid 
+      AND sc.activeflag = 1
+     JOIN person pr ON pr.personid = pl.personid 
+      AND pr.activeflag = 1
+     join routing rt on rt.objectid::character varying = pl.placementid::character varying 
+      and rt.routingstatustypeid = 16 
+      AND rt.eventcode::character varying = 'PLTR'::character varying 
+      AND rt.activeflag = 1
+    WHERE pl.startdatetime IS NOT NULL
+     AND ((CASE COALESCE(pl.isvoided, 0)  WHEN 1 THEN 'Y'::text  ELSE NULL::text END::character) = 'N'
+     OR
+     (CASE COALESCE(pl.isvoided, 0) WHEN 1 THEN 'Y'::text ELSE NULL::text END::character) IS NULL)
+     AND pl.activeflag = 1
+     AND pr.cjamspid = VL_CLIENT_ID
+     AND sc.servicecasenumber::bigint = VL_CASE_ID::bigint
+     AND pl.startdatetime >= VDT_START_DT::DATE
+    ORDER BY pl.startdatetime
+    limit 1;
+
+
+    -- RAISE NOTICE 'ABCDRUIIVDT_PLCMT_DATE%', LENGTH(VDT_PLCMT_DATE); 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED  FOR PLCMT_DATE #90 FOR -->'|| VL_CLIENT_ID :: VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C90N'|| VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    IF VDT_PLCMT_DATE IS NULL OR LTRIM(RTRIM(VDT_PLCMT_DATE)) ='' THEN
+     -- VDT_PLCMT_DATE := LPAD('',8,' ');
+     VDT_PLCMT_DATE := LPAD('',6,'0');
+    ELSE                                 
+     -- VDT_PLCMT_DATE := to_char(to_date(VDT_PLCMT_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+     VDT_PLCMT_DATE := to_char(to_date(VDT_PLCMT_DATE,'yyyy-mm-dd'), 'mmddyy');
+    END IF; 
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     RAISE NOTICE 'VDT_PLCMT_DATE % ', VDT_PLCMT_DATE;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. CONVERSION FAILED PLCMT_DATE #90 FOR -->'|| VDT_PLCMT_DATE :: VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C90N'|| VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+    RETURN;
+   END;
+   
+   BEGIN
+    -- RECENT  PLACEMENT ENTRY SINCE PROGRAM ASSIGNMENT #91- #94, 96
+    /*  SELECT ENTRY_DT :: VARCHAR(10),
+    EXIT_DT ::VARCHAR(10),
+    RTRIM(PLACEMENT_STRUCTURE_ID::VARCHAR),
+    PROVIDER_ID,
+    FISCAL_CATEGORY_CD
+    INTO
+    VDT_LA_BEG_DATE,
+    VDT_LA_CAN_DATE,
+    VS_LA_TYPE,
+    VL_PROVIDER_ID,
+    VS_FUND_SOURCE
+    FROM TB_PLACEMENT
+    WHERE CLIENT_ID = VL_CLIENT_ID
+    AND CASE_ID :: VARCHAR = VL_CASE_ID
+    and DELETE_SW = 'N'
+    AND ENTRY_DT IS NOT NULL
+    AND ENTRY_DT >= VDT_START_DT::DATE
+    --  AND EXIT_DT IS NULL
+    AND (VOID_SW = 'N' OR VOID_SW IS NULL)
+    AND CONVERSION_SW IS NULL
+    AND APPROVAL_STATUS_CD= '3047'
+    AND PLACEMENT_ID IN  (SELECT MAX(PLACEMENT_ID) FROM TB_PLACEMENT
+    WHERE  CLIENT_ID = VL_CLIENT_ID
+    AND CASE_ID :: VARCHAR = VL_CASE_ID
+    AND DELETE_SW = 'N'
+    AND ENTRY_DT IS NOT NULL
+    AND ENTRY_DT >= VDT_START_DT:: DATE
+    --                              AND EXIT_DT IS NULL
+    AND (VOID_SW = 'N' OR VOID_SW IS NULL)
+    AND CONVERSION_SW IS NULL
+    AND APPROVAL_STATUS_CD= '3047') ;    */
+
+         
+    SELECT  pl.startdatetime :: VARCHAR(10),
+     pl.enddatetime ::VARCHAR(10),
+     -- RTRIM(pl.service_id::VARCHAR),
+     (case when pl.service_id = 1 then '35' -- Semi Independent Living Arrangement
+      when pl.service_id = 8 then '03' -- Formal Kinship Care
+      when pl.service_id = 9 then '02' -- Restricted (Relative) Foster Care
+      when pl.service_id = 10 then '11' -- Regular Foster Care
+      when pl.service_id = 11 then '11' -- Intermediate Foster Care
+      when pl.service_id = 12 then '05' -- Treatment Foster Care
+      when pl.service_id = 13 then '06' -- Emergency Foster Home Care
+      when pl.service_id = 14 then '33' -- Residential Group Homes
+      when pl.service_id = 15 then '32' -- Emergency Group Shelter Care
+      when pl.service_id = 73 then '99' -- CHAFEE After care room and board
+      when pl.service_id = 74 then '36' -- Alternative Living Units
+      when pl.service_id = 75 then '33' -- Teen Mother Programs
+      when pl.service_id = 76 then '33' -- Residential Treatment Centers
+      when pl.service_id = 77 then '99' -- Refugee Child
+      when pl.service_id = 167 then '38' -- Therapeutic Group Homes
+      when pl.service_id = 500 then '11' -- Pre-Finalized Adoptive Home with Subsidy
+      when pl.service_id = 501 then '26' -- Adoptive Home with Subsidy
+      when pl.service_id = 503 then '14'  -- Subsidized Guardianship
+      when pl.service_id = 78 then '13' -- Treatment Foster Care (Private)
+     end),
+     pl.altproviderid,
+     pl.fiscalcategorytypekey
+    INTO
+     VDT_LA_BEG_DATE,
+     VDT_LA_CAN_DATE,
+     VS_LA_TYPE,
+     VL_PROVIDER_ID,
+     VS_FUND_SOURCE
+    FROM PLACEMENT pl
+    JOIN servicecase sc ON sc.servicecaseid = pl.servicecaseid 
+     AND sc.activeflag = 1
+    JOIN person pr ON pr.personid = pl.personid 
+     AND pr.activeflag = 1
+    JOIN routing rt on rt.objectid::character varying = pl.placementid::character varying
+     and rt.routingstatustypeid = 16 
+     AND rt.eventcode::character varying = 'PLTR'::character varying 
+     AND rt.activeflag = 1
+    WHERE  pr.cjamspid  = VL_CLIENT_ID
+     AND sc.servicecasenumber::bigint = VL_CASE_ID::bigint
+     AND pl.activeflag = 1
+     AND pl.startdatetime IS NOT NULL
+     AND pl.startdatetime >= VDT_START_DT:: DATE
+     --  AND EXIT_DT IS NULL
+     AND ((CASE COALESCE(pl.isvoided, 0)  WHEN 1 THEN 'Y'::text  ELSE NULL::text END::character) = 'N' 
+     OR 
+     (CASE COALESCE(pl.isvoided, 0) WHEN 1 THEN 'Y'::text ELSE NULL::text END::character) IS NULL)
+     -- AND CONVERSION_SW IS NULL
+     AND pl.alternateid 
+      IN  (SELECT MAX(pl.alternateid) 
+         FROM PLACEMENT pl
+        JOIN servicecase sc ON sc.servicecaseid = pl.servicecaseid
+         AND sc.activeflag = 1
+        JOIN person pr ON pr.personid = pl.personid 
+         AND pr.activeflag = 1
+        join routing rt  on rt.objectid::character varying = pl.placementid::character varying 
+         and rt.routingstatustypeid = 16 
+         AND rt.eventcode::character varying = 'PLTR'::character varying 
+         AND rt.activeflag = 1
+       WHERE  pr.cjamspid =  VL_CLIENT_ID
+        AND sc.servicecasenumber::bigint = VL_CASE_ID::bigint
+        AND pl.activeflag = 1
+        AND pl.startdatetime IS NOT NULL
+        AND pl.startdatetime >= VDT_START_DT:: DATE
+       --                              AND EXIT_DT IS NULL
+       AND ((CASE COALESCE(pl.isvoided, 0)  WHEN 1 THEN 'Y'::text  ELSE NULL::text END::character) = 'N' 
+       OR 
+       (CASE COALESCE(pl.isvoided, 0) WHEN 1 THEN 'Y'::text ELSE NULL::text END::character) IS NULL)
+
+       --AND CONVERSION_SW IS NULL
+       ) ; 
+
+    -- RAISE NOTICE 'VS_LA_TYPE';        
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR PLACEMENT ENTRY #91- #94,#96 FOR -->'|| VL_CLIENT_ID::VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C91N'||VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   --VDT_LA_BEG_DATE LTRIM(RTRIM(VDT_LA_BEG_DATE)) LTRIM(RTRIM(VDT_SIGN_DATE))
+   IF VDT_LA_BEG_DATE IS NULL OR LTRIM(RTRIM(VDT_LA_BEG_DATE))  = '' THEN
+    -- VDT_LA_BEG_DATE := LPAD('',8, ' ');
+    VDT_LA_BEG_DATE := LPAD('',6, '0');
+   ELSE                                     
+    -- VDT_LA_BEG_DATE := to_char(to_date(VDT_LA_BEG_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_LA_BEG_DATE := to_char(to_date(VDT_LA_BEG_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+   -- VDT_LA_CAN_DATE,   LTRIM(RTRIM(VDT_LA_CAN_DATE))
+   IF VDT_LA_CAN_DATE IS NULL OR LTRIM(RTRIM(VDT_LA_CAN_DATE)) = '' THEN
+    -- VDT_LA_CAN_DATE := LPAD('',8, ' ');
+    VDT_LA_CAN_DATE := LPAD('',6, '0');
+   ELSE                                  
+    -- VDT_LA_CAN_DATE := to_char(to_date(VDT_LA_CAN_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_LA_CAN_DATE := to_char(to_date(VDT_LA_CAN_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+   IF VS_LA_TYPE is NULL THEN
+    VS_LA_TYPE := LPAD('',2, '0');
+   END IF;
+   
+   IF VS_FUND_SOURCE is NULL OR LTRIM(RTRIM(VS_FUND_SOURCE)) = '' THEN
+    VS_FUND_SOURCE := LPAD('',4, '0');
+   END IF;
+   
+   -- ADDRESS '3357'  #10- #18
+   RAISE NOTICE 'VL_PROVIDER_ID % ', VL_PROVIDER_ID ;
+   IF VL_PROVIDER_ID IS NOT NULL AND VL_PROVIDER_ID <> 0 THEN
+    BEGIN  
+     SELECT substring(ADR_STREET_TX,1,6) as ADR_STREET_TX,
+      -- ADR_PRE_DIR_CD,
+      replace(( select tpv.value_tx
+       from tb_picklist_values tpv 
+        where tpv.picklist_type_id = 69
+       and btrim(tpv.picklist_value_cd) = btrim(ADR_PRE_DIR_CD)
+      ),'.' ,'') as  ADR_PRE_DIR_CD,  
+      substring(TRIM(ADR_STREET_NM),1,20) as ADR_STREET_NM,
+      substring(ADR_STREET_SUFFIX_CD,1,4) as ADR_STREET_SUFFIX_CD,
+      substring(ADR_UNIT_NO_TX,1,5) as ADR_UNIT_NO_TX,
+      ADR_UNIT_TYPE_CD,
+      substring(ADR_CITY_NM,1,22) as ADR_CITY_NM,
+      btrim(ADR_STATE_CD) as ADR_STATE_CD,
+      RTRIM(cast(ADR_ZIP5_NO::integer as varchar))
+     INTO VS_CURR_STR_NO,
+      VS_CURR_STR_DIR,
+      VS_CURR_STR_NM,
+      VS_CURR_STR_TYPE_CD,
+      VS_CURR_APT_NUM,
+      VS_CURR_ADDL_ADDR,
+      VS_CURR_CITY,
+      VS_CURR_ST,
+      VS_CURR_ZIP
+     FROM TB_PROVIDER_ADDRESSES
+     WHERE  DELETE_SW = 'N'
+      AND ADR_TYPE_CD = '3357'
+      AND ADR_DEFAULT_SW = 'Y'   -- 07/19/06
+      AND  PARENT_KEY_ID ::VARCHAR = VL_PROVIDER_ID :: VARCHAR ;
+      --    CHAR(ADR_ZIP5_NO)
+   
+     -- RAISE NOTICE 'VS_CURR_STR_NO';
+     EXCEPTION WHEN OTHERS THEN
+      VS_OUTPUT_STATE := SQLSTATE;
+      VL_OUTPUT_SQLCODE :=SQLERRM;
+      VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR CLIENT_ADDRESS -->'|| VL_CLIENT_ID::VARCHAR ;
+      VL_EXCEP_FLAG := 1;
+      VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C10N'||VL_OUTPUT_SQLCODE::VARCHAR ||'T'|| VS_OUTPUT_STATE ;
+
+    END;
+    
+    -- SET VS_CURR_ZIP = CHAR(INTEGER(SUBSTR(VS_CURR_ZIP,LOCATE('.',(VS_CURR_ZIP))+1)))  ;
+    IF VS_CURR_ZIP = '0' OR VS_CURR_ZIP is NULL OR RTRIM(LTRIM(VS_CURR_ZIP)) = ''THEN
+     -- VS_CURR_ZIP = LPAD('',5,' ');
+     VS_CURR_ZIP = LPAD('',5,'0');
+    ELSIF LENGTH(ltrim(RTRIM(VS_CURR_ZIP))) < 5 THEN
+     -- VS_CURR_ZIP = VS_CURR_ZIP || SUBSTRING('    ',1,5 - LENGTH(LTRIM(RTRIM(VS_CURR_ZIP))))  ;
+     VS_CURR_ZIP = LPAD(btrim(VS_CURR_ZIP),5,'0') ;
+    END IF;
+    
+   END IF;
+   
+   -- GET PROVIDER NAME #94
+   /*SELECT F_ENAME('2953', VL_PROVIDER_ID) INTO VS_LA_PROVIDER FROM SYSIBM.SYSDUMMY1 */
+   VS_LA_PROVIDER := RTRIM(VL_PROVIDER_ID::VARCHAR) ;
+   -- RAISE NOTICE 'VS_LA_PROVIDER';
+   IF VS_LA_PROVIDER = '0' OR VS_LA_PROVIDER IS NULL THEN
+    -- VS_LA_PROVIDER := LPAD('',9,' ');
+    VS_LA_PROVIDER := LPAD('',9,'0');
+   ELSE 
+    VS_LA_PROVIDER := LPAD(VL_PROVIDER_ID,9,'0');    
+   END IF;
+   
+   BEGIN
+    -- FC_EXIT_DATE #97 98
+    /*      SELECT  icr.returndate::VARCHAR(10),
+    CRBV.chessiecode
+    INTO  VDT_FC_EXIT_DATE,
+    VS_FC_EXIT_REASON
+    FROM  intakeservreqchildremoval icr, 
+    person pga, 
+    intakeservicerequestactor isa, 
+    intakeservreqchildremovalreason icrr,
+    crbreferencevalues CRBV
+    WHERE  icr.intakeservicerequestactorid = isa.intakeservicerequestactorid
+    and pga.personid = isa.personid
+    and icr.intakeservreqchildremovalid = icrr.intakeservreqchildremovalid
+    and icrr.removalreasontypekey = CRBV.cjamscode
+    and CRBV.referencetype = 'removalreasontype'
+    and pga.cjamspid = VL_CLIENT_ID
+    AND icr.activeflag = 1
+    AND icr.updatedon IN ( SELECT  MAX(icr.updatedon)
+    FROM  intakeservreqchildremoval icr, person pga, intakeservicerequestactor isa
+    WHERE icr.intakeservicerequestactorid = isa.intakeservicerequestactorid
+    and icr.intakeservreqchildremovalid = icrr.intakeservreqchildremovalid
+    and pga.personid = isa.personid
+    and pga.cjamspid = VL_CLIENT_ID
+    AND icr.activeflag = 1) ; */
+     
+     
+    SELECT  (pl.enddatetime::date)::varchar ,
+     -- coalesce (CRBV.chessiecode , '1830')
+     (case when CRBV.chessiecode = '1825' then '13' -- Adoption Disruption
+      when CRBV.chessiecode = '1826' then '07' -- Custody Non-Relative
+      when CRBV.chessiecode = '1827' then '15' -- Death of Child
+      when CRBV.chessiecode = '1828' then '07' -- Guardianship Non-Relative
+      when CRBV.chessiecode = '1829' then '05' -- Independence
+      when CRBV.chessiecode = '1830' then '99' -- Other
+      when CRBV.chessiecode = '1831' then '02' -- Other Relative
+      when CRBV.chessiecode = '1832' then '99' -- Refused Service
+      when CRBV.chessiecode = '1833' then '01' -- Reunification
+      when CRBV.chessiecode = '1834' then '10' -- Runaway
+      when CRBV.chessiecode = '1835' then '09' -- Transfer to Other Agency
+      when CRBV.chessiecode = '12740' then '11' -- Adoption Placement
+      when CRBV.chessiecode = '4529' then '03' -- Adoption Finalization
+      when CRBV.chessiecode = '10480' then '16' -- Court ordered return home against DSS recommendation
+      else '99' -- Other
+     end)
+    INTO VDT_FC_EXIT_DATE,
+     VS_FC_EXIT_REASON
+    FROM placement pl 
+    JOIN intakeservreqchildremoval icr on pl.intakeservreqchildremovalid = icr.intakeservreqchildremovalid  
+     AND icr.updatedon 
+      IN ( SELECT MAX(icr.updatedon)
+        FROM intakeservreqchildremoval icr, 
+         person pga, 
+         intakeservicerequestactor isa
+       WHERE icr.intakeservicerequestactorid = isa.intakeservicerequestactorid
+        and pga.personid = isa.personid
+        and pga.cjamspid = VL_CLIENT_ID
+        AND icr.activeflag = 1
+       )
+    join crbreferencevalues CRBV on crbv.cjamscode = pl.exitreasontypekey 
+     and crbv.referencetype = 'exitreasontypekey'
+    JOIN serviceCASE sc on icr.serviceCASEid=sc.serviceCASEid 
+     AND icr.activeflag=1 
+     AND sc.activeflag=1 
+    JOIN intakeservicerequestactor isra on isra.intakeservicerequestactorid=icr.intakeservicerequestactorid 
+     AND isra.activeflag=1
+    JOIN person p on p.personid = isra.personid 
+     AND p.activeflag=1 
+     and p.cjamspid = VL_CLIENT_ID 
+     and p.activeflag = 1
+    order by pl.enddatetime desc limit 1 ;
+
+    -- RAISE NOTICE 'VDT_FC_EXIT_DATE';
+  
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR FC_EXIT_DATE #97, 98 FOR -->'|| VL_CLIENT_ID::VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C97N'|| VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;  
+   
+   IF VDT_FC_EXIT_DATE  IS NULL OR LTRIM(RTRIM(VDT_FC_EXIT_DATE))  = '' THEN
+    -- VDT_FC_EXIT_DATE  := LPAD('',8,' ');
+    VDT_FC_EXIT_DATE  := LPAD('',6,'0');
+   ELSE                    
+    -- VDT_FC_EXIT_DATE   := to_char(VDT_FC_EXIT_DATE::date , 'mmddyyyy');
+    VDT_FC_EXIT_DATE   := to_char(VDT_FC_EXIT_DATE::date , 'mmddyy');
+   END IF;
+   
+   IF VS_FC_EXIT_REASON IS NULL OR LTRIM(RTRIM(VS_FC_EXIT_REASON))  = '' THEN
+    VS_FC_EXIT_REASON := LPAD('',2,'0');
+   ELSE                    
+    VS_FC_EXIT_REASON := LPAD(VS_FC_EXIT_REASON,2,'0');
+   END IF;
+   
+   
+   --CASE_OPENED  #99
+   --SET VS_CASE_OPENED = VDT_START_DT;   
+   -- VS_CASE_OPENED := to_char(to_date(VDT_START_DT,'yyyy-mm-dd'), 'mmddyyyy');
+   IF VDT_START_DT is not null THEN
+    VS_CASE_OPENED := to_char(to_date(VDT_START_DT,'yyyy-mm-dd'), 'mmddyy');
+   ELSE
+    VS_CASE_OPENED := LPAD('',6,'0');
+   END IF;  
+   
+   BEGIN
+    -- FCRB_DATE  #100  ADDED-- VDT_FCRB_DATE < CHAR(VDT_START_DT)
+    SELECT CAST(MAX(reviewdate) AS VARCHAR(10))
+     INTO VDT_FCRB_DATE
+    FROM casereview CR, 
+     person PGA,
+     intakeservicerequestactor TA, 
+     intakeservicerequest ISR, 
+     servicecase SC
+    WHERE PGA.cjamspid = VL_CLIENT_ID
+     and TA.intakeserviceid = ISR.intakeserviceid
+     AND SC.servicecaseid = ISR.servicecaseid 
+     and TA.personid = PGA.personid
+     AND CR.caseid = ISR.intakeserviceid
+     and SC.servicecasenumber = VL_CASE_ID
+     AND cr.activeflag = 1
+     and pga.activeflag =1
+     and TA.activeflag = 1
+     and ISR.activeflag =1
+     AND reviewtypekey = '2560';
+
+    -- RAISE NOTICE 'VDT_FCRB_DATE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR FCRB_DATE  #100 FOR -->'|| VL_CLIENT_ID ::VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C100N'|| VL_OUTPUT_SQLCODE::VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VDT_FCRB_DATE  IS NULL OR VDT_FCRB_DATE = '' OR (DATE(VDT_FCRB_DATE) < DATE(VDT_START_DT)) THEN
+    -- VDT_FCRB_DATE  = LPAD('',8,' ');
+    VDT_FCRB_DATE  = LPAD('',6,'0');
+   ELSE                                
+    -- VDT_FCRB_DATE  = to_char(to_date(VDT_FCRB_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_FCRB_DATE  = to_char(to_date(VDT_FCRB_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+   BEGIN  
+    --PANEL_DATE  #101    ADDED -- VDT_PANEL_DATE < CHAR(VDT_START_DT)
+    SELECT CAST(MAX(reviewdate) AS VARCHAR(10))
+     INTO VDT_PANEL_DATE
+    FROM casereview CR, 
+     person PGA, 
+     intakeservicerequestactor TA, 
+     intakeservicerequest ISR,
+     servicecase SC
+    where PGA.cjamspid = VL_CLIENT_ID
+     and TA.personid = PGA.personid
+     and TA.intakeserviceid = ISR.intakeserviceid
+     AND CR.caseid = ISR.intakeserviceid
+     AND SC.servicecaseid = ISR.servicecaseid
+     and SC.servicecasenumber = VL_CASE_ID
+     AND cr.activeflag = 1
+     and pga.activeflag =1
+     and TA.activeflag = 1
+     and ISR.activeflag =1
+     AND reviewtypekey = '2559';
+
+    -- RAISE NOTICE 'VDT_PANEL_DATE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR PANEL_DATE  #101 FOR -->'|| VL_CLIENT_ID:: VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C101N'||VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;  
+   
+   IF VDT_PANEL_DATE  IS NULL OR LTRIM(RTRIM(VDT_PANEL_DATE)) = '' OR (DATE(VDT_PANEL_DATE) < date(VDT_START_DT))  THEN
+    -- VDT_PANEL_DATE = LPAD('',8,' ');
+    VDT_PANEL_DATE = LPAD('',6,'0');
+   ELSE                               
+    -- VDT_PANEL_DATE  = to_char(to_date(VDT_PANEL_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_PANEL_DATE  = to_char(to_date(VDT_PANEL_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+    BEGIN
+    -- #102  ADDED -- VDT_DISP_DATE < CHAR(VDT_START_DT)
+    SELECT CAST(MAX(CH.hearingdatetime)AS VARCHAR(10))
+     -- to_char(MAX(CH.hearingdatetime), 'mmddyy')
+     INTO VDT_DISP_DATE
+    FROM intakeservicerequestcourthearing CH,
+     hearingtype  HP, 
+     servicecase SC
+    WHERE CH.hearingtypekey = HP.hearingtypekey
+     AND CH.servicecaseid = SC.servicecaseid
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND CH.courthearingstatustypekey = 'Pending'
+     AND HP.hearingtypekey IN ('6251','7335', '6249', '6250', '6254', '1311', 'GR', 'TGC', 'TGU', 'PP', 'Disp', 'REH')
+     AND CH.activeflag = 1
+     AND HP.activeflag = 1
+     AND SC.activeflag = 1 ;
+
+    -- RAISE NOTICE 'VDT_DISP_DATE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR DISP_DATE  #102 FOR -->'|| VL_CLIENT_ID :: VARCHAR ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C102N'||VL_OUTPUT_SQLCODE :: VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;   
+   
+   IF VDT_DISP_DATE  IS NULL OR LTRIM(RTRIM(VDT_DISP_DATE)) = '' OR (date(VDT_DISP_DATE) < date(VDT_START_DT)) THEN
+    -- VDT_DISP_DATE = LPAD('',8,' ');
+    VDT_DISP_DATE = LPAD('',6,'0');
+   ELSE
+    VDT_DISP_DATE  = to_char(to_date(VDT_DISP_DATE,'yyyy-mm-dd'), 'mmddyy');
+    -- VDT_DISP_DATE  = SUBSTRING(VDT_DISP_DATE ,1,2)||SUBSTRING(VDT_DISP_DATE ,4,2)||SUBSTRING(VDT_DISP_DATE,7,4);
+    -- Not required
+   END IF;
+   
+   BEGIN
+    -- 103 ADDED -- VDT_DISP_DUE_DATE < CHAR(VDT_START_DT)
+    SELECT CAST(MAX(CH.hearingdatetime)AS VARCHAR(10))
+     -- to_char(MAX(CH.hearingdatetime), 'mmddyy')
+     INTO VDT_DISP_DUE_DATE -- VDT_DISP_DATE
+    FROM intakeservicerequestcourthearing CH,
+     hearingtype  HP, 
+     servicecase SC
+    WHERE CH.hearingtypekey = HP.hearingtypekey
+     AND CH.servicecaseid = SC.servicecaseid
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND CH.courthearingstatustypekey = 'Completed'
+     AND HP.hearingtypekey IN ('6251','7335', '6249', '6250', '6254', '1311', 'GR', 'TGC', 'TGU', 'PP', 'Disp', 'REH')
+     AND CH.activeflag = 1
+     AND HP.activeflag = 1
+     AND SC.activeflag = 1 ;
+
+    -- RAISE NOTICE 'VDT_DISP_DUE_DATE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR RDISP_DUE_DATE #103 FOR -->'|| VL_CLIENT_ID::VARCHAR;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C103N'||VL_OUTPUT_SQLCODE::VARCHAR||'T'|| VS_OUTPUT_STATE ;
+
+   END;     
+   
+   IF VDT_DISP_DUE_DATE  IS NULL OR LTRIM(RTRIM(VDT_DISP_DUE_DATE)) = '' OR (date(VDT_DISP_DUE_DATE) < date(VDT_START_DT)) THEN
+    -- VDT_DISP_DUE_DATE := LPAD('',8,' ');
+    VDT_DISP_DUE_DATE := LPAD('',6,'0');
+   ELSE                       
+                VDT_DISP_DUE_DATE  = to_char(to_date(VDT_DISP_DUE_DATE,'yyyy-mm-dd'), 'mmddyy');    
+    -- VDT_DISP_DUE_DATE  := to_char(to_date(VDT_DISP_DUE_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    -- Not requied
+   END IF;
+   
+    BEGIN
+    --ADOPT_PLCMT_DATE  #104   NO EXIT_DT CHECK
+    SELECT CAST(MAX(ENTRY_DT) AS VARCHAR(10))
+     INTO VDT_ADOPT_PLCMT_DATE
+    FROM TB_PLACEMENT
+    where CLIENT_ID = VL_CLIENT_ID
+     AND CASE_ID :: VARCHAR = VL_CASE_ID
+     AND DELETE_SW = 'N'
+     AND PLACEMENT_STRUCTURE_ID = 501
+     AND ENTRY_DT IS NOT NULL
+     --AND EXIT_DT IS NULL
+     AND (VOID_SW = 'N' OR VOID_SW IS NULL)
+     AND APPROVAL_STATUS_CD = '3047'  ;
+
+    -- RAISE NOTICE 'VDT_ADOPT_PLCMT_DATE';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR ADOPT_PLCMT_DATE #104 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C104N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;        
+   
+   IF VDT_ADOPT_PLCMT_DATE  IS NULL OR LTRIM(RTRIM(VDT_ADOPT_PLCMT_DATE)) = '' THEN
+    -- VDT_ADOPT_PLCMT_DATE := LPAD('',8,' ');
+    VDT_ADOPT_PLCMT_DATE := LPAD('',6,'0');
+   ELSE
+    -- VDT_ADOPT_PLCMT_DATE  :=  to_char(to_date(VDT_ADOPT_PLCMT_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_ADOPT_PLCMT_DATE  :=  to_char(to_date(VDT_ADOPT_PLCMT_DATE,'yyyy-mm-dd'), 'mmddyy');
+   END IF;
+   
+   BEGIN  
+    -- #105   #8048 EXCLUDE THE CURRENT PLACEMENT (END DATE IS NOT NULL)
+    SELECT RTRIM(CAST(COUNT(*)AS VARCHAR))
+     INTO VS_FC_ADOPT_PLCMT_NO
+    FROM TB_PLACEMENT
+    WHERE CASE_ID :: VARCHAR = VL_CASE_ID
+     AND CLIENT_ID = VL_CLIENT_ID
+     AND DELETE_SW = 'N'
+     AND (VOID_SW = 'N'  OR VOID_SW IS NULL)
+     AND PLACEMENT_STRUCTURE_ID = 501
+     AND ENTRY_DT IS NOT NULL
+     AND EXIT_DT IS NOT NULL
+     AND APPROVAL_STATUS_CD = '3047';
+
+
+    IF length(VS_FC_ADOPT_PLCMT_NO) > 2 THEN
+     VS_FC_ADOPT_PLCMT_NO = '99';
+    END IF;
+    
+    IF VS_FC_ADOPT_PLCMT_NO is null THEN 
+     VS_FC_ADOPT_PLCMT_NO := LPAD('',2,'0');
+    ELSE 
+     VS_FC_ADOPT_PLCMT_NO := LPAD(VS_FC_ADOPT_PLCMT_NO,2,'0');
+    END IF;
+    -- RAISE NOTICE 'VS_FC_ADOPT_PLCMT_NO';
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR FC_ADOPT_PLCMT_NO  #105 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C105N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    --SIBLINGS_COUNT  #106
+    SELECT RTRIM(CAST(COUNT(*)AS VARCHAR(2)))
+     INTO VS_SIBS_NO  
+    FROM actorrelationship ACR, 
+     person PP, 
+     person TPP, 
+     servicecase SC, 
+     intakeservicerequest isr
+    WHERE ACR.servicecaseid = SC.servicecaseid 
+     AND ACR.person2id = PP.personid
+     AND ACR.person1id = TPP.personid
+     AND SC.servicecaseid = ISR.servicecaseid 
+     AND TPP.cjamspid = VL_CLIENT_ID
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND ACR.activeflag = 1
+     AND PP.activeflag = 1
+     AND TPP.activeflag = 1
+     AND ACR.relationshiptypekey IN ('1630', '1674', '1887', '1888', '1878', '1879', '3607','3448', 'LEGLBR', 'LGLSISTR', 'HLFSISTR', 'STPSISTR', 'HLFBR', 'STPBR', 'BIOBR', 'BGSISTR')  ; 
+
+    -- RAISE NOTICE 'VS_SIBS_NO';              
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE := SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR SIBS_NO  #106 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C106N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VS_SIBS_NO   IS NULL OR VS_SIBS_NO  = ''  THEN
+    -- VS_SIBS_NO  := LPAD('',2,' ') ;
+    VS_SIBS_NO  := LPAD('',2,'0') ;
+   ELSE 
+    VS_SIBS_NO  := LPAD(VS_SIBS_NO,2,'0') ;
+   END IF;
+   
+   BEGIN  
+    -- SIBS_ADOPT_NO #107
+    SELECT RTRIM(CAST(COUNT(*)AS VARCHAR))
+     INTO VS_SIBS_ADOPT_NO
+    FROM TB_PLACEMENT
+    WHERE PLACEMENT_STRUCTURE_ID = 501
+     AND PROVIDER_ID = VL_PROVIDER_ID
+     AND CASE_ID :: VARCHAR = VL_CASE_ID
+     AND (VOID_SW = 'N' OR VOID_SW IS NULL)
+     AND DELETE_SW = 'N'
+     AND CLIENT_ID 
+      IN (SELECT DISTINCT(PP.cjamspid::integer)  
+        FROM actorrelationship ACR, 
+         person PP, 
+         person TPP, 
+         servicecase SC, 
+         intakeservicerequest isr
+       WHERE ACR.servicecaseid = SC.servicecaseid 
+        AND ACR.person2id = PP.personid
+        AND ACR.person1id = TPP.personid
+        AND SC.servicecaseid = ISR.servicecaseid 
+        AND TPP.cjamspid = VL_CLIENT_ID
+        AND SC.servicecasenumber = VL_CASE_ID
+        AND ACR.activeflag = 1
+        AND PP.activeflag = 1
+        AND TPP.activeflag = 1
+        AND ACR.relationshiptypekey  IN ('1630', '1674', '1887', '1888', '1878', '1879', '3607','3448', 'LEGLBR', 'LGLSISTR', 'HLFSISTR', 'STPSISTR', 'HLFBR', 'STPBR', 'BIOBR', 'BGSISTR') 
+       ) ; 
+       
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE := SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR SIBS_ADOPT_NO #107 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C107N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VS_SIBS_ADOPT_NO  IS NULL OR VS_SIBS_ADOPT_NO = ''   THEN
+    -- VS_SIBS_ADOPT_NO := LPAD('',2,' ');
+    VS_SIBS_ADOPT_NO := LPAD('',2,'0');
+   ELSE 
+    VS_SIBS_ADOPT_NO  := LPAD(VS_SIBS_ADOPT_NO,2,'0') ; 
+   END IF;
+   
+   BEGIN
+    -- #190  moved here
+    --GET MOTHER_ID
+    -- SELECT DISTINCT(TP.cjamspid)  INTO  VS_FATHER_ID  --v 1.3
+    SELECT DISTINCT(TP.cjamspid)  
+    INTO  VS_MOTHER_ID
+     FROM actorrelationship AR, 
+      person TP, 
+      person PP, 
+      servicecase SC
+    WHERE AR.person2id = PP.personid
+     AND AR.person1id = TP.personid
+     AND PP.cjamspid = VL_CLIENT_ID
+     AND SC.servicecaseid = AR.servicecaseid 
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND AR.activeflag = 1
+     AND PP.activeflag = 1
+     AND TP.activeflag = 1
+     AND SC.activeflag = 1       
+     and AR.relationshiptypekey IN ('1885', 'BGMTHR','mother') ; -- v1.3 added mother string      
+
+
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE := SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR MOTHER ID #190 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C190MIDN'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   --  MOTHER_RACE #108
+   IF VS_MOTHER_ID IS NOT NULL AND VS_MOTHER_ID <> '' THEN
+    BEGIN  
+     -- To Send FACTS Code (B-119348)
+     SELECT ( CASE WHEN PP.racetypekey like '%"BA"%' or PP.racetypekey  = 'BA' THEN 'B' -- Black/African-American
+       WHEN PP.racetypekey like '%"WH"%' or PP.racetypekey  = 'WH' THEN 'C' -- White/Caucasian
+       WHEN PP.racetypekey like '%"AS"%' or PP.racetypekey  = 'AS' THEN 'A' -- Asian
+       WHEN PP.racetypekey like '%"AN"%' or PP.racetypekey  = 'AN' THEN 'N' -- Alaskan Native
+       WHEN PP.racetypekey like '%"AI"%' or PP.racetypekey  = 'AI' THEN 'N' -- American Indian
+       WHEN PP.racetypekey like '%"PI"%' or PP.racetypekey  = 'PI' THEN 'P' -- Native Hawaiian/Pacific Islander
+       ELSE 'U' -- Unable To Determine
+      END) 
+      /*
+      CASE WHEN PP.racetypekey = '2028-9' THEN '6310'
+      WHEN PP.racetypekey = '2054-5' THEN '1801'
+      WHEN PP.racetypekey = '2106-3' THEN '1806'
+      WHEN PP.racetypekey = '1002-5' THEN '1802'
+      WHEN PP.racetypekey = '3005' THEN '1803'
+      WHEN PP.racetypekey = '2076-8' THEN '6311'
+      WHEN PP.racetypekey = '2008-9' THEN '6312'
+      WHEN PP.racetypekey LIKE '%[]%' THEN '    '
+      WHEN PP.racetypekey LIKE '%AI%' THEN '1802'
+      WHEN PP.racetypekey LIKE '%AN%' THEN '1803'
+      WHEN PP.racetypekey LIKE '%AS%' THEN '6310'
+      WHEN PP.racetypekey LIKE '%BA%' THEN '1801'
+      WHEN PP.racetypekey LIKE '%PI%' THEN '6347'
+      WHEN PP.racetypekey LIKE '%WH%' THEN '1806'
+      WHEN PP.racetypekey LIKE '%UN%' THEN '6312' 
+      WHEN  pp.racetypekey LIKE '%OT%' THEN '1805'
+      WHEN  pp.racetypekey LIKE '%LA%' THEN '1805'
+      -- WHEN PP.racetypekey LIKE '%[]%' THEN '    '
+      WHEN  pp.racetypekey LIKE '%99%' THEN '6312'
+      -- ELSE PP.racetypekey
+      END
+      */
+     INTO VS_RACE_MOTHER
+     FROM person PP
+     WHERE activeflag = 1
+      AND pp.cjamspid = CAST(VS_MOTHER_ID AS BIGINT) ;
+     
+     EXCEPTION WHEN OTHERS THEN
+      VS_OUTPUT_STATE := SQLSTATE;
+      VL_OUTPUT_SQLCODE := SQLERRM;
+      VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR MOTHER_RACE #108 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+      VL_EXCEP_FLAG := 1;
+      VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C108N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+    END;
+   ELSE
+    IF VS_RACE_MOTHER  IS NULL OR VS_RACE_MOTHER   = '' THEN
+     -- VS_RACE_MOTHER := LPAD('',8,' ');
+     VS_RACE_MOTHER := LPAD('',3,' ');
+     -- VS_MOTHER_ID := LPAD('',9,' ');
+    END IF;
+    VS_MOTHER_ID := LPAD('',9,'0');
+   END IF;
+   
+   BEGIN  
+    -- GET FATHER _ID          
+    SELECT DISTINCT(TP.cjamspid)  
+     INTO  VS_FATHER_ID 
+     FROM actorrelationship AR, 
+      person TP, 
+      person PP, 
+      servicecase SC
+    WHERE AR.person2id = PP.personid
+     AND AR.person1id = TP.personid
+     AND PP.cjamspid = VL_CLIENT_ID
+     AND SC.servicecaseid = AR.servicecaseid 
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND AR.activeflag = 1
+     AND PP.activeflag = 1
+     AND TP.activeflag = 1
+     AND SC.activeflag = 1       
+     and AR.relationshiptypekey IN ('1881', 'BGFTHR','father'); -- v1.3 added father string
+    --fetch first row only;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE := SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR FATHER ID #190 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C190FIDN'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   --FATHER RACE  #109
+   IF VS_FATHER_ID IS NOT NULL AND VS_FATHER_ID <> '' THEN
+    BEGIN  
+     -- To Send FACTS Code (B-119348)
+     SELECT ( CASE WHEN PP.racetypekey like '%"BA"%' or PP.racetypekey  = 'BA' THEN 'B' -- Black/African-American
+       WHEN PP.racetypekey like '%"WH"%' or PP.racetypekey  = 'WH' THEN 'C' -- White/Caucasian
+       WHEN PP.racetypekey like '%"AS"%' or PP.racetypekey  = 'AS' THEN 'A' -- Asian
+       WHEN PP.racetypekey like '%"AN"%' or PP.racetypekey  = 'AN' THEN 'N' -- Alaskan Native
+       WHEN PP.racetypekey like '%"AI"%' or PP.racetypekey  = 'AI' THEN 'N' -- American Indian
+       WHEN PP.racetypekey like '%"PI"%' or PP.racetypekey  = 'PI' THEN 'P' -- Native Hawaiian/Pacific Islander
+       ELSE 'U' -- Unable To Determine
+      END) 
+      /*
+      CASE WHEN PP.racetypekey = '2028-9' THEN '6310'
+      WHEN PP.racetypekey = '2054-5' THEN '1801'
+      WHEN PP.racetypekey = '2106-3' THEN '1806'
+      WHEN PP.racetypekey = '1002-5' THEN '1802'
+      WHEN PP.racetypekey = '3005' THEN '1803'
+      WHEN PP.racetypekey = '2076-8' THEN '6311'
+      WHEN PP.racetypekey = '2008-9' THEN '6312'
+      WHEN PP.racetypekey LIKE '%[]%' THEN '    '
+      WHEN PP.racetypekey LIKE '%AI%' THEN '1802'
+      WHEN PP.racetypekey LIKE '%AN%' THEN '1803'
+      WHEN PP.racetypekey LIKE '%AS%' THEN '6310'
+      WHEN PP.racetypekey LIKE '%BA%' THEN '1801'
+      WHEN PP.racetypekey LIKE '%PI%' THEN '6347'
+      WHEN PP.racetypekey LIKE '%WH%' THEN '1806'
+      WHEN PP.racetypekey LIKE '%UN%' THEN '6312' 
+      WHEN  pp.racetypekey LIKE '%OT%' THEN '1805'
+      WHEN  pp.racetypekey LIKE '%LA%' THEN '1805'
+      -- WHEN PP.racetypekey LIKE '%[]%' THEN '    '
+      WHEN  pp.racetypekey LIKE '%99%' THEN '6312'
+      -- ELSE PP.racetypekey
+      END
+      */
+     INTO VS_RACE_FATHER
+     FROM PERSON PP
+     WHERE ACTIVEFLAG = 1
+      --   AND pp.cjamspid ::VARCHAR = VS_FATHER_ID;
+      AND pp.cjamspid  = VS_FATHER_ID::BIGINT;
+      
+     EXCEPTION WHEN OTHERS THEN
+      VS_OUTPUT_STATE := SQLSTATE;
+      VL_OUTPUT_SQLCODE := SQLERRM;
+      VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR FATHER RACE  #109  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+      VL_EXCEP_FLAG := 1;
+      VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C109N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+    END;
+   ELSE
+    IF VS_RACE_FATHER   IS NULL OR VS_RACE_FATHER    = '' THEN
+     -- VS_RACE_FATHER := LPAD('',5,' ');
+     VS_RACE_FATHER := LPAD('',3,' ');
+     -- VS_FATHER_ID := LPAD('',9,' ');
+    END IF;
+    VS_FATHER_ID := LPAD('',9,'0');
+   END IF;
+   
+   BEGIN  
+    --PET_DATE   #112   ADDED-- VDT_PET_DATE < CHAR( VDT_START_DT)
+    SELECT MAX(COALESCE(CAST(petitiondate AS VARCHAR(10)), ''))                              
+     INTO  VDT_PET_DATE
+    FROM intakeservicerequestpetition IPT, 
+     intakeservicerequestactor isa, 
+     person pp, 
+     servicecase SC
+    where  pp.cjamspid = vl_client_id 
+     and IPT.servicecaseid = SC.servicecaseid
+     AND SC.servicecaseid = isa.servicecaseid
+     and isa.personid = pp.personid
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND IPT.petitiontypekey IN ('5952', '3933', '2640', 'GAPTPR', 'Adoption')
+     AND IPT.activeflag = 1
+     AND isa.activeflag = 1
+     AND PP.activeflag = 1
+     AND SC.activeflag = 1 ; 
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR PET_DATE #112  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C112N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;      
+   
+   IF VDT_PET_DATE IS NULL OR LTRIM(RTRIM(VDT_PET_DATE)) = ''  THEN
+    -- VDT_PET_DATE := LPAD('',8,' ');
+    VDT_PET_DATE := LPAD('',4,'0'); 
+   ELSIF  (date(VDT_PET_DATE) < date( VDT_START_DT)) THEN
+    -- VDT_PET_DATE := LPAD('',8,' ');
+    VDT_PET_DATE := LPAD('',4,'0');
+   END IF;
+   --  SET VDT_PET_DATE  = SUBSTR(VDT_PET_DATE,1,2)||SUBSTR(VDT_PET_DATE ,4,2)||SUBSTR(VDT_PET_DATE ,7,4);
+   
+   BEGIN  
+    -- #113 SERVED_DT   ADDED--  VDT_SERVED_DATE < CHAR( VDT_START_DT)
+    SELECT MAX(CAST(serveddate AS VARCHAR(10)))
+     INTO VDT_SERVED_DATE
+    FROM tprdetails tp, 
+     servicecase SC, 
+     intakeservicerequestactor isa, 
+     person pp, 
+     person TPP
+    WHERE  tp.intakeservicerequestactorid = isa.intakeservicerequestactorid
+     and isa.personid = pp.personid
+     and tp.servicecaseid = SC.servicecaseid
+     and isa.servicecaseid = SC.servicecaseid
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND tp.activeflag = 1
+     and SC.activeflag = 1
+     AND PP.activeflag = 1
+     AND isa.activeflag = 1
+     AND TPP.personid 
+      IN (select PP.personid 
+       from person PP, 
+        servicecase SC, 
+        actor TA, 
+        relationshiptype RT
+       WHERE TA.personid = PP.personid
+        AND TA.servicecaseid = SC.servicecaseid
+        AND SC.servicecasenumber = VL_CASE_ID
+        AND PP.cjamspid = VL_CLIENT_ID
+        AND TA.actortype = 'CHILD'
+       ); 
+     --  AND tp.parentserveddate IS NOT NULL ;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR SERVED_DATE #113  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C113N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;  
+   
+   IF VDT_SERVED_DATE IS NULL OR LTRIM(RTRIM(VDT_SERVED_DATE))  = '' 
+     OR VDT_PET_DATE IS NULL OR LTRIM(RTRIM(VDT_PET_DATE)) = '' 
+     OR btrim(VDT_PET_DATE) = '0000' THEN
+    -- VDT_SERVED_DATE := LPAD('',8,' ');
+    VDT_SERVED_DATE := LPAD('',4,'0');
+   ELSIF (date(VDT_SERVED_DATE) < date( VDT_START_DT)) 
+     OR (date(VDT_SERVED_DATE) <  date(VDT_PET_DATE))  THEN
+    -- VDT_SERVED_DATE := LPAD('',8,' ');
+    VDT_SERVED_DATE := LPAD('',4,'0');
+   ELSE 
+    -- VDT_SERVED_DATE := to_char(to_date(VDT_SERVED_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_SERVED_DATE := to_char(to_date(VDT_SERVED_DATE,'yyyy-mm-dd'), 'yyyy');
+   END IF;
+   
+     
+   BEGIN
+    -- #114 HEAR_DATE   ADDED -  VDT_HEAR_DATE < CHAR(VDT_START_DT) OR VDT_HEAR_DATE  < VDT_PET_DATE
+    SELECT MAX(COALESCE(CAST(ch.hearingdatetime AS VARCHAR(10)), ''))
+     INTO VDT_HEAR_DATE 
+    FROM intakeservicerequestcourthearing CH,
+     hearingtype HP,
+     person pp,
+     servicecase SC,
+     actor TA
+    where CH.servicecaseid = SC.servicecaseid
+     and CH.hearingtypekey = HP.hearingtypekey
+     AND HP.hearingtypekey IN ('6249', '6250', 'TGC', 'TGU')
+     AND SC.servicecasenumber = VL_CASE_ID
+     and TA.servicecaseid = SC.servicecaseid
+     and TA.personid = pp.personid
+     AND CH.ACTIVEFLAG = 1
+     AND HP.activeflag = 1
+     and SC.activeflag = 1
+     and PP.activeflag = 1
+     AND TA.activeflag = 1
+     AND TA.actortype = 'CHILD'
+     AND PP.cjamspid = VL_CLIENT_ID ; 
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR HEAR_DATEE #114  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR);
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C114N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;  
+   
+   IF VDT_HEAR_DATE  IS NULL OR  LTRIM(RTRIM(VDT_HEAR_DATE))  = ''
+     OR VDT_PET_DATE IS NULL OR LTRIM(RTRIM(VDT_PET_DATE)) = '' 
+     OR btrim(VDT_PET_DATE) = '0000' THEN
+    -- VDT_HEAR_DATE := LPAD('',8,' ');
+    VDT_HEAR_DATE := LPAD('',4,'0');
+   ELSIF (date(VDT_HEAR_DATE) < DATE(VDT_START_DT)) 
+     OR (date(VDT_HEAR_DATE)  < date(VDT_PET_DATE)) THEN
+    -- VDT_HEAR_DATE := LPAD('',8,' ');
+    VDT_HEAR_DATE := LPAD('',4,'0');
+   ELSE                            
+    -- VDT_HEAR_DATE := to_char(to_date(VDT_HEAR_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_HEAR_DATE := to_char(to_date(VDT_HEAR_DATE,'yyyy-mm-dd'), 'yyyy');
+   END IF;
+   
+      
+   BEGIN
+    -- 115 DENIED DATE  ADDED --OR VDT_DENIED_DATE < CHAR(VDT_START_DT)
+    SELECT  MAX(COALESCE(CAST(TPR.decisiondate AS VARCHAR(10)), ''))
+     INTO VDT_DENIED_DATE
+    FROM tprdetails TPR,
+     servicecase SC,
+     actor AC,
+     person pp
+    WHERE TPR.servicecaseid = SC.servicecaseid
+     AND AC.personid = PP.personid
+     and pp.cjamspid = VL_CLIENT_ID
+     AND SC.servicecasenumber = VL_CASE_ID
+     and AC.actortype = 'CHILD'
+     AND TPR.isgranted != 'true'; 
+     
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR DENIED_DATE #115  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR);
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C115N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;  
+   
+   IF VDT_DENIED_DATE IS NULL OR LTRIM(RTRIM(VDT_DENIED_DATE)) = '' 
+     OR VDT_PET_DATE IS NULL OR LTRIM(RTRIM(VDT_PET_DATE)) = '' 
+     OR btrim(VDT_PET_DATE) = '0000' THEN
+    -- VDT_DENIED_DATE := LPAD('',8,' ');
+    VDT_DENIED_DATE := LPAD('',4,'0');
+   ELSIF (date(VDT_DENIED_DATE) < date(VDT_START_DT)) 
+     OR (date(VDT_DENIED_DATE)  < date(VDT_PET_DATE)) THEN
+    -- VDT_DENIED_DATE := LPAD('',8,' ');
+    VDT_DENIED_DATE := LPAD('',4,'0');
+   ELSE      
+    -- VDT_DENIED_DATE := to_char(to_date(VDT_DENIED_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_DENIED_DATE := to_char(to_date(VDT_DENIED_DATE,'yyyy-mm-dd'), 'yyyy');
+   END IF; 
+   
+   --116  CONSENT 117
+   -- RAISE NOTICE 'VDT_PET_DATE % ', VDT_PET_DATE ;
+   
+   IF VDT_PET_DATE is not null and btrim(VDT_PET_DATE) != '' 
+    and btrim(VDT_PET_DATE) <> '0000' THEN
+    -- VDT_PET_DATE  :=to_char(to_date(VDT_PET_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_PET_DATE :=to_char(to_date(VDT_PET_DATE,'yyyy-mm-dd'), 'yyyy');
+   END IF ; 
+   -- VDT_SERVED_DATE := to_char(to_date(VDT_SERVED_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    
+   BEGIN
+    -- 116 consent
+    IF EXISTS( SELECT 1 
+      FROM tprrecommendation TPR, 
+       intakeservicerequestactor ISR, 
+       person PP   
+     WHERE TPR.intakeservicerequestactorid = ISR.intakeservicerequestactorid
+      AND ISR.personid = PP.personid
+      AND PP.cjamspid = VL_CLIENT_ID 
+      AND PP.activeflag = 1
+      AND TPR.activeflag = 1
+      AND ISR.activeflag = 1) THEN
+     VS_CONSENT := 'N'   ;
+    ELSE
+     VS_CONSENT := 'Y' ;
+    END IF;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR consent #116  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C116N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- CHECK FOR GRANTED TPR
+    -- 118
+    IF EXISTS (SELECT 1 
+     FROM intakeservicerequestcourthearing CH, 
+     hearingtype HP, 
+     intakeservicerequestactor isa, 
+     person pp, 
+     servicecase SC
+    where CH.servicecaseid = SC.servicecaseid
+     and HP.hearingtypekey = CH.hearingtypekey
+     and isa.servicecaseid = SC.servicecaseid
+     and isa.personid = pp.personid
+     and SC.servicecasenumber = VL_CASE_ID
+     and pp.cjamspid =  VL_CLIENT_ID
+     AND CH.ACTIVEFLAG = 1
+     AND HP.activeflag = 1
+     AND isa.activeflag = 1
+     AND SC.activeflag = 1 ) THEN
+     -- AND CH.legalstatustypekey IN ('6241', 'pp')) THEN
+     VS_POSTPONED := 'Y'   ; 
+    ELSE
+     VS_POSTPONED := 'N' ; 
+    END IF;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR POSTPONED #118  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C118N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- Case Review functionality is not theer in CJAMS the below logic is for Legacy cases ????
+    -- 122 NEXT_TYPE_REVIEW 
+    SELECT ( case when btrim(cr.reviewtypekey) = '2559' then 'P' -- Administrative Panel Review
+       when btrim(cr.reviewtypekey) = '2560' then 'C' -- Citizen's Review Board
+       end ) 
+     INTO VS_NEXT_TYPE_REVIEW
+    FROM casereview CR, 
+     person PGA, 
+     servicecase SC
+    where  CR.personid = pga.personid 
+     and cr.caseid = sc.servicecaseid 
+     and PGA.cjamspid = VL_CLIENT_ID
+     and SC.servicecasenumber = VL_CASE_ID
+     AND cr.activeflag = 1
+     and pga.activeflag =1
+     and cr.reviewtypekey IN ('2559', '2560')
+    order by cr.nextreviewdate nulls last
+    limit 1 ;
+    /*
+    SELECT RTRIM(reviewtypekey) 
+     INTO VS_NEXT_TYPE_REVIEW
+    FROM casereview CR, 
+     person PGA, 
+     actor TA, 
+     intakeservicerequest ISR, 
+     servicecase SC
+    WHERE  PGA.cjamspid = VL_CLIENT_ID
+     and TA.personid = PGA.personid
+     AND CR.caseid = ISR.intakeserviceid
+     AND SC.servicecaseid = ISR.servicecaseid
+     and SC.servicecasenumber = VL_CASE_ID
+     AND cr.activeflag = 1
+     and pga.activeflag =1
+     and TA.activeflag = 1
+     and ISR.activeflag =1
+     AND  reviewtypekey IN ('2559', '2560')
+     AND nextreviewdate 
+      IN ( SELECT MIN(nextreviewdate)   
+        FROM casereview CR, 
+         person PGA, 
+         actor TA, 
+         intakeservicerequest ISR, 
+         servicecase SC
+       where  PGA.cjamspid = VL_CLIENT_ID
+        and TA.personid = PGA.personid
+        AND CR.caseid = ISR.intakeserviceid
+        and SC.servicecasenumber = VL_CASE_ID
+        AND SC.servicecaseid = ISR.servicecaseid 
+        AND cr.activeflag = 1
+        and pga.activeflag =1
+        and TA.activeflag = 1
+        and ISR.activeflag =1
+        and reviewtypekey IN ('2559', '2560')
+       )
+    limit 1;
+    */
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR NEXT_TYPE_REVIEW  #122  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C122N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+
+   IF VS_NEXT_TYPE_REVIEW   IS NULL OR VS_NEXT_TYPE_REVIEW   = '' THEN
+    VS_NEXT_TYPE_REVIEW := LPAD('',1,' ');
+   END IF;
+   
+   BEGIN  
+    -- 125 PRIM_CARETAKER -----> 
+    select (case when btrim(ACR.relationshiptypekey) 
+       in (  'cousin', 'PRNTLCN', 'MTNLCN' ) then 'CU' -- Cousins
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'ADPFTHR', 'BGFTHR', 'father', 'FTHRRHF', 'FSTRFTHR' ,'PUTFATHR', 
+         'UKNFTHR', 'ADPMTHR', 'BGMTHR', 'FSTRMTHR', 'GDMTHR', 'mother', 'MTHRTHF', 
+         'PTMTHR', 'UKMTHR', 'adoptiveparent', 'fosterparent', 'NCUSPRNT', 
+         'PRNT' ) then 'PB' -- Parents
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'auntuncle', 'MTNLAT', 'MTNLGAT', 'PRNTLAT', 'PRNTLGAT' ) then 'AU' -- Aunt/Uncle
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'MATNLNC', 'niecenephew', 'PRNTLNC', 'MATNLNPW', 'niecenephew', 'PRNTLNPW' ) then 'NN' -- Niece/Nephew 
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'BIOBR', 'HLFBR', 'LEGLBR', 'STPBR', 'BGSISTR', 'HLFSISTR', 'LGLSISTR', 'STPSISTR' ) then 'SI' -- Brother/Sister
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'STPFTHR', 'STMTHR', 'stepparent' ) then 'PS' -- Step Parents
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'LGLMTHR', 'LGLFTHR') then 'LG' -- Legal Parents
+       when btrim(ACR.relationshiptypekey) in  
+       ( 'MATRNLGPRNT', 'MTNLGGPRNT', 'STMATRNLGPRNT' ) then 'GA' -- Maternal Grandparents
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'PRNTLGPRNT', 'PRNTLGGPRNT', 'STPRNTLGPRNT' ) then 'GP' -- Paternal Grandparents
+       when btrim(ACR.relationshiptypekey) in 
+       ( 'RELOTHR' ) then 'OT' --  Relative(Other)
+       end)   
+     INTO VS_PRIM_CARETAKER  
+    from intakeservreqchildremoval rm,
+     person PC, 
+     person PP,
+     actorrelationship ACR, 
+     servicecase SC
+    WHERE rm.personid = pc.personid
+     AND PC.cjamspid = VL_CLIENT_ID
+     and rm.primarycaregiveractorid = pp.personid 
+     AND rm.servicecaseid = SC.servicecaseid
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND ( ACR.person1id = PP.personid or ACR.person1id = pc.personid )
+     AND ( ACR.person2id = PP.personid or ACR.person2id = pc.personid )
+     and ACR.relationshiptypekey
+      in  (
+      'cousin', 'PRNTLCN', 'MTNLCN', 'auntuncle', 'MTNLAT', 'MTNLGAT', 'PRNTLAT', 'PRNTLGAT',
+      'MATNLNC', 'niecenephew', 'PRNTLNC', 'MATNLNPW', 'niecenephew', 'PRNTLNPW', 'BIOBR', 'HLFBR',
+      'LEGLBR', 'STPBR', 'BGSISTR', 'HLFSISTR', 'LGLSISTR', 'STPSISTR', 'ADPFTHR', 'BGFTHR', 
+      'father','FTHRRHF', 'FSTRFTHR', 'PUTFATHR', 'UKNFTHR', 'ADPMTHR', 'BGMTHR', 'FSTRMTHR',
+      'GDMTHR', 'mother', 'MTHRTHF', 'PTMTHR', 'UKMTHR', 'adoptiveparent', 'fosterparent',
+      'NCUSPRNT', 'PRNT', 'STPFTHR', 'STMTHR', 'stepparent', 'LGLMTHR', 'LGLFTHR', 'MATRNLGPRNT',
+      'MTNLGGPRNT', 'STMATRNLGPRNT', 'PRNTLGPRNT', 'PRNTLGGPRNT', 'STPRNTLGPRNT', 'RELOTHR'           
+       )
+     AND rm.returndate IS NULL 
+    order by ACR.updatedon desc 
+    limit 1;
+    
+    /*
+    select CRBV.chessiecode  
+     INTO VS_PRIM_CARETAKER
+    from intakeservreqchildremoval ICR,
+     person PP, 
+     actorrelationship ACR, 
+     servicecase SC, 
+     crbreferencevalues CRBV
+    WHERE ICR.primarycaregiveractorid = PP.personid
+     AND PP.cjamspid = VL_CLIENT_ID
+     AND ICR.servicecaseid = SC.servicecaseid
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND ACR.person2id = PP.personid 
+     AND ACR.relationshiptypekey = CRBV.cjamscode
+     AND CRBV.referencetype = 'relationtype'
+     AND ICR.returndate IS NULL ;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR PRIM_CARETAKER  #125  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C125N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+    */
+   END;
+   
+   IF VS_PRIM_CARETAKER IS NULL OR  VS_PRIM_CARETAKER = '' THEN
+    VS_PRIM_CARETAKER := LPAD('',2,' ');
+   END IF ;
+   
+   --  # 128-- #146  REMOVAL CURSOR
+   -- RAISE NOTICE 'Before REMOVAL_CUR';
+   
+   I :=0;
+   OPEN REMOVAL_CUR ;
+   <<REMOVALCURSOR>>
+   WHILE  I <= 7 LOOP
+    BEGIN
+     FETCH REMOVAL_CUR INTO VS_PICKLIST_VALUE_CD ;
+     
+     -- RAISE NOTICE 'REMOVALCURSOR I % ', I;
+     -- RAISE NOTICE 'PICKLIST_VALUE_CD % ', VS_PICKLIST_VALUE_CD;
+     
+     EXCEPTION WHEN OTHERS THEN
+      VS_OUTPUT_STATE := SQLSTATE;
+      VL_OUTPUT_SQLCODE :=SQLERRM;
+      VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR REMOVAL_CURSOR #128-146  FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+      VL_EXCEP_FLAG := 1;
+      VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C128N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+    END;
+    VS_OT_PARENT_FACTOR_l := CASE WHEN I = 0 THEN (COALESCE(VS_PICKLIST_VALUE_CD,'')) END ;
+    VS_OT_PARENT_FACTOR_2 := CASE WHEN I = 1 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    VS_OT_PARENT_FACTOR_3 := CASE WHEN I = 2 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    VS_OT_PARENT_FACTOR_4 := CASE WHEN I = 3 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    VS_OT_PARENT_FACTOR_5 := CASE WHEN I = 4 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    VS_OT_PARENT_FACTOR_6 := CASE WHEN I = 5 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    VS_OT_PARENT_FACTOR_7 := CASE WHEN I = 6 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    IF I NOT IN (0,1,2,3,4,5,6) THEN
+     EXIT REMOVALCURSOR;
+    END IF;
+    VS_PICKLIST_VALUE_CD := '';
+    I:=I+1 ;
+   END LOOP;
+   CLOSE REMOVAL_CUR;
+   
+   BEGIN
+    -- #147 CLIENT_ID
+    SELECT RTRIM(cisclientid)
+     INTO VS_CLIENT_ID
+    FROM person
+    WHERE cjamspid = VL_CLIENT_ID
+     AND activeflag = 1;
+     
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR CLIENT_ID #147 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C147N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   RAISE NOTICE 'VS_CLIENT_ID % ', VS_CLIENT_ID;
+   
+
+   IF VS_CLIENT_ID IS NULL OR VS_CLIENT_ID = '' THEN
+    -- VS_CLIENT_ID  := LPAD('',9,' ');
+    VS_CLIENT_ID  := LPAD('',9,'0');
+   END IF;
+   --# 148
+   --VS_SU_ID := RTRIM(CAST(vl_case_id AS VARCHAR(9)));
+   VS_SU_ID := vl_case_id;
+   
+   IF length(vl_case_id) < 9 THEN
+    VS_SU_ID := LPAD(VS_SU_ID,9,'0');
+   END IF; 
+      
+   BEGIN
+    --  # 149PARENT_CLIENT_ID    leagal and then bio
+    SELECT RTRIM(cisclientid)  
+     INTO VS_PARENT_CLIENT_ID
+     FROM person
+    WHERE activeflag = 1
+     AND cjamspid IN (SELECT (tpp.cjamspid)
+     FROM actorrelationship AR, person pp, person tpp, intakeservicerequestactor isa, servicecase SC
+     WHERE person1id = tpp.personid
+     AND AR.servicecaseid = SC.servicecaseid
+     AND AR.person2id = pp.personid
+     AND pp.cjamspid = VL_CLIENT_ID  
+     AND SC.servicecasenumber = VL_CASE_ID
+     AND SC.activeflag = 1
+     AND AR.activeflag = 1
+     AND tpp.activeflag = 1
+     AND AR.relationshiptypekey IN ('1886', 'LGLMTHR', 'mother')); --    v1.3 added 'mother'           
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR LEGAL PARENT_ID #149 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C149N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VS_PARENT_CLIENT_ID IS NOT NULL AND  VS_PARENT_CLIENT_ID <> '' THEN 
+    VS_PARENT_CLIENT_ID := VS_PARENT_CLIENT_ID   ;
+   ELSIF VS_MOTHER_ID IS NOT NULL AND btrim(VS_MOTHER_ID) <> '' THEN
+    BEGIN  
+     SELECT RTRIM(cisclientid) 
+      INTO VS_PARENT_CLIENT_ID
+     FROM person
+     WHERE activeflag = 1
+      --  AND cjamspid :: VARCHAR = VS_MOTHER_ID ;
+      AND cjamspid  = VS_MOTHER_ID::BIGINT ;
+      
+     EXCEPTION WHEN OTHERS THEN
+      VS_OUTPUT_STATE := SQLSTATE;
+      VL_OUTPUT_SQLCODE :=SQLERRM;
+      VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR BIO PARENT_ID #149 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR);
+      VL_EXCEP_FLAG := 1;
+      VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C149N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+    END;
+   ELSE
+    -- IF VS_PARENT_CLIENT_ID IS NULL OR VS_PARENT_CLIENT_ID = ''
+    -- VS_PARENT_CLIENT_ID = LPAD('',9,' ');
+    VS_PARENT_CLIENT_ID = LPAD('',9,'0');
+    -- END IF;
+   END IF;
+   
+   IF VS_PARENT_CLIENT_ID is null or Btrim(VS_PARENT_CLIENT_ID) = '' THEN
+    VS_PARENT_CLIENT_ID = LPAD('',9,'0');
+   END IF; 
+   
+   BEGIN
+    --152 SPECIAL NEEDS     ---------> ask karthik
+    select (case when 
+       ( select count(1)
+        from persondisability
+        where personid = vu_personid
+        and activeflag = 1
+        and lower(specialkey) like '%racial or ethnic factor%'
+       ) > 0 then '1'  
+      when ( select count(1)
+        from persondisability
+        where personid = vu_personid
+        and activeflag = 1
+        and lower(specialkey) like '%age is > 6%'
+       ) > 0 then '2'  
+      when ( select count(1)
+        from persondisability
+        where personid = vu_personid
+        and activeflag = 1
+        and lower(specialkey) like '%sibling group%'
+       ) > 0 then '3'  
+      when ( select count(1)
+        from persondisability
+        where personid = vu_personid
+        and activeflag = 1
+        and ( lower(specialkey) like '%physical disability%'
+           or lower(specialkey) like '%physical disability / requires wheelchair%'
+           or lower(specialkey) like '%emotional disability%'
+          )  
+       ) > 0 then '4'
+      when ( select count(1)
+        from persondisability
+        where personid = vu_personid
+        and activeflag = 1
+        and ( lower(specialkey) like '%other disability%'
+           or lower(specialkey) like '%other (specify)%'
+           )  
+       ) > 1 then '0'
+      when ( select count(1)
+        from persondisability
+        where personid = vu_personid
+        and activeflag = 1
+        and lower(specialkey) like '%high risk of physical or mental disease%'
+       ) > 0 then '6'  
+      end) 
+    INTO VS_BASIS_SPECIAL_NEEDS ;
+    
+    /*  
+    SELECT -- DISTINCT(splneedprimarybasistypekey)
+     (case when PMI.splneedprimarybasistypekey = '8080' then '1' -- Racial/Original Background
+      when PMI.splneedprimarybasistypekey = '8081' then '2' -- Age
+      when PMI.splneedprimarybasistypekey = '8082' then '3' -- Membership in a Sibling Group
+      when PMI.splneedprimarybasistypekey = '8083' then '4' -- Medical/Mental/Physical/Emotional Disabilities
+      when PMI.splneedprimarybasistypekey = '8084' then '0' -- Other
+      when PMI.splneedprimarybasistypekey = '32905' then '6' -- Child with high risk of physical or mental disease
+     end)
+     INTO VS_BASIS_SPECIAL_NEEDS
+    FROM personmedicalinfo PMI, person pp
+    WHERE PMI.personid = pp.personid
+     and PMI.activeflag = 1
+     AND pp.activeflag = 1
+     AND pp.cjamspid = VL_CLIENT_ID
+    ORDER BY PMI.insertedon desc
+    LIMIT 1;
+    */ 
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR BASIS_SPECIAL_NEEDS #152 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C152N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    -- #153 LEGAL_STATUS_AT_ENTRY
+    select -- CRBV.chessiecode
+     ( case when CRBV.chessiecode = '3964' then '04' --  Committed to DSS
+       when CRBV.chessiecode = '3965' then '07' -- Co-Committed to DSS & DDA
+       when CRBV.chessiecode = '3966' then '07' -- Co-Committed to DSS & DHMH
+       when CRBV.chessiecode = '3967' then '05' -- Co-Committed to DSS & DJJ
+       when CRBV.chessiecode = '3968' then '05' -- Co-Committed to DSS, DJJ, & DHMH
+       when CRBV.chessiecode = '6030' then '15' -- Committed to Another State Agency
+       when CRBV.chessiecode = '6031' then '08' -- Guardianship to DSS
+       when CRBV.chessiecode = '6029' then '05' -- DJJ & DHMH
+       when CRBV.chessiecode = '8143' then '01' -- Order of Protective Supervision
+       when CRBV.chessiecode = '8144' then '12' -- Final Decree of Adoption
+       when CRBV.chessiecode = '8145' then '13' -- Rescission
+       when CRBV.chessiecode = '8146' then '15' -- Committed to DHMH
+       when CRBV.chessiecode = '6032' then '10' -- Caretaker Custody
+       when CRBV.chessiecode = '6033' then '11' -- Caretaker Guardianship
+       when CRBV.chessiecode = '6034' then '10' -- Custody to Relative
+       when CRBV.chessiecode = '6035' then '10' -- Custody to Mother
+       when CRBV.chessiecode = '6036' then '10' -- Custody to Father
+       when CRBV.chessiecode = '6037' then '10' -- Parental Custody
+       when CRBV.chessiecode = '6229' then '06' -- Delinquent - Committed to DJJ
+       when CRBV.chessiecode = '6230' then '06' -- Delinquent - Committed to DSS and DJJ
+       when CRBV.chessiecode = '8140' then '03' -- Shelter Care Order to DSS DSS
+       when CRBV.chessiecode = '8141' then '03' -- Shelter Care Order to Other
+       when CRBV.chessiecode = '8142' then '02' -- Voluntary Placement Agreement to DSS
+       when CRBV.chessiecode = '6038' then '02' -- Voluntary Placement Agreement to Caregiver 
+       when CRBV.chessiecode = '12741' then '99' -- Other
+       else
+        '99' -- Other
+     end )
+    INTO VS_LEGAL_STATUS_AT_ENTRY
+    FROM legalcustody LC,
+     servicecase SC, 
+     intakeservicerequestactor isa, 
+     person pp, 
+     crbreferencevalues CRBV
+    WHERE SC.servicecaseid = LC.servicecaseid 
+     and SC.servicecaseid = isa.servicecaseid
+     and isa.personid = pp.personid
+     and LC.legalcustodytypekey = CRBV.cjamscode
+     and CRBV.referencetype = 'legalcustodytype'
+     and pp.cjamspid = VL_CLIENT_ID
+     and servicecasenumber = VL_CASE_ID
+     AND LC.fromdate >= VDT_START_DT :: DATE
+     AND LC.activeflag = 1
+     and isa.activeflag = 1
+     AND pp.activeflag = 1
+    ORDER BY LC.fromdate ASC
+    limit 1; 
+    
+    IF VS_LEGAL_STATUS_AT_ENTRY is null THEN
+     VS_LEGAL_STATUS_AT_ENTRY := LPAD('',2,'0');
+    END IF;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR LEGAL_STATUS_AT_ENTRY #153 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C153N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   -- 168 CHILD_FACTOR_1 -- #170
+   vs_picklist_value_cd := '';
+   I := 0;
+   OPEN CHILD_FACTOR_CUR ;
+   <<CHILDFACTOR>>
+   WHILE  I <= 4 LOOP
+    BEGIN
+    FETCH CHILD_FACTOR_CUR INTO VS_PICKLIST_VALUE_CD ;
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR CHILD FACTOR CURSOR #153 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C168N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+    END;
+    I:=I+1 ;
+    /* VS_CHILD_FACTOR_1 := CASE WHEN I=1 THEN(COALESCE(VS_PICKLIST_VALUE_CD,'')) END;
+    VS_CHILD_FACTOR_2 := CASE WHEN I=2 THEN(COALESCE(VS_PICKLIST_VALUE_CD,''))END;
+    VS_CHILD_FACTOR_3 := CASE WHEN I=3 THEN(COALESCE(VS_PICKLIST_VALUE_CD,''))END ;
+    */
+
+    IF I=1 THEN 
+     SELECT (COALESCE(VS_PICKLIST_VALUE_CD,'')) INTO VS_CHILD_FACTOR_1;
+    END IF ;
+      
+    IF I=2 THEN 
+     SELECT (COALESCE(VS_PICKLIST_VALUE_CD,'')) INTO VS_CHILD_FACTOR_2;
+    END IF ;
+
+    IF I=3 THEN 
+     SELECT (COALESCE(VS_PICKLIST_VALUE_CD,'')) INTO VS_CHILD_FACTOR_3;
+    END IF ;
+       
+    IF I NOT IN (0,1,2,3) THEN
+     EXIT CHILDFACTOR;
+    END IF;
+    VS_PICKLIST_VALUE_CD := '';
+   END LOOP;
+   CLOSE CHILD_FACTOR_CUR;
+   
+   BEGIN  
+    -- 190 FILLER_2
+    -- FATHER_ID MOTHER_ID MOVED TO #108
+    --  SELECT F_PRIM_WORKER_ID(VL_CASE_ID, '2952')  INTO VL_STAFF_ID FROM SYSIBM.SYSDUMMY1;
+    IF VL_STAFF_ID IS NULL   THEN  VS_FIRST_NM := LPAD('',20,' ');
+     VS_LAST_NM  :=  LPAD('',20,' ');
+     VS_CURR_WORKER_ID := LPAD('',9,' ');
+    ELSE
+     SELECT regexp_replace(UP.firstname, '[^\\w\\space(1)]+','', 'g'), 
+      regexp_replace(UP.lastname, '[^\\w\\space(1)]+','', 'g'), 
+      M.id ::VARCHAR
+     INTO VS_FIRST_NM,
+      VS_LAST_NM,
+      VS_CURR_WORKER_ID
+     FROM securityusers SU
+      INNER JOIN userprofile UP ON UP.securityusersid = SU.securityusersid
+      INNER JOIN muser M ON M.securityusersid = SU.securityusersid
+     --where M.id = VL_STAFF_ID ::VARCHAR
+     where M.id = VL_STAFF_ID 
+      AND UP.activeflag = 1
+      AND SU.activeflag = 1;
+    END IF; 
+    /* IF VS_CURR_WORKER_ID IS NULL OR VS_CURR_WORKER_ID ='' THEN
+    VS_CURR_WORKER_ID := LPAD('',9,' ');
+    ELSE
+    VS_CURR_WORKER_ID := VS_CURR_WORKER_ID || SUBSTRING('        ', 1, 9 - LENGTH(VS_CURR_WORKER_ID)) ;
+    END IF ; */
+         
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR FILLER #190 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C190N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+   END; 
+   
+   BEGIN  
+    SELECT VS_FIRST_NM || SUBSTRING('                   ', 1, 20 - LENGTH(VS_FIRST_NM))
+     || ' ' || VS_LAST_NM || SUBSTRING('                   ', 1, 20 - LENGTH(VS_LAST_NM))||
+     LPAD(VS_MOTHER_ID,9,'0')  || SUBSTRING('        ', 1, 9 - LENGTH(LPAD(VS_MOTHER_ID,9,'0')))||
+     LPAD(VS_FATHER_ID,9,'0')  || SUBSTRING('        ', 1, 9 - LENGTH(LPAD(VS_FATHER_ID,9,'0')))
+     INTO VS_FILLER_2 ;
+
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. POPULATING  FAILED FOR FILLER #190 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C109N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END; 
+       
+   BEGIN  
+    -- #67- 70
+    SELECT 
+     case when PD.disabilitytypekey = 'PYDY' THEN PD.disabilitytypekey END,
+     case when PD.disabilitytypekey ='EMDY' THEN PD.disabilitytypekey END,
+     case when PD.disabilitytypekey = 'MRD' THEN PD.disabilitytypekey END,
+     case when PD.disabilitytypekey = 'HDY' THEN PD.disabilitytypekey  END,
+     case when PD.disabilitytypekey IN ('INDIS','AUTDIS') THEN 'INDIS'  END,
+     case when PD.disabilitytypekey = 'ODY' THEN PD.disabilitytypekey  END
+    INTO
+     VS_PHYSICAL,
+     VS_EMOTIONAL,
+     VS_LEARNING,
+     VS_HEARING,
+     VS_VISUAL,
+     VS_MENTAL,
+     VS_OTHER
+    FROM persondisability PD, 
+     person pp
+    WHERE PD.personid = pp.personid
+     AND  PP.cjamspid = VL_CLIENT_ID
+     AND PD.activeflag = 1
+     AND pp.activeflag = 1;
+     
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR SPECIAL NEEDS #67-70 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C67N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VS_PHYSICAL IS NULL OR VS_PHYSICAL = '' THEN
+    CNT := 0;
+   ELSE
+    CNT1 := 'P';
+    CNT := 1;
+   END IF;
+   
+   IF (VS_EMOTIONAL IS NULL OR VS_EMOTIONAL = '') AND   CNT = 0 THEN
+    CNT := 0;
+   ELSIF (VS_EMOTIONAL IS NOT  NULL OR VS_EMOTIONAL <> '')  AND CNT = 0  THEN
+    CNT1 := 'E';
+    CNT :=1;
+   ELSIF (VS_EMOTIONAL IS NOT  NULL OR VS_EMOTIONAL <> '')  AND CNT = 1  THEN 
+    CNT := 2;
+    CNT2 := 'E';
+   END IF;
+   
+   IF (VS_LEARNING IS NULL OR VS_LEARNING = '')  AND CNT = 0  THEN
+    CNT := 0;
+   ELSIF (VS_LEARNING IS NOT  NULL OR VS_LEARNING <> '')  AND CNT = 0 THEN
+    CNT1 := 'L';
+    CNT :=1;
+   ELSIF (VS_LEARNING IS NOT  NULL OR VS_LEARNING <> '')  AND CNT = 1  THEN
+    CNT :=2;
+    CNT2 := 'L';
+   ELSIF (VS_LEARNING IS NOT  NULL OR VS_LEARNING <> '')  AND CNT = 2 THEN
+    CNT :=3;
+    CNT3 := 'L';
+   END IF;
+   
+   IF (VS_HEARING IS NULL OR VS_HEARING = '')  AND CNT = 0  THEN
+    CNT := 0;
+   ELSIF (VS_HEARING IS NOT  NULL OR VS_HEARING <> '')  AND CNT = 0 THEN
+    CNT1 := 'H';
+    CNT :=1;
+   ELSIF (VS_HEARING IS NOT  NULL OR VS_HEARING <> '')  AND CNT = 1 THEN
+    CNT :=2;
+    CNT2 := 'H';
+   ELSIF (VS_HEARING IS NOT  NULL OR VS_HEARING <> '')  AND CNT = 2 THEN
+    CNT :=3;
+    CNT3 := 'H';
+   ELSIF (VS_HEARING IS NOT  NULL OR VS_HEARING <> '')  AND CNT = 3 THEN
+    CNT :=4;
+    CNT4 := 'H';
+   END IF;
+   
+   IF (VS_VISUAL IS NULL OR VS_VISUAL = '')  AND CNT = 0  THEN
+    CNT := 0;
+   ELSIF (VS_VISUAL IS NOT  NULL OR VS_VISUAL <> '')  AND CNT = 0 THEN
+    CNT1 := 'V';
+    CNT :=1;
+   ELSIF (VS_VISUAL IS NOT  NULL OR VS_VISUAL <> '')  AND CNT = 1 THEN
+    CNT :=2;
+    CNT2 := 'V';
+   ELSIF (VS_VISUAL IS NOT  NULL OR VS_VISUAL <> '')  AND CNT = 2 THEN
+    CNT :=3;
+    CNT3 :='V';
+   ELSIF (VS_VISUAL IS NOT  NULL OR VS_VISUAL <> '')  AND CNT = 3 THEN
+    CNT :=4;
+    CNT4 := 'V';
+   ELSIF (VS_VISUAL IS NOT  NULL OR VS_VISUAL <> '')  AND CNT = 4 THEN
+    CNT :=5;
+    CNT5 := 'V';
+   END IF;
+   
+   IF (VS_MENTAL IS NULL OR VS_MENTAL = '')  AND CNT = 0  THEN
+    CNT := 0;
+   ELSIF (VS_MENTAL IS NOT  NULL OR VS_MENTAL <> '')  AND CNT = 0 THEN
+    CNT1 := 'M';
+    CNT :=1;
+   ELSIF (VS_MENTAL IS NOT  NULL OR VS_MENTAL <> '')  AND CNT = 1 THEN
+    CNT :=2;
+    CNT2 := 'M';
+   ELSIF (VS_MENTAL IS NOT  NULL OR VS_MENTAL <> '')  AND CNT = 2 THEN
+    CNT :=3;
+    CNT3 := 'M';
+   ELSIF (VS_MENTAL IS NOT  NULL OR VS_MENTAL <> '')  AND CNT = 3 THEN
+    CNT :=4;
+    CNT4 := 'M';
+   ELSIF (VS_MENTAL IS NOT  NULL OR VS_MENTAL <> '')  AND CNT = 4 THEN
+    CNT :=5;
+    CNT5 := 'M';
+   ELSIF (VS_MENTAL IS NOT  NULL OR VS_MENTAL <> '')  AND CNT = 5 THEN
+    CNT :=6;
+    CNT6 := 'M';
+   END IF;
+   
+   IF (VS_OTHER IS NULL OR VS_OTHER = '')  AND CNT = 0  THEN
+    CNT := 0;
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 0 THEN
+    CNT1 := 'O';
+    CNT :=1;
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 1 THEN
+    CNT :=2;
+    CNT2 := 'O';
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 2 THEN
+    CNT :=3;
+    CNT3 := 'O';
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 3 THEN
+    CNT :=4;
+    CNT4 := 'O';
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 4 THEN
+    CNT :=5;
+    CNT5 := 'O';
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 5 THEN
+    CNT :=6;
+    CNT6 := 'O';
+   ELSIF (VS_OTHER IS NOT  NULL OR VS_OTHER <> '')  AND CNT = 6 THEN
+    CNT :=7;
+    CNT7 := 'O';
+   END IF;
+   
+   -- To Send FACTS Code (B-119348)
+   VS_SP_NEED_l := ( Case when CNT1 = 'P' then 'C0' -- Physical Disability
+        when CNT1 = 'E' then 'E1' -- Emotionally Disturbed
+        when CNT1 = 'L' then 'L0' -- Learning Disability
+        when CNT1 = 'H' then 'P2' -- Hearing Disability
+        when CNT1 = 'V' then 'P1' -- Visual Disability
+        when CNT1 = 'M' then 'R1' -- Mental Retardation
+        when CNT1 = 'O' then '09' -- Other
+       end ) ;
+   VS_SP_NEED_2 := ( Case when CNT2 = 'P' then 'C0' -- Physical Disability
+        when CNT2 = 'E' then 'E1' -- Emotionally Disturbed
+        when CNT2 = 'L' then 'L0' -- Learning Disability
+        when CNT2 = 'H' then 'P2' -- Hearing Disability
+        when CNT2 = 'V' then 'P1' -- Visual Disability
+        when CNT2 = 'M' then 'R1' -- Mental Retardation
+        when CNT2 = 'O' then '09' -- Other
+       end ) ;
+   VS_SP_NEED_3 := ( Case when CNT3 = 'P' then 'C0' -- Physical Disability
+        when CNT3 = 'E' then 'E1' -- Emotionally Disturbed
+        when CNT3 = 'L' then 'L0' -- Learning Disability
+        when CNT3 = 'H' then 'P2' -- Hearing Disability
+        when CNT3 = 'V' then 'P1' -- Visual Disability
+        when CNT3 = 'M' then 'R1' -- Mental Retardation
+        when CNT3 = 'O' then '09' -- Other
+       end ) ;
+   
+   VS_SP_NEED_4 := ( Case when CNT4 = 'P' then 'C0' -- Physical Disability
+        when CNT4 = 'E' then 'E1' -- Emotionally Disturbed
+        when CNT4 = 'L' then 'L0' -- Learning Disability
+        when CNT4 = 'H' then 'P2' -- Hearing Disability
+        when CNT4 = 'V' then 'P1' -- Visual Disability
+        when CNT4 = 'M' then 'R1' -- Mental Retardation
+        when CNT4 = 'O' then '09' -- Other
+       end ) ;
+   
+   BEGIN   
+    --#151
+    SELECT -- SE.STATUS_CD
+     (case when SE.STATUS_CD = '2276' then '1' -- A - No Disabilities
+      when SE.STATUS_CD = '2277' then '4' -- B - Receiving SSI, State is Rep Payee
+      when SE.STATUS_CD = '2278' then '4' -- C - Receiving SSI, State is Not Rep Payee
+      when SE.STATUS_CD = '2279' then '3' -- D - Eligible, Not Receiv SSI Due to Receipt of IVE
+      when SE.STATUS_CD = '2280' then '2' -- Denied SSA
+      when SE.STATUS_CD = '2281' then '3' -- E - Eligible,Not Receiving SSI Due to Other Reason
+      when SE.STATUS_CD = '2282' then '1' -- F - SSI Not Applied For, LDSS Action Needed
+      when SE.STATUS_CD = '2283' then '1' -- G - SSI Not App For, Disabil Lev Insuff/Inaccurate
+      when SE.STATUS_CD = '2284' then '1' -- H - SSI Not Applied For, Child's Income Over Scale
+      when SE.STATUS_CD = '2285' then '1' -- I - SSI Not Applied For, Child Receives IV-E
+      when SE.STATUS_CD = '2286' then '4' -- Receiving SSA
+      when SE.STATUS_CD = '10540' then '1' -- J - SSI Applied For, Social Security Decision Pend
+      when SE.STATUS_CD = '10541' then '2' -- K - Denied
+      when SE.STATUS_CD = '10542' then '2' -- L - Appeal Filed
+     end) 
+     INTO VS_SSI_CODE
+    FROM TB_SSI_ELIGIBILITY_EVENTS SE,
+     TB_CLIENT_ELIGIBILITY CE
+    WHERE SE.ELIGIBILITY_ID = CE.ELIGIBILITY_ID
+     AND CE.CLIENT_ID = VL_CLIENT_ID
+     AND SE.DELETE_SW = 'N'
+     AND CE.DELETE_SW = 'N'
+    ORDER BY SE.START_DT DESC
+    limit 1   ;
+    
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT  FAILED FOR SSI_CODE#151 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C151N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   BEGIN  
+    SELECT TRIM(AE.effortdate::VARCHAR(10))
+     INTO VDT_MARE_DATE
+    FROM adoptionefforts AE
+     join adoptionplanning ADP  on  AE.adoptionplanningid = ADP.adoptionplanningid 
+      AND AE.activeflag = 1 
+      and ADP.activeflag = 1
+    and  AE.adoptionplanningid 
+     IN ( select ap.adoptionplanningid 
+       from intakeservicerequestactor isra , 
+       person pr, 
+       adoptionplanning ap 
+      where isra.personid = pr.personid 
+       and isra.servicecaseid = ap.servicecaseid
+       and ap.servicecaseid::varchar = VL_CASE_ID 
+       and pr.cjamspid = VL_CLIENT_ID 
+      );
+
+    /*  --  71 to_char(effortdate,'yyyymmdd')::integer 
+    SELECT TRIM(AE.effortdate:: VARCHAR(10))
+    INTO VDT_MARE_DATE
+    FROM adoptionefforts AE, adoptionplanning ADP
+    WHERE AE.adoptionplanningid = ADP.adoptionplanningid
+    AND AE.activeflag = 1 and ADP.activeflag = 1
+    -- AND efforttypekey = '1210' 
+    AND AE.adoptionplanningid IN (SELECT adoptionplanningid
+    FROM TB_ADOPTION  WHERE DELETE_SW = 'N'
+    AND CASE_ID::VARCHAR = VL_CASE_ID  
+    AND CLIENT_ID =VL_CLIENT_ID);
+    --   AND APPROVAL_STATUS_CD = '3047')  ;  */              
+    EXCEPTION WHEN OTHERS THEN
+     VS_OUTPUT_STATE := SQLSTATE;
+     VL_OUTPUT_SQLCODE :=SQLERRM;
+     VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. SELECT FAILED FOR MARE_DATE#71 FOR -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+     VL_EXCEP_FLAG := 1;
+     VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C71N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+   END;
+   
+   IF VDT_MARE_DATE IS NULL OR VDT_MARE_DATE = '' THEN
+    -- VDT_MARE_DATE := LPAD('',8,' ');
+    VDT_MARE_DATE := LPAD('',4,'0'); -- ????
+   ELSE                            
+    -- VDT_MARE_DATE := to_char(to_date(VDT_MARE_DATE,'yyyy-mm-dd'), 'mmddyyyy');
+    VDT_MARE_DATE := to_char(to_date(VDT_MARE_DATE,'yyyy-mm-dd'), 'yyyy'); -- ????
+   END IF;
+    
+   -- NEW or UPDATE flags
+   IF v_pgm_createdate = to_char(to_date(VDT_DATE,'mmddyyyy'),'yyyy-mm-dd')::date THEN
+    VS_NEW_CDE := 'Y';
+    VS_FACTS_CHG := ' ';
+    VS_CDB_CHG := ' ';
+   ELSE
+    VS_NEW_CDE := ' ';
+    VS_FACTS_CHG := 'Y'; 
+    VS_CDB_CHG := ' '; -- X or Y ??
+   END IF; 
+   
+   RAISE NOTICE 'VL_EXCEP_FLAG % ', VL_EXCEP_FLAG;
+   
+   IF VL_EXCEP_FLAG != 1 THEN
+    RAISE NOTICE 'INSERT INTO INTERFACECRBOUTBOUND... ';    
+   
+    BEGIN  
+     INSERT INTO INTERFACECRBOUTBOUND(
+      CRB_FACTS_INTERMEDIATE_ID,
+      CLIENT_ID,
+      CASE_ID,
+      DISTRICT_OFFICE,
+      AMF_CASE_NO,
+      FST_NAME,
+      MID_INAL,
+      LST_NAME,
+      BIRTH_DATE,
+      SEX,
+      RACE,
+      SS_NO,
+      CURR_STR_NO,
+      CURR_STR_DIR,
+      CURR_STR_NM,
+      CURR_STR_TYPE_CD,
+      CURR_APT_NUM,
+      CURR_ADDL_ADDR,
+      CURR_CITY,
+      CURR_ST,
+      CURR_ZIP,
+      MAIL_CASE_NAME,
+      MAIL_STR_NO,
+      MAIL_STR_DIR,
+      MAIL_STR_NM,
+      MAIL_STR_TYPE_CD  ,
+      MAIL_APT_NUM,
+      MAIL_ADDL_ADDR,
+      MAIL_CITY,
+      MAIL_ST,
+      MAIL_ZIP,
+      CURR_STATUS,
+      CURR_PROJ_CAT,
+      CURR_STATE_USE_CD,
+      CURR_LOCAL_USE_CD,
+      CURR_WORKER_ID,
+      CURR_APPL_DATE,
+      CURR_ACCP_DATE,
+      CURR_CLOSE_DATE,
+      CURR_CLOSE_CD,
+      CURR_RECON_DATE,
+      CURR_REDET_DATE,
+      CURR_ELIG_CODE,
+      FCRB_DOWNLOAD,
+      BALCITY_DOWNLOAD,
+      AA_DOWNLOAD,
+      NEW_CDE,
+      FACTS_CHG,
+      CDB_CHG,
+      FACTS_PCAT_CTR,
+      PREV_TRANS_DATE,
+      PREV_RUN_DATE,
+      CURR_RUN_DATE,
+      MG_DOWNLOAD,
+      PG_DOWNLOAD,
+      BALT_CNTY_DOWNLOAD,
+      RACE_SE_A,
+      RACE_SE_B,
+      RACE_SE_C,
+      RACE_SE_N,
+      RACE_SE_P,
+      RACE_SE_U,
+      ETHNICITY_SE,
+      WASHCNTY_DOWNLOAD,
+      CALVCOUNTY_DOWNLOAD,
+      FILLER_1,
+      EDUC_CODE,
+      RELIGION_CODE,
+      ORIGIN_CODE,
+      SP_NEED_1,
+      SP_NEED_2,
+      SP_NEED_3,
+      SP_NEED_4,
+      MARE_DATE,
+      NEXT_REVIEW_DATE,
+      PRIOR,
+      SIGN_DATE,
+      APPROVE_BEFORE,
+      APPROVE_CURR,
+      TIMES_HOME,
+      LEGAL_STAT,
+      LS_EFF_DATE,
+      COURT,
+      DOCKET,
+      PERM_PLAN,
+      PLAN_DATE,
+      PLAN_LA,
+      PLAN_LS ,
+      PRJ_ACH_DATE,
+      ACH_DATE,
+      SVC_AGR_DATE,
+      ENT_REASON,
+      PLCMT_DATE,
+      LA_BEG_DATE,
+      LA_CAN_DATE ,
+      LA_TYPE ,
+      LA_PROVIDER,
+      FOUR_E_STATUS,
+      FUND_SOURCE,
+      FC_EXIT_DATE,
+      FC_EXIT_REASON,
+      CASE_OPENED,
+      FCRB_DATE ,
+      PANEL_DATE ,
+      DISP_DATE,
+      DISP_DUE_DATE  ,
+      ADOPT_PLCMT_DATE,
+      FC_ADOPT_PLCMT_NO,
+      SIBS_NO ,
+      SIBS_ADOPT_NO,
+      RACE_MOTHER ,
+      RACE_FATHER,
+      AD_TRANSFER_DATE,
+      DSS_ATTY_DATE,
+      PET_DATE ,
+      SERVED_DATE,
+      HEAR_DATE ,
+      DENIED_DATE,
+      CONSENT,
+      CONTESTED,
+      POSTPONED,
+      LAST_TRANS_DATE,
+      PARENT_CASE_NO,
+      RECORD_ID ,
+      NEXT_TYPE_REVIEW,
+      NLA_INDICATOR,
+      ENT_REASON_2,
+      PRIM_CARETAKER,
+      MO_PARENT_FACTOR_1 ,
+      FA_PARENT_FACTOR_1,
+      OT_PARENT_FACTOR_1 ,
+      MO_PARENT_FACTOR_2,
+      FA_PARENT_FACTOR_2,
+      OT_PARENT_FACTOR_2 ,
+      MO_PARENT_FACTOR_3 ,
+      FA_PARENT_FACTOR_3 ,
+      OT_PARENT_FACTOR_3,
+      MO_PARENT_FACTOR_4,
+      FA_PARENT_FACTOR_4,
+      OT_PARENT_FACTOR_4,
+      MO_PARENT_FACTOR_5,
+      FA_PARENT_FACTOR_5,
+      OT_PARENT_FACTOR_5,
+      MO_PARENT_FACTOR_6,
+      FA_PARENT_FACTOR_6,
+      OT_PARENT_FACTOR_6,
+      MO_PARENT_FACTOR_7,
+      FA_PARENT_FACTOR_7,
+      OT_PARENT_FACTOR_7,
+      CIS_CLIENT_ID,
+      SU_ID,
+      PARENT_CLIENT_ID,
+      FOUR_E_RECON_DATE,
+      SSI_CODE,
+      BASIS_SPECIAL_NEEDS,
+      LEGAL_STATUS_AT_ENTRY,
+      ENTRY_REASON_3 ,
+      ENTRY_REASON_4,
+      ADOPTION_FAMILY_STRUCTURE,
+      ADOPTION_CHILD_PLACED_FROM,
+      ADOPTION_CHILD_PLACED_BY,
+      REL_TO_CHILD_ADOP_MOTHER,
+      REL_TO_CHILD_ADOP_FATHER,
+      BIRTH_MOTHER_YEAR_OF_BIRTH,
+      BIRTH_FATHER_YEAR_OF_BIRTH,
+      YEAR_OR_BIRTH_ADOPT_MOTHER,
+      YEAR_OR_BIRTH_ADOPT_FATHER,
+      BIRTH_MOTHER_MARITAL_STATUS,
+      BIRTH_MOTHER_TPR_DATE,
+      BIRTH_FATHER_TPR_DATE ,
+      CHILD_FACTOR_1,
+      CHILD_FACTOR_2,
+      CHILD_FACTOR_3 ,
+      PREV_ADOP,
+      ADOPTION_AGE ,
+      MONTHLY_SUBSIDY,
+      RACE_ADMO_A,
+      RACE_ADMO_B ,
+      RACE_ADMO_C,
+      RACE_ADMO_N ,
+      RACE_ADMO_P,
+      RACE_ADMO_U,
+      RACE_ADMO_I ,
+      ETHNICITY_ADMO,
+      RACE_ADFA_A ,
+      RACE_ADFA_B  ,
+      RACE_ADFA_C ,
+      RACE_ADFA_N,
+      RACE_ADFA_P,
+      RACE_ADFA_U ,
+      RACE_ADFA_I,
+      ETHNICITY_ADFA,
+      FILLER_2,
+      SEGMENT_CNT,
+      DELETE_SW,
+      CREATE_TS,
+      CREATE_USER_ID,
+      UPDATE_TS,
+      UPDATE_USER_ID
+     )
+     VALUES(
+      NEXTVAL('SQ_CRB_FACTS_INTERMEDIATE'),
+      VL_CLIENT_ID,
+      VL_CASE_ID,
+      VS_DISTRICT_OFFICE,
+      VS_AMF_CASE_NO,
+      VS_FST_NAME,
+      VS_MID_INAL,
+      VS_LST_NAME,
+      VDT_BIRTH_DATE,
+      VS_SEX,
+      VS_RACE,
+      VS_SS_NO,
+      VS_CURR_STR_NO,
+      VS_CURR_STR_DIR,
+      VS_CURR_STR_NM,
+      VS_CURR_STR_TYPE_CD,
+      VS_CURR_APT_NUM,
+      VS_CURR_ADDL_ADDR,
+      VS_CURR_CITY,
+      VS_CURR_ST,
+      VS_CURR_ZIP,
+      VS_MAIL_CASE_NAME,
+      VS_MAIL_STR_NO,
+      VS_MAIL_STR_DIR,
+      VS_MAIL_STR_NM,
+      VS_MAIL_STR_TYPE_CD  ,
+      VS_MAIL_APT_NUM,
+      VS_MAIL_ADDL_ADDR,
+      VS_MAIL_CITY ,
+      VS_MAIL_ST,
+      VS_MAIL_ZIP,
+      VS_CURR_STATUS,
+      VS_CURR_PROJ_CAT,
+      VS_CURR_STATE_USE_CD,
+      VS_CURR_LOCAL_USE_CD,
+      VL_WORKER_ID,
+      VDT_CURR_APPL_DATE,
+      VDT_CURR_ACCP_DATE,
+      VDT_CURR_CLOSE_DATE,
+      VS_CURR_CLOSE_CD,
+      VDT_CURR_RECON_DATE,
+      VDT_CURR_REDET_DATE,
+      VS_CURR_ELIG_CODE,
+      VS_FCRB_DOWNLOAD,
+      VS_BALCITY_DOWNLOAD,
+      VS_AA_DOWNLOAD,
+      VS_NEW_CDE,
+      VS_FACTS_CHG,
+      VS_CDB_CHG,
+      VS_FACTS_PCAT_CTR,
+      VDT_PREV_TRANS_DATE,
+      VDT_PREV_RUN_DATE,
+      VDT_CURR_RUN_DATE,
+      VS_MG_DOWNLOAD,
+      VS_PG_DOWNLOAD,
+      VS_BALT_CNTY_DOWNLOAD,
+      VS_RACE_SE_A,
+      VS_RACE_SE_B,
+      VS_RACE_SE_C,
+      VS_RACE_SE_N,
+      VS_RACE_SE_P,
+      VS_RACE_SE_U,
+      -- To Send FACTS Code (B-119348)
+      VS_ETHNICITY_SE,
+      -- (case when VS_ETHNICITY_SE = 'H' then 'Y' else 'N' end),
+      VS_WASHCNTY_DOWNLOAD,
+      VS_CALVCOUNTY_DOWNLOAD,
+      VS_FILLER,
+      VS_EDUC_CODE,
+      VS_RELIGION_CODE,
+      VS_ORIGIN_CODE,
+      VS_SP_NEED_l,
+      VS_SP_NEED_2,
+      VS_SP_NEED_3,
+      VS_SP_NEED_4,
+      VDT_MARE_DATE,
+      VDT_NEXT_REVIEW_DATE,
+      VS_PRIOR ,
+      VDT_SIGN_DATE,
+      VS_APPROVE_BEFORE,
+      VS_APPROVE_CURR,
+      VS_TIMES_HOME ,
+      VS_LEGAL_STAT ,
+      VDT_LS_EFF_DATE,
+      VS_COURT,
+      VS_DOCKET,
+      VS_PERM_PLAN,
+      VDT_PLAN_DATE,
+      VS_PLAN_LA,
+      VS_PLAN_LS,
+      VDT_PRJ_ACH_DATE,
+      VDT_ACH_DATE,
+      VDT_SVC_AGR_DATE,
+      VS_ENT_REASON ,
+      VDT_PLCMT_DATE,
+      VDT_LA_BEG_DATE,
+      VDT_LA_CAN_DATE,
+      VS_LA_TYPE,
+      VS_LA_PROVIDER ,
+      VS_4E_STATUS,
+      VS_FUND_SOURCE,
+      VDT_FC_EXIT_DATE,
+      VS_FC_EXIT_REASON,
+      VS_CASE_OPENED,
+      VDT_FCRB_DATE,
+      VDT_PANEL_DATE,
+      VDT_DISP_DATE,
+      VDT_DISP_DUE_DATE  ,
+      VDT_ADOPT_PLCMT_DATE,
+      VS_FC_ADOPT_PLCMT_NO,
+      VS_SIBS_NO,
+      VS_SIBS_ADOPT_NO,
+      VS_RACE_MOTHER,
+      VS_RACE_FATHER ,
+      VDT_AD_TRANSFER_DATE,
+      VDT_DSS_ATTY_DATE,
+      VDT_PET_DATE,
+      VDT_SERVED_DATE,
+      VDT_HEAR_DATE,
+      VDT_DENIED_DATE,
+      VS_CONSENT,
+      VS_CONTESTED,
+      VS_POSTPONED,
+      VDT_LAST_TRANS_DATE,
+      VS_PARENT_CASE_NO,
+      VS_RECORD_ID,
+      VS_NEXT_TYPE_REVIEW,
+      VS_NLA_INDICATOR,
+      VS_ENT_REASON_2,
+      VS_PRIM_CARETAKER,
+      VS_MO_PARENT_FACTOR_l,
+      VS_FA_PARENT_FACTOR_l,
+      VS_OT_PARENT_FACTOR_l,
+      VS_MO_PARENT_FACTOR_2,
+      VS_FA_PARENT_FACTOR_2,
+      VS_OT_PARENT_FACTOR_2,
+      VS_MO_PARENT_FACTOR_3,
+      VS_FA_PARENT_FACTOR_3,
+      VS_OT_PARENT_FACTOR_3 ,
+      VS_MO_PARENT_FACTOR_4 ,
+      VS_FA_PARENT_FACTOR_4 ,
+      VS_OT_PARENT_FACTOR_4 ,
+      VS_MO_PARENT_FACTOR_5 ,
+      VS_FA_PARENT_FACTOR_5 ,
+      VS_OT_PARENT_FACTOR_5 ,
+      VS_MO_PARENT_FACTOR_6 ,
+      VS_FA_PARENT_FACTOR_6 ,
+      VS_OT_PARENT_FACTOR_6 ,
+      VS_MO_PARENT_FACTOR_7 ,
+      VS_FA_PARENT_FACTOR_7 ,
+      VS_OT_PARENT_FACTOR_7 ,
+      VS_CLIENT_ID,
+      VS_SU_ID,
+      VS_PARENT_CLIENT_ID,
+      VDT_4E_RECON_DATE,
+      VS_SSI_CODE,
+      VS_BASIS_SPECIAL_NEEDS,
+      VS_LEGAL_STATUS_AT_ENTRY,
+      VS_ENTRY_REASON_3,
+      VS_ENTRY_REASON_4,
+      VS_ADOPTION_FAMILY_STRUCTURE,
+      VS_ADOPTION_CHILD_PLACED_FROM,
+      VS_ADOPTION_CHILD_PLACED_BY,
+      VS_REL_TO_CHILD_ADOP_MOTHER,
+      VS_REL_TO_CHILD_ADOP_FATHER,
+      VS_BIRTH_MOTHER_YEAR_OF_BIRTH,
+      VS_BIRTH_FATHER_YEAR_OF_BIRTH,
+      VS_YEAR_OR_BIRTH_ADOPT_MOTHER,
+      VS_YEAR_OR_BIRTH_ADOPT_FATHER,
+      VS_BIRTH_MOTHER_MARITAL_STATUS,
+      VDT_BIRTH_MOTHER_TPR_DATE,
+      VDT_BIRTH_FATHER_TPR_DATE,
+      VS_CHILD_FACTOR_1,
+      VS_CHILD_FACTOR_2,
+      VS_CHILD_FACTOR_3 ,
+      VS_PREV_ADOP,
+      VS_ADOPTION_AGE,
+      VS_MONTHLY_SUBSIDY,
+      VS_RACE_ADMO_A,
+      VS_RACE_ADMO_B ,
+      VS_RACE_ADMO_C,
+      VS_RACE_ADMO_N ,
+      VS_RACE_ADMO_P,
+      VS_RACE_ADMO_U ,
+      VS_RACE_ADMO_I,
+      VS_ETHNICITY_ADMO,
+      VS_RACE_ADFA_A,
+      VS_RACE_ADFA_B ,
+      VS_RACE_ADFA_C,
+      VS_RACE_ADFA_N ,
+      VS_RACE_ADFA_P ,
+      VS_RACE_ADFA_U,
+      VS_RACE_ADFA_I,
+      VS_ETHNICITY_ADFA,
+      VS_FILLER_2,
+      VS_SEGMENT_CNT,
+      'N',
+      CURRENT_TIMESTAMP,
+      'CADMIN',
+      CURRENT_TIMESTAMP,
+      'CADMIN'
+     )  ;
+
+     --IF OUTPUTCODE <>0 THEN WRITE INTO ERROR LOG
+     EXCEPTION WHEN OTHERS THEN
+      VS_OUTPUT_STATE := SQLSTATE;
+      VL_OUTPUT_SQLCODE :=SQLERRM;
+      VS_MESSAGE := 'SQLSTATE:' || VS_OUTPUT_STATE || '. INSERT INTO INTERFACECRBOUTBOUND FAILED -->'|| CAST(VL_CLIENT_ID AS VARCHAR) ;
+      VL_EXCEP_FLAG := 1;
+      VL_EXCEP_MESSAGE := VL_EXCEP_MESSAGE || 'C71N'||CAST(VL_OUTPUT_SQLCODE AS VARCHAR)||'T'|| VS_OUTPUT_STATE ;
+
+     END;  
+   ELSE
+    RAISE NOTICE 'DO NOT INSERT INTO INTERFACECRBOUTBOUND... ';    
+   END IF;  
+   
+   -- IF RECORD IS INSERTED THEN COMMIT THE RECORD.
+   -- ELSE
+
+   -- IF EXCEP FLAG = 1 THEN WRITE EXCEPTION RECORD
+   IF VL_EXCEP_FLAG = 1 THEN
+    INSERT INTO interfaceserrorlog(
+     interfaceid,
+     currentruntimestamp,
+     -- errorlineno,
+     errorcode,
+     errorsqlcode, 
+     errordescription,
+     insertedon)VALUES ('CRB OUTBOUND INTERFACE',
+     CURRENT_TIMESTAMP,
+     -- 1346,
+     VS_MESSAGE,
+     VL_OUTPUT_SQLCODE, 
+     VL_EXCEP_MESSAGE,
+     CURRENT_DATE);
+   END IF;
+
+   VL_PREV_CLIENT_ID := VL_CLIENT_ID;
+  END IF;  -- v_updt_cnt > 0
+  
+  VL_CASE_ID := '0';
+  VL_CLIENT_ID := 0;
+  VDT_START_DT :='';
+  VL_PROGRAM_AREA_ID := 0 ;
+  VDT_END_DT := '';
+  VL_CLIENT_PROGRAM_ID  := 0 ;
+  VS_DISTRICT_OFFICE  := '     ';
+  VS_FST_NAME := ' ';
+  VS_MID_INAL :='';
+  VS_LST_NAME := '';
+  VDT_BIRTH_DATE := '';
+  VS_SEX :='';
+  VS_RACE := '';
+  VS_SS_NO := '' ;
+  VS_RELIGION_CODE :='' ;
+  VS_CLIENT_ID := '' ;
+  VS_PREV_ADOP := '' ;
+  VS_ADOPTION_AGE := '';
+  VS_ETHNICITY_SE  := '';
+  VS_CURR_STR_NO := '';
+  VS_CURR_STR_DIR  := '';
+  VS_CURR_STR_NM  := '';
+  VS_CURR_STR_TYPE_CD  := '';
+  VS_CURR_APT_NUM  := '';
+  VS_CURR_ADDL_ADDR  := '';
+  VS_CURR_CITY  := '';
+  VS_CURR_ST  := '';
+  VS_CURR_ZIP  := '';
+  VS_MAIL_STR_NO := '';
+  VS_MAIL_STR_DIR := '';
+  VS_MAIL_STR_NM := '';
+  VS_MAIL_STR_TYPE_CD := '';
+  VS_MAIL_APT_NUM := '';
+  VS_MAIL_ADDL_ADDR := '';
+  VS_MAIL_CITY := '';
+  VS_MAIL_ST := '';
+  VS_MAIL_ZIP := '00000'; -- '';
+  VL_STATUS_CNT  := 0;
+  VS_CURR_STATUS := '';
+  VS_CURR_PROJ_CAT  := '';
+  VL_WORKER_ID := NULL ;
+  VDT_CURR_ACCP_DATE := '';
+  VDT_CURR_CLOSE_DATE := '';
+  VDT_CURR_REDET_DATE := '000000'; -- '';
+  VS_CURR_ELIG_CODE := '';
+  VS_4E_STATUS  := '';
+  VS_RACE_SE_A := '     ';
+  VS_RACE_SE_B := '     ';
+  VS_RACE_SE_C := '     ';
+  VS_RACE_SE_N := '     ';
+  VS_RACE_SE_P := '     ';
+  VS_RACE_SE_U := '     ';
+  VS_FILLER := '';
+  VS_EDUC_CODE := '';
+  VS_LEGAL_STAT := '00' ; -- ' ';
+  vs_origin_code := '';
+  VDT_NEXT_REVIEW_DATE := '';
+  VS_PRIOR := '';
+  VDT_SIGN_DATE := '';
+  VS_APPROVE_BEFORE := '';
+  VS_APPROVE_CURR := '';
+  VS_TIMES_HOME := '';
+  VDT_LS_EFF_DATE  := ' ';
+  VS_DOCKET  := '';
+  VS_PERM_PLAN := ' ';
+  VDT_PLAN_DATE := ' ';
+  VS_PLAN_LA := ' ';
+  VS_PLAN_LS :=' ';
+  VDT_PRJ_ACH_DATE :=' ';
+  VDT_ACH_DATE  :=' ';
+  VDT_SVC_AGR_DATE  := ' ';
+  VDT_PLCMT_DATE  := ' ';
+  VDT_LA_BEG_DATE := ' ';
+  VDT_LA_CAN_DATE := ' ';
+  VS_LA_TYPE := ' ';
+  VL_PROVIDER_ID := 0;
+  VS_FUND_SOURCE :=' ';
+  VS_LA_PROVIDER := ' ';
+  VDT_FC_EXIT_DATE := '';
+  VS_FC_EXIT_REASON := '';
+  VS_CASE_OPENED := '';
+  VDT_FCRB_DATE := ' ';
+  VS_SIBS_NO  := '  ';
+  VDT_PANEL_DATE := ' ';
+  VDT_DISP_DATE := '';
+  VDT_DISP_DUE_DATE := '';
+  VDT_ADOPT_PLCMT_DATE :='';
+  VS_FC_ADOPT_PLCMT_NO := '';
+  VS_SIBS_ADOPT_NO := '  ';
+  VS_RACE_MOTHER    := '  ';
+  VS_RACE_FATHER := '';
+  VDT_DSS_ATTY_DATE := '0000'; -- '';
+  VDT_PET_DATE := '        ';
+  VDT_SERVED_DATE  := '        ';
+  VDT_HEAR_DATE   := '        ';
+  VDT_DENIED_DATE := '';
+  VS_NEXT_TYPE_REVIEW  := '        ';
+  VS_OT_PARENT_FACTOR_l := '';
+  VS_OT_PARENT_FACTOR_2 := '';
+  VS_OT_PARENT_FACTOR_3 := '';
+  VS_OT_PARENT_FACTOR_4 := '';
+  VS_OT_PARENT_FACTOR_5 := '';
+  VS_OT_PARENT_FACTOR_6 := '';
+  VS_OT_PARENT_FACTOR_7 := '';
+  VS_PICKLIST_VALUE_CD  := '';
+  VS_SU_ID := '';
+  VS_PARENT_CLIENT_ID := '';
+  VDT_4E_RECON_DATE := '000000'; -- '';
+  VS_SSI_CODE := '';
+  VS_BASIS_SPECIAL_NEEDS := '';
+  VS_LEGAL_STATUS_AT_ENTRY := '';
+  VDT_FC_EXIT_DATE  := '';
+  VL_PICKLIST_CNT := 0;
+  VS_PREV_ADOP := '';
+  VS_ADOPTION_AGE := '';
+  I := 0;
+  VS_MOTHER_ID := '000000000'; -- '';
+  VS_FATHER_ID := '000000000'; -- '';
+  cnt := 0;
+  CNT1 :=  '';
+  CNT2  :=  '';
+  CNT3  :=  '';
+  CNT4  :=  '';
+  CNT5  :=  '';
+  CNT6  :=  '';
+  CNT7  :=  '';
+  VS_PHYSICAL := '';
+  VS_EMOTIONAL  := '';
+  VS_LEARNING := '';
+  VS_HEARING := '';
+  VS_VISUAL := '';
+  VS_MENTAL := '';
+  VS_OTHER := '';
+  VS_CONSENT := '';
+  VDT_MARE_DATE :='';
+  VS_POSTPONED := '' ;
+  VS_PRIM_CARETAKER := '';
+  VS_SP_NEED_l := '';
+  VS_SP_NEED_2 := '';
+  VS_SP_NEED_3 := '';
+  VS_SP_NEED_4 := '';
+  VS_CHILD_FACTOR_1 := '';
+  VS_CHILD_FACTOR_2 := '';
+  VS_CHILD_FACTOR_3 := '';
+  VS_FILLER_2 := '';
+  VS_FIRST_NM := '';
+  VS_LAST_NM  := '';
+  --end if ;
+  VL_MAIN_CUR_CNT := VL_MAIN_CUR_CNT - 1 ;
+  vu_personid := null;
+  VL_EXCEP_FLAG  := 0;
+ END LOOP;
+ CLOSE MAIN_CUR;
+ --AFTER ALL RECORDS GOT INSERTED INTO CRB TABLE INSERT A ROW INTO RUNTIMES LOG .
+
+ INSERT INTO interfaceserrorlog
+  ( interfaceid,
+   currentruntimestamp,
+   -- errorlineno,
+   errorcode,
+   errordescription,
+   insertedon,
+   client_id
+  )
+  select 
+   'CRB OUTBOUND INTERFACE',
+   CURRENT_TIMESTAMP,
+   'Case Id :'||case_id,
+   'NULL values in Case worker county',
+   CURRENT_DATE,
+   client_id
+  from INTERFACECRBOUTBOUND 
+  where (district_office is null or  trim(district_office)='') ;
+
+  Delete from INTERFACECRBOUTBOUND 
+   where (district_office is null or  trim(district_office)='') ;
+
+ IF  VL_EXCEP_FLAG != 1 THEN 
+  VS_OUTPUT_STATE :='00000';
+  VS_MESSAGE := 'THE RUN WAS SUCCESSFUL';
+  VS_SUCCESS_SW := 'Y';
+ else
+  VS_SUCCESS_SW :='N'; 
+ end if;
+ RAISE NOTICE 'End Time % ', now() ;
+END;
+ 
+$function$
+

@@ -1,0 +1,110 @@
+CREATE OR REPLACE FUNCTION createpersonhealth21(personjson json, v_personid uuid, securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+   persondata json;
+   p_Personid uuid;
+   v_securityuserid character varying;
+   s_examinationObj json;
+   s_personmedicalconditionObj json;
+   s_personbehavioralhealthObj json;
+   s_personabusehistoryObj json;
+   s_personabusesubstanceObj json;
+   s_physicianInfoObj json;
+   s_healthInsuranceObj json;
+   s_medicationPhyscotropicObj json;
+   s_DentalinfoObj json; 
+   l_Status character varying;
+   i json;
+   j json;
+   v_date timestamp without time zone;
+   v_personmedicalconditionid character varying;
+   s_medicalconditiontypekey json;
+   medicalcondition json;
+
+BEGIN
+
+   persondata := personjson;
+   p_Personid := v_personid;
+   v_date:= now() ;
+   v_securityuserid := securityuserid;
+
+
+      
+      
+ CREATE TEMP TABLE temp_sp_Create_Temp_personmedicalconditions1  ( 
+ 
+    personmedicalconditionid character varying,
+    personid character varying,
+    begindate date,
+    enddate date,
+    recordedby character varying,
+    medicalconditiontypekey character varying,
+             medicalconditionother character varying,
+    isNew int default 0 );
+    
+FOR i IN SELECT * FROM json_array_elements(personjson)
+ LOOP
+      
+ s_personmedicalconditionObj:= i->>'personmedicalcondition';
+ insert into temp_sp_Create_Temp_personmedicalconditions1
+ select   * from json_to_recordset(s_personmedicalconditionObj ) as x("personmedicalconditionid" character varying,
+     "personid" character varying,    
+     "begindate" date,
+     "enddate" date,
+     "recordedby" character varying,
+     "medicalconditiontypekey" character varying,
+     "medicalconditionother" character varying ); 
+
+ 
+update temp_sp_Create_Temp_personmedicalconditions1  set  isNew =1 where coalesce(personmedicalconditionid,'') =''; 
+
+UPDATE personmedicalcondition SET activeflag=0, updatedby = v_securityuserid, updatedon = v_date
+WHERE personmedicalconditionid  in (select personmedicalconditionid::uuid from 
+         temp_sp_Create_Temp_personmedicalconditions1 where isnew=0);
+
+    insert into personmedicalcondition( personid, begindate, enddate, 
+         recordedby, medicalconditionother,
+       activeflag,insertedby, updatedby, insertedon, updatedon)
+
+     SELECT p_Personid::uuid,begindate, enddate, recordedby, medicalconditionother, 
+   1,v_securityuserid,v_securityuserid, v_date, v_date FROM   temp_sp_Create_Temp_personmedicalconditions1 WHERE isNew=1 
+         RETURNING "personmedicalconditionid" into v_personmedicalconditionid;
+
+     
+    FOR medicalcondition IN SELECT * FROM json_array_elements(s_personmedicalconditionObj)
+ LOOP
+    s_medicalconditiontypekey := medicalcondition->>'medicalconditiontypekey';
+    
+   RAISE NOTICE 'medicalconditiontypekey %',s_medicalconditiontypekey;
+   
+    FOR j IN SELECT * FROM json_array_elements(s_medicalconditiontypekey)
+ LOOP
+   
+       INSERT INTO personmedicalconditioninfo ( personmedicalconditionid,medicalconditiontypekey,
+          activeflag,insertedby, updatedby, insertedon, updatedon)
+    
+    SELECT v_personmedicalconditionid::uuid, j->>'medicalconditiontypekey',
+   1,v_securityuserid,v_securityuserid, v_date, v_date ;
+    
+END LOOP;
+    
+END LOOP; 
+
+END LOOP;      
+ 
+
+l_Status := 'SUCCESS';
+
+DROP TABLE temp_sp_Create_Temp_personmedicalconditions1;
+
+
+return l_Status;
+
+END
+
+$function$
+

@@ -1,0 +1,216 @@
+CREATE OR REPLACE FUNCTION prov_providerreqmail(objectls json)
+ RETURNS SETOF json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+v_fromsecurityuserid character varying;
+v_appstatus character varying;
+v_objectid character varying;
+v_eventcode character varying;
+v_msg character varying; 
+v_msgs character varying;
+v_tosecurityusersid character varying;
+v_username character varying;
+v_site_id character varying;
+v_provider_id character varying;
+v_request_no character varying ;
+v_request_type character varying;
+v_status character varying;
+v_isfinal boolean;
+v_activeflag integer;
+v_rejectedbyid character varying;
+v_minagefrom integer;
+v_minageto integer;
+v_maxagefrom integer;
+v_maxageto integer;
+v_gender_from character varying;
+v_genderto character varying;
+v_childrennofrom integer;
+v_childrennoto integer;
+v_body character varying;
+v_minfrom character varying;
+v_min character varying;
+v_maxfrom character varying;
+v_max character varying;
+v_genderfrom character varying;
+v_gender character varying;
+v_childernfrom character varying;
+v_childern character varying;
+v_prov_address  character varying;
+v_prov_nm  character varying;
+v_mailid character varying;
+v_data json;
+v_touserjson json;
+v_reqtype character varying;
+v_tomaildetails json;
+v_toroleid character varying;
+v_approvernm character varying;
+ v_prgram character varying;
+ v_program_type character varying;
+begin
+v_fromsecurityuserid:= objectls->>'fromsecurityuserid';
+v_appstatus:= objectls->>'status';
+v_objectid:= objectls->>'objectid';
+v_eventcode := objectls->>'eventcode';
+v_tosecurityusersid := objectls->>'tosecurityusersid';
+v_isfinal := objectls->>'isfinalapproval';
+v_toroleid := objectls->>'toroleid';
+
+select request_type into v_reqtype 
+from providerportalrequest ppr where ppr.request_no = v_objectid;
+
+select mu.username into v_approvernm
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('OLMED') ;
+
+select distinct prgram ,program_type into v_prgram , v_program_type  from providerportalrequest p 
+join tb_provider_applicant tpa on p.provider_id = tpa.provider_id join tb_provider_decision  tpd on tpa.applicant_id = tpd.objectid 
+where request_no = v_objectid ;
+
+
+if(v_reqtype = 'License Change')then
+ 
+select json_agg(a) into v_data from (
+select pp.min_age_from :: int, pp.min_age_to :: int, pp.max_age_from :: int, pp.max_age_to :: int,pp.site_id,
+pp.comar_citation,pp.variance_type,pp.reason_for_request_variance,pp.reason_for_request_waiver,pp.request_expirationdate,
+pp.gender_from, pp.gender_to, pp.children_no_from :: int , pp.children_no_to :: int ,pp.site_id :: character varying,
+pp.provider_id,pp.request_no,pp.request_type,pp.request_date,
+concat_ws(' ' ,tpra.adr_street_no, tpra.adr_street_nm, tpra.adr_city_nm,tpra.adr_state_cd,tpra.adr_county_cd ) provaddress,
+concat_ws(' ', tpr.provider_referral_first_nm , tpr.provider_referral_last_nm) provnm,pp.how_pgm_allowed_to_oprt,pp.expiration_date
+from Providerportalrequest pp  
+join  tb_provider_referral tpr on tpr.provider_id = pp.provider_id::int
+left join tb_provider_referral_addresses tpra  on tpra.parent_key_id = tpr.provider_referral_id 
+where request_no = v_objectid) a ;
+
+select json_agg(j) into v_tomaildetails from (
+select mu.email,mu.username 
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('OLMLA',v_toroleid) and mu.securityusersid = (select distinct fromsecurityusersid from providerportalrequest p 
+join tb_provider_applicant tpa on p.provider_id = tpa.provider_id join tb_provider_decision  tpd on tpa.applicant_id = tpd.objectid 
+ where fromroleid = 'Licensing Administrator' and status = 'Approved' and request_no = v_objectid 
+))j;
+
+if( v_minagefrom is not null )
+then
+v_minfrom := ' Min Age From :'||v_minagefrom;
+else 
+v_minfrom := '';
+end if;
+
+if( v_minageto is not null )
+then
+v_min := ' Min Age To :'||v_minageto;
+else 
+v_min := '';
+end if;
+
+if (v_maxagefrom is not null)
+then
+v_maxfrom := ' Max Age From :'||v_maxagefrom;
+else 
+v_maxfrom := '';
+end if;
+
+if (v_maxageto is not null)
+then
+v_max := ' Max Age To :'||v_maxageto;
+else 
+v_max := '';
+end if;
+
+if (v_gender_from <> '' and v_gender_from is not null)
+then
+v_genderfrom := ' Gender From :'||v_gender_from;
+else 
+v_genderfrom := '';
+end if;
+
+if (v_genderto <> '' and v_genderto is not null)
+then
+v_gender := ' Gender To :'||v_genderto;
+else 
+v_gender := '';
+end if;
+
+if ( v_childrennofrom is not null)
+then
+v_childernfrom := ' Childern No From :'||v_childrennofrom;
+else 
+v_childernfrom := '';
+end if;
+
+if ( v_childrennoto is not null)
+then
+v_childern := ' Childern No To :'||v_childrennoto;
+else 
+v_childern := '';
+end if;
+
+v_body := 'LICENSE INFORMATION TO BE CHANGED for ' || v_min || v_max || v_gender || v_childern ;
+
+if(v_eventcode = 'LICR')
+then
+select json_agg(b) into  v_tomaildetails
+from (
+select mu.email 
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('OLMQA',v_toroleid,'OLMLA'))b ;
+
+elsif(v_eventcode = 'LIC')
+then
+select json_agg(j) into v_tomaildetails from (
+select mu.email,mu.username 
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('OLMLA',v_toroleid) and mu.securityusersid = (select distinct fromsecurityusersid from providerportalrequest p 
+join tb_provider_applicant tpa on p.provider_id = tpa.provider_id join tb_provider_decision  tpd on tpa.applicant_id = tpd.objectid 
+ where fromroleid = 'Licensing Administrator' and status = 'Approved' and request_no = v_objectid 
+))j;
+end if;
+
+ELSE
+
+select json_agg(j) into v_tomaildetails from (
+select mu.email,mu.username 
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('OLMLA',v_toroleid) and mu.securityusersid = (select distinct fromsecurityusersid from providerportalrequest p 
+join tb_provider_applicant tpa on p.provider_id = tpa.provider_id join tb_provider_decision  tpd on tpa.applicant_id = tpd.objectid 
+ where fromroleid = 'Licensing Administrator' and status = 'Approved' and request_no = v_objectid limit 1
+))j;
+select json_agg(a) into v_data from (
+select pp.provider_id,pp.request_no,pp.request_type,pp.program_phone,pp.program_address,pp.request_date,pp.variance_type,pp.waiver_type,
+pp.comar_citation,pp.variance_type,pp.reason_for_request_variance,pp.reason_for_request_waiver,pp.request_expirationdate,pp.site_id,
+concat_ws(' ' ,tpra.adr_street_no, tpra.adr_street_nm, tpra.adr_city_nm,tpra.adr_state_cd,tpra.adr_county_cd ) provaddress,
+concat_ws(' ', tpr.provider_referral_first_nm , tpr.provider_referral_last_nm) provnm,pp.how_pgm_allowed_to_oprt,pp.expiration_date,
+pp.new_license_expire_date,pp.old_license_expire_date,
+(select concat_ws(' ',first_nm,last_nm) from  providerstaff p where object_id = pp.provider_id and employee_type = 'Program Administrator'  limit 1) as prg_admin,
+(select mu.username from muser mu where mu.securityusersid = (select fromsecurityusersid from tb_provider_decision tpd where objectid = v_objectid and  fromroleid = 'OLMPM' limit 1)) as olmpm_nm,
+(select program_name from tb_provider_applicant tpa where provider_id = pp.provider_id and license_no is not null limit 1 )
+from Providerportalrequest pp  
+join  tb_provider_referral tpr on tpr.provider_id = pp.provider_id::int
+join tb_provider_referral_addresses tpra  on tpra.parent_key_id = tpr.provider_referral_id  
+where request_no = v_objectid) a ;
+v_body := '';
+end if;
+
+RETURN QUERY
+select json_agg(x) from (
+select 
+v_tosecurityusersid,v_body,v_objectid,v_reqtype,v_appstatus,v_approvernm, v_prgram , v_program_type,
+v_tomaildetails ,v_data ,v_touserjson) as x
+;
+end;
+$function$
+

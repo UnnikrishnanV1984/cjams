@@ -1,0 +1,1 @@
+update tb_provider set vacancy_no=20 where provider_id='201900181';

@@ -1,0 +1,91 @@
+CREATE OR REPLACE FUNCTION cjams.fn_caseclnt_upd()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- Revision(s)
+-- 11/25/2020 Vineet Tirodkar - Modification for CJAMS - E&E Interface
+------------------------------------------------------------------------
+BEGIN
+
+    IF  NEW.dateofdeath IS NOT NULL THEN
+
+		INSERT INTO caresoutboundtrigger
+			( 	fk_id, 
+				old_id,
+				transactionon,
+				transactiontypekey,
+				statusflag,
+				activeflag
+			)
+		Select person.cjamspid,
+			servicecase.servicecasenumber,
+			CURRENT_TIMESTAMP,
+			'60',
+			'N',
+			1
+		from person,  
+			servicecase,
+			intakeservicerequestactor
+		where intakeservicerequestactor.personid = person.personid 
+			and intakeservicerequestactor.intakeservicerequestpersontypekey = 'PARENT' 
+			and person.personid = new.personid 
+			and servicecase.servicecaseid = intakeservicerequestactor.servicecaseid;
+			
+		INSERT INTO eneoutboundtrigger
+			( 	fk_id, 
+				old_id,
+				transactionon,
+				transactiontypekey,
+				statusflag,
+				activeflag
+			)
+		Select person.cjamspid,
+			servicecase.servicecasenumber,
+			CURRENT_TIMESTAMP,
+			'60',
+			'N',
+			1
+		from person,  
+			servicecase,
+			intakeservicerequestactor
+		where intakeservicerequestactor.personid = person.personid 
+			and intakeservicerequestactor.intakeservicerequestpersontypekey = 'PARENT' 
+			and person.personid = new.personid 
+			and servicecase.servicecaseid = intakeservicerequestactor.servicecaseid;	
+
+    END IF;
+
+
+    IF  NEW.dateofdeath IS NOT NULL THEN
+
+		INSERT INTO csesoutboundtrigger
+			( 	fk_id, 
+				old_id,
+				transactionon,
+				transactiontypekey,
+				statusflag,
+				activeflag
+			)
+		Select
+			person.cjamspid,
+			servicecase.servicecasenumber,
+			CURRENT_TIMESTAMP,
+			'42',
+			'N',
+			1
+		from person,  
+			servicecase,
+			intakeservicerequestactor
+		where intakeservicerequestactor.personid = person.personid 
+			and intakeservicerequestactor.intakeservicerequestpersontypekey = 'PARENT' 
+			and person.personid = new.personid 
+			and servicecase.servicecaseid = intakeservicerequestactor.servicecaseid;
+
+    END IF;
+
+return new;
+END;
+
+$function$
+;

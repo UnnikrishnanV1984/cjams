@@ -1,0 +1,1 @@
+DELETE FROM socialhistory WHERE socialhistoryid IN ('a35737bc-5c41-46c9-9309-7f15c7a4078d', '5efd9e7c-dd43-4a1c-992a-8ae78b4923e1');

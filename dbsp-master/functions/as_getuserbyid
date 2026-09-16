@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION as_getuserbyid(v_usersid integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+jsondata  json;
+
+begin
+
+select row_to_json(a) INTO jsondata from (
+select m.id, m.securityusersid, m.realm, m.username, m.email, m.emailVerified,
+(select jsonb_build_object(
+            'securityusersid', up.securityusersid, 
+            'firstname', up.firstname,
+            'lastname', up.lastname,
+            'displayname', up.displayname,
+            'fullname', up.fullname,
+            'activeflag', up.activeflag,
+            'onprobation', up.onprobation,
+            'email', up.email,
+            'oldId', up.old_id,
+            'title', up.title, 
+            'isavailable', up.unavailableflag, 
+            'userworkstatustypekey', up.userworkstatustypekey, 
+            'usertypekey', up.usertypekey, 
+            'autonotification', up.autonotification,
+            'userphoto', up.userphoto, 
+            'gendertypekey', up.gendertypekey, 
+            'middlename', up.middlename, 
+            'dob', up.dob, 
+            'teamtypekey', rm.teamtypekey, 
+            'cjamspid', up.cjamspid, 
+            'usersignatureurl', up.usersignatureurl, 
+            'supervisorid', up.assupervisorid,
+            'supervisorname',(select upsup.fullname from userprofile upsup where securityusersid = up.assupervisorid),
+         --   'viewpreference', up.viewpreference,
+         --   'documentviewpreference', up.documentviewpreference,
+            'teammemberassignment', jsonb_build_object(
+                                        'teammemberid', tma.teammemberid, 
+                                        'securityusersid', tma.securityusersid,
+                                        'teammember', jsonb_build_object(
+                                                        'teammemberid', tm.teammemberid,
+                                                        'teamid', tm.teamid, 
+                                                        'loadnumber', tm.loadnumber,
+                                                        'roletypekey', r.roletypekey,
+                                                     --   'providerid', tm.providerid,
+                                                      --  'isoperatedbydjs',pr.isoperatedbydjs,
+                                                        'team', jsonb_build_object(             
+                                                                    'id', t.teamid,
+                                                                    'name', t.teamname,
+                                                                    'teamtypekey', rm.teamtypekey,
+                                                                    'parentteamid', t.parentteamid,
+                                                                    'countyid',t.countyid,
+                                                                    'teamtype', (select jsonb_build_object(
+                                                                                            'description', description, 
+                                                                                            'teamtypekey', ref_key) 
+                                                                                from referencevalues where activeflag = 1 
+                                                                                and ref_key =rm.teamtypekey 
+                                                                                and referencetypeid in 
+                                                                                (select referencetypeid from referencetype 
+                                                                                where tablename='teamtype'))),
+                                                        'teammemberroletype', jsonb_build_object(
+                                                                                'roletypekey', r.roletypekey,
+                                                                                'description', r.description,
+                                                                                'issupervisor', up.issupervisor)
+                                                        )
+                                        ),
+            'userprofilephonenumber', COALESCE((select jsonb_agg(upn) from (
+                                        select uppn.userprofilephonenumberid, uppn.securityusersid, uppn.activeflag,
+                                        uppn.userprofiletypekey, uppn.phonenumber, uppn.phoneextension, uppn.effectivedate,
+                                        uppn.old_id as oldId, uppn.insertedby, uppn.insertedon, uppn.updatedon,
+                                        uppn.updatedby from userprofilephonenumber uppn 
+                                        where uppn.securityusersid = up.securityusersid
+                                        )upn), '[]'),
+
+            'userprofileaddress', COALESCE((select jsonb_agg(pa) from (
+                                    select upa.userprofileaddressid, upa.securityusersid, upa.activeflag, upa.county,
+                                    upa.userprofileaddresstypekey, upa.address, upa.zipcode, upa.effectivedate,
+                                    upa.old_id as oldId, upa.pobox, upa.city, upa.state, upa.country, upa.countyid
+                                    from userprofileaddress upa 
+                                    where upa.securityusersid = up.securityusersid
+                                    )pa), '[]'),
+   'countylist',  COALESCE((select jsonb_agg(pc) from (
+                                    SELECT
+          c.countyid, c.countycode, c.countyname, c.effectivedate, c.expirationdate, 
+          c.fipscode, c.latitude, c.locationcode, c.longitude, c.ltcregion,
+          c.oldcountyid,c.regionid,c.state,c.statecountycode,c.zipcode,
+          c.activeflag,c.apsregion,c.city
+          FROM 
+          as_teammemberassignment tma 
+            INNER JOIN  teammember tm   ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+            INNER JOIN  team t   ON t.teamid = tm.teamid AND tm.activeflag =1
+            INNER JOIN county c ON c.countyid::character varying = t.countyid and c.activeflag = 1
+          WHERE tma.securityusersid = up.securityusersid
+                                    )pc), '[]')
+
+            ) as userprofile
+)
+FROM  muser m
+INNER  JOIN userprofile up on m.securityusersid = up.securityusersid and up.activeflag = 1
+INNER  JOIN as_teammemberassignment tma on tma.securityusersid = up.securityusersid and tma.activeflag = 1
+INNER  JOIN teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+INNER  JOIN team t on t.teamid = tm.teamid and t.activeflag = 1
+INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS' 
+INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1 
+where m.id = v_usersid and m.activeflag =1
+)a ;
+
+RETURN  jsondata;
+
+END;
+$function$
+

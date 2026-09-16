@@ -1,0 +1,17 @@
+ CREATE OR REPLACE FUNCTION public.test_mani(fname character varying)                                                
+  RETURNS TABLE(personid uuid, firstname character varying)                                                          
+  LANGUAGE plpgsql                                                                                                   
+ AS $function$                                                                                                       
+                                                                                                                     
+ DECLARE                                                                                                             
+ v_firstname character varying;                                                                                      
+ begin                                                                                                               
+ v_firstname := fname;                                                                                               
+                                                                                                                     
+ return query                                                                                                        
+ EXECUTE format('select personid, firstname from person where firstname like %L limit 10', concat(v_firstname, '%'));
+                                                                                                                     
+ END;                                                                                                                
+                                                                                                                     
+ $function$                                                                                                          
+

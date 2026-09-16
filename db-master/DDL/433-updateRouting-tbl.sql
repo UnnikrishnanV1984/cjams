@@ -1,0 +1,1 @@
+ update routing set insertedon = '2019-10-12 09:10:13', updatedon = now() where routingid='f9c97c24-f8f9-42d8-980c-e56bb3a4fb94';

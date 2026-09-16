@@ -1,0 +1,1 @@
+update intakeservreqchildremoval set removaldate = '2021-01-26 09:30:00', updatedon = now(), updatedby = 'CDM-9795' where intakeservreqchildremovalid = 'b2621f45-4065-402a-87b5-90c1cfc8caa4';

@@ -1,0 +1,23 @@
+ CREATE OR REPLACE FUNCTION public.getreferalassessmentlist(v_intakeserviceid uuid)                                                                                                                
+  RETURNS TABLE(assessmenttemplateid uuid, external_templateid character varying, titleheadertext text, name text, submissiondata jsonb, insertedon timestamp without time zone, assessmentid uuid)
+  LANGUAGE plpgsql                                                                                                                                                                                 
+ AS $function$                                                                                                                                                                                   
+                                                                                                                                                                                                 
+                                                                                                                                                                                                 
+ BEGIN                                                                                                                                                                                           
+                                                                                                                                                                                                 
+ return query                                                                                                                                                                                    
+                                                                                                                                                                                                 
+ select ast.assessmenttemplateid,ast.external_templateid,ast.titleheadertext,ast.name,                                                                                                           
+ a.submissiondata,a.insertedon,a.assessmentid                                                                                                                                                    
+ from assessment a                                                                                                                                                                               
+ join assessmenttemplate ast on ast.assessmenttemplateid= a.assessmenttemplateid                                                                                                                 
+                                                                                                                                                                                                 
+ where a.objectid=v_intakeserviceid and a.assessmentstatustypekey='Submitted'                                                                                                                    
+ order by a.insertedon desc;                                                                                                                                                                     
+                                                                                                                                                                                                 
+                                                                                                                                                                                                 
+ END;                                                                                                                                                                                            
+                                                                                                                                                                                                 
+ $function$                                                                                                                                                                                        
+

@@ -1,0 +1,15 @@
+UPDATE referencevalues SET ref_key = 'Austronesian' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Austronesian - Malayo - Polynesian' ;
+UPDATE referencevalues SET ref_key = 'Bosnian' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Bosnian & Herzegovina' ;
+UPDATE referencevalues SET ref_key = 'Botswanans' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Bosnian & Herzegovina Botswanans' ;
+UPDATE referencevalues SET ref_key = 'CAfrican' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Central African Republican' ;
+UPDATE referencevalues SET ref_key = 'Dominicanrepbln' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Dominican Republican' ;
+UPDATE referencevalues SET ref_key = 'Equatorial' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Equatorial Guinean' ;
+UPDATE referencevalues SET ref_key = 'IndigenousTribe' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Indigenous Tribe' ;
+UPDATE referencevalues SET ref_key = 'Liechtensteiner' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Liechtensteiners' ;
+UPDATE referencevalues SET ref_key = 'MIslander' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Marshall Islander' ;
+UPDATE referencevalues SET ref_key = 'MNamibian' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Myanmarian Namibian' ;
+UPDATE referencevalues SET ref_key = 'NZNicaraguan' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'New Zealander Nicaraguan' ;
+UPDATE referencevalues SET ref_key = 'PapuaParaguayan' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Papua Paraguayan' ;
+UPDATE referencevalues SET ref_key = 'PacificIslander' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Pacific Islander' ;
+UPDATE referencevalues SET ref_key = 'TrinidadianT' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'Trinidadian & Toboggan' ;
+UPDATE referencevalues SET ref_key = 'UAE' WHERE referencetypeid = 304 and activeflag = 1 and ref_key = 'United Arab Emiratese' ;

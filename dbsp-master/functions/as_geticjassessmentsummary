@@ -1,0 +1,103 @@
+CREATE OR REPLACE FUNCTION as_geticjassessmentsummary(v_intakeserviceid uuid, v_securityuserid character varying)
+ RETURNS TABLE(caseworkername character varying, firstname character varying, lastname character varying, suffix character varying, cjamspid bigint, dob timestamp without time zone, personid uuid, assistid character varying, currentdate timestamp without time zone, sex character varying, race character varying, height character varying, weight character varying, eyecolor character varying, haircolor character varying, adjudicationdate timestamp without time zone, v_parentguaridanname character varying, v_relationship character varying, v_parentcontactnumber character varying, v_parentaddress1 character varying, v_parentaddress2 character varying, v_parentzipcode character varying, v_parentcity character varying, v_parentcounty character varying, v_parentstate character varying, v_parentemail character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_intakenumber character varying;
+v_firstname character varying ;
+v_lastname character varying;
+v_suffix character varying;
+v_cjamspid bigint ;
+v_dob timestamp without time zone ;
+v_personid uuid;
+v_assistid character varying;
+v_caseworkername character varying;
+v_date timestamp without time zone ;
+v_sex character varying;
+v_race character varying;
+v_height character varying;
+v_weight character varying;
+v_eyecolor character varying;
+v_haircolor character varying;
+v_adjudicationdate timestamp without time zone ;
+v_parentguaridanname character varying;
+v_relationship character varying;
+v_parentcontactnumber character varying;
+v_parentaddress1 character varying;
+v_parentaddress2 character varying;
+v_parentzipcode character varying;
+v_parentcity character varying;
+v_parentcounty character varying;
+v_parentstate character varying;
+v_parentemail character varying;
+ 
+BEGIN
+
+v_date :=now();
+
+select intakenumber into v_intakenumber 
+from intakeservicerequest where activeflag =1 
+and intakeserviceid = v_intakeserviceid;
+
+
+select up.displayname into v_caseworkername 
+from userprofile up where up.activeflag =1 and up.securityusersid =v_securityuserid;
+
+select p.firstname,p.lastname,p.suffix,
+      p.cjamspid,p.dob ,p.personid,p.old_id,p.gendertypekey,rt.typedescription,
+      (select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Ht' and activeflag = 1),
+   (select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Wt' and activeflag = 1),
+   (select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Eyecolor' and activeflag = 1),
+   (select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Haircolor' and activeflag = 1)
+INTO v_firstname ,v_lastname ,v_suffix,
+   v_cjamspid,v_dob,v_personid,v_assistid,v_sex,v_race,v_height,v_weight,v_eyecolor,v_haircolor
+from intakeservicerequestactor isra
+join person p on isra.personid =p.personid and p.activeflag =1
+left join racetype rt ON rt.racetypekey = P.racetypekey AND rt.activeflag = 1
+where isra.intakeserviceid = v_intakeserviceid and isra.activeflag =1 
+and isra.intakeservicerequestpersontypekey = 'Youth'; 
+
+select ica.adjudicationdatetime into v_adjudicationdate
+from intakeservicerequestcourthearing ich 
+join intakeservicerequestcourtaction  ica on ich.intakeservicerequestcourthearingid = ica.intakeservicerequestcourthearingid
+where  ica.activeflag =1 
+and ich.activeflag = 1
+and ich.hearingtypekey ='Adjudi'
+and ich.intakenumber = v_intakenumber;
+
+select  
+ cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying),
+ cast(ac.relationshiptypekey as character varying),
+ cast(coalesce(pph.phoneextension,'000')||pph.phonenumber as character varying),
+ cast(pa.address as character varying) ,
+ cast(pa.address2 as character varying),
+ cast(pa.zipcode as character varying),
+ cast(pa.city as character varying),
+ cast(pa.county as character varying),
+ cast(pa.state as character varying),
+ cast(pe.email as character varying)
+  into v_parentguaridanname,v_relationship,v_parentcontactnumber,v_parentaddress1,v_parentaddress2,v_parentzipcode,v_parentcity,v_parentcounty,v_parentstate,v_parentemail
+from intakeservicerequestactor isra  
+left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+join actor a on a.actorid = isra.actorid and a.activeflag =1
+join person p on p.personid = a.personid and p.activeflag = 1
+left join (select ph.phoneextension,ph.phonenumber,ph.personid from personphonenumber ph left join personphonetype pp on ph.personphonetypekey = pp.personphonetypekey and ph.activeflag =1 and pp.activeflag =1 order by pp.sequencenumber limit 1)pph on pph.personid = p.personid 
+left join (select ad.* from personaddress ad left join personaddresstype pat on ad.personaddresstypekey = pat.personaddresstypekey and pat.activeflag = 1 and ad.activeflag = 1 order by pat.sequencenumber limit 1)pa on pa.personid = p.personid 
+left join (select e.* from personemail e left join personemailtype pet on e.personemailtypekey = pet.personemailtypekey and e.activeflag =1 and pet.activeflag =1 order by pet.sequencenumber limit 1)pe on pe.personid = p.personid 
+join (select 1 as seq,'father' as relation union 
+  select 2 as seq,'mother' as relation union
+  select 3 as seq,'fosterparent' as relation union 
+  select 4 as seq,'stepparent' as relation union
+  select 5 as seq,'adoptiveparent' as relation union 
+  select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey
+order by rel.seq limit 1;
+  
+ RETURN query select v_caseworkername,v_firstname ,v_lastname ,v_suffix,
+   v_cjamspid,v_dob,v_personid,v_assistid,v_date,v_sex,v_race,v_height,v_weight,v_eyecolor,v_haircolor,v_adjudicationdate,
+   v_parentguaridanname,v_relationship,v_parentcontactnumber,v_parentaddress1,v_parentaddress2,v_parentzipcode,v_parentcity,v_parentcounty,v_parentstate,v_parentemail;
+
+END
+ $function$
+

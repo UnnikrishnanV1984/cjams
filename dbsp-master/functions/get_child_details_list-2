@@ -1,0 +1,166 @@
+CREATE OR REPLACE FUNCTION get_child_details_list(searchobj json, v_lipagenumber bigint, v_lipagesize bigint, sortorder character varying, sortcolumn character varying, dummy character varying)
+ RETURNS TABLE(totalcount bigint, client_id bigint, client_name character varying, client_dob timestamp without time zone, client_age integer, ssn character varying, client_gender character varying, caseworker jsonb, local_dept character varying, county_cd character varying, difference integer)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE  
+
+ v_client_id bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_client_name character varying;
+ v_firstname character varying;
+ v_lastname character varying;
+
+
+begin
+
+v_client_id := searchobj ->> 'client_id';
+--v_client_name := searchobj ->> 'client_name';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+--if(v_client_name is not null) then 
+v_firstname := searchobj ->> 'v_firstname';
+v_lastname := searchobj ->> 'v_lastname';
+--end if;
+
+ return query
+
+SELECT  COUNT(1) OVER() totalcount, 
+ P.cjamspid as client_id, 
+/* CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as client_name, */
+ concat_ws(' ',P.firstname,P.middlename,P.lastname,P.suffix)::character varying as client_name,
+    P.dob as client_dob ,        
+    --(DATE_PART('year', current_date ::date) - DATE_PART('year', P.dob::date)) :: integer as client_age ,
+ f_age(P.dob::date, current_date::date):: integer as client_age,
+ -- p.ssnno :: character varying 
+ (select pid.personidentifiervalue from personidentifier pid 
+  where pid.personidentifiertypekey = 'SSN' and pid.personid = p.personid and pid.activeflag = 1 limit 1) :: character varying as ssn
+ ,GT.typedescription as client_gender ,
+ --sc.servicecasenumber as case_id,
+-- (select 
+-- CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+-- CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as household
+-- from intakeservicerequestactor ina
+--join actor a on a.actorid = ina.actorid 
+--join person p on p.personid = a.personid 
+--where ina.servicecaseid = sc.servicecaseid and ina.isheadofhousehold = true order by ina.insertedon desc limit 1),
+
+  (select jsonb_agg(a) from (select  count(1) over(), * from (
+ select 
+ max(sc1.servicecasenumber ) as case_id 
+ ,ISRT.description as case_nm
+ ,up.cjamspid as case_worker_id
+ ,up.displayname as case_worker_name
+ ,uppn.phonenumber as case_worker_phone_no
+ --,upa.county as local_dept
+ , (select countyname from get_county_values(up.securityusersid)) as local_dept
+ , (select statecountycode from get_county_values(up.securityusersid)) as county_cd
+ ,(select 
+ CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+ CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as household
+ from intakeservicerequestactor ina
+join actor a on a.actorid = ina.actorid 
+join person p on p.personid = a.personid 
+where ina.servicecaseid = sc1.servicecaseid and ina.isheadofhousehold = true order by ina.insertedon desc limit 1)
+ from 
+  servicecase sc1 
+ inner join intakeservicerequestactor insa on insa.servicecaseid = sc1.servicecaseid and insa.activeflag = 1 
+-- join actor a on a.actorid = ina.actorid 
+join person per on per.personid = insa.personid 
+--inner join tb_placement tpl on sc.servicecasenumber = tpl.case_id:: character varying AND sc.activeflag = 1
+--INNER JOIN (SELECT RANK() OVER(PARTITION BY objectid ORDER BY insertedon DESC) rno, * 
+--    FROM caseassignment) ca ON ca.objectid = sc1.servicecaseid AND sc1.activeflag = 1 AND rno = 1
+INNER JOIN caseassignment ca ON ca.objectid = sc1.servicecaseid AND sc1.activeflag = 1 
+    and (ca.enddate is null or ca.enddate::date >=current_date) and ca.toworkeridno is not null and ca.responsibilitytypekey in ('family','child')
+LEFT JOIN userprofile up on up.securityusersid= ca.toworkeridno and up.activeflag =1 
+LEFT JOIN intakeservicerequest as ISR ON ISR.servicecaseid = sc1.servicecaseid and ISR.activeflag =1
+LEFT JOIN IntakeServiceRequestType ISRT ON ISRT.intakeservreqtypeid=ISR.intakeservreqtypeid and ISRT.activeflag =1
+--left JOIN userprofile up on up.securityusersid=sc.insertedby and up.activeflag =1
+LEFT join userprofilephonenumber uppn on up.securityusersid=uppn.securityusersid and uppn.userprofiletypekey='office'   and uppn.activeflag =1
+LEFT join userprofileaddress upa on up.securityusersid=upa.securityusersid  and upa.activeflag =1 
+where   sc1.activeflag=1  and per.cjamspid = P.cjamspid
+group by ISRT.description,up.cjamspid,up.displayname,uppn.phonenumber,upa.county,sc1.insertedon,sc1.servicecasenumber,sc1.servicecaseid,up.securityusersid order by sc1.insertedon desc
+limit  1) as b) as a) as caseworker,
+''::character varying,
+--c.countyname,
+--(select trim(PICKLIST_VALUE_CD) from tb_picklist_values where TRIM(lower(value_tx)) like '%' || TRIM(lower(c.countyname)) || '%' 
+-- AND PICKLIST_type_id=104 AND delete_sw='N' AND active_sw='Y' AND  c.countyname is not null limit 1) as  county_cd,
+''::character varying,
+ difference(lower(CAST(INITCAP(TRIM(P.firstname)|| ''||TRIM(P.lastname) )as character varying)),
+ (lower( trim(v_firstname) || ''||  trim(v_lastname) )))
+FROM person as P
+--join actor a on a.actorid = P.personid
+ inner join intakeservicerequestactor insa on P.personid = insa.personid and insa.activeflag = 1  
+--INNER JOIN tb_placement pl ON P.cjamspid=pl.client_id and pl.delete_sw='N'
+INNER JOIN gendertype as GT ON GT.gendertypekey = p.gendertypekey and GT.activeflag =1
+INNER JOIN servicecase as sc ON sc.servicecaseid = insa.servicecaseid AND sc.activeflag = 1
+--INNER JOIN servicecase as sc ON sc.servicecasenumber = pl.case_id:: character varying AND sc.activeflag = 1
+LEFT JOIN caseassignment ca ON ca.objectid = sc.servicecaseid AND sc.activeflag = 1 
+    and (ca.enddate is null or ca.enddate::date >=current_date) and ca.toworkeridno is not null
+/* MODIFIED TO LEFT JOIN AND REMOVED RANK FOR PERFORMANCE 05/28/2020 - EZHILAN
+INNER JOIN (SELECT RANK() OVER(PARTITION BY objectid ORDER BY insertedon DESC) rno, * 
+    FROM caseassignment) ca ON ca.objectid = sc.servicecaseid AND sc.activeflag = 1 AND rno = 1
+*/
+--LEFT JOIN userprofile up on up.securityusersid= ca.toworkeridno and up.activeflag =1 
+--LEFT JOIN userprofilephonenumber uppn on up.securityusersid=uppn.securityusersid and uppn.userprofiletypekey='cell' and uppn.activeflag =1 
+--LEFT JOIN userprofileaddress upa on up.securityusersid=upa.securityusersid  and upa.activeflag =1 AND upa.county is not null
+--left join teammemberassignment tma on tma.securityusersid=  up.securityusersid and tma.activeflag=1 
+--left join teammember tm on  tm.teammemberid = tma.teammemberid  and tm.activeflag=1 
+--left join team t on t.teamid = tm.teamid and t.activeflag=1
+--left join county c on  t.countyid = c.countyid::character varying  
+WHERE (v_client_id is null or P.cjamspid = v_client_id)
+
+and (v_firstname is null or
+ (lower(TRIM(P.firstname)) like '%'||  lower(TRIM(v_firstname)) ||'%'  or
+ ( soundex(lower(trim(p.firstname))) = soundex(lower(trim(v_firstname))))))
+
+ 
+and (v_lastname is null or
+ (lower(TRIM(P.lastname)) like '%'||  lower(TRIM(v_lastname)) ||'%'  or
+ ( soundex(lower(trim(p.lastname))) = soundex(lower(trim(v_lastname))))))
+ 
+   
+ --AND pl.placement_id=(SELECT MAX(PLA.placement_id) from tb_placement PLA where PLA.client_id=P.cjamspid )
+-- AND sc.servicecasenumber=pl.case_id::character varying
+ AND p.activeflag =1
+   group by p.cjamspid,p.firstname,p.lastname,p.middlename,p.dob,p.personid,gt.typedescription--,sc.servicecasenumber
+  -- ,sc.servicecaseid--,c.countyname
+ 
+
+ -- limit 1;
+ order by (
+    CASE sortorder
+     WHEN 'asc'
+     THEN
+                         CASE sortcolumn
+                            WHEN 'clientname' THEN  cast(P.firstname  as character varying)
+                          WHEN 'dob' THEN cast(P.dob  as character varying)
+                          WHEN 'ssn' THEN cast(ssn  as character varying)
+                          WHEN 'gender' THEN cast(GT.typedescription  as character varying)
+               ELSE
+                     cast(P.cjamspid  as character varying)
+               END
+              END) ASC NULLS LAST,
+                (CASE sortorder
+                   WHEN 'desc'
+     THEN
+      CASE sortcolumn
+                            WHEN 'clientname' THEN  cast(P.firstname as character varying)
+                          WHEN 'dob' THEN cast(P.dob  as character varying)
+                          WHEN 'ssn' THEN cast(ssn as character varying)
+                          WHEN 'gender' THEN cast(GT.typedescription as character varying)
+               --ELSE
+                    -- cast(P.cjamspid as character varying)
+               END
+                   END) DESC NULLS last,
+                   levenshtein((lower(CAST(INITCAP(TRIM(P.firstname) || ' '||TRIM(P.lastname) )as character varying))),(lower( trim( V_firstname)   || ' '|| trim(v_lastname))),1,0,4)        
+       
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

@@ -1,0 +1,153 @@
+CREATE OR REPLACE FUNCTION legalactionbycomplaint(evaluationid uuid)
+ RETURNS TABLE(complaintid character varying, arrestdate timestamp without time zone, complaintreceiveddate timestamp without time zone, countyname character varying, sourcetitle character varying, badgeno character varying, sourceagency character varying, sourcetype text, sourcefirstname character varying, sourcelastname character varying, caseworker character varying, casecreatedon timestamp without time zone, offencelocation character varying, yearsofage text, allegationname character varying[], offensedate text, victim json, folders json, petitions json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+  
+BEGIN
+  RETURN QUERY 
+
+select INEV.complaintid,INEV.arrestdate,INEV.complaintreceiveddate,CU.countyname,ES.title,ES.badgeno,
+ESA.description as sourceagency,INP.description as sourcetype,ES.firstname,ES.lastname
+,UP.displayname as caseworker,IDS.insertedon,OFL.description ,
+(
+select 
+case when INEV.unknownrange=0 then
+case when date_part('month',age(INEV.offensedate::date, p.dob::date)) = 0 then 
+        date_part('year',age(INEV.offensedate::date, p.dob::date))||' Years '  else
+        date_part('year',age(INEV.offensedate::date, p.dob::date))||' Years '||
+        date_part('month',age(INEV.offensedate::date, p.dob::date))||' Months'  end
+
+--ge(INEV.offensedate::date,p.dob::date)
+ --when INEV.unknownrange=1 then  age(INEV.offensedate::date,now()::date)
+ when INEV.unknownrange=2 then  
+ case when date_part('month',age(INEV.begindate::date, p.dob::date)) = 0 then 
+        date_part('year',age(INEV.begindate::date, p.dob::date))||' Years '  else
+        date_part('year',age(INEV.begindate::date, p.dob::date))||' Years '||
+        date_part('month',age(INEV.begindate::date, p.dob::date))||' Months'  end
+-- age(INEV.begindate::date,p.dob::date) 
+end as yearsofage from intakeservicerequestevaluation INEV
+join intakeservicerequest ISR on ISR.intakenumber=INEV.intakenumber and ISR.activeflag=1
+join intakeservicerequestactor INRAC on INRAC.intakeserviceid =ISR.intakeserviceid and INRAC.intakeservicerequestpersontypekey='Youth'
+join actor AC on INRAC.actorid=AC.actorid and AC.activeflag=1 
+join person P on p.personid=AC.personid and p.activeflag=1 
+where INEV.intakeservicerequestevaluationid= evaluationid) as yearsofage,
+
+
+
+(select array_agg(AG.name)  from  allegation AG
+      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+      where  ITSEC.intakeservicerequestevaluationid=INEV.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as allegationname,
+
+      case when INEV.unknownrange=0 then to_char(INEV.offensedate,'MM/DD/YYYY') 
+ when INEV.unknownrange=1 then '' :: character varying 
+  when INEV.unknownrange=2 then to_char(INEV.begindate,'MM/DD/YYYY')|| ' - ' || to_char(INEV.enddate,'MM/DD/YYYY')
+
+end as offensedate ,
+(select (
+select json_agg (x) from (select 
+P.personid
+,PA.address
+,PA.address2 ,PA.zipcode,PA.city,PA.state,PA.country,p.lastname,p.firstname,p.middlename,ESA.description ,C.countyname as county 
+--select * from personphonenumber where intakeservicerequestevaluationid='6740b279-5df1-4531-aa36-f9406dde5f64'
+--'6740b279-5df1-4531-aa36-f9406dde5f64'
+,(select json_agg(x) from
+(select phonenumber,phoneextension from personphonenumber PP where PP.personid=P.personid)as x
+) as phone
+from intakeservicerequestevaluation INEV
+join evaluationsourceagency ESA on ESA.evaluationsourceagencyid = INEV.evaluationsourceagencyid
+join intakeservreqevalactorconfig INAC on INEV.intakeservicerequestevaluationid=INAC.intakeservicerequestevaluationid and INAC.activeflag=1
+join intakeservicerequestactor INRAC on INRAC.intakeservicerequestactorid =INAC.intakeservicerequestactorid
+join actor AC on INRAC.actorid=AC.actorid and AC.activeflag=1 
+join person P on p.personid=AC.personid and p.activeflag=1 
+left join personaddress PA on PA.personid=p.personid and PA.activeflag=1  and PA.personaddresstypekey='C'
+left join county C on C.countyid=PA.county ::uuid and C.activeflag=1
+--left join personphonenumber PPN on PPN.personid=P.personid and PPN.activeflag=1
+where  INEV.intakeservicerequestevaluationid=evaluationid and INEV.activeflag=1 
+and lower(AC.actortype)='victim') as x) as victim) as victim 
+,
+(select json_agg(x) from ((select distinct '00000000-0000-0000-0000-000000000000' ::uuid as intakeserviceid ,INTSR.intakenumber,  FT.description as foldertype,FA.foldertypekey,INTSR.teamtypekey,TT.description as businessunit
+          ,FA.status as status,UP.displayname as currentworker,UP.cjamspid as worker,FA.opendate as opendate ,
+           FA.closedate  as closeddate
+   from intakeservicerequest INTSR 
+   join intakedastaging IDS on IDS.intakenumber=INTSR.intakenumber and IDS.activeflag=1
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1
+   
+   left join teamtype TT on TT.teamtypekey = INTSR.teamtypekey
+   left join intakeserreqstatustype INST on INST.intakeserreqstatustypeid = INTSR.intakeserreqstatustypeid  
+   left join userprofile UP on UP.securityusersid=IDS.insertedby and UP.activeflag=1
+   left join folderassignment FA on FA.objectid=INTSR.intakenumber 
+   left join foldertype FT on FT.foldertypekey=FA.foldertypekey and FT.activeflag=1
+   where INTSR.intakenumber=INEV.intakenumber) 
+   union all
+   (
+   select INTSR.intakeserviceid,INTSR.servicerequestnumber, FT.description as foldertype,INTSR.foldertypekey,INTSR.teamtypekey,TT.description as businessunit
+          , INST.description as status,UP.displayname as currentworker,UP.cjamspid as worker,INTSR.insertedon as opendate ,
+           ( select ISRD.insertedon as closeddate from intakeservicerequestdispositioncode ISRD
+    join intakeserreqstatustype ISS on ISS.intakeserreqstatustypeid = ISRD.intakeserreqstatustypeid and ISS.intakeserreqstatustypekey='Closed'
+          left join servicerequesttypeconfigdispositioncode SCP 
+    on ISRD.servicerequesttypeconfigiddispostionid=SCP.servicerequesttypeconfigiddispostionid and ISRD.activeflag=1
+    where ISRD.intakeserviceid=INTSR.intakeserviceid order by ISRD.insertedon limit 1 
+           ) as closeddate
+   from intakeservicerequest INTSR 
+   join intakeservicerequestevaluation INEVI on INTSR.intakenumber=INEVI.intakenumber and INEVI.activeflag=1
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+   left join foldertype FT on FT.foldertypekey=INTSR.foldertypekey and FT.activeflag=1
+   left join teamtype TT on TT.teamtypekey = INTSR.teamtypekey
+   left join intakeserreqstatustype INST on INST.intakeserreqstatustypeid = INTSR.intakeserreqstatustypeid 
+   join routing RU on RU.objectid=INTSR.intakeserviceid ::character varying and RU.toroleid='JSCW' and RU.activeflag=1 
+   left join userprofile UP on UP.securityusersid=RU.tosecurityusersid and UP.activeflag=1
+   where INEVI.intakeservicerequestevaluationid=evaluationid and INTSR.activeflag=1 and INTSR.teamtypekey='DJS'
+   )
+   ) as x) as folders,
+   
+   (select json_agg(x) from (select 
+  (select json_agg(x) from (select AG."name" as allegationname,ADT.description as adjudicateddecisiontype
+, (select string_agg(CAT.description,',') as courtActions from intakeservicerequestcourtactiontype INTSRCAT
+join courtactiontype CAT on CAT.courtactiontypekey=INTSRCAT.courtactiontypekey and INTSRCAT.activeflag=1
+where  INTSRCAT.courtactionallegationconfigid=CAC.courtactionallegationconfigid and INTSRCAT.activeflag=1) as courtActions,
+    
+    (select string_agg(COTY.description,',') as courtOrder from intakeservicerequestcourtordertypeconfig INTSRCOTC
+join courtordertype COTY on COTY.courtordertypekey=INTSRCOTC.courtordertypekey and INTSRCOTC.activeflag=1
+ where  INTSRCOTC.courtactionallegationconfigid=CAC.courtactionallegationconfigid  and INTSRCOTC.activeflag=1
+) as courtOrder,
+    
+    (select string_agg(COTY.description,',') as courtCondition from  intakeservicerequestcourtconditiontypeconfig INTSRCOTC
+join conditiontype COTY on COTY.conditiontypekey=INTSRCOTC.conditiontypekey and INTSRCOTC.activeflag=1
+ where  INTSRCOTC.courtactionallegationconfigid=CAC.courtactionallegationconfigid and INTSRCOTC.activeflag=1) as courtCondition
+from courtactionallegationconfig CAC
+      join intakeservicerequestcourtaction INA on INA.intakeservicerequestcourtactionid=CAC.intakeservicerequestcourtactionid and INA.activeflag=1
+      join allegation AG on AG.allegationid=CAC.allegationid and AG.activeflag=1
+      join adjudicateddecisiontype ADT on ADT.adjudicateddecisiontypekey=CAC.adjudicateddecisiontypekey and ADT.activeflag=1
+      where CAC.intakeservicerequestcourtactionid=INTSRCA.intakeservicerequestcourtactionid and CAC.activeflag=1) as x ) as adjudicateddecision
+            ,INTSRP.petitionid,INTSRP.intakeservicerequestpetitionid, PT.description as petitiontype,HT.description as hearingtype,INTSRPH.hearingdatetime
+      from intakeservicerequestevaluation INTSRE  
+   left join Intakeservreqevalpetitionconfig INTSREPC on INTSRE.intakeservicerequestevaluationid =INTSREPC.intakeservicerequestevaluationid and INTSREPC.activeflag=1 
+   left join intakeservicerequestpetition INTSRP on INTSRP.intakeservicerequestpetitionid =INTSREPC.intakeservicerequestpetitionid and INTSRP.activeflag=1
+   left join petitiontype PT on PT.petitiontypekey=INTSRP.petitiontypekey and PT.activeflag=1
+   left join Intakeservreqpetitionhearingconfig INTSRPHC on INTSRPHC.intakeservicerequestpetitionid =INTSRP.intakeservicerequestpetitionid and INTSRPHC.activeflag=1
+   left join Intakeservicerequestcourthearing INTSRPH on INTSRPH.intakeservicerequestcourthearingid = INTSRPHC.intakeservicerequestcourthearingid and INTSRPH.activeflag=1
+   join  hearingtype HT on INTSRPH.hearingtypekey=HT.hearingtypekey and HT.activeflag=1 and HT.description ='Adjudication'   
+   join intakeservicerequestcourtaction INTSRCA on INTSRCA.intakeservicerequestcourthearingid=INTSRPH.intakeservicerequestcourthearingid and INTSRCA.activeflag=1
+   where INTSRE.intakenumber=INEV.intakenumber)as x) as petitions
+      
+
+from intakeservicerequestevaluation INEV 
+left join county CU on CU.countyid=INEV.countyid and CU.activeflag=1
+left join evaluationsourcetype EST on EST.evaluationsourcetypeid=INEV.evaluationsourcetypeid
+left join evaluationsourceagency ESA on ESA.evaluationsourceagencyid=INEV.evaluationsourceagencyid and INEV.activeflag=1
+left join evaluationsource ES on ES.evaluationsourceid=INEV.evaluationsourceid
+join intakedastaging IDS on IDS.intakenumber=INEV.intakenumber and IDS.activeflag=1
+left join userprofile UP on UP.securityusersid=INEV.insertedby and UP.activeflag=1
+left join intakeservicerequestpurpose INP on INP.intakeservreqpurposeid=INEV.evaluationsourcetypeid
+left join offencelocationtype OFL on OFL.offencelocationtypekey=INEV.offencelocationtypekey 
+where 
+ INEV.intakeservicerequestevaluationid=evaluationid and INEV.activeflag=1;
+ 
+ end;
+
+$function$
+

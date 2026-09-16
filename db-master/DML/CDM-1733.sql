@@ -1,0 +1,2 @@
+update cjams.intakeservicerequest SET activeflag = 0, updatedon = now(), updatedby = 'CDM-1733'
+where intakeserviceid = '3b9d4bef-1d79-41af-af8e-1f079683e47e'  AND servicerequestnumber = '2020038015403';

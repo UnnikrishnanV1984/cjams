@@ -1,0 +1,1 @@
+update county set golivedate='2020-01-21', updatedon=current_timestamp where countyid='f5214cb2-953e-41a9-a4ad-71341501e2ad';

@@ -1,0 +1,39 @@
+-- FUNCTION: cjams.updateassessment(uuid)
+
+DROP FUNCTION IF EXISTS cjams.updateassessment(uuid);
+
+CREATE OR REPLACE FUNCTION cjams.updateassessment(v_assessmentid uuid)
+	RETURNS text
+	LANGUAGE 'plpgsql'
+	VOLATILE 
+	COST 100
+AS $BODY$
+
+DECLARE
+
+v_temp integer;
+
+BEGIN
+
+BEGIN LOCK TABLE assessmentactor IN ROW EXCLUSIVE MODE;
+SELECT 1 into v_temp FROM assessmentactor WHERE  assessmentid=v_assessmentid and activeflag=1 FOR UPDATE;
+UPDATE assessmentactor SET activeflag=0 WHERE  assessmentid=v_assessmentid and activeflag=1;
+END;
+
+UPDATE assessmentcomments SET activeflag=0 WHERE assessmentid=v_assessmentid and activeflag=1;
+
+-- UPDATE submissioncollection SET activeflag=0 WHERE  assessmentsubmissionid IN (
+-- SELECT distinct assessmentsubmissionid FROM assessmentsubmission WHERE assessmentid=v_assessmentid and activeflag=1 );
+
+-- UPDATE assessmentsubmission SET activeflag=0 WHERE assessmentid =v_assessmentid and activeflag=1;
+
+-- update routing set activeflag = 0, updatedon = now() where eventcode = 'ASST' and routingstatustypeid = 15 and activeflag = 1 and objectid = v_assessmentid :: character varying;
+
+
+update cjams.usernotification set activeflag = 0, updatedon = now() where objectid = v_assessmentid :: character varying and activeflag = 1;
+
+RETURN  'Success';
+
+END;
+
+$BODY$;

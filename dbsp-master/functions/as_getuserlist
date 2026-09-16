@@ -1,0 +1,64 @@
+CREATE OR REPLACE FUNCTION as_getuserlist(page integer, size integer, searchcol character varying, searchval character varying, sortcol character varying, sortby character varying)
+ RETURNS TABLE(totalcount bigint, id bigint, securityusersid character varying, email character varying, displayname character varying, userphoto text, teamname character varying, gender character varying, zipcode character varying, county character varying, phonenumber character varying, role character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE searchstring character varying;
+DECLARE totalcount integer;
+DECLARE p_offset integer;
+
+DECLARE limitstring character varying;
+  
+BEGIN    
+
+searchstring:='';
+limitstring:='';
+ if(searchcol!='' and  searchval !='' ) then
+       
+   searchstring:=' WHERE lower( cast('|| searchcol   || ' as character varying)) ilike ''' || lower(searchval) || '%'' '; 
+ END IF;
+
+ if(sortcol!='') then
+
+ else
+ sortcol:= ' displayname ';
+ sortby:= ' asc ';
+ end if;
+
+ IF size > 0  Then
+ p_offset:= (page - 1) * size;
+ limitstring:= ' LIMIT ' || size ||'  OFFSET ' || p_offset;
+ ELSE
+ limitstring:= '';
+ END IF;
+
+    
+    RETURN QUERY 
+
+ execute 'select count(1) over(),* from
+(select 
+u.id, u.securityusersid, u.email--, r.description as role
+, up.displayname, up.userphoto, t.teamname, gt.typedescription AS gender,
+(select zipcode from userprofileaddress where securityusersid = u.securityusersid and userprofileaddresstypekey = ''P'' and activeflag = 1 limit 1),
+(select county from userprofileaddress where securityusersid = u.securityusersid and userprofileaddresstypekey = ''P'' and activeflag = 1 limit 1),
+(select phonenumber from userprofilephonenumber where securityusersid = u.securityusersid and userprofiletypekey = ''cell'' and activeflag = 1 limit 1),
+(select r.description as role from rolemapping rm join role r on r.id = rm.roleid where principalid = cast(u.id as varchar) and rm.activeflag = 1 and r.activeflag = 1 order by r.id desc limit 1)
+from muser u 
+join userprofile up on up.securityusersid = u.securityusersid
+LEFT JOIN gendertype gt ON gt.gendertypekey = up.gendertypekey AND gt.activeflag =1
+INNER JOIN as_teammemberassignment tma ON tma.securityusersid = up.securityusersid AND tma.activeflag =1
+INNER JOIN teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+INNER JOIN team t ON t.teamid = tm.teamid AND t.activeflag =1
+inner join rolemapping rm on rm.principalid = cast(u.id as varchar) and rm.activeflag = 1 
+inner join role r on r.id = rm.roleid and r.activeflag = 1 and tm.roletypekey = r.roletypekey
+where u.activeflag = 1 and up.activeflag = 1
+) as a
+' || searchstring || '
+ORDER BY  ' || sortcol || ' ' ||  sortby ||' ' || limitstring;
+
+
+
+END;
+
+$function$
+

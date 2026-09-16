@@ -1,0 +1,144 @@
+CREATE OR REPLACE FUNCTION placementexitvoidtickler(v_objectid character varying, v_securityusersid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+v_providerid bigint;
+v_providernm character varying;
+v_enddatetime timestamp;
+v_isvoided int;
+v_count int;
+v_receivablecount int;
+v_receivableid bigint;
+vl_tickler_id BIGINT DEFAULT 0;--
+vs_tickler_col VARCHAR(50) DEFAULT 'sq_ticklers';
+v_categorycd character varying;
+v_percentage_no numeric;
+v_countycd character varying;
+v_placementid bigint;
+v_clientid bigint;
+v_caseid bigint;
+
+BEGIN 
+ vl_tickler_id := 0; -- INITIAL VALUE
+ vs_tickler_col:='sq_ticklers';
+ 
+-- select statecountycode 
+-- into v_countycd
+-- from county where countyid = (
+--  SELECT  DISTINCT  t.countyid        
+--  FROM     muser m 
+--         INNER JOIN teammemberassignment tma ON tma.securityusersid = m.securityusersid AND tma.activeflag =1 
+--         INNER JOIN teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1 
+--   INNER JOIN teammemberroletype  tmrt ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1 --AND tmrt.isupervisor   = true 
+--   INNER JOIN team t ON t.teamid = tm.teamid AND t.activeflag =1 and t.countyid in  ( select countyid::varchar from county where golivedate <= CURRENT_DATE)
+--   INNER JOIN userprofile up ON up.securityusersid =m.securityusersid AND up.activeflag =1
+--  where m.securityusersid::character varying = v_securityusersid::character varying
+--  )::uuid;
+
+
+select statecountycode into v_countycd from v_userprofile where securityusersid = v_securityusersid LIMIT 1;
+
+select placement_id, client_id, case_id 
+into v_placementid, v_clientid, v_caseid
+from tb_placement where placementid = v_objectid::uuid;
+ 
+SELECT sp_nextid(vs_tickler_col::character varying) into vl_tickler_id;
+
+select pl.enddatetime,pl.isvoided,tb.provider_id, tb.provider_category_cd,
+(case when tb.provider_nm is null or tb.provider_nm = '' then concat_ws(' ',tb.provider_first_nm,tb.provider_last_nm) else tb.provider_nm end) 
+ into  v_enddatetime,v_isvoided,v_providerid,v_categorycd,v_providernm
+from placement pl 
+ inner join tb_provider tb on tb.provider_id = pl.altproviderid
+ where pl.placementid=v_objectid::uuid;
+ 
+if(v_categorycd = '1783') then  
+ v_percentage_no = 25 :: numeric;
+else
+ v_percentage_no = 100 :: numeric;
+end if;
+
+if((v_isvoided = 1)) then 
+ INSERT INTO tb_ticklers
+ (TICKLER_ID, tickler_tx, tickler_type_sw, due_dt, reminder_start_dt, entity_type_cd, 
+ entity_key_id, entity_nm, assigned_to_staff_id, client_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw, county_cd, county_unit_id, system_tickler_id, 
+ tickler_nature_cd, assign_to_county_cd, assign_to_unit_id, expiry_dt, entity_id1, entity_id2, screen_cd, data_valid_sw, client_merge_id, action_tx, action_sw, action_dt, supervisor_review_sw, transfered_tickler_id, action_by_staff_id)
+ VALUES( vl_tickler_id,'Placement has been voided, which will generate overpayment.', 'S', NULL, NULL, '2953', 
+ v_providerid, v_providernm, NULL, v_clientid, now(), 'online',now(), 'online', 'N', v_countycd, NULL, 439,
+ NULL, NULL, NULL, NULL, v_caseid, v_placementid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+end if;
+
+select count(1) into v_count from tb_placement tp 
+where tp.provider_id=v_providerid and tp.delete_sw='N' and tp.approval_status_cd = '3047' and exit_dt is null and void_sw is null;
+
+v_receivablecount:= 0;
+
+select count(1) over(),receivable_id into v_receivablecount,v_receivableid from tb_receivable_header where provider_id=v_providerid and delete_sw='N' limit 1;
+
+if(v_receivablecount > 0) then 
+
+if (v_count = 0 or v_isvoided=1 ) then
+
+update tb_payment_plan set delete_sw='Y' where receivable_id=v_receivableid;
+
+INSERT INTO tb_payment_plan
+( plan_dt, receivable_id, amount_no, percentage_no, months_no, start_dt, end_dt, offset_sw, payment_option_sw, 
+offset_option_sw, manual_sw, create_ts, create_user_id, update_ts, update_user_id, delete_sw, current_receivable_amount)
+SELECT  plan_dt, receivable_id, amount_no, v_percentage_no, months_no, start_dt, end_dt, null, payment_option_sw, 
+null, manual_sw, now(), 'online', now(), 'online', 'N', current_receivable_amount
+FROM tb_payment_plan
+WHERE receivable_id=v_receivableid and delete_sw='Y' order by create_ts limit 1;
+
+update tb_receivable_collection_status set delete_sw='Y', update_user_id='online' where collection_status_id in (
+select collection_status_id from tb_receivable_collection_status trcs 
+inner join tb_receivable_detail trd on trd.receivable_detail_id = trcs.receivable_detail_id 
+where trd.receivable_id=v_receivableid and trcs.delete_sw='N' and trim(trcs.collection_status_cd)='779');
+
+INSERT INTO tb_receivable_collection_status
+( collection_status_cd, collection_status_dt, active_sw, create_ts, create_user_id, update_ts, receivable_detail_id, 
+update_user_id, delete_sw)
+ (select '780', collection_status_dt, active_sw, now(), 'online', now(), trcs.receivable_detail_id, 'online', 
+ 'N' from tb_receivable_collection_status trcs 
+inner join tb_receivable_detail trd on trd.receivable_detail_id = trcs.receivable_detail_id 
+where trd.receivable_id=v_receivableid and trcs.delete_sw='Y' and trim(trcs.collection_status_cd)='779');
+
+end if;
+
+if (v_count = 1 and v_isvoided != 1) then
+
+update tb_payment_plan set delete_sw='Y' where receivable_id=v_receivableid;
+
+INSERT INTO tb_payment_plan
+( plan_dt, receivable_id, amount_no, percentage_no, months_no, start_dt, end_dt, offset_sw, payment_option_sw, 
+offset_option_sw, manual_sw, create_ts, create_user_id, update_ts, update_user_id, delete_sw, current_receivable_amount)
+SELECT  plan_dt, receivable_id, amount_no, v_percentage_no, months_no, start_dt, end_dt, 'Y', payment_option_sw, 
+'A', manual_sw, now(), 'online', now(), 'online', 'N', current_receivable_amount
+FROM tb_payment_plan
+WHERE receivable_id=v_receivableid and delete_sw='Y' order by create_ts limit 1;
+
+update tb_receivable_collection_status set delete_sw='Y', update_user_id='online' where collection_status_id in (
+select collection_status_id from tb_receivable_collection_status trcs 
+inner join tb_receivable_detail trd on trd.receivable_detail_id = trcs.receivable_detail_id 
+where trd.receivable_id=v_receivableid and trcs.delete_sw='N' and trim(trcs.collection_status_cd)='780');
+
+INSERT INTO tb_receivable_collection_status
+( collection_status_cd, collection_status_dt, active_sw, create_ts, create_user_id, update_ts, receivable_detail_id, 
+update_user_id, delete_sw)
+ (select '779', collection_status_dt, active_sw, now(), 'online', now(), trcs.receivable_detail_id, 'online', 
+ 'N' from tb_receivable_collection_status trcs 
+inner join tb_receivable_detail trd on trd.receivable_detail_id = trcs.receivable_detail_id 
+where trd.receivable_id=v_receivableid and trcs.delete_sw='Y' and trim(trcs.collection_status_cd)='780');
+
+end if;
+
+end if;
+ 
+
+return 'success';
+
+END;
+
+$function$
+

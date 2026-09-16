@@ -1,0 +1,1 @@
+ALTER TABLE cjams.placement alter  column voidremarks type varchar (1000);

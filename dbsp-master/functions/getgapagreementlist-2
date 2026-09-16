@@ -1,0 +1,171 @@
+CREATE OR REPLACE FUNCTION getgapagreementlist(v_gapid uuid, _page integer, _limit integer, objectid uuid, objecttype character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$    
+------------------------------------------------------------------------
+-- Revision(s)
+-- 12/21/2021 Veera Nadimpalli - Modifications for GAP Refinement story (CIDM-3159) - To get Approved and Request by 
+-- 12/16/2021 Veera Nadimpalli - Modifications for GAP Refinement story (CIDM-3159) - To get the SSA Foster care board Rate
+
+-- 12/14/2021 Veera Nadimpalli - Modifications for GAP Refinement story (CIDM-3159)
+------------------------------------------------------------------------    
+
+                                                                                                                                              
+                                                                                                                                              
+ DECLARE                                                                                                                                      
+ _offset    integer;                                                                                                                          
+ l_agreementdetails json ;                                                                                                                    
+                                                                                                                                              
+                                                                                                                                              
+ BEGIN                                                                                                                                        
+ _offset  :=  (_page  -  1)  *  _limit;                                                                                                       
+                                                                                                                                              
+ IF objecttype = 'agreement' THEN                                                                                                             
+                                                                                                                                              
+ SELECT gapid INTO v_gapid FROM gapagreement WHERE gapagreementid = objectid;                                                                 
+                                                                                                                                              
+ END IF;                                                                                                                                      
+                                                                                                                                              
+ SELECT json_agg(f)  INTO l_agreementdetails FROM(                                                                                            
+         SELECT  ga.gapagreementid ,ga.gapid,ga.iscomprehensivehomestudy,                                                                     
+         ga.iscgawardedcustody,ga.isplacementenddate,ga.ischildreceivetca,                                                                    
+         ga.tcaamount,ga.startdate,ga.enddate,  
+ (select grv.enddate from 
+                 gapagreementrevision grv where grv.gapagreementid=ga.gapagreementid 
+                 and grv.approvalstatustypekey='3045' and grv.activeflag=1 order by insertedon desc limit 1
+                 )   as newenddate , 
+ (select grv.startdate from 
+                 gapagreementrevision grv where grv.gapagreementid=ga.gapagreementid 
+                 and grv.approvalstatustypekey='3045' and grv.activeflag=1 order by insertedon desc limit 1
+                 )   as newstartdate ,  
+  ga.signaturedate,                                                                               
+  ga.guardianonedate,ga.guardiantwodate,ga.ldssdate, ga.guardian1signature,ga.guardian2signature,ga.ldssdirectorsignature,      
+         (SELECT rs.typedescription from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GAAR' AND r.objectid  =  ga.gapagreementid :: character varying AND r.activeflag=1 LIMIT 1)
+         routingstatusnew,
+         (SELECT r.remarks from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GAAR' AND r.objectid  =  ga.gapagreementid :: character varying AND r.activeflag=1 LIMIT 1)
+         "comments",
+         (SELECT r.insertedon from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GAAR' AND r.objectid  =  ga.gapagreementid :: character varying AND r.activeflag=1 LIMIT 1)
+         insertdate,
+          (select up1.fullname from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber    
+         left join userprofile up1 on r.fromsecurityusersid:: character varying = up1.securityusersid and r.fromroleid = 'CWCW' and r.toroleid = 'CWSP'
+         WHERE r.eventcode = 'GAAR' AND r.objectid  = ga.gapagreementid :: character varying 
+         and r.routingstatustypeid = 15 order by r.updatedon desc LIMIT 1 ) approvedby,
+         (select up1.fullname from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber    
+         left join userprofile up1 on r.fromsecurityusersid:: character varying = up1.securityusersid 
+         WHERE r.eventcode = 'GAAR' AND r.objectid  = ga.gapagreementid :: character varying 
+         and r.routingstatustypeid in (16, 17) and r.fromroleid = 'CWSP' and r.toroleid = 'CWCW' order by r.updatedon desc LIMIT 1) requestedby,
+         case when (SELECT rs.typedescription from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GAAR' AND r.objectid  =  ga.gapagreementid :: character varying AND r.activeflag=1 LIMIT 1) is not null 
+         then (SELECT rs.typedescription from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GAAR' AND r.objectid  =  ga.gapagreementid :: character varying AND r.activeflag=1 LIMIT 1)
+        else null end as routingstatus,      
+         (SELECT json_agg (e) FROM (                                                                                                          
+                 select  case when (SELECT  CASE WHEN count(*) >=1 THEN                                                                                   
+                                 'YES' else 'NO' END                                                                                          
+                                 from gapannualreview gr   
+                                 join routing r on gapannualreviewid:: character varying =r.objectid 
+                                 
+                 where gr.gapagreementid = ga.gapagreementid and r.routingstatustypeid=16                                                                               
+                -- and gr.reviewdate::date = grt.enddate::date 
+                 and gr.activeflag =1 group by r.insertedon order by r.insertedon desc limit 1) is null 
+                  then 'NO' else 
+                  (SELECT  CASE WHEN count(*) >=1 THEN                                                                                   
+                                 'YES' else 'NO' END                                                                                          
+                                 from gapannualreview gr   
+                                 join routing r on gapannualreviewid:: character varying =r.objectid                                  
+                 where gr.gapagreementid = ga.gapagreementid and r.routingstatustypeid=16                                                                               
+                -- and gr.reviewdate::date = grt.enddate::date 
+                 and gr.activeflag =1 group by r.insertedon order by r.insertedon desc limit 1)
+                  end as annualreviewstatus,
+              
+                  grt.gapagreementrateid, grt.updatedon,                                                                                                     
+                 grt.gapagreementid, grt.provider_id,grt.startdate ratestartdate,case when
+                 (select grv.rateenddate from 
+                 gapratesrevision grv where grt.gapagreementrateid=grv.gaprateid 
+                 and grv.approvalstatustypekey='3045' and grv.activeflag=1
+                 )is not null then (select grv.rateenddate from 
+                 gapratesrevision grv where grt.gapagreementrateid=grv.gaprateid 
+                 and grv.approvalstatustypekey='3045' and grv.activeflag=1
+                 ) else grt.enddate end as rateenddate  ,
+                 grt.rateapprovaldate,                                     
+                 grt.paymentamout,grt.isoverride,grt.paymenttypekey,grt.notes,
+
+                  (SELECT r.remarks from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GARR' AND r.objectid  =  grt.gapagreementrateid:: character varying AND r.activeflag=1 LIMIT 1)
+         "comments",
+         (SELECT r.insertedon from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber                                                        
+         WHERE r.eventcode = 'GARR' AND r.objectid  =  grt.gapagreementrateid:: character varying AND r.activeflag=1 LIMIT 1)
+         insertdate,
+          (select up1.fullname from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber    
+         left join userprofile up1 on r.fromsecurityusersid:: character varying = up1.securityusersid
+         WHERE r.eventcode = 'GARR' AND r.objectid = grt.gapagreementrateid:: character varying 
+         and r.routingstatustypeid = 16 order by r.updatedon desc LIMIT 1) approvedby,
+          (select up1.fullname from routing r                                                                                            
+         INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber    
+         left join userprofile up1 on r.fromsecurityusersid:: character varying = up1.securityusersid
+         WHERE r.eventcode = 'GARR' AND r.objectid = grt.gapagreementrateid:: character varying 
+         and r.routingstatustypeid = 15 order by r.updatedon desc LIMIT 1) requestedby,
+          --grt.status, 
+                    case when (select grv.approvalstatustypekey :: character varying from 
+                 gapratesrevision grv where grt.gapagreementrateid=grv.gaprateid 
+                 and grv.approvalstatustypekey='3045' and grv.activeflag=1 order by insertedon desc limit 1
+                 ) = '3045'  and grt.status != 'Rejected'
+                      then 'Review'  else  grt.status  end as status,
+                 grt.negotiateddate, grt.ssaapprovaldate
+                 FROM  gapagreementrate grt 
+                 WHERE grt.activeflag = 1 AND 
+                 grt.gapagreementid = ga.gapagreementid order by grt.startdate asc ) e                                                      
+         ) :: json as agreementrate   ,
+         (                                                                                                                                                                                                                                                                                                                                                                             
+               SELECT                                                                                                                                                                                                                                                                                                                                        
+                json_agg(doc) AS attachments                                                                                                                                                                                                                                                                                                          
+     FROM                                                                                                                                                                                                                                                                                                                                          
+ (                                                                                                                                                                                                                                                                                                                                             
+SELECT  dp.filename, dp.documentpropertiesid,  dp.title,  dp.mime,  dp.numberofbytes, dp.s3bucketpathname,  dp.originalfilename,                                                                                                                                                                                                                                
+       dp.documentdate, 
+       dp.actualdocumentdate, 
+       dp.title,
+       (select attachmentclassificationtypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+       (select attachmentclassificationtypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid)                                                                                                                                                                                                                                
+       from documentproperties dp where dp.objectid =  ga.gapagreementid  and dp.activeflag = 1                                                                                                                                                                                                                                           
+                                         ) doc                                                                                                                                                                                                                                                                                                                                         
+                                 ) :: json attachments,ga.isfianotified,ga.fianotifieddate,isrcnotifiedcontact,iscsnotifiedtocustody,ga.signaturecheck,
+           (select p.dob 
+   from person p 
+   join intakeservicerequestactor isra on isra.personid=p.personid and isra.activeflag=1 and p.activeflag=1
+   join permanencyplan pp on pp.intakeservicerequestactorid = isra.intakeservicerequestactorid and pp.activeflag=1
+   join guardianship gap on gap.permanencyplanid = pp.permanencyplanid and gap.activeflag=1 
+   where gap.gapid=v_gapid order by gap.insertedon desc limit 1) as childdob,
+            (select c.countyid from person p 
+     join intakeservicerequestactor isra on isra.personid=p.personid and isra.activeflag=1 and p.activeflag=1
+     join permanencyplan pp on pp.intakeservicerequestactorid = isra.intakeservicerequestactorid and pp.activeflag=1
+     join guardianship gap on gap.permanencyplanid = pp.permanencyplanid and gap.activeflag=1 
+     join caseassignment c2 on c2.objectid = pp.servicecaseid 
+     join county c on c.countyid = c2.toldssid and c.activeflag =1
+            where gap.gapid = v_gapid  limit 1)  as countyDetails
+ FROM gapagreement ga 
+ WHERE ga.activeflag =1 AND ga.gapid = v_gapid 
+ order by ga.insertedon desc 
+ LIMIT  _limit  OFFSET  _offset                                                                                                               
+ )f;                                                                                                                                          
+                                                                                                                                              
+ Return l_agreementdetails;                                                                                                                   
+                                                                                                                                              
+   END;                                                                                                                                       
+                                                                                                                                              
+                                                                                                                                              
+ $function$
+

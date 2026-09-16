@@ -1,0 +1,107 @@
+CREATE OR REPLACE FUNCTION as_overpaymenthistory(v_paymentdetailid integer, v_lipagesize bigint, v_lipagenumber bigint)
+ RETURNS TABLE(totalcount bigint, payment_id integer, payment_dt date, payment_type_cd character varying, receivable_status_cd character varying, gross_amount_no numeric, offset_amount_no numeric, netamount numeric, offsetreceiptdetails jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select  count(1) over() as totalcount, x.* from  (
+
+select  tph.payment_id,tph.payment_dt,(select value_tx from tb_picklist_values where PICKLIST_type_id=2 AND delete_sw='N'
+AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(tph.payment_type_cd)) AS  payment_type_cd,trr.receivable_status_cd,tph.gross_amount_no,
+tph.offset_amount_no,
+((case when tph.gross_amount_no is null then 0 else tph.gross_amount_no end) - (case when tph.offset_amount_no is null then 0 else tph.offset_amount_no end)) as netamount,
+((select json_agg(receipt) from 
+(select receipts.* from
+(
+
+(select (select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N'
+AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd)) as type,tro.offset_id as receipt_id,tro.offset_dt as receipt_dt,null::character varying as receipttype,tro.offset_amount_no as payment_amount_no,trl.collected_amount_no,tro.payment_id::character varying as referencenumber,trh.receivable_id,trd.receivable_detail_id,null::character varying  as notes_tx,tro.create_ts as enteredat,up.fullname as  enteredby,null::character varying as payment_method_cd,null::character varying as payment_type_cd,null::character varying as payee_cd from tb_payment_header tph
+join tb_payment_detail tpd on tpd.payment_id= tph.payment_id
+join tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id
+join tb_receivable_header trh on trd.receivable_id = trh.receivable_id
+ join tb_RECEIVABLE_OFFSET tro on tro.payment_id = tph.payment_id
+ join tb_RECEIVABLE_LIQUIDATION trl on trl.offset_id = tro.offset_id
+ join tb_RECEIVABLE_COLLECTION_STATUS trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+left join userprofile up on up.securityusersid = tro.create_user_id
+where tpd.payment_detail_id=v_paymentdetailid and trcs.collection_status_cd='779'
+order by tro.offset_id desc)
+
+union all
+
+(select (select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N'
+AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(trcs.collection_status_cd)) as type,tpr.receipt_id,tpr.receipt_dt,(select value_tx from tb_picklist_values where PICKLIST_type_id=5 AND delete_sw='N'
+AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(tpr.payment_method_cd)) as receipttype,tpr.payment_amount_no,trl.collected_amount_no,tpr.payment_no_tx as referencenumber,trd.receivable_id,trd.receivable_detail_id,tpr.notes_tx,tpr.create_ts as enteredat,up.fullname as enteredby,tpr.payment_method_cd,tpr.payment_type_cd,tpr.payee_cd  from tb_payment_detail tpd
+join tb_payment_header tph on tpd.payment_id= tph.payment_id
+ join tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id
+  join tb_RECEIVABLE_LIQUIDATION trl on trd.receivable_detail_id = trl.receivable_detail_id
+ join tb_payment_receipt tpr on tpr.receipt_id = trl.receipt_id
+ join tb_RECEIVABLE_COLLECTION_STATUS trcs on trcs.receivable_detail_id = trd.receivable_detail_id
+ left join userprofile up on up.securityusersid = tpr.create_user_id
+where tpd.payment_detail_id=v_paymentdetailid and trcs.collection_status_cd='780'
+order by tpr.receipt_id desc
+)
+)
+as receipts
+group by receipts.type,receipts.receipt_id,receipts.receipt_dt,receipts.receipttype,
+receipts.payment_amount_no,receipts.collected_amount_no,receipts.referencenumber,receipts.receivable_id,receipts.receivable_detail_id
+,receipts.notes_tx,receipts.enteredat,receipts.enteredby,receipts.payment_method_cd,receipts.payment_type_cd,receipts.payee_cd
+
+
+
+) receipt
+group by receipt.type,receipt.receipt_id,receipt.receipt_dt,receipt.receipttype,
+receipt.payment_amount_no,receipt.collected_amount_no,receipt.referencenumber,receipt.receivable_id,receipt.receivable_detail_id
+,receipt.notes_tx,receipt.enteredat,receipt.enteredby,receipt.payment_method_cd,receipt.payment_type_cd,receipt.payee_cd
+) 
+)::jsonb  as offsetreceiptdetails
+from tb_payment_header tph
+join tb_payment_detail tpp on tpp.payment_id = tph.payment_id
+ join tb_receivable_detail trr on trr.payment_detail_id = tpp.payment_detail_id
+where tpp.payment_detail_id=v_paymentdetailid
+--union 
+--select tph.payment_id,tph.payment_dt,(select value_tx from tb_picklist_values where PICKLIST_type_id=6 AND delete_sw='N'
+--AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(tph.payment_type_cd)) AS  payment_type_cd,tph.gross_amount_no,
+--tph.offset_amount_no,
+--((case when tph.gross_amount_no is null then 0 else tph.gross_amount_no end) - (case when tph.offset_amount_no is null then 0 else tph.offset_amount_no end)) as netamount,((select json_agg(receipt) from 
+--(select (select value_tx from tb_picklist_values  where picklist_value_cd =  trcs.collection_status_cd) as type,tpr.receipt_id,tpr.receipt_dt,tpr.payment_method_cd as receipttype,tpr.payment_amount_no,trl.collected_amount_no,null::int as referencenumber,trh.receivable_id,trd.receivable_detail_id  from tb_payment_header tph
+--join tb_payment_detail tpd on tpd.payment_id= tph.payment_id
+--left join tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id
+--join tb_receivable_header trh on trd.receivable_id = trh.receivable_id
+--left join tb_RECEIVABLE_COLLECTION_STATUS trcs on trcs.receivable_detail_id = trd.receivable_detail_id and trcs.collection_status_cd='780'
+--left join tb_RECEIVABLE_LIQUIDATION trl on trl.receivable_detail_id = trd.receivable_detail_id
+--left join tb_payment_receipt tpr on tpr.provider_id = tph.provider_id
+--where tph.payment_id=v_paymentid)receipt) )::jsonb  as offsetreceiptdetails,'Recovery' as typecd
+--from tb_payment_header tph
+--where tph.payment_id=v_paymentid
+) as x
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+
+$function$
+

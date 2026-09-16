@@ -1,0 +1,254 @@
+CREATE OR REPLACE FUNCTION cjams.sp_ene_outbound_interface_gen_data_50(vl_client_id integer, vl_other_id bigint, vs_transaction_type_cd character varying, vl_transaction_sequence integer, vd_transaction_ts timestamp without time zone, OUT vs_message character varying, OUT vl_output_sqlcode character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created: 11/25/2020
+-- Description: To generate E&E Inbound data for Record Type 50
+
+-- Revision(s):
+-- 05/26/2021 Vineet Tirodkar 
+-- Modifications for new Child Account Transaction Source (5491 - Contribution) added with B-85860
+-- 02/18/2022 Vineet Tirodkar - Modifications to intreface person income records known to E&E only (CIDM-4272)
+------------------------------------------------------------------------
+DECLARE VS_RECORD_TYPE VARCHAR(2);
+	VL_RECORD_SEQUENCE INTEGER DEFAULT 000;
+	VS_TRANSACTION_SEQUENCE VARCHAR(5);
+	VS_RECORD_SEQUENCE VARCHAR(3);
+	-- Client Variables
+	VS_CIS_CLIENT_ID VARCHAR(10); -- ENE_OUT_COL6
+
+	ENE_OUT_INCOME_COL1 CHAR(5);
+	ENE_OUT_INCOME_COL2 CHAR(5);
+	ENE_OUT_INCOME_COL3 CHAR(5);
+	ENE_OUT_INCOME_COL4 DECIMAL(10,2);
+	ENE_OUT_INCOME_COL4_CONV VARCHAR(15);
+	ENE_OUT_INCOME_COL5 INTEGER;
+
+DECLARE CURSOR_INCOME CURSOR FOR
+SELECT 
+	CASE WHEN personincome.incomesourcetypekey = 'CS' THEN '1' -- Child Support
+		WHEN personincome.incomesourcetypekey = 'DIN' THEN '2' -- Deemed Income
+		WHEN personincome.incomesourcetypekey = 'GLFE' THEN '3' -- Grants or Loans for Education
+		WHEN personincome.incomesourcetypekey = 'NO' THEN '4' -- None
+		WHEN personincome.incomesourcetypekey = 'PEN' THEN '5' -- Pensions
+		WHEN personincome.incomesourcetypekey = 'RRB' THEN '6' -- Railroad Retirement Benefits
+		WHEN personincome.incomesourcetypekey = 'SLB' THEN '7' -- Sick Leave Benefits
+		WHEN personincome.incomesourcetypekey = 'SSR' THEN '8' -- Social Security Retirement
+		WHEN personincome.incomesourcetypekey = 'UC' THEN '9' -- Unemployment Compensation
+		WHEN personincome.incomesourcetypekey = 'VB' THEN '10' -- Veterans Benefits
+		WHEN personincome.incomesourcetypekey = 'IFSP' THEN '11' -- Income from Sale of Property
+		WHEN personincome.incomesourcetypekey = 'NRI' THEN '12' -- Net Rental Income
+		WHEN personincome.incomesourcetypekey = 'NE' THEN '13' -- None - Earned
+		WHEN personincome.incomesourcetypekey = 'RCC' THEN '14' -- Regular Cash Contributions
+		WHEN personincome.incomesourcetypekey = 'SEE' THEN '15' -- Self Employment Earnings
+		WHEN personincome.incomesourcetypekey = 'TIPS' THEN '16' -- Tips
+		WHEN personincome.incomesourcetypekey = 'WS' THEN '17' -- Wages or Salary
+		WHEN personincome.incomesourcetypekey = 'WIP' THEN '18' -- WIC Payments
+		WHEN personincome.incomesourcetypekey = 'FGL' THEN '19' -- Federal Grants/Loans
+		WHEN personincome.incomesourcetypekey = 'IVEP' THEN '20' -- IV-E Payments
+		WHEN personincome.incomesourcetypekey = 'SIN' THEN '21' -- Student Income
+		WHEN personincome.incomesourcetypekey = 'OTHU' THEN '22' -- Other - Unearned
+		WHEN personincome.incomesourcetypekey = 'OTHE' THEN '23' -- Other - Earned
+		WHEN personincome.incomesourcetypekey = 'TXM' THEN '24' -- Title XIX - Medicaid 
+		WHEN personincome.incomesourcetypekey = 'TANF' THEN '25' -- TANF
+		WHEN personincome.incomesourcetypekey = 'SSI' THEN '26' -- SSI/Supplemental Security Income
+		WHEN personincome.incomesourcetypekey = 'SSB' THEN '27' -- Social Security Benefits
+		WHEN personincome.incomesourcetypekey = 'SSD' THEN '28' -- Social Security Disability Insurance 
+		WHEN personincome.incomesourcetypekey = '' THEN '    '
+		ELSE SUBSTRING(personincome.incomesourcetypekey,1,5)
+	END,
+	CASE WHEN personincome.incomefrequencytypekey = 'TM' THEN '1241'
+		WHEN personincome.incomefrequencytypekey = 'ETW' THEN '1237'
+		WHEN personincome.incomefrequencytypekey = 'MON' THEN '1238'
+		WHEN personincome.incomefrequencytypekey = 'WKLY' THEN '1243'
+		WHEN personincome.incomefrequencytypekey = 'DAI' THEN '1236'
+		WHEN personincome.incomefrequencytypekey = 'ANN' THEN '1235'
+		WHEN personincome.incomefrequencytypekey = 'OT' THEN '1239'
+		WHEN personincome.incomefrequencytypekey = 'QRTY' THEN '1240'
+		WHEN personincome.incomefrequencytypekey = 'TY' THEN '1242'
+		WHEN personincome.incomefrequencytypekey = '' THEN '    '				   
+		ELSE personincome.incomefrequencytypekey
+	END,
+	CASE -- WHEN personincome.verificationtypekey = 'BS' THEN '2846'
+		WHEN personincome.verificationtypekey = 'CR' THEN '1197'
+		WHEN personincome.verificationtypekey = 'CVO' THEN '10400'
+		WHEN personincome.verificationtypekey = 'OTH' THEN '3277'
+		WHEN personincome.verificationtypekey = 'UVI' THEN '10405'
+		WHEN personincome.verificationtypekey = 'BS' THEN '10402'
+		WHEN personincome.verificationtypekey = 'WT' THEN '1203'
+		WHEN personincome.verificationtypekey = 'SVES' THEN '10404'
+		WHEN personincome.verificationtypekey = 'RR' THEN '1202'
+		WHEN personincome.verificationtypekey = 'MABS' THEN '10406'
+		WHEN personincome.verificationtypekey IN ( 'CNC' , 'CNV' ) THEN '10401'
+		WHEN personincome.verificationtypekey = 'RB' THEN '1201'
+		WHEN personincome.verificationtypekey = 'PS' THEN '1200'
+		WHEN personincome.verificationtypekey = 'LRA' THEN '1199'
+		WHEN personincome.verificationtypekey IN ( 'FTF', 'TIT', 'LD', 'LIP', 'BBV', 'BBS') THEN '3277'
+		WHEN personincome.verificationtypekey = 'CSEA' THEN '10403'
+		-- WHEN personincome.verificationtypekey = 'SVES' THEN '2849'
+		WHEN personincome.verificationtypekey = '' THEN '    '			  
+	END,
+	personincome.amount,
+	-- (SUBSTRING(personincome.enddate::VARCHAR,7,4)||SUBSTRING(personincome.enddate::VARCHAR,1,2)||SUBSTRING(personincome.enddate::VARCHAR,4,2))::INTEGER
+	/* (SUBSTRING(personincome.enddate::VARCHAR,6,2)||SUBSTRING(personincome.enddate::VARCHAR,9,2)||SUBSTRING(personincome.enddate::VARCHAR,1,4))::INTEGER ---#27062019 */
+	to_char(personincome.enddate, 'yyyymmdd'):: integer
+FROM personincome, 
+	person 
+WHERE personincome.personid = person.personid
+	and person.cjamspid = VL_CLIENT_ID
+	AND personincome.activeflag = 1
+	AND caresincome IS NULL
+	AND amount > 0
+UNION ALL
+SELECT TRANSACTION_SOURCE_CD,
+	'',
+	'', 
+	SUM(TRANSACTION_AMOUNT_NO), 
+	BED
+FROM  
+	( 	SELECT  
+			CASE WHEN TR.TRANSACTION_SOURCE_CD = '5481'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5479'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5480'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5482'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5484'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5485'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5486'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5487'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5488'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5489'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5490'  THEN '585'
+				WHEN TR.TRANSACTION_SOURCE_CD = '5491'  THEN '585'
+				ELSE TR.TRANSACTION_SOURCE_CD
+			END AS TRANSACTION_SOURCE_CD, 
+			TR.TRANSACTION_AMOUNT_NO, 
+			TR.CREATE_TS, 
+			to_char(TR.BENEFIT_END_DT, 'yyyymmdd'):: integer as BED
+		FROM TB_CLIENT_ACCOUNT CA, 
+			TB_ACCOUNT_TRANSACTION TR
+		WHERE CA.CLIENT_ID = VL_CLIENT_ID
+			AND TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID
+			AND TR.CREDIT_DEBIT_SW = 'C'
+			AND CA.DELETE_SW = 'N'
+			AND TR.DELETE_SW = 'N'
+			AND TR.TRANSACTION_AMOUNT_NO > 0
+	) a,
+	(	SELECT MAX(TR.CREATE_TS) as CT
+		FROM TB_CLIENT_ACCOUNT CA, 
+			TB_ACCOUNT_TRANSACTION TR
+		WHERE CA.CLIENT_ID = VL_CLIENT_ID
+		   AND TR.CLIENT_ACCOUNT_ID = CA.CLIENT_ACCOUNT_ID
+		   AND TR.CREDIT_DEBIT_SW = 'C'
+		   AND CA.DELETE_SW = 'N'
+		   AND TR.DELETE_SW = 'N'
+		   AND TR.TRANSACTION_AMOUNT_NO > 0
+	) b
+where a.create_ts = b.ct
+GROUP BY TRANSACTION_SOURCE_CD, BED;
+	
+BEGIN    
+	VL_OUTPUT_SQLCODE:='00000';   
+	-- RAISE NOTICE 'GEN DATA 50 STARTS';
+	-- SET transaction sequence
+	VS_TRANSACTION_SEQUENCE := LTRIM(RTRIM(VL_TRANSACTION_SEQUENCE::VARCHAR)) ;
+
+	-- Get CIS_CLIENT_ID
+	BEGIN
+		SELECT person.cisclientid
+			INTO VS_CIS_CLIENT_ID
+		FROM person  	
+		WHERE person.cjamspid = VL_CLIENT_ID
+			AND person.activeflag = 1;  
+
+		EXCEPTION WHEN OTHERS THEN 
+		VL_OUTPUT_SQLCODE :=  SQLSTATE;
+		VS_MESSAGE :=  '(E&E) SELECT cisclientid FAILED FOR person'  ;
+		RETURN;
+	END ;
+
+	-- Generate records for record type 50
+	VS_RECORD_TYPE := '50';
+	VL_RECORD_SEQUENCE := 000 ;
+	VS_RECORD_SEQUENCE := '';
+	
+	IF  VS_RECORD_TYPE = '50' THEN
+
+		OPEN CURSOR_INCOME;
+		<<CURS_INCOME>>
+		WHILE VL_OUTPUT_SQLCODE = '00000'  LOOP
+			FETCH CURSOR_INCOME INTO ENE_OUT_INCOME_COL1, 
+									ENE_OUT_INCOME_COL2, 
+									ENE_OUT_INCOME_COL3,
+									ENE_OUT_INCOME_COL4, 
+									ENE_OUT_INCOME_COL5 ;
+
+				EXIT CURS_INCOME WHEN NOT FOUND;
+
+				VL_RECORD_SEQUENCE := VL_RECORD_SEQUENCE + 1 ;
+				VS_RECORD_SEQUENCE := LTRIM(RTRIM(VL_RECORD_SEQUENCE::VARCHAR));
+				ENE_OUT_INCOME_COL4_CONV := LTRIM(RTRIM(ENE_OUT_INCOME_COL4::VARCHAR)) ;
+				ENE_OUT_INCOME_COL4_CONV = SUBSTRING('00000000000',1,11 - LENGTH(ENE_OUT_INCOME_COL4_CONV)) || ENE_OUT_INCOME_COL4_CONV ;		
+
+				-- Set Interface Data
+				INSERT INTO eneoutboundinterface
+					(	ENE_RECORD_ID,
+						STATUS_CD,
+						BATCH_SEQ_NO,
+						TRANSACTION_SEQ_NO,
+						TRANSACTION_TYPE_CD,
+						CIS_CLIENT_ID,
+						RECORD_TYPE_CD,
+						TRANSACTION_TS,
+						RECORD_SEQ_NO,
+						ENE_OUT_COL1,
+						ENE_OUT_COL2,
+						ENE_OUT_COL3,
+						ENE_OUT_COL4,
+						ENE_OUT_COL5
+					)	
+				SELECT
+					NEXTVAL('SQ_ENEOUTBOUNDINTERFACE'),
+					'000',
+					'',
+					(CASE WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 1 THEN '0000'||VS_TRANSACTION_SEQUENCE
+						WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 2 THEN '000'||VS_TRANSACTION_SEQUENCE
+						WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 3 THEN '00'||VS_TRANSACTION_SEQUENCE
+						WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 4 THEN '0'||VS_TRANSACTION_SEQUENCE
+						WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 5 THEN VS_TRANSACTION_SEQUENCE
+					END),
+					VS_TRANSACTION_TYPE_CD,
+					COALESCE(SUBSTR('000000000',1,9 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)),'000000000'),
+					'50',
+					VD_TRANSACTION_TS,
+					(CASE WHEN LENGTH(VS_RECORD_SEQUENCE) = 1 THEN '00'||VS_RECORD_SEQUENCE
+						WHEN LENGTH(VS_RECORD_SEQUENCE) = 2 THEN '0'||VS_RECORD_SEQUENCE
+						WHEN LENGTH(VS_RECORD_SEQUENCE) = 3 THEN VS_RECORD_SEQUENCE
+					END),
+					ENE_OUT_INCOME_COL1,
+					ENE_OUT_INCOME_COL2,
+					ENE_OUT_INCOME_COL3,
+					(CASE WHEN ENE_OUT_INCOME_COL4_CONV = '' THEN '00000000.00'
+						WHEN LENGTH(ENE_OUT_INCOME_COL4_CONV) <= 0 THEN '00000000.00'
+						ELSE COALESCE(ENE_OUT_INCOME_COL4_CONV::VARCHAR,'00000000.00')
+					END),		
+					COALESCE(ENE_OUT_INCOME_COL5::VARCHAR,'00000000')
+				;
+ 
+			--	RAISE NOTICE 'INSERT IN GEN DATA 50 SUCCESFUL';
+		END LOOP;
+		CLOSE CURSOR_INCOME;
+	END IF;
+
+	RETURN ;
+    EXCEPTION WHEN OTHERS THEN 
+		VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+		VS_MESSAGE := '(E&E) INSERT INTO eneoutboundinterface FAILED ' || SQLERRM  ;
+		RETURN;
+
+END 
+;
+$function$
+;

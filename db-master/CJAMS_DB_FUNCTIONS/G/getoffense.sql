@@ -1,0 +1,63 @@
+CREATE OR REPLACE FUNCTION cjams.getoffense (IN v_intakeserviceid uuid)
+   RETURNS TABLE (allegationid uuid, allegationname CHARACTER VARYING)
+   LANGUAGE 'plpgsql'
+   VOLATILE
+   NOT LEAKPROOF
+   SECURITY INVOKER
+   PARALLEL UNSAFE
+   ROWS 1000
+AS
+$$
+
+DECLARE
+   v_intakenumber   CHARACTER VARYING;
+   v_count          BIGINT;
+BEGIN
+   SELECT irs.intakenumber
+     INTO v_intakenumber
+     FROM intakeservicerequest irs
+    WHERE irs.intakeserviceid = v_intakeserviceid AND irs.activeflag = 1;
+
+   SELECT count (*)
+    INTO v_count
+    FROM intakeservicerequestcourthearing isch1
+   WHERE     isch1.intakenumber = v_intakenumber
+         AND isch1.hearingtypekey = 'Adjudi'
+         AND isch1.courthearingstatustypekey = 'Completed'
+         AND isch1.activeflag = 1;
+
+   IF v_count = 0
+   THEN
+      RETURN QUERY
+         SELECT alle.allegationid, alle.name
+           FROM intakeservicerequestevaluation ise
+                INNER JOIN intakeservicerequestevaluationconfig isec
+                   ON     ise.intakeservicerequestevaluationid =
+                          isec.intakeservicerequestevaluationid
+                      AND ise.activeflag = 1
+                INNER JOIN allegation alle
+                   ON isec.allegationid = alle.allegationid
+          WHERE ise.intakenumber = v_intakenumber AND ise.activeflag = 1;
+   ELSE
+      RETURN QUERY
+         SELECT alle.allegationid, alle.name
+           FROM intakeservicerequestcourthearing isch
+                INNER JOIN intakeservicerequestcourtaction isca
+                   ON     isca.intakeservicerequestcourthearingid =
+                          isch.intakeservicerequestcourthearingid
+                      AND isca.activeflag = 1
+                INNER JOIN courtactionallegationconfig cac
+                   ON     cac.intakeservicerequestcourtactionid =
+                          isca.intakeservicerequestcourtactionid
+                      AND cac.activeflag = 1
+                INNER JOIN allegation alle
+                   ON     alle.allegationid = cac.allegationid
+                      AND alle.activeflag = 1
+          WHERE     isch.intakenumber = v_intakenumber
+                AND isch.hearingtypekey = 'Adjudi'
+                AND isch.courthearingstatustypekey = 'Completed'
+                AND cac.adjudicateddecisiontypekey = 'S'
+                AND isch.activeflag = 1;
+   END IF;
+END;
+$$

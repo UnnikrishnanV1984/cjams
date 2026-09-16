@@ -1,0 +1,399 @@
+CREATE OR REPLACE FUNCTION as_f_fm680r_d(start_date date, end_date date)
+ RETURNS TABLE(ldss character varying, client_id integer, last_name character varying, first_name character varying, middle_name character varying, date_of_birth timestamp without time zone, age integer, removal_dt timestamp without time zone, return_dt timestamp without time zone, living_arrangement_name character varying, livingstartdate timestamp without time zone, livingenddate timestamp without time zone, placement_structure character varying, palcement_begin_dt timestamp without time zone, placement_exit_dt timestamp without time zone, current_provider_name character varying, eligibility_status text, fiscal_category_cd character, subsidy_start_dt timestamp without time zone, subsidy_end_dt timestamp without time zone, case_type text, reason character varying)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+( WITH FC AS (SELECT  DISTINCT CE.CLIENT_ID,F_PRIM_COUNTY(CE.CASE_ID)  AS COUNTY,
+                     CE.ELIGIBILITY_TYPE_CD,CE.ELIGIBILITY_STATUS_CD
+                    ,CAST(NULL AS DATE) AS SUBSIDY_START_DT
+                    ,CAST(NULL AS DATE) AS SUBSIDY_END_DT
+                    ,R.REMOVALDATE
+                    ,R.RETURNDATE
+                    ,'FOSTER CARE' AS CASE_TYPE
+               FROM TB_CLIENT_ELIGIBILITY CE INNER  JOIN
+                    INTAKESERVREQCHILDREMOVAL R
+    ON CE.REMOVAL_ID :: varchar= R.intakeservreqchildremovalid :: varchar
+
+                                   AND CE.CLIENT_ID :: varchar= R.intakeservicerequestactorid :: varchar
+
+     AND  CE.ELIGIBILITY_TYPE_CD = '2931'
+                                 WHERE  R.intakeservreqchildremovalid :: varchar IN (SELECT MAX(RE.intakeservreqchildremovalid :: varchar
+) FROM INTAKESERVREQCHILDREMOVAL RE WHERE (((RE.RETURNDATE BETWEEN  start_date AND  end_date )
+           OR (RE.REMOVALDATE <=  end_date AND  RE.RETURNDATE IS NULL) )
+    OR (RE.REMOVALDATE <=  end_date AND RE.RETURNDATE >=    start_date))
+    AND RE.caseid IN (SELECT servicecaseid FROM servicecase WHERE Activeflag = 1) 
+    AND RE.activeflag=1 AND RE.intakeservicerequestactorid=R.intakeservicerequestactorid)
+    AND R.caseid IN (SELECT servicecaseid FROM servicecase WHERE Activeflag = 1)
+                         AND CE.CLIENT_ID NOT IN  (SELECT TB_PLACEMENT.CLIENT_ID FROM TB_PLACEMENT
+                                                    WHERE TB_PLACEMENT.placement_id IN (select MAX(TB_PLACEMENT.placement_id)
+                                                              FROM TB_PLACEMENT
+                                                                            where  (entry_dt <= end_date OR ENTRY_DT IS NOT NULL)
+                                                                             and (exit_dt IS NULL OR exit_dt >=start_date)
+                                                              and delete_sw = 'N'
+                                                                             and (void_sw is null or void_sw = 'N')
+                                                                             AND PLACEMENT_STRUCTURE_ID = 8
+                                                                             GROUP BY TB_PLACEMENT.CLIENT_ID))
+                         AND CE.CLIENT_ID :: VARCHAR  NOT IN (SELECT  PERSONID :: VARCHAR   -- PERSONID  COLUMN IN UUID 
+              FROM LIVINGARRANGEMENT LIV1
+                                                   WHERE LIV1.ACTIVEFLAG = 1
+                                                     AND LIV1.LIVINGSTARTDATE <= end_date
+                                                     AND LIVINGARRANGEMENTTYPEKEY IN ('1505','1532')
+                                                     AND NOT EXISTS  (select placement_id from tb_placement
+                                                                       where (entry_dt <= end_date OR ENTRY_DT IS NOT NULL)
+                                                                         and (exit_dt is null or exit_dt> end_date)
+                                                                         and delete_sw='N'
+                                                                         and (void_sw is null or void_sw = 'N')
+                                                                         and tb_placement.client_id :: VARCHAR =liv1.PERSONID :: VARCHAR )  -- liv1.PERSONID  COLUMN IN UUID 
+                                                    AND (LIV1.LIVINGENDDATE IS NULL OR lIV1.LIVINGENDDATE >= start_date)
+                                                    AND  LIVINGID IN (SELECT LIVINGID
+                                                                         FROM LIVINGARRANGEMENT lIV2
+                                                                        WHERE ACTIVEFLAG = 1
+                                                                          AND LIV2.livingstartDATE <=  end_date
+                                                                          AND (LIV2.livingendDATE IS NULL OR  LIV2.livingendDATE >= start_date)
+                                                                          AND LIV2.PERSONID = LIV1.PERSONID
+                                                                   ORDER BY COALESCE(LIV2.LIVINGENDDATE,end_date) DESC
+                                                                           ,LIV2.LIVINGSTARTDATE DESC
+                                                                         FETCH FIRST 1 ROW ONLY)
+                                                 )
+    AND CE.DELETE_SW = 'N'
+    AND ACTIVEFLAG=1
+)
+
+,KC AS ( SELECT  DISTINCT CE.CLIENT_ID,F_PRIM_COUNTY(CE.CASE_ID)  AS COUNTY,
+                         CE.ELIGIBILITY_TYPE_CD,CE.ELIGIBILITY_STATUS_CD
+                        ,CAST(NULL AS DATE) AS SUBSIDY_START_DT
+                        ,CAST(NULL AS DATE) AS SUBSIDY_END_DT
+                        ,'KINSHIP CARE' AS CASE_TYPE
+                        ,R.REMOVALDATE
+                        ,R.RETURNDATE
+               FROM TB_CLIENT_ELIGIBILITY CE
+              INNER  JOIN INTAKESERVREQCHILDREMOVAL R
+  ON CE.REMOVAL_ID ::varchar = R.intakeservreqchildremovalid ::varchar
+                                  AND CE.CLIENT_ID :: varchar = R.intakeservicerequestactorid ::varchar
+
+  WHERE  R.intakeservreqchildremovalid ::varchar IN (SELECT MAX(RE.intakeservreqchildremovalid ::varchar) FROM INTAKESERVREQCHILDREMOVAL RE WHERE (((RE.RETURNDaTe BETWEEN   start_date AND  end_date )
+           OR (RE.REMOVALDaTe <=  end_date AND  RE.RETURNDATE IS NULL) )
+    OR (RE.REMOVALDATE <=  end_date AND RE.RETURNDATE >=   start_date))
+    AND RE.CASEID IN (SELECT servicecaseid FROM servicecase WHERE Activeflag=1)
+    AND RE.Activeflag=1 AND RE.intakeservicerequestactorid=R.intakeservicerequestactorid)
+    AND (CE.CLIENT_ID IN  (SELECT TB_PLACEMENT.CLIENT_ID FROM TB_PLACEMENT
+                                                    WHERE TB_PLACEMENT.placement_id IN (select MAX(placement_id)
+                                                              FROM TB_PLACEMENT
+                                                                            where  (entry_dt <= end_date OR ENTRY_DT IS NOT NULL)
+                                                                             and (exit_dt IS NULL OR exit_dt >=start_date)
+                                                              and delete_sw = 'N'
+                                                                             and (void_sw is null or void_sw = 'N')
+                                                                             AND PLACEMENT_STRUCTURE_ID = 8
+                                                                             GROUP BY tb_placement.CLIENT_ID))
+                   /* PRJ-01178 - The Below section is commented out, as it is wrongly adding up clients to Kinship Care */
+       /*   OR CE.CLIENT_ID  IN (SELECT  CLIENT_ID
+                                                    FROM TB_LIVING_ARRANGEMENT LIV1
+                                                   WHERE DELETE_SW ='N'
+                                                     AND LIVING_ARRANGEMENT_CD IN ('1505','1532')
+                                                     AND NOT EXISTS  (select placement_id from tb_placement
+                                                                       where (entry_dt <= prev_month_last_day OR ENTRY_DT IS NOT NULL)
+                                                                         and (exit_dt is null or exit_dt> prev_month_last_day)
+                                                                         and delete_sw='N'
+                                                                         and (void_sw is null or void_sw = 'N')
+                                                                         and client_id=liv1.client_id)
+                                                     AND  LIVING_ID IN (SELECT LIVING_ID
+                                                                         FROM TB_LIVING_ARRANGEMENT lIV2
+                                                                        WHERE DELETE_SW ='N'
+                                                                          AND living_start_dt <=  prev_month_last_day
+                                                                          AND (living_end_dt IS NULL OR  living_end_dt >= prev_month_first_day)
+                                                                          AND LIV2.CLIENT_ID = LIV1.CLIENT_ID
+                                                                   ORDER BY COALESCE(LIVING_END_DT,prev_month_last_day) DESC
+                                                                           ,LIVING_START_DT DESC
+                                                                         FETCH FIRST 1 ROW ONLY)
+                                                 ) */
+                         )
+    AND CE.DELETE_SW = 'N'
+    AND R.Activeflag=1
+)
+,ADOPTION AS
+  (SELECT  DISTINCT CE.CLIENT_ID,F_PRIM_COUNTY(CE.CASE_ID) AS COUNTY
+      , CE.ELIGIBILITY_TYPE_CD,CE.ELIGIBILITY_STATUS_CD
+      , SA.SUBSIDY_START_DT,SA.SUBSIDY_END_DT
+      , 'SUBSIDIZED ADOPTION' AS CASE_TYPE
+  FROM TB_ADOPTION SA INNER JOIN  TB_CLIENT_ELIGIBILITY CE
+  ON SA.ADOPTION_ID = CE.ADOPTION_ID
+  WHERE
+      (SA.SUBSIDY_START_DT <=  end_date AND
+      (SA.SUBSIDY_END_DT IS NULL OR SA.SUBSIDY_END_DT >=   start_date ) )
+      AND CE.CASE_ID :: varchar IN (SELECT servicecase.Servicecaseid :: varchar  FROM servicecase  WHERE activeflag = 1 )
+      AND CE.ELIGIBILITY_TYPE_CD = '2934' AND CE.DELETE_SW = 'N' AND SA.DELETE_SW = 'N'
+)
+,GUARDIAN AS
+   (SELECT DISTINCT CE.CLIENT_ID,F_PRIM_COUNTY(CE.CASE_ID) AS COUNTY
+            , CE.ELIGIBILITY_TYPE_CD,CE.ELIGIBILITY_STATUS_CD
+            ,GS.SUBSIDY_START_DT,GS.SUBSIDY_END_DT
+            , 'SUBSIDIZED GUARDIANSHIP' AS CASE_TYPE
+  FROM TB_GUARDIAN_SUBSIDY GS INNER JOIN TB_CLIENT_ELIGIBILITY CE
+  ON CE.CLIENT_ID=GS.CLIENT_ID AND CE.DELETE_SW='N' AND GS.DELETE_SW='N'
+  WHERE GS.SUBSIDY_START_DT <=  end_date
+  AND (GS.SUBSIDY_END_DT >=start_date OR GS.SUBSIDY_END_DT IS NULL)
+  AND CE.ELIGIBILITY_TYPE_CD='2935'
+  AND CE.CASE_ID ::varchar IN (SELECT servicecaseid :: varchar FROM servicecase WHERE activeflag = 1 )
+  AND GS.SUSBSIDY_APPROVAL_STATUS_CD='3047'
+)
+,FOSTER_CARE AS (SELECT DISTINCT FC.CLIENT_ID,COUNTY
+                     ,ELIGIBILITY_TYPE_CD,ELIGIBILITY_STATUS_CD
+                     , FC.SUBSIDY_START_DT,FC.SUBSIDY_END_DT
+                     , FC.CASE_TYPE
+                FROM FC
+                         WHERE NOT EXISTS ((SELECT 1 FROM GUARDIAN
+                                             WHERE  GUARDIAN.CLIENT_ID = FC.CLIENT_ID
+                                             AND  FC.RETURNDaTe BETWEEN start_date AND end_date
+                                             AND   GUARDIAN.SUBSIDY_END_DT >= FC.RETURNDATE)
+                                            UNION
+                                             SELECT 1 FROM ADOPTION
+                                            WHERE ADOPTION.CLIENT_ID = FC.CLIENT_ID
+                                            AND  FC.RETURNDATE BETWEEN start_date AND end_date
+                                            AND ADOPTION.SUBSIDY_END_DT >= FC.RETURNDATE)
+             )
+,KINSHIP AS (SELECT DISTINCT KC.CLIENT_ID,KC.COUNTY
+                             ,KC.ELIGIBILITY_TYPE_CD,KC.ELIGIBILITY_STATUS_CD
+                             ,KC.SUBSIDY_START_DT,KC.SUBSIDY_END_DT
+                             , KC.CASE_TYPE
+                        FROM KC
+                         WHERE NOT EXISTS ((SELECT 1 FROM GUARDIAN
+                                             WHERE  GUARDIAN.CLIENT_ID = KC.CLIENT_ID
+                                                AND  KC.RETURNDATE BETWEEN start_date AND end_date
+                                               AND   GUARDIAN.SUBSIDY_END_DT >= KC.RETURNDATE)
+                                             UNION
+                                             SELECT 1 FROM ADOPTION
+                                              WHERE ADOPTION.CLIENT_ID = KC.CLIENT_ID
+                                                 AND KC.RETURNDATE BETWEEN start_date AND end_date
+                                                AND ADOPTION.SUBSIDY_END_DT >= KC.RETURNDATE)
+)
+,KIDS
+AS
+(SELECT FOSTER_CARE.CLIENT_ID,COUNTY
+                     ,ELIGIBILITY_TYPE_CD,ELIGIBILITY_STATUS_CD
+                     , FOSTER_CARE.SUBSIDY_START_DT,FOSTER_CARE.SUBSIDY_END_DT
+                     , FOSTER_CARE.CASE_TYPE
+                FROM FOSTER_CARE
+                          UNION
+                       SELECT KINSHIP.CLIENT_ID,KINSHIP.COUNTY
+                             ,ELIGIBILITY_TYPE_CD,ELIGIBILITY_STATUS_CD
+                             ,KINSHIP.SUBSIDY_START_DT,KINSHIP.SUBSIDY_END_DT
+                             , KINSHIP.CASE_TYPE
+                        FROM KINSHIP
+                                UNION
+                             SELECT GUARDIAN.CLIENT_ID,COUNTY
+                                   ,ELIGIBILITY_TYPE_CD,ELIGIBILITY_STATUS_CD
+                                   ,GUARDIAN.SUBSIDY_START_DT,GUARDIAN.SUBSIDY_END_DT
+                                   , GUARDIAN.CASE_TYPE FROM GUARDIAN
+                               UNION
+                             SELECT ADOPTION.CLIENT_ID,COUNTY
+                                     ,ELIGIBILITY_TYPE_CD,ELIGIBILITY_STATUS_CD
+                                     ,ADOPTION.SUBSIDY_START_DT,ADOPTION.SUBSIDY_END_DT
+                                     ,ADOPTION.CASE_TYPE
+                              FROM ADOPTION
+)
+
+,ALL_KIDS AS (select b.* from
+                           (
+                            SELECT DISTINCT A.*
+                                    ,(Select as_f_age(dob_dt) from tb_client c where c.delete_sw = 'N' and c.client_id = A.client_id) as age
+                                    ,(SELECT PD.FINAL_FISCAL_CATEGORY_CD FROM TB_PAYMENT_DETAIL PD
+                                          WHERE PD.CLIENT_ID = A.CLIENT_ID
+                                             AND PD.DELETE_SW = 'N'
+                                             AND PAYMENT_ID = (SELECT MAX(PAYMENT_ID) FROM TB_PAYMENT_DETAIL PD2
+                                            WHERE PD.CLIENT_ID = PD2.CLIENT_ID
+                                              AND PD2.DELETE_SW = 'N'
+                                              AND PD2.FINAL_SERVICE_ID IS NOT NULL
+                                             AND PAYMENT_ID IN (SELECT PAYMENT_ID FROM TB_PAYMENT_HEADER WHERE DELETE_SW='N' AND PAYMENT_DT <= end_date)
+                                  )
+               FETCH FIRST 1 ROW ONLY
+            ) AS FISCAL_CATEGORY_CD
+                           FROM KIDS A
+                    ) B
+                        WHERE   B.Age < 21 and  b.Fiscal_Category_Cd IS NOT NULL -- PRJ-01178
+                       )
+SELECT DISTINCT A.*
+FROM
+(
+SELECT  DISTINCT
+             as_f_plvalue(COUNTY,104) AS LDSS
+            ,ALL_KIDS.CLIENT_ID
+           ,(SELECT C.LAST_NM FROM TB_CLIENT C WHERE C.DELETE_SW = 'N' AND C.CLIENT_ID = ALL_KIDS.CLIENT_ID) AS LAST_NAME
+            ,(SELECT C.FIRST_NM FROM TB_CLIENT C WHERE C.DELETE_SW = 'N' AND C.CLIENT_ID = ALL_KIDS.CLIENT_ID) AS FIRST_NAME
+            ,(SELECT C.MIDDLE_NM FROM TB_CLIENT C WHERE C.DELETE_SW = 'N' AND C.CLIENT_ID = ALL_KIDS.CLIENT_ID) AS MIDDLE_NAME
+            ,(SELECT C.DOB_DT FROM TB_CLIENT C WHERE C.DELETE_SW = 'N' AND C.CLIENT_ID = ALL_KIDS.CLIENT_ID) AS DATE_OF_BIRTH
+            ,(SELECT F_AGE(C.DOB_DT,start_date)
+                FROM TB_CLIENT C WHERE C.DELETE_SW = 'N' AND C.CLIENT_ID = ALL_KIDS.CLIENT_ID) AS AGE
+              ,(SELECT R.REMOVALDATE
+                FROM INTAKESERVREQCHILDREMOVAL R
+               WHERE R.intakeservicerequestactorid :: varchar = ALL_KIDS.CLIENT_ID :: varchar AND R.Activeflag=1
+                 AND  R.intakeservreqchildremovalid :: varchar= (SELECT MAX(RE.intakeservreqchildremovalid :: varchar) FROM INTAKESERVREQCHILDREMOVAL RE
+                                     WHERE RE.intakeservicerequestactorid = R.intakeservicerequestactorid AND RE.Activeflag = 1
+                                       AND (((RE.RETURNDATE BETWEEN  start_date  AND  end_date )
+                          OR (RE.REMOVALDATE <=  end_date AND  RE.RETURNDATE IS NULL) )
+                   OR (RE.REMOVALDATE <=  end_date AND RE.RETURNDATE >=   start_date)))
+             FETCH FIRST 1 ROW ONLY
+            ) AS REMOVAL_DT
+            ,(SELECT (CASE WHEN R.RETURNDATE >  end_date THEN NULL ELSE R.RETURNDATE END) RETURN_DT
+                FROM INTAKESERVREQCHILDREMOVAL R
+               WHERE R.intakeservicerequestactorid :: varchar = ALL_KIDS.CLIENT_ID :: varchar AND R.Activeflag=1
+                 AND  R.intakeservreqchildremovalid ::varchar = (SELECT MAX(RE.intakeservreqchildremovalid::varchar) FROM INTAKESERVREQCHILDREMOVAL RE
+                                     WHERE RE.intakeservicerequestactorid = R.intakeservicerequestactorid AND RE.Activeflag=1
+                                       AND (((RE.RETURNDATE BETWEEN  start_date  AND  end_date )
+                          OR (RE.REMOVALDATE <=  end_date AND  RE.RETURNDATE IS NULL) )
+                   OR (RE.REMOVALDATE <=  end_date AND RE.RETURNDATE >=   start_date)))
+             FETCH FIRST 1 ROW ONLY
+            ) AS RETURN_DT
+           ,as_f_plvalue(livingarrangementTYPEKEY,115) as living_arrangement_name
+           ,lv.LIVINGSTARTDATE
+           ,lv.LIVINGENDDATE
+           ,SERVICE_NM AS PLACEMENT_STRUCTURE
+           ,ENTRY_DT AS PLACEMENT_BEGIN_DT
+           ,EXIT_DT AS PLACEMENT_EXIT_DT
+           ,F_ENAME('2953',PROVIDER_ID) AS CURRENT_PROVIDER_NAME
+           ,(CASE WHEN COALESCE (FC_NONREIMBUR1.E_STATUS,FC_NONREIMBUR2.E_STATUS) IS NULL
+                  THEN (CASE WHEN ALL_KIDS.ELIGIBILITY_STATUS_CD = '2912'
+                             THEN 'ELIGIBILE_NON-REIMBURSABLE(2)'
+                         ELSE F_PLVALUE(ALL_KIDS.ELIGIBILITY_STATUS_CD,262)END)
+                  ELSE COALESCE (FC_NONREIMBUR1.E_STATUS,FC_NONREIMBUR2.E_STATUS) END) AS ELIGIBILITY_STATUS
+           ,(SELECT PD.FINAL_FISCAL_CATEGORY_CD FROM TB_PAYMENT_DETAIL PD
+              WHERE PD.CLIENT_ID = ALL_KIDS.CLIENT_ID
+                AND PD.DELETE_SW = 'N'
+                AND PAYMENT_ID = (SELECT MAX(PAYMENT_ID) FROM TB_PAYMENT_DETAIL PD2
+                                   WHERE PD.CLIENT_ID = PD2.CLIENT_ID
+                                     AND PD2.DELETE_SW = 'N'
+                                     AND PD2.FINAL_SERVICE_ID IS NOT NULL
+                                     AND PAYMENT_ID IN (SELECT PAYMENT_ID FROM TB_PAYMENT_HEADER WHERE DELETE_SW='N' AND PAYMENT_DT <=  end_date)
+                                  )
+               FETCH FIRST 1 ROW ONLY
+            ) AS FISCAL_CATEGORY_CD
+           ,ALL_KIDS.SUBSIDY_START_DT
+           ,ALL_KIDS.SUBSIDY_END_DT
+           ,ALL_KIDS.CASE_TYPE
+           ,EL_REASON.REASON
+
+  FROM
+ALL_KIDS
+
+  LEFT JOIN
+
+     (SELECT LIV1.PERSONID,LIV1.LIVINGARRANGEMENTTYPEKEY,LIV1.LIVINGSTARTDATE,LIV1.LIVINGENDDATE
+        FROM livingarrangement   LIV1
+             WHERE ACTIVEFLAG = 1
+             AND  livingid :: VARCHAR  IN ( SELECT MAX(livingid :: VARCHAR )    --livingid COLUMN IN UUID 
+                      FROM livingarrangement  LIV2
+                                   WHERE ACTIVEFLAG = 1
+                       AND   LIV2.livingstartDATE <=  end_date
+                       AND   (LIV2.livingendDATE IS NULL OR  LIV2.livingendDATE >=  start_date)
+                                                GROUP BY LIV2.PERSONID
+                                              )
+                                       ) LV
+        ON ( LV.PERSONID :: VARCHAR =ALL_KIDS.CLIENT_ID :: VARCHAR )
+
+   LEFT JOIN (SELECT p.client_id ,service_nm,service_id,P.PROVIDER_ID,ENTRY_DT,EXIT_DT
+         FROM tb_placement p
+   JOIN tb_services s
+    ON s.service_id=p.placement_structure_id AND s.delete_sw='N' AND p.delete_sw='N'
+        WHERE placement_id IN     (select MAX(placement_id)
+                              from tb_placement
+                                                   where  (entry_dt <=   end_date OR ENTRY_DT IS NOT NULL)
+                                                   and (exit_dt IS NULL OR exit_dt >=start_date)
+                              and delete_sw = 'N'
+                                                   and (void_sw is null or void_sw = 'N')
+                                                   and case_id ::varchar in (select servicecaseid ::varchar from servicecase where activeflag = 1)
+               group by p.client_id
+             )
+     
+                            AND (void_sw IS NULL OR void_sw = 'N')
+                     AND case_id :: varchar IN (select servicecaseid ::varchar  from servicecase where activeflag = 1)
+                           )placement
+ 
+      ON placement.client_id=ALL_KIDS.client_id
+
+
+ LEFT JOIN
+
+(select
+distinct as_f_pdesc(REASON_CD,263)  AS REASON,CE.CLIENT_ID,ce.eligibility_type_cd
+                            FROM     TB_CLIENT_ELIGIBILITY CE,
+                 TB_ELIGIBILITY_PERIOD EP,
+                 TB_ELIGIBILITY_EVENTS EE
+
+     WHERE
+      CE.ELIGIBILITY_ID = EP.ELIGIBILITY_ID
+        AND      EE.ELIGIBILITY_PERIOD_ID = EP.ELIGIBILITY_PERIOD_ID
+        AND      CE.ELIGIBILITY_TYPE_CD IN ('2931','2934','2935')
+        AND      CE.DELETE_SW = 'N'
+        AND      CE.START_DT <= end_date
+        AND      ((CE.END_DT IS NULL OR CE.END_DT >= start_date))
+        AND      EP.DELETE_SW = 'N'
+        AND      ((EP.END_DT IS NULL OR EP.END_DT >= start_date ))
+        AND      EE.DELETE_SW = 'N'
+        AND      EE.TYPE_CD <> '2925'
+        AND      EE.EVENT_ID IN (SELECT MAX(EVENT_ID) FROM TB_ELIGIBILITY_EVENTS ee2
+                                 WHERE ee2.ELIGIBILITY_PERIOD_ID = EP.ELIGIBILITY_PERIOD_ID AND TYPE_CD <> '2925'
+                                   AND EE2.DELETE_SW = 'N' )
+       AND     CE.ELIGIBILITY_ID IN (SELECT MAX(ELIGIBILITY_ID) FROM TB_CLIENT_ELIGIBILITY
+                                      WHERE START_DT <= end_date
+                                        AND (END_DT IS NULL OR END_DT >= start_date)
+                                        AND TB_CLIENT_ELIGIBILITY.CLIENT_ID = CE.CLIENT_ID)
+        AND     EE.ELIGIBILITY_PERIOD_ID IN (SELECT MAX(ELIGIBILITY_PERIOD_ID) FROM TB_ELIGIBILITY_PERIOD EP2
+                                 WHERE EP2.ELIGIBILITY_ID = CE.ELIGIBILITY_ID AND TYPE_CD <> '2925'
+                                   AND EP2.DELETE_SW = 'N' ))  AS EL_REASON
+ON EL_REASON.CLIENT_ID = ALL_KIDS.CLIENT_ID
+   AND EL_REASON.ELIGIBILITY_TYPE_CD = ALL_KIDS.ELIGIBILITY_TYPE_CD
+
+LEFT JOIN
+  /* FOSTER CARE NON-REIMBURSABLE(1) */
+                   (SELECT DISTINCT FCA.CLIENT_ID,'ELIGIBILE_NON-REIMBURSABLE(1)' AS E_STATUS FROM FOSTER_CARE FCA
+                     INNER JOIN LIVINGARRANGEMENT LA
+                   ON FCA.CLIENT_ID :: VARCHAR = LA.PERSONID :: VARCHAR AND LA.ACTIVEFLAG = 1
+                    AND LA.LIVINGARRANGEMENTTYPEKEY IN ('10460','6589')
+                    AND LA.LIVINGSTARTDATE <=end_date
+                    AND (LA.LIVINGENDDATE IS NULL OR la.LIVINGENDDATE >=start_date)
+                    AND trunc(date_part('day',LA.LIVINGENDDATE :: timestamp - end_date::timestamp ))  - trunc(date_part('day',la.LIVINGSTARTDATE::timestamp - start_date :: timestamp ))  <= 180 
+     AND FCA.ELIGIBILITY_STATUS_CD IN ('2912','2913')
+                     UNION
+
+                   SELECT DISTINCT FCA.CLIENT_ID,'ELIGIBILE_NON-REIMBURSABLE(1)' AS E_STATUS FROM FOSTER_CARE FCA
+                       WHERE   FCA.CLIENT_ID IN (SELECT CE2.CLIENT_ID FROM TB_CLIENT_ELIGIBILITY CE2
+                                               WHERE CE2.ELIGIBILITY_STATUS_CD IN ('2277','2278','2286')
+                                                 AND CE2.ELIGIBILITY_TYPE_CD IN ('2274','2275')
+                                                 AND CE2.START_DT <= end_date AND (CE2.END_DT IS NULL OR CE2.END_DT >= start_date)
+                                                 AND CE2.DELETE_SW = 'N')
+                        AND FCA.ELIGIBILITY_STATUS_CD IN ('2913')
+
+                         ) AS  FC_NONREIMBUR1
+    ON  ALL_KIDS.CLIENT_ID = FC_NONREIMBUR1.CLIENT_ID
+            LEFT JOIN
+                    /* FOSTER CARE NON-REIMBURSABLE(2) */
+
+                 (SELECT DISTINCT FCA.CLIENT_ID,'ELIGIBILE_NON-REIMBURSABLE(2)' AS E_STATUS  FROM FOSTER_CARE FCA
+                     INNER JOIN LIVINGARRANGEMENT LA
+                        ON FCA.CLIENT_ID :: VARCHAR = LA.PERSONID  :: VARCHAR AND LA.ACTIVEFLAG = 1
+                     WHERE LA.LIVINGARRANGEMENTTYPEKEY IN ('10460','6589')
+                       AND LA.LIVINGSTARTDATE <= end_date
+                       AND (LA.LIVINGENDDATE IS NULL OR la.LIVINGENDDATE >= start_date)
+           AND TRUNC(DATE_PART('day',LA.LIVINGENDDATE :: timestamp - end_date:: timestamp )) -  TRUNC(DATE_PART('day',la.LIVINGSTARTDATE::timestamp - start_date )) > 180
+                       AND FCA.ELIGIBILITY_STATUS_CD IN ('2913')
+                     UNION
+                    SELECT FCA.CLIENT_ID,'ELIGIBILE_NON-REIMBURSABLE(2)' AS E_STATUS  FROM FOSTER_CARE FCA
+                    WHERE ELIGIBILITY_STATUS_CD IN ('2912')
+                      AND FCA.CLIENT_ID::VARCHAR NOT IN ( SELECT LA.PERSONID ::VARCHAR
+           FROM LIVINGARRANGEMENT LA
+                                               JOIN FOSTER_CARE FCA
+                                                ON FCA.CLIENT_ID ::VARCHAR = LA.PERSONID  ::VARCHAR 
+                                               WHERE LA.ACTIVEFLAG = 1
+                                                AND LA.LIVINGARRANGEMENTTYPEKEY IN ('10460','6589')
+                                                 AND LA.LIVINGSTARTDATE <= end_date
+                                                AND (LA.LIVINGENDDATE IS NULL OR la.LIVINGENDDATE >= start_date)
+                                            AND TRUNC(DATE_PART('day', LA.LIVINGENDDATE ::timestamp - end_date::timestamp))  - TRUNC(DATE_PART('day',la.LIVINGSTARTDATE ::timestamp - start_date ::timestamp) ) <= 180
+              AND FCA.ELIGIBILITY_STATUS_CD IN ('2912'))) AS   FC_NONREIMBUR2
+ON ALL_KIDS.CLIENT_ID =  FC_NONREIMBUR2.CLIENT_ID
+
+WHERE COUNTY NOT IN ('3824','3825','3826')
+) A)
+ ;
+END;
+$function$
+

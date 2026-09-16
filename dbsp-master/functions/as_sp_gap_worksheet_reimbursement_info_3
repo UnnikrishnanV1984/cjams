@@ -1,0 +1,132 @@
+CREATE OR REPLACE FUNCTION as_sp_gap_worksheet_reimbursement_info_3(al_client_id bigint)
+ RETURNS TABLE(client_id bigint, removalid bigint, childremovedbycowithctw character varying, removalcourtorderdate timestamp without time zone, childremovedbyvpa character varying, bestinterestcourtorderdate timestamp without time zone, last6monthfiscalpaymentstatus character varying, placementid uuid)
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE 
+  vs_Procedure_nm           VARCHAR(100) DEFAULT 'sp_gap_worksheet_reimbursement_info';
+  vn_rmvl_id            BIGINT;
+  vs_chld_rmvd_by_co_with_ctw        VARCHAR(20);
+  vd_child_rmvl_crt_ord_dt        TIMESTAMP;
+  vs_chld_rmvd_vpa          VARCHAR(20);
+  vd_crt_ord_by_bi_dt          TIMESTAMP;
+  vs_lst_6_mnth_pymnt_stus        VARCHAR(20);
+  vd_placementid                                          UUID;
+  
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_reimbursement_info ( 
+  client_id             BIGINT,
+  removalid            BIGINT,
+  childremovedbycowithctw         VARCHAR(20),
+  removalcourtorderdate         TIMESTAMP,
+  childremovedbyvpa          VARCHAR(20),
+  bestinterestcourtorderdate        TIMESTAMP,
+  last6monthfiscalpaymentstatus       VARCHAR(20), 
+  placementid                                              UUID
+ ); 
+
+vs_lst_6_mnth_pymnt_stus = 'YES';
+-- Removal ID   
+SELECT isrcr.removalid  
+ INTO vn_rmvl_id
+   FROM intakeservreqchildremoval isrcr, person per, intakeservicerequestactor isra     
+WHERE isra.servicecaseid = isrcr.servicecaseid AND isrcr.activeflag = 1
+ AND isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isrcr.updatedon DESC LIMIT 1;
+
+--- Placement ID
+SELECT 
+   pl.placementid into vd_placementid
+  from placement pl, routing r, intakeservreqchildremoval isrcr, person per
+  Where pl.placementid::character varying = r.objectid AND r.eventcode='PLTR' AND isrcr.servicecaseid = pl.servicecaseid and pl.activeflag= 1 and r.activeflag = 1
+  AND pl.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid and isrcr.activeflag =1  AND isrcr.removalid = vn_rmvl_id
+  AND per.personid = pl.personid  AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY pl.update_ts DESC limit 1;
+ 
+
+-- Child Removed By CourtOrder With CTW
+SELECT ( CASE WHEN (rtrim(isrcr.removaltypekey) = 'JD') 
+    THEN (SELECT ( CASE WHEN ( SELECT ( CASE WHEN (iscod.isselected = 1) 
+    THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END )
+   FROM intakeservreqcourtorder isco, intakeservreqcourtorderdetails iscod, intakeservicerequestpetition isrp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+WHERE isco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ AND iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = '838f07f5-0c94-4f13-b5c0-658c4b9ad5bc' 
+ AND isrp.intakeservicerequestpetitionid = isco.intakeservicerequestpetitionid AND isrp.activeflag = 1 AND isrp.servicecaseid = isco.servicecaseid
+ AND sc.servicecaseid = isrp.servicecaseid AND sc.activeflag = 1 AND isrp.petitiontypekey IN ('GAPTPR', 'CINA', 'CINS')  
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isco.updatedon desc LIMIT 1 ) = 'YES'::VARCHAR
+     THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END ))
+    ELSE NULL end )
+ INTO vs_chld_rmvd_by_co_with_ctw
+   FROM intakeservreqchildremoval isrcr, person per, intakeservicerequestactor isra     
+WHERE isra.servicecaseid = isrcr.servicecaseid AND isrcr.activeflag = 1
+ AND isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isrcr.updatedon DESC LIMIT 1;
+
+-- Child Removed By VPA 
+SELECT (CASE WHEN typeofremoval = 'Voluntary_Placement_Agreement'
+   THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END)  INTO vs_chld_rmvd_vpa 
+FROM  tb_ive_fostercare_audit
+WHERE  cjamspid = al_client_id;
+
+-- Removal Court Order Date
+if vs_chld_rmvd_vpa = 'NO' then 
+SELECT courtorderremovaldate  INTO vd_child_rmvl_crt_ord_dt 
+FROM  tb_ive_fostercare_audit
+WHERE  cjamspid = al_client_id and typeofremoval = 'Court_Order';
+ELSE
+SELECT vparemovaldate  INTO vd_child_rmvl_crt_ord_dt 
+FROM  tb_ive_fostercare_audit
+WHERE  cjamspid = al_client_id and typeofremoval = 'Voluntary_Placement_Agreement';
+end if;
+-- Best Interest Court Order Date
+SELECT ( CASE WHEN (rtrim(isrcr.removaltypekey) = 'JD') 
+    THEN (SELECT ( CASE WHEN ( SELECT ( CASE WHEN (iscod.isselected = 1) 
+    THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END )
+   FROM intakeservreqcourtorder isco, intakeservreqcourtorderdetails iscod, intakeservicerequestpetition isrp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+WHERE isco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ AND iscod.checklisttypekey = 'COPP' AND iscod.checklistid = '1a0f7592-e31f-44e7-a18e-e4e5cece3fee' 
+ AND isrp.intakeservicerequestpetitionid = isco.intakeservicerequestpetitionid AND isrp.activeflag = 1 AND isrp.servicecaseid = isco.servicecaseid
+ AND sc.servicecaseid = isrp.servicecaseid AND sc.activeflag = 1 AND isrp.petitiontypekey IN ('GAPTPR', 'CINA', 'CINS')  
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isco.updatedon desc LIMIT 1 ) = 'YES'::VARCHAR
+     THEN MAX(isco.courtorderdate)::TIMESTAMP ELSE NULL END ))
+    ELSE NULL end )
+ INTO vd_crt_ord_by_bi_dt
+   FROM intakeservreqcourtorder isco, intakeservreqchildremoval isrcr, person per, intakeservicerequestactor isra     
+WHERE isco.servicecaseid = isra.servicecaseid AND isco.activeflag = 1
+ AND isra.servicecaseid = isrcr.servicecaseid AND isrcr.activeflag = 1
+ AND isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 GROUP BY isrcr.removaltypekey, isrcr.updatedon LIMIT 1;
+
+--SELECT (CASE WHEN LEFT(tpd.final_fiscal_category_cd, 2) = '21' 
+--    THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END) 
+-- INTO vs_lst_6_mnth_pymnt_stus
+--   FROM tb_payment_detail tpd
+--WHERE (tpd.final_service_start_dt >= date_trunc('month', now()) - interval '6 month' and
+--      tpd.final_service_start_dt < date_trunc('month', now()))
+--AND tpd.client_id::BIGINT = al_client_id AND tpd.delete_sw = 'N';
+
+INSERT INTO Temp_worksheet_reimbursement_info
+SELECT 
+  al_client_id,
+  vn_rmvl_id,
+  vs_chld_rmvd_by_co_with_ctw,
+  vd_child_rmvl_crt_ord_dt,
+  vs_chld_rmvd_vpa,
+  vd_crt_ord_by_bi_dt,
+  vs_lst_6_mnth_pymnt_stus,
+  vd_placementid;
+  
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_reimbursement_info;
+              
+DROP TABLE Temp_worksheet_reimbursement_info;
+
+   END
+    $function$
+

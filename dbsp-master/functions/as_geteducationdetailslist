@@ -1,0 +1,60 @@
+CREATE OR REPLACE FUNCTION as_geteducationdetailslist(personid uuid)
+ RETURNS TABLE("personEducation" json)
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE
+    
+    v_personid uuid;
+         
+BEGIN
+    
+    v_personid := personid :: uuid;
+ 
+RETURN QUERY
+
+ SELECT json_agg(A) FROM 
+  (
+select pe.*,json_build_object('educationtypekey',edt.educationtypekey,'typedescription',edt.typedescription) as educationtype,
+        json_build_object('countyid', c.countyid,'countyname',c.countyname) as county,
+        json_build_object('gradetypekey',l.gradetypekey, 'typedescription',l.typedescription) as lastgrade,
+        json_build_object('gradetypekey',cg.gradetypekey, 'typedescription',cg.typedescription) as currentgrade,
+        json_build_object('schoolid', s.schoolid,'educationtypekey',s.educationtypekey, 'schoolname',s.schoolname, 'address', s.address,'city', 
+        s.city,'zipcode', 
+        s.zipcode,'phonenumber',s.phonenumber) as school,eduspec.currentiep,eduspec.iepspecialeducation from personeducation as pe      
+ left join (
+select personeducationid,currentiep,json_build_object('iepspecialeducationid',ise.iepspecialeducationid,'personeducationid',personeducationid,
+ 'currentiep',currentiep,'courseandgrades',courseandgrades,'describeappropriateness',describeappropriateness,'youthsacademicadjustmentkey',
+    youthsacademicadjustmentkey,'youthsacademicadjustmentdesc',youthsacademicadjustmentdesc,'youthssocialadjustmentkey',
+    youthssocialadjustmentkey,'youthssocialadjustmentdesc',
+    youthssocialadjustmentdesc,
+   'iepeducationalservices',
+  (case when ies.iepeducationalservices is not null then ies.iepeducationalservices else '[]' end),
+   'iepdisabilitycode',
+   (case when ids.iepdisabilitycode is not null then ids.iepdisabilitycode else '[]' end)
+  ) as iepspecialeducation
+   from iepspecialeducation as ise
+   left join  (select json_agg(EP) as iepeducationalservices,EP.iepspecialeducationid from (select iepeducationalservicesid,educationalserviceskey,educationalservicesdesc,
+        iepspecialeducationid 
+ from iepeducationalservices where activeflag=1) as EP
+ group by iepspecialeducationid) as ies on ise.iepspecialeducationid=ies.iepspecialeducationid
+   left join (select json_agg(p) as iepdisabilitycode
+ ,p.iepspecialeducationid from (select iepdisabilitycodeid,disabilitycodekey,disabilitycodedesc,iepspecialeducationid 
+ from iepdisabilitycode where activeflag=1) as p
+ group by iepspecialeducationid) as ids on ise.iepspecialeducationid=ids.iepspecialeducationid
+ ) as eduspec on pe.personeducationid=eduspec.personeducationid
+   left join educationtype as edt on pe.educationtypekey = edt.educationtypekey
+   left join county as c on pe.countyid = c.countyid
+   left join gradetype as l on pe.lastgradetypekey = l.gradetypekey
+   left join gradetype as cg on pe.currentgradetypekey = cg.gradetypekey
+   left join school as s on pe.schoolid = s.schoolid
+   where pe.personid=v_personid  and pe.activeflag=1 order by pe.startdate desc
+    
+  ) A;
+ 
+END;
+
+ 
+$function$
+

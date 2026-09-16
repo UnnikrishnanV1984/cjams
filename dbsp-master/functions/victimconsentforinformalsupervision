@@ -1,0 +1,61 @@
+CREATE OR REPLACE FUNCTION victimconsentforinformalsupervision(i_evalutionid uuid, i_secid character varying, i_person_id uuid)
+ RETURNS TABLE(currentdate character varying, complaint_id character varying, complaintdate character varying, youth json, victim json, offensename character varying[], offensedate character varying, officername character varying, officerphone character varying)
+ LANGUAGE plpgsql
+AS $function$
+   BEGIN    
+ RETURN QUERY    
+ ( select CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate ,
+          complaintid as complaint_id,
+          cast (to_char(complaintreceiveddate,'MM/DD/YYYY') as character varying) as complaintdate,
+          (
+           select row_to_json(y) from 
+           (select CAST(ip.firstname||' '||ip.lastname as character varying)  as name,
+                CAST(ip.cjamspid as character varying) as id
+                from person ip join actor iacc
+                on ip.personid = iacc.personid
+                join intakeservicerequestactor iisra
+                on iisra.actorid = iacc.actorid
+                where iacc.actortype = 'Youth'
+                and iisra.intakeserviceid = INTSR.intakeserviceid) as y
+          ) as youth,
+          (
+           select row_to_json(v) from 
+           (select CAST(ip.firstname||' '||ip.lastname as character varying)  as name,
+                CAST(ip.cjamspid as character varying) as id,
+                (select json_agg(a) 
+                 from 
+                  (select pa.address || ', ' || pa.address2 as address,
+                  pa.county || ' ' || pa.state || ' ' || pa.zipcode as state,
+                  pa.personaddresstypekey
+                  from personaddress pa where ip.personid = pa.personid and pa.activeflag=1) as a) as address
+                from person ip 
+                join actor iacc
+                on ip.personid = iacc.personid
+                join intakeservicerequestactor iisra
+                on iisra.actorid = iacc.actorid
+                where iacc.actortype = 'Victim'
+                and iacc.activeflag = 1
+                and iisra.intakeserviceid = INTSR.intakeserviceid
+                and
+                ip.personid = i_person_id) as v
+          ) as victim,
+             (select array_agg(AG.name)  from  allegation AG
+      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+      where  ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as offensename,
+             cast (case 
+          when inve.unknownrange=0 then to_char(inve.offensedate,'MM/DD/YYYY') 
+           when inve.unknownrange=1 then to_char(inve.offensedate,'MM/DD/YYYY')
+            when inve.unknownrange=2 then to_char(inve.begindate,'MM/DD/YYYY')|| ' - ' || to_char(inve.enddate,'MM/DD/YYYY')
+             end as character varying) as offensedate,
+            (select distinct up.fullname from userprofile up where securityusersid = i_secid) as officername,
+            (select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as officerphone
+            from intakeservicerequestevaluation inve
+        join intakeservicerequest INTSR on INTSR.intakenumber=inve.intakenumber and INTSR.activeflag=1
+       left join evaluationsource es on es.evaluationsourceid=inve.evaluationsourceid and es.activeflag=1 
+       join intakeservicerequestevaluationconfig ITSEC on ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1
+       join allegation AG on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+       where  inve.intakeservicerequestevaluationid = i_evalutionid) ; 
+     
+   end;
+  $function$
+

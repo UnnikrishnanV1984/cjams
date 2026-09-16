@@ -1,0 +1,15 @@
+ALTER TABLE cjams.visitationplan ALTER COLUMN personid DROP NOT NULL;
+ALTER TABLE cjams.visitationplan ALTER COLUMN referralid DROP NOT NULL;
+ALTER TABLE cjams.visitationplan ALTER COLUMN clientmergeid DROP NOT NULL;
+ALTER TABLE cjams.visitationplan ALTER COLUMN visitationplanid SET DEFAULT gen_random_uuid();
+ALTER TABLE cjams.serviceplanvisitationplanmapping ALTER COLUMN serviceplanvisitationplanmappingid SET DEFAULT gen_random_uuid();
+ALTER TABLE cjams.visitationplanclients ALTER COLUMN visitplanclntid SET DEFAULT gen_random_uuid();
+ALTER TABLE cjams.visitationplanclients ALTER COLUMN clientmergeid DROP NOT NULL;
+ALTER TABLE cjams.visitationplanclients ALTER COLUMN personid DROP NOT NULL;
+ALTER TABLE cjams.visitationplanclients ALTER COLUMN collateralid DROP NOT NULL;
+ALTER TABLE cjams.visitationplan ALTER COLUMN updatedby TYPE varchar(50) USING updatedby::varchar;
+ALTER TABLE cjams.visitationplan ALTER COLUMN insertedby TYPE varchar(50) USING insertedby::varchar;
+ALTER TABLE cjams.serviceplanvisitationplanmapping ALTER COLUMN insertedby TYPE varchar(50) USING insertedby::varchar;
+ALTER TABLE cjams.serviceplanvisitationplanmapping ALTER COLUMN updatedby TYPE varchar(50) USING updatedby::varchar;
+ALTER TABLE cjams.visitationplanclients ALTER COLUMN updatedby TYPE varchar(50) USING updatedby::varchar;
+ALTER TABLE cjams.visitationplanclients ALTER COLUMN insertedby TYPE varchar(50) USING insertedby::varchar;

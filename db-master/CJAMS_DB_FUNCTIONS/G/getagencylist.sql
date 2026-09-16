@@ -1,0 +1,22 @@
+ CREATE OR REPLACE FUNCTION public.getagencylist(_agencyid uuid, _limit integer, _page integer)                 
+  RETURNS TABLE(firstname character varying, lastname character varying)                                        
+  LANGUAGE plpgsql                                                                                              
+ AS $function$                                                                                                  
+                                                                                                                
+ BEGIN                                                                                                          
+                                                                                                                
+     RETURN QUERY                                                                                               
+                                                                                                                
+ select p.firstname,p.lastname from agency  a join intakeservicerequestagency ia   on  a.agencyid = ia.agencyid 
+ join intakeservicerequestactor iac on  iac.intakeserviceid = ia.intakeserviceid                                
+ join actor  ac on ac.actorid = iac.actorid                                                                     
+ join person p on p.personid = ac.personid                                                                      
+ where a.agencyid = _agencyid AND                                                                               
+ ac.actortype IN('RA','RC')                                                                                     
+ group by  p.firstname,p.lastname                                                                               
+                                                                                                                
+ LIMIT _limit OFFSET  (_page - 1) * _limit;                                                                     
+                                                                                                                
+   END;                                                                                                         
+ $function$                                                                                                     
+

@@ -1,0 +1,1 @@
+update intakeservicerequestactor set activeflag = 1, updatedby = 'Data fix as per CDM-9071' , updatedon = now() where intakeservicerequestactorid = '0e9edc71-1353-4b9d-be4b-950bb9311784' and activeflag = 0;

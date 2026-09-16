@@ -1,0 +1,1 @@
+ALTER TABLE defecttracking.supportlog ADD column jirarequestno character varying (50);

@@ -1,0 +1,49 @@
+DROP FUNCTION IF EXISTS cjams.getlegalcustodymultiplepersons(text);
+
+CREATE OR REPLACE FUNCTION cjams.getlegalcustodymultiplepersons(personids text)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+ -------------------------------------------------------------------------------------------
+--Revision(s)
+-- 12/27/2023 Palani/Manasa - Query optimization changes(CIDM-8257)
+-------------------------------------------------------------------------------------------  
+
+DECLARE l_legalcustody json;
+ v_personids text[]; 
+
+BEGIN
+ 
+	v_personids :=personids;  
+
+IF ( v_personids is not null ) THEN  
+
+	SELECT json_agg(legalcustody) INTO l_legalcustody FROM (
+	SELECT lc.legalcustodyid, lc.servicecaseid, lc.intakeservicerequestactorid,lc.permanencyplanid,
+		lc.legalcustodytypekey, lc.reason, lc.fromdate, lc.todate, pn.personid, 
+		(SELECT 	arp.relationshiptypekey 
+			FROM	actorrelationship arp 
+			WHERE 	arp.intakeservicerequestactorid = isra.intakeservicerequestactorid AND arp.activeflag =1 LIMIT 1
+		) relationshiptypekey,
+		'' As personaddress,
+		(pn.firstname || ' ' || pn.lastname) As personname,
+		(Select ppn.phonenumber from personphonenumber ppn where ppn.personid = pn.personid AND ppn.activeflag =1 order by updatedon DESC Limit 1),
+		(SELECT  json_agg(legalcustodydetail)  AS  legalcustodydetail  FROM  (
+				SELECT lcy.legalcustodytypekey, rv.description FROM legalcustody lcy
+				INNER JOIN referencevalues rv ON rv.ref_key = lcy.legalcustodytypekey AND rv.activeflag =1 AND lcy.activeflag =1
+				WHERE lcy.legalcustodyid = lc.legalcustodyid
+		)  legalcustodydetail)
+	FROM legalcustody lc
+	INNER JOIN person pn ON pn.personid = lc.personid AND pn.activeflag = 1 AND lc.activeflag = 1
+	INNER JOIN intakeservicerequestactor isra ON isra.personid = lc.personid AND isra.activeflag =1
+	WHERE isra.intakeservicerequestactorid =  ANY( v_personids::uuid[])
+	) AS legalcustody;
+
+	RETURN l_legalcustody;     
+
+end if;
+
+end;
+
+$function$;

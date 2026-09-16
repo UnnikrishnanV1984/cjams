@@ -1,0 +1,101 @@
+CREATE OR REPLACE FUNCTION as_getpoporientationreport_new(p_intakenumber character varying, p_intakeserviceid uuid, p_caseworkerid character varying)
+ RETURNS TABLE(youthpid bigint, youthname character varying, officeaddress character varying, youthphonenumber character varying, caseworkername character varying, casesupervisorname character varying, petitionnumber character varying, facility character varying, courtname character varying, courtorderdatetime timestamp without time zone, periodoftime timestamp without time zone, courtauthorized character varying, adjudicationdatetime timestamp without time zone, conditiontypedescription character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_workername character varying;
+v_supervisorname character varying;
+v_officeaddress character varying;
+v_youthphonenumber character varying;
+BEGIN
+
+ IF p_intakeserviceid IS NULL THEN 
+ 
+  select cwup.fullname,cwupa.address into v_workername,v_officeaddress 
+  from userprofile cwup
+  left join userprofileaddress cwupa on cwupa.securityusersid = cwup.securityusersid and cwup.activeflag = 1 and cwupa.userprofileaddresstypekey = 'O'
+  where cwup.securityusersid = p_caseworkerid and cwup.activeflag = 1;
+
+  select up.fullname into v_supervisorname 
+  from routing r 
+  left join userprofile up on up.securityusersid = r.tosecurityusersid and up.activeflag = 1
+  where 
+  r.objectid = p_intakenumber 
+  and r.activeflag = 1  and r.toroleid = 'JSSP';
+
+  select distinct
+   cast(coalesce(personphonejson->>'contactnumber','') as character varying) as youth_contactnumber into v_youthphonenumber
+  from (select jsonb_array_elements(jsonb_array_elements(jsondata->'persons')->'phoneNumber') personphonejson,
+  jsonb_array_elements(jsondata->'persons') personjson,
+  intakenumber,activeflag from intakedastaging )ida         
+  where 
+  ida.activeflag=1  and personjson->>'Role' ='Youth' and 
+  ida.intakenumber = p_intakenumber;
+ 
+ end if;
+ 
+     RETURN QUERY 
+   select distinct p.cjamspid as youthpid,--isr.intakenumber,isr.intakeserviceid,
+    cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying) as youthname,
+    cwupa.address as officeaddress,
+    cast(pph.phoneextension||'-'||pph.phonenumber as character varying) as youthphonenumber,
+    cast(cwup.firstname||' '||cwup.lastname as character varying) as caseworkername,
+    cast(csup.firstname||' '||csup.lastname as character varying) as casesupervisorname,
+    isrp.petitionid as petitionnumber,
+    cast(pr.providername as character varying) as facility,
+    cast(null as character varying) as courtname,
+    iscra.courtorderdatetime,
+    iscra.expirationdate as periodoftime,
+    pla.description as courtauthorized,
+    iscra.adjudicationdatetime,
+    cast(iscra.conditiontypedescription as character varying) as conditiontypedescription
+    from routing r  
+   join intakeservicerequest isr on ((cast(isr.intakeserviceid as character varying)= r.objectid) or (isr.intakenumber = r.objectid)) and isr.activeflag = 1
+   join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+   join actor a on a.actorid = isra.actorid and a.activeflag = 1
+   join person p on p.personid = a.personid and p.activeflag = 1
+   left join personphonenumber pph on pph.personid = p.personid and pph.activeflag = 1
+   join userprofile cwup on cwup.securityusersid = r.tosecurityusersid and cwup.activeflag = 1
+   left join userprofileaddress cwupa on cwupa.securityusersid = cwup.securityusersid and cwup.activeflag = 1 and cwupa.userprofileaddresstypekey = 'O'
+   join userprofile csup on csup.securityusersid = r.fromsecurityusersid and csup.activeflag = 1
+   left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing) ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1 and ich.recno = 1 
+   left join intakeservicerequestcourtaction iscra on iscra.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and iscra.activeflag = 1
+   left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+   left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+   left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on pl.intakeserviceid = isr.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   left join placementadmissionauthorizationtype pla on pla.placementadmissionauthorizationtypekey = pl.placementadmissionauthorizationtypekey and pla.activeflag = 1
+   left join intakeservicerequestcourthearing ichd on ichc.intakeservicerequestcourthearingid = ichd.intakeservicerequestcourthearingid and ichd.hearingtypekey = 'Disp' and ichd.activeflag = 1
+   left join intakeservicerequestcourtaction isrcd on isrcd.intakeservicerequestcourthearingid = ichd.intakeservicerequestcourthearingid and isrcd.activeflag = 1
+   where  r.activeflag =1  and r.toroleid = 'JSCW' 
+   and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+   and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end)
+   and (case when p_caseworkerid is not null then r.tosecurityusersid = p_caseworkerid else true end)
+   union all
+   select distinct cast(coalesce(personjson->>'cjamspid',null) as bigint) as youthid,--isr.intakenumber,isr.intakeserviceid,
+    cast(INITCAP(TRIM(coalesce(personjson->>'Lastname',''))|| CASE WHEN (personjson->>'suffix' is not null and personjson->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(personjson->>'suffix','')) || ', ' ||TRIM(coalesce(personjson->>'Firstname',''))) as  character varying)   as youthname,
+    cast(v_officeaddress as character varying) as officeaddress,
+    cast(v_youthphonenumber as character varying) as youthphonenumber,
+    cast(v_workername as character varying) as caseworkername,
+    cast(v_supervisorname as character varying) as casesupervisorname,
+    cast(null as character varying) as petitionnumber,
+    cast(pr.providername as character varying) as facility,
+    cast(null as character varying) as courtname,
+    cast(null as timestamp) as courtorderdatetime,
+    cast(null as timestamp) as periodoftime,
+    pla.description as courtauthorized,
+    cast(null as timestamp) as adjudicationdatetime,
+    cast(null as character varying) as conditiontypedescription
+    from routing r 
+   join (select jsonb_array_elements(intk.jsondata->'persons') as personjson,intk.intakenumber,intk.activeflag from intakedastaging intk where intk.activeflag = 1) ida on ida.intakenumber = r.objectid and personjson->>'Role' ='Youth'
+   left join (select *,row_number() over(partition by intakenumber order by startdatetime desc) as recno from placement) pl on pl.intakenumber = ida.intakenumber and pl.activeflag = 1 and pl.recno = 1
+   left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+   left join placementadmissionauthorizationtype pla on pla.placementadmissionauthorizationtypekey = pl.placementadmissionauthorizationtypekey and pla.activeflag = 1
+   where  r.activeflag =1  and p_intakeserviceid is null
+   and (case when p_intakenumber is not null then ida.intakenumber = p_intakenumber else true end)
+   and (case when p_caseworkerid is not null then r.tosecurityusersid = p_caseworkerid else true end);
+   
+END;
+$function$
+

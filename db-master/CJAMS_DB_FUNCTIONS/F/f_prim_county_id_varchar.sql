@@ -1,0 +1,44 @@
+-- FUNCTION: cjams.f_prim_county(character varying)
+
+-- DROP FUNCTION cjams.f_prim_county(character varying);
+
+CREATE OR REPLACE FUNCTION cjams.f_prim_county(
+	ai_entity_id character varying, out county character varying)
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+
+declare 
+ai_entity_cd varchar;--
+ai_entity1_id varchar; --
+ai_entity2_id varchar; --
+ai_case_id uuid; --
+
+BEGIN 
+
+SELECT servicecasenumber INTO  ai_entity1_id from servicecase where servicecasenumber = ai_entity_id; --
+SELECT adoptioncasenumber INTO ai_entity2_id from adoptioncase where adoptioncasenumber = ai_entity_id ;--
+
+IF(ai_entity_id = ai_entity1_id)THEN
+    ai_case_id:= (SELECT servicecaseid from servicecase where servicecasenumber = ai_entity_id); --
+ELSIF (ai_entity_id = ai_entity2_id) THEN 
+     ai_case_id:= (SELECT servicecaseid from servicecase where servicecasenumber = ai_entity_id); --  
+END IF ; --
+ 
+SELECT objecttypekey into ai_entity_cd from caseassignment where objectid = ai_case_id; --
+
+SELECT county.statecountycode INTO county
+FROM caseassignment, county
+WHERE (caseassignment.objectid = AI_CASE_ID) AND
+(caseassignment.objecttypekey = Ai_ENTITY_CD) AND 
+(caseassignment.fromldssid = county.countyid) AND 
+ (caseassignment.activeflag = 1)ORDER BY caseassignment.updatedon DESC LIMIT 1 ; --
+	 
+END ;
+$BODY$;
+
+ALTER FUNCTION cjams.f_prim_county(character varying)
+    OWNER TO welfareadmin;
+	

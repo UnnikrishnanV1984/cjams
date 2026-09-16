@@ -1,0 +1,33 @@
+ CREATE OR REPLACE FUNCTION public.getcasecountbyuser(userid character varying)                                                                                                   
+  RETURNS TABLE(totalcount bigint, open bigint, closed bigint, cancelled bigint, closedtoday bigint, closedthisweek bigint, averageclosurerate bigint)                            
+  LANGUAGE plpgsql                                                                                                                                                                
+ AS $function$                                                                                                                                                                    
+                                                                                                                                                                                  
+                                                                                                                                                                                  
+ BEGIN                                                                                                                                                                            
+                                                                                                                                                                                  
+  RETURN QUERY                                                                                                                                                                    
+ SELECT  count(*) as TotalCount                                                                                                                                                   
+     ,COUNT(CASE WHEN  ISRS.description != 'Closed' AND ISRS.description != 'Cancelled' THEN 1 END) as Open                                                                       
+     ,COUNT(CASE WHEN ISRS.description = 'Closed' THEN 1 END) as Closed                                                                                                           
+     ,COUNT(CASE WHEN ISRS.description = 'Cancelled' THEN 1 END) as Cancelled                                                                                                     
+ --  ,COUNT(CASE WHEN ISRDC.insertedon::date = now()::date AND ISRS.description = 'Closed' THEN 1 END) as ClosedToday                                                             
+ --  ,COUNT(CASE WHEN (ISRDC.insertedon::date < now()::date AND ISRDC.insertedon::date > now()::date-7)AND ISRS.description = 'Closed' THEN 1 END) as ClosedThisWeek              
+ --   ,COUNT(CASE WHEN (ISRDC.insertedon::date < now()::date AND ISRDC.insertedon::date > now()::date-90)AND ISRS.description = 'Closed' THEN 1 END)/3 as AverageClosureRate      
+ ,COUNT(CASE WHEN ISR.insertedon::date = now()::date AND ISRS.description = 'Closed' THEN 1 END) as ClosedToday                                                                   
+  ,COUNT(CASE WHEN (ISR.insertedon::date <= now()::date AND ISR.insertedon::date >= now()::date-7)AND ISRS.description = 'Closed' THEN 1 END) as ClosedThisWeek                   
+    ,COUNT(CASE WHEN (ISR.insertedon::date <= now()::date AND ISR.insertedon::date >= now()::date-90)AND ISRS.description = 'Closed' THEN 1 END)/3 as AverageClosureRate          
+ FROM intakeservicerequest AS ISR                                                                                                                                                 
+ LEFT JOIN intakeservicerequestgroupdetails AS ISGD ON ISR.intakeserviceid=ISGD.intakeserviceid                                                                                   
+ JOIN IntakeSerReqStatusType   AS ISRS  ON  ISR.IntakeSerReqStatusTypeId = ISRS.IntakeSerReqStatusTypeId and ISRS.activeflag=1                                                    
+ --JOIN Intakeservicerequestdispositioncode ISRDC ON ISRDC.intakeserviceid = ISR.intakeserviceid AND ISRDC.activeflag=1                                                           
+ JOIN AreaTeamMemberServiceRequest  AS ATSR  ON  ATSR.IntakeServiceId   = ISR.IntakeServiceId AND   ATSR.ActiveFlag = 1                                                           
+ JOIN TeamMember AS TM  ON  ATSR.TeamMemberId   = TM.TeamMemberId                                                                                                                 
+ JOIN TeamMemberAssignment   AS TMA  ON  TMA.TeamMemberId   = ATSR.TeamMemberId     AND TMA.ActiveFlag = 1                                                                        
+ --JOIN muser muser ON muser.securityusersid=TMA.securityusersid                                                                                                                  
+ --and muser.id=userid;                                                                                                                                                           
+ and TMA.securityusersid = userid;                                                                                                                                                
+  END;                                                                                                                                                                            
+                                                                                                                                                                                  
+ $function$                                                                                                                                                                       
+

@@ -1,0 +1,405 @@
+CREATE OR REPLACE FUNCTION prov_portalworkerrouting(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_tosecurityuserid character varying;
+v_fromroleid character varying;
+v_toroleid character varying;
+v_objectid character varying;
+v_subject character VARYING;
+v_subject_prv character VARYING;
+v_body character VARYING;
+v_body_prv character VARYING;
+v_custombody character varying;
+v_customsubject character varying;
+v_remarks character VARYING;
+v_success character VARYING;
+v_objecttype character varying;
+v_eventcode character varying;
+v_sign json;
+v_appstatus character varying;
+v_send_to character varying;
+response json;
+v_sitename character varying;
+v_date TIMESTAMP without time zone;
+v_siteListString character varying;
+currentRow record;
+v_status_cd integer;
+v_providerid character varying;
+v_objecttypename character varying;
+v_statustext character varying;
+v_statustextprv character varying;
+v_providername character varying;
+v_site_list json;
+v_tousers json;
+v_tousers2 jsonb;
+v_tousers3  jsonb;
+v_tousers4 json;
+v_tousers5 json;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_tosecurityuserid := objectls->>'tosecurityusersid';
+v_fromroleid := objectls->>'fromroleid';
+v_status_cd := objectls->>'status_cd';
+v_toroleid := objectls->>'toroleid';
+v_objecttypename := objectls->>'objectTypeName';
+v_statustext := objectls->>'statusText';
+v_statustextprv := objectls->>'statusTextprv';
+v_appstatus := objectls->>'status';
+v_send_to := objectls->>'send_to';
+v_objectid := objectls->>'objectid';
+v_objecttype := objectls->>'object_type';
+v_providerid := objectls->>'provider_id';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_sign := objectls->>'signature';
+v_siteListString := objectls->>'siteListString';
+v_site_list := objectls->>'site_list';
+v_subject :=  objectls->>'subject' ;
+v_subject_prv :=  objectls->>'subjectprv' ;
+v_body :=  objectls->>'body' ; 
+v_body_prv :=  objectls->>'body_prv' ; 
+v_customsubject :=  objectls->>'customsubject' ;
+v_custombody :=  objectls->>'custombody' ; 
+v_date:= now();
+v_status_cd = 1;
+currentRow = null;
+
+select provider_nm into v_providername from tb_provider tp where tp.provider_id = v_providerid limit 1;
+v_subject = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+if v_statustextprv is not null then 
+    v_body_prv = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustextprv;
+    v_subject_prv = ''||v_objecttypename||' ' || v_statustextprv;
+end if;
+
+
+if v_custombody is not null then 
+    v_body = v_custombody;
+    v_subject = v_customsubject;
+end if;
+
+if v_siteListString is not null and trim(v_siteListString) !='' then 
+    v_body  = v_body|| ' for site(s)';
+    v_subject = v_subject || ' for site(s)';
+    for currentRow IN select provider_nm, provider_id from tb_provider tp where tp.provider_id::character varying in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    loop
+        BEGIN
+            v_body  = v_body||' "'||currentRow.provider_id||'-'||currentRow.provider_nm||'", ';
+            v_subject  = v_subject||' "'||currentRow.provider_id||'-'||currentRow.provider_nm||'", ';
+        END;
+    end loop;
+end if;
+v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+v_body  = v_body||', for Provider "'|| v_providerid||'-'||v_providername||'"';
+v_subject  = v_subject||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+
+
+INSERT INTO tb_provider_decision
+      (decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+      toroleid,tosecurityusersid, signature)
+      VALUES(gen_random_uuid(),objectls->>'eventcode', v_fromsecurityuserid, objectls->>'fromroleid', v_objectid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+      now(), false, objectls->>'remarks', v_appstatus,  now(), v_toroleid, v_tosecurityuserid,  v_sign);
+
+
+
+if v_send_to = 'ROUTETOSELECTED' then --to selected worker/supervisor and add routing
+    UPDATE routing SET  activeflag =0  , updatedby = v_fromsecurityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+    INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby, updatedby,insertedon,updatedon, isreviewrequest,
+                        remarks,routeddescription,servicerequestnumber)
+              values (v_eventcode,v_fromsecurityuserid,v_tosecurityuserid,
+                        v_fromroleid,v_toroleid,v_objectid,v_status_cd,
+                        v_fromsecurityuserid,v_fromsecurityuserid,v_date,v_date,true,
+                        objectls->>'remarks',v_appstatus,v_objectid);
+
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid, 'System', 'High', v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+
+    select json_agg(a) into v_tousers from ( 
+        SELECT v_tosecurityuserid as toworkeridno 
+    )a;
+
+elsif v_send_to = 'ROUTETOSITE' then --to all assigned workers
+    UPDATE routing SET  activeflag =0  , updatedby = v_fromsecurityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+    for currentRow IN SELECT distinct toworkeridno FROM providerassignment pa where  pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date)  and pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    loop
+        BEGIN
+            INSERT INTO routing(
+                                eventcode, fromsecurityusersid, tosecurityusersid, 
+                                fromroleid, objectid , routingstatustypeid,
+                                insertedby, updatedby,insertedon,updatedon, isreviewrequest,
+                                remarks,routeddescription,servicerequestnumber)
+                    values (v_eventcode,v_fromsecurityuserid,currentRow.toworkeridno,
+                                v_fromroleid,v_objectid,v_status_cd,
+                                v_fromsecurityuserid,v_fromsecurityuserid,v_date,v_date,true,
+                                objectls->>'remarks',v_appstatus,v_objectid);
+
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct toworkeridno 
+        FROM providerassignment pa 
+        where pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date) and  pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    )a;
+
+elsif v_send_to = 'SITE'  then --to all assigned workers
+    for currentRow IN SELECT distinct toworkeridno FROM providerassignment pa where  pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date)  and pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct toworkeridno 
+        FROM providerassignment pa 
+        where pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date) and  pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    )a;
+
+elsif v_send_to = 'PROVIDER' then --to provider
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_providerid, v_fromsecurityuserid, v_providerid, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct  up.email as email, tpu.securityusers_id as toworkeridno 
+            from tb_provider_userconfig tpu 
+            join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying
+            where provider_id = v_providerid
+        union
+        select m.email as email, null as toworkeridno 
+            from tb_provider t
+            cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id = v_providerid
+    )a;
+    
+    select json_agg(a) into v_tousers4 from ( 
+    SELECT distinct tpu.securityusers_id as toworkeridno 
+    , up.email as email
+            from tb_provider_userconfig tpu 
+            join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying
+            where provider_id = v_providerid
+    )a;
+    select json_agg(a) into v_tousers5 from ( 
+        select m.email as email
+        from tb_provider t
+        cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id = v_providerid
+    )a;
+
+elsif v_send_to = 'PROVIDERANDSITE' then --approved rejected -  to provider and assigned workers 
+    for currentRow IN SELECT distinct toworkeridno FROM providerassignment pa where  pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date)  and pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct toworkeridno 
+        FROM providerassignment pa 
+        where pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date) and  pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    )a;
+    
+    select json_agg(a) into v_tousers4 from ( 
+    SELECT distinct tpu.securityusers_id as toworkeridno 
+    , up.email as email
+            from tb_provider_userconfig tpu 
+            join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying
+            where provider_id = v_providerid
+    )a;
+    select json_agg(a) into v_tousers5 from ( 
+        select m.email as email
+        from tb_provider t
+        cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id = v_providerid
+    )a;
+    if v_body_prv is not null then 
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_providerid, v_fromsecurityuserid, v_providerid, 'System', 'High',  v_subject_prv, v_body_prv, v_objectid,  false, false, v_objecttype, v_providerid);
+    else
+      SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_providerid, v_fromsecurityuserid, v_providerid, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+   
+end if;
+    elsif v_send_to = 'PROVIDERSITEANDEXE' then --approved -to provider / assigned workers / Executives 
+    --For sites
+    for currentRow IN SELECT distinct toworkeridno FROM providerassignment pa where  pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date)  and pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers2::jsonb from ( 
+        SELECT distinct toworkeridno 
+        FROM providerassignment pa 
+        where pa.activeflag = 1 and (pa.enddate is null or pa.enddate::date >= now()::date) and  pa.objectid in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    )a;
+    
+    select json_agg(a) into v_tousers4 from ( 
+    SELECT distinct tpu.securityusers_id as toworkeridno 
+    , up.email as email
+            from tb_provider_userconfig tpu 
+            join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying
+            where provider_id = v_providerid
+    )a;
+    select json_agg(a) into v_tousers5 from ( 
+        select m.email as email
+        from tb_provider t
+        cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id = v_providerid
+    )a;
+    --For executives 
+    for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                        from muser mu 
+                                                        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                        join role r on r.id = rm.roleid and r.activeflag = 1
+                                                        where (r.name = 'Program Manager' or  r.name ='Executive' or
+                                                               r.name = 'Secretary' or  r.name ='QA Coordinator' or  
+                                                                r.name = 'OIG Director' or  r.name ='Resource Program Manager' ) 
+                                                         and rm.teamtypekey = 'OLMDJS'
+                                                         and mu.activeflag =1
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers3::jsonb from ( 
+        SELECT distinct mu.securityusersid as toworkeridno 
+                from muser mu 
+                join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                join role r on r.id = rm.roleid and r.activeflag = 1
+                where (r.name = 'Program Manager' or  r.name ='Executive' or
+                    r.name = 'Secretary' or  r.name ='QA Coordinator' or  
+                    r.name = 'OIG Director' or  r.name ='Resource Program Manager' ) 
+                and rm.teamtypekey = 'OLMDJS'
+                and mu.activeflag =1
+    )a;
+
+    v_tousers = v_tousers2||v_tousers3;
+    --For Providers
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_providerid, v_fromsecurityuserid, v_providerid, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+
+
+
+elsif v_send_to = 'CON_PM' then
+
+    for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                        from muser mu 
+                                                        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                        join role r on r.id = rm.roleid and r.activeflag = 1
+                                                        where (r.name = 'SSA_CONTRACT_PM') 
+                                                         and rm.teamtypekey = 'OLM'
+                                                         and mu.activeflag =1
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct mu.securityusersid as toworkeridno 
+            from muser mu 
+            join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+            join role r on r.id = rm.roleid and r.activeflag = 1
+            where (r.name = 'SSA_CONTRACT_PM') 
+                and rm.teamtypekey = 'OLM'
+                and mu.activeflag =1
+    )a;
+
+elsif v_send_to = 'DJSPMEXE' then
+
+    for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                        from muser mu 
+                                                        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                        join role r on r.id = rm.roleid and r.activeflag = 1
+                                                        where (r.name = 'Program Manager' or  r.name ='Executive') 
+                                                         and rm.teamtypekey = 'OLMDJS'
+                                                         and mu.activeflag =1
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct mu.securityusersid as toworkeridno 
+                from muser mu 
+                join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                join role r on r.id = rm.roleid and r.activeflag = 1
+                where (r.name = 'Program Manager' or  r.name ='Executive') 
+                    and rm.teamtypekey = 'OLMDJS'
+                    and mu.activeflag =1
+    )a;
+elsif v_send_to = 'LICEXE' then
+
+    for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                        from muser mu 
+                                                        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                        join role r on r.id = rm.roleid and r.activeflag = 1
+                                                        where r.name = 'Licensing Administrator' or  r.name ='Executive Director' and mu.activeflag =1
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+    
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct mu.securityusersid as toworkeridno 
+                from muser mu 
+                join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                join role r on r.id = rm.roleid and r.activeflag = 1
+                where (r.name = 'Licensing Administrator' or  r.name ='Executive Director') and mu.activeflag =1
+    )a;
+
+elsif v_send_to = 'LIC' then
+    for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                        from muser mu 
+                                                        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                        join role r on r.id = rm.roleid and r.activeflag = 1
+                                                        where (r.name = 'Licensing Administrator' or  r.name ='Licensing Coordinator') and mu.activeflag =1
+    loop
+        BEGIN
+            SELECT prov_send_notification into v_success
+            FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_objectid,  false, false, v_objecttype, v_providerid);
+        END;
+    end loop;
+
+    select json_agg(a) into v_tousers from ( 
+        SELECT distinct mu.securityusersid as toworkeridno 
+                from muser mu 
+                join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                join role r on r.id = rm.roleid and r.activeflag = 1
+                where r.name = 'Licensing Administrator' and mu.activeflag =1
+    )a;
+
+else 
+    v_success = 'Error: Notification recipient not defined';
+
+end if;
+
+
+return (json_build_object('Decision',v_success,'tousers',v_tousers, 'subject', v_subject,'provsubject',v_subject_prv, 'body', v_body,'provbody',v_body_prv,'PROV_CONFIG_USERS',v_tousers4, 
+    'PROV_ADMIN_USERS', v_tousers5));
+end;
+$function$
+

@@ -1,0 +1,1 @@
+alter table auditlogtype alter column logtype type varchar(250); 

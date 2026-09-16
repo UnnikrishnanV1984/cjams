@@ -1,0 +1,1 @@
+ALTER TABLE cjams.personeducation ADD COLUMN if not exists  sasidNo character varying (50) NULL;

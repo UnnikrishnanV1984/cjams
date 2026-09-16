@@ -1,0 +1,1 @@
+update personprogramarea set activeflag = 0, updatedon = now(), updatedby = 'CDM-12556' where personprogramid = '6bce68c9-a450-43b7-b53e-582b3aa28ca9';

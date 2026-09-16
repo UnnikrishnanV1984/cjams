@@ -1,0 +1,44 @@
+CREATE OR REPLACE FUNCTION as_getercfamilyagmt(p_intakenumber character varying, p_intakeserviceid uuid, i_secid character varying)
+ RETURNS TABLE(youthsname character varying, parentname character varying, providername character varying, scheduledcourthearing timestamp without time zone, officeworkername character varying, youthnamewithsuffix character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+     RETURN QUERY 
+      select 
+   distinct cast(p.firstname||' '||p.lastname as character varying) as youthsname,
+   pgdetail.parentname,
+   pr.providername,
+   ich.hearingdatetime as scheduledcourthearing,
+   (select distinct cast(concat(lastname,',',' ',firstname) as character varying) from userprofile up where securityusersid = i_secid) as officeworkername,
+            cast(concat(p.lastname,case when (p.suffix is null or p.suffix ='') then '' else concat(' ',p.suffix) end,', ',p.firstname) as 
+character varying) as youthnamewithsuffix
+  from intakeservicerequest isr  
+  left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on isr.intakeserviceid = pl.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+  left join provider pr on pr.providerid = pl.providerid
+  left join intakeservicerequestcourthearing ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1
+  left join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+  left join actor a on a.actorid = isra.actorid and a.activeflag = 1 and a.actortype = 'Youth'
+  left join person p on p.personid = a.personid and p.activeflag = 1
+  left join (select inr.* from (select isra.intakeserviceid,cast(p.firstname||' '||p.lastname as character varying) as parentname,row_number() over(partition by isra.intakeserviceid order by rel.seq) as recno
+    from 
+    intakeservicerequestactor isra 
+    left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+    join actor a on a.actorid = isra.actorid and a.activeflag =1
+    join person p on p.personid = a.personid and p.activeflag = 1
+    left join (select 1 as seq,'father' as relation union 
+           select 2 as seq,'mother' as relation union
+           select 3 as seq,'fosterparent' as relation union 
+           select 4 as seq,'stepparent' as relation union
+           select 5 as seq,'adoptiveparent' as relation)rel on rel.relation = ac.relationshiptypekey
+    where isra.activeflag = 1 )inr where inr.recno = 1
+     )pgdetail on pgdetail.intakeserviceid = isr.intakeserviceid
+  left join userprofile up on up.securityusersid = pl.updatedby and up.activeflag = 1
+  where isr.activeflag = 1 
+  and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+  and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end);
+
+END;
+$function$
+

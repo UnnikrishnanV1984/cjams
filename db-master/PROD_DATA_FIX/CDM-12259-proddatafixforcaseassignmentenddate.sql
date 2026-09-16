@@ -1,0 +1,1 @@
+update caseassignment c set enddate = '2020-09-24 00:00:00', updatedby = 'CDM-12259',updatedon = now() where caseassignmentid = '47c6e252-e934-4367-ad81-325fee760bd2';

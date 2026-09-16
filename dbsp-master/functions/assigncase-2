@@ -1,0 +1,179 @@
+CREATE OR REPLACE FUNCTION assigncase(appeventcode character varying, service_caseid uuid, fromuserid character varying, v_assignedsecurity json, v_programkey character varying, v_subprogramkey character varying)
+ RETURNS TABLE(statuscode integer, status_description character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+statuscode integer;
+status_description character varying;
+
+caseworker_name text;
+
+v_teamid uuid;
+v_loadnumber character varying; 
+v_toroletypekey  character varying;
+v_teamname character varying;
+v_team_member_id  uuid;
+v_torolesupervisor  bool;
+
+v_roletypecode character varying;
+v_fromroletypekey character varying;
+v_routingid uuid;
+v_status  int;
+v_notifystatus character varying;
+v_servicerequestno character varying;
+i json;
+l_fromteamid uuid;
+l_fromldssid uuid;
+l_toldssid uuid;
+
+BEGIN
+ v_status:= 4; 
+
+ 
+ /*Assigned service Case number*/
+ 
+ SELECT  servicecasenumber
+ INTO v_servicerequestno
+ FROM servicecase  
+ WHERE servicecaseid = service_caseid AND activeflag =1 LIMIT 1;
+ 
+ 
+   
+ /*Logged in user role details*/ 
+
+  SELECT   tm.teamid, t.countyid  INTO  l_fromteamid, l_fromldssid
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        INNER JOIN team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = fromuserid
+        AND   tma.activeflag =1;
+
+  select role.roletypekey INTO v_fromroletypekey  from rolemapping rm
+  join role on role.id = rm.roleid and role.activeflag = 1 
+  join muser on muser.id = rm.principalid and muser.activeflag = 1 and rm.activeflag = 1 and rm.teamtypekey = 'CW'
+  where muser.securityusersid = fromuserid;
+ 
+      SELECT routingid INTO v_routingid 
+        FROM routing r WHERE tosecurityusersid = fromuserid 
+        AND activeflag =1
+        AND r.objectid  = service_caseid :: character varying
+        ORDER BY insertedon desc limit 1;
+       
+ /*Mark previous data as inactive and mark as accepted*/    
+      UPDATE routing SET activeflag =0 WHERE routingid = v_routingid ;
+
+ /*Routing to  user*/
+ FOR  i  IN  SELECT  *  FROM  Json_array_elements(v_assignedsecurity::json)  
+   loop
+   
+   SELECT a.teamid, a.loadnumber, a.roletypekey, a.teamname, a.isupervisor, a.countyid
+   INTO  v_teamid, v_loadnumber, v_toroletypekey, v_teamname, v_torolesupervisor, l_toldssid
+   FROM v_userprofile a
+   WHERE a.countyid = l_fromldssid and a.securityusersid = (i->>'userid') ;
+
+ --   SELECT teamid, loadnumber, roletypekey, teamname, isupervisor, countyid
+ --   INTO  v_teamid, v_loadnumber, v_toroletypekey, v_teamname, v_torolesupervisor, l_toldssid
+ --   FROM v_userprofile WHERE countyid = l_fromldssid and securityusersid = (i->>'userid') ;
+   
+  /*Assigned user team details*/
+  IF v_teamid is NULL THEN
+   SELECT p.teamid, p.loadnumber, p.roletypekey, p.teamname, p.teammemberid, p.isupervisor
+   INTO v_teamid, v_loadnumber, v_toroletypekey, v_teamname, v_team_member_id, v_torolesupervisor
+   FROM v_userprofile p
+   WHERE p.securityusersid = (i->>'userid') and p.countyid = l_fromldssid;
+   
+   -- SELECT tm.teamid, tm.loadnumber, tm.roletypekey, t.teamname, tm.teammemberid, coalesce(isupervisor,false) 
+   -- INTO v_teamid, v_loadnumber, v_toroletypekey, v_teamname, v_team_member_id, v_torolesupervisor
+   -- FROM teammemberassignment tma 
+   -- INNER JOIN teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+   -- INNER JOIN team t ON t.teamid = tm.teamid  AND t.activeflag =1
+   -- INNER JOIN teammemberroletype tmrt ON tmrt.roletypekey =tm.roletypekey 
+   -- WHERE tma.SecurityUsersId = (i->>'userid')
+   -- AND tma.activeflag =1 ;
+     END IF;
+    
+  INSERT INTO routing(
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid,objectid , routingstatustypeid,
+      insertedby,  updatedby , servicerequestnumber,objecttypekey,routeddescription)
+
+  VALUES(appeventcode,fromuserid,(i->>'userid'),v_teamid,
+     v_fromroletypekey,v_toroletypekey,service_caseid,v_status,
+     fromuserid,fromuserid,v_servicerequestno,'servicecase','Service Case Assigned');
+    
+    
+ /*Notification*/
+
+ /*Get caseworker name for Notification*/
+ SELECT cast( lastname ||',' || firstname as character varying) INTO caseworker_name 
+ FROM userprofile 
+ WHERE SecurityUsersId=(i->>'userid') AND activeflag =1;
+
+    SELECT send_notification INTO v_notifystatus FROM send_notification((i->>'userid'), fromuserid,(i->>'userid'),
+ 'System', 'Normal', 'Service Case #'||v_servicerequestno|| ' Assigned to '|| caseworker_name ,
+ 'Service Case #'||v_servicerequestno|| ' Assigned to '|| caseworker_name ,
+ cast(service_caseid as character varying));
+
+ UPDATE caseassignment SET enddate = now()::date,updatedby = fromuserid,updatedon = now() WHERE fromworkeridno=fromuserid AND objectid= service_caseid AND objecttypekey = 'servicecase' 
+       AND enddate IS NULL AND responsibilitytypekey= (i->>'responsibilitytypekey')::character varying;
+ UPDATE caseassignment SET enddate = now()::date,updatedby = fromuserid, updatedon = now() WHERE objectid= service_caseid AND assignmenttype = 'T' AND enddate IS NULL ;
+
+ -- Get the ldssid (countyid) for the worker assigned
+ IF l_toldssid is NULL THEN
+  SELECT t.countyid  INTO  l_toldssid
+  FROM teammemberassignment tma 
+  INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+  INNER JOIN team t on t.teamid = tm.teamid  and t.activeflag =1
+  WHERE  tma.SecurityUsersId = (i->>'userid')
+  AND   tma.activeflag =1;
+ END IF;
+
+ INSERT INTO caseassignment
+ (fromworkeridno, toworkeridno, insertedby, updatedby, insertedon, updatedon,startdate, objecttypekey, objectid,
+ responsibilitytypekey,fromteamid,toteamid,fromldssid,toldssid,assignmenttype,assigndate)
+ VALUES(fromuserid,(i->>'userid'),fromuserid,fromuserid,now(),now(),now(),'servicecase',service_caseid,
+ (i->>'responsibilitytypekey'),l_fromteamid,v_teamid,l_fromldssid,l_toldssid,'W',now()::date);
+ 
+
+  UPDATE activitytask SET assignedto =(i->>'userid')  FROM activity AAA
+  WHERE AAA.activityid =activitytask.activityid AND AAA.objectid =service_caseid
+    AND AAA.activeflag =1 AND  activitytask.activeflag =1;
+ 
+
+ END LOOP;
+ 
+    
+   /*Service Case Status Change*/ 
+   UPDATE servicecase SET statustypekey = 'ASSGN', updatedby = fromuserid, updatedon = now()  
+   WHERE servicecaseid = service_caseid  AND activeflag =1;
+   
+  UPDATE servicecaserequest SET programkey = v_programkey , subprogramkey = v_subprogramkey, updatedby = fromuserid, updatedon = now()
+  WHERE servicecaseid = service_caseid AND activeflag = 1;
+  
+ IF (coalesce(v_programkey,'') = '') THEN
+  UPDATE personprogramarea SET  activeflag = 0, updatedby = fromuserid, updatedon = now()
+   WHERE objectid = service_caseid::character varying  AND activeflag = 1 and programkey NOT IN ('OOH');
+ END IF;
+ 
+/* 
+ IF (LOWER(coalesce(v_programkey,'')) != 'ooh') THEN
+  UPDATE personprogramarea SET subprogramkey = v_subprogramkey, programkey = v_programkey, startdate = now(), entityid = v_servicerequestno, datatransferflag = 'U'
+  WHERE objectid = service_caseid::character varying AND LOWER(programkey) != 'ooh' AND activeflag = 1;
+ END IF;
+*/ 
+ 
+ statuscode:= 200;
+    status_description := 'Service Case Assigned Successfully';
+        
+RETURN  QUERY 
+
+SELECT statuscode,status_description;
+
+END;
+
+
+$function$
+

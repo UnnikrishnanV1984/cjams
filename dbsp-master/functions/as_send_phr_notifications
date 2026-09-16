@@ -1,0 +1,124 @@
+CREATE OR REPLACE FUNCTION as_send_phr_notifications()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$     
+DECLARE   
+
+ v_date        timestamp without time zone; 
+ v_date_30     timestamp without time zone; 
+ v_date_60     timestamp without time zone;
+ v_intakeserviceid   uuid;
+ v_tosecurityuserid   character varying;
+ v_fromsecurityuserid  character varying;
+ v_subject     character varying;
+ v_body      character varying;
+ v_status    character varying;
+ v_rec      record;
+ 
+BEGIN
+ 
+ v_date:=    now();
+ v_intakeserviceid := '00000000-0000-0000-0000-000000000000';
+ 
+ select v_date + interval '30 days', v_date + interval '60 days'
+  into v_date_30, v_date_60;
+  
+ RAISE NOTICE 'v_date_30 %',  v_date_30;
+ RAISE NOTICE 'v_date_60 %',  v_date_60;
+  
+ FOR v_rec IN 
+  SELECT distinct i.intakeserviceid, at.name, at.duedate, ir.servicerequestnumber
+   FROM activitytask at
+   JOIN activity a ON a.activityid = at.activityid and a.activeflag = 1
+   JOIN investigation i ON i.investigationid = a.objectid and i.activeflag = 1
+   JOIN intakeservicerequest ir ON ir.intakeserviceid = i.intakeserviceid AND ir.activeflag = 1
+   JOIN routing r ON ir.intakeserviceid::character varying = r.objectid AND r.toroleid = 'ASCW' AND r.fromroleid = 'ASSP' AND r.eventcode = 'INVT' AND r.activeflag = 1
+   WHERE at.duedate::date = v_date_30::date 
+    AND at.completeddate IS NULL
+    AND at.activeflag = 1
+    AND (at.name like '%Complete Service Plan%' OR 
+     at.name like '%Case Manager, Client, Provider and optionally Supervisor signs Service Plan%')
+    AND a.description = 'Project Home - Reconsideration'
+ LOOP
+
+  IF (v_rec.intakeserviceid != v_intakeserviceid) THEN
+   RAISE NOTICE 'Inside IF';
+   v_intakeserviceid := v_rec.intakeserviceid;
+   v_tosecurityuserid := null;
+   SELECT r.tosecurityusersid, r.fromsecurityusersid 
+    INTO v_tosecurityuserid, v_fromsecurityuserid
+    FROM routing r
+    JOIN userprofile u ON r.tosecurityusersid = u.securityusersid
+    WHERE r.objectid = v_intakeserviceid::character varying 
+     AND r.activeflag = 1 
+     AND r.toroleid = 'ASCW' 
+     AND r.fromroleid = 'ASSP' 
+     AND r.eventcode = 'INVT';
+
+  END IF;
+    
+  IF (v_tosecurityuserid IS NOT NULL) THEN 
+   
+   v_subject := 'Checklist for ' || v_rec.name || ' - Review Due in 30 days';
+   v_body := 'Review for ' || v_rec.name || ' due in 30 days for case id '|| v_rec.servicerequestnumber || '  Please take necessary action';
+   
+   SELECT send_notification INTO v_status FROM send_notification(v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid,                                                                                                                          
+    'System', 'High', v_subject, v_body , v_rec.servicerequestnumber::character varying); 
+ 
+  END IF;
+ END LOOP;
+ 
+ v_intakeserviceid := '00000000-0000-0000-0000-000000000000';
+ v_tosecurityuserid := null;
+ v_rec := null;
+ FOR v_rec IN 
+  SELECT distinct i.intakeserviceid, at.name, at.duedate, ir.servicerequestnumber
+   FROM activitytask at
+   JOIN activity a ON a.activityid = at.activityid and a.activeflag = 1
+   JOIN investigation i ON i.investigationid = a.objectid and i.activeflag = 1
+   JOIN intakeservicerequest ir ON ir.intakeserviceid = i.intakeserviceid AND ir.activeflag = 1
+   JOIN routing r ON ir.intakeserviceid::character varying = r.objectid AND r.toroleid = 'ASCW' AND r.fromroleid = 'ASSP' AND r.eventcode = 'INVT' AND r.activeflag = 1
+   WHERE at.duedate::date = v_date_60::date 
+    AND at.completeddate IS NULL
+    AND at.activeflag = 1
+    AND (at.name like '%Review Project Home reconsideration COMAR regulations%' OR 
+     at.name like '%Project Home Reconsideration worksheet%' OR
+     at.name like '%Project Home - Level of Care Rating Instrument%' OR
+     at.name like '%Consent for Release of information%' OR
+     at.name like '%Update Client Information Sheet%' OR
+     at.name like '%Summary of Contacts%' OR
+     at.name like '%Resident Agreement%')
+    AND a.description = 'Project Home - Reconsideration'
+ LOOP
+
+  IF (v_rec.intakeserviceid != v_intakeserviceid) THEN
+   v_intakeserviceid := v_rec.intakeserviceid;
+   v_tosecurityuserid := null;
+   SELECT r.tosecurityusersid, r.fromsecurityusersid 
+    INTO v_tosecurityuserid, v_fromsecurityuserid
+    FROM routing r
+    JOIN userprofile u ON r.tosecurityusersid = u.securityusersid
+    WHERE r.objectid = v_intakeserviceid::character varying
+     AND r.activeflag = 1 
+     AND r.toroleid = 'ASCW' 
+     AND r.fromroleid = 'ASSP' 
+     AND r.eventcode = 'INVT';
+  END IF;
+    
+  IF (v_tosecurityuserid IS NOT NULL) THEN 
+  
+   v_subject := 'Checklist for ' || v_rec.name || ' - Review Due in 60 days';
+   v_body := 'Review for ' || v_rec.name || ' due in 60 days for case id '|| v_rec.servicerequestnumber || '  Please take necessary action';
+   
+   SELECT send_notification INTO v_status FROM send_notification(v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid,                                                                                                                          
+    'System', 'High', v_subject, v_body , v_rec.servicerequestnumber::character varying); 
+ 
+  END IF;
+ 
+ END LOOP;
+
+ Return 'Success';
+END
+
+$function$
+

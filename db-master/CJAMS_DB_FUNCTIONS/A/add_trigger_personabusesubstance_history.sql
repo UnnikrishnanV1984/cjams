@@ -1,0 +1,21 @@
+-- B-130716 changes:
+-- function to populate history table through trigger
+
+CREATE OR REPLACE FUNCTION cjams.add_trigger_personabusesubstance_history()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+	modifieddata_v jsonb;
+ 
+BEGIN
+	  INSERT INTO cjams.personabusesubstance_history (personabusesubstanceid,personid,isusetobacco,isusedrugoralcohol,isusedrug,isusealcohol,drugfrequencydetails,drugageatfirstuse,alcoholfrequencydetails,alcoholageatfirstuse,drugoralcoholproblems,activeflag,updatedby,updatedon,insertedby,insertedon,effectivedate,expirationdate,tobaccoageatfirstuse,tobaccofrequencydetails,drugfrequencytypekey,alcoholfrequencytypekey,tobaccofrequencytypekey,drugtimes,alcoholtimes,tobaccotimes,medicalprofilekey,substanceusekey,substancecode,substanceusenotetext,uploadpath,parentabusesubstanceid,etl_userid,etl_load_date,ischildhassextraffichistory,issextraffichistoryreported,sextraffichistoryreportedon,ischildhassextraffic,issextrafficreported,sextrafficreportedon,nochangesinsextraffic) 
+		      SELECT personabusesubstanceid,personid,isusetobacco,isusedrugoralcohol,isusedrug,isusealcohol,drugfrequencydetails,drugageatfirstuse,alcoholfrequencydetails,alcoholageatfirstuse,drugoralcoholproblems,activeflag,updatedby,updatedon,insertedby,insertedon,effectivedate,expirationdate,tobaccoageatfirstuse,tobaccofrequencydetails,drugfrequencytypekey,alcoholfrequencytypekey,tobaccofrequencytypekey,drugtimes,alcoholtimes,tobaccotimes,medicalprofilekey,substanceusekey,substancecode,substanceusenotetext,uploadpath,parentabusesubstanceid,etl_userid,etl_load_date,ischildhassextraffichistory,issextraffichistoryreported,sextraffichistoryreportedon,ischildhassextraffic,issextrafficreported,sextrafficreportedon,nochangesinsextraffic
+		      FROM cjams.personabusesubstance
+		      WHERE personabusesubstanceid = new.personabusesubstanceid;
+  
+  RETURN null;
+END;
+$function$
+;

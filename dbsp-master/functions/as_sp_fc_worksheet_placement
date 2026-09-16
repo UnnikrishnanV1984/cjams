@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION as_sp_fc_worksheet_placement(al_client_id bigint, al_removal_id bigint, al_period_start_dt date, al_period_end_dt date DEFAULT NULL::date)
+ RETURNS TABLE(placementid bigint, start_dt timestamp without time zone, end_dt timestamp without time zone, livingorplacement_type character varying, provider_nm character varying, isplacementreimbursible character varying, livingarrangementtype character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+declare
+
+plc   record;
+--la    record;
+v_isplacementreimbursible character varying;
+v_prov_category VARCHAR(10);
+vs_home_app  VARCHAR(10);
+vs_app_status_cd VARCHAR(10);
+vs_lic_status    VARCHAR(10);
+lcount bigint;
+
+begin
+ CREATE TEMP TABLE IF NOT EXISTS
+ Temp_worksheet_placemnets_info ( 
+  placementid       bigint, 
+  start_dt        TIMESTAMP without time zone, 
+  end_dt         TIMESTAMP without time zone, 
+  livingorplacement_type     VARCHAR(50),  
+  provider_nm                         VARCHAR(50),
+  isplacementreimbursible             VARCHAR(10),
+  livingarrangementtype               VARCHAR(10)
+  );
+ 
+ for plc in
+ select placement_id, entry_dt::timestamp , exit_dt::timestamp , tbs.service_nm , (case when tbp.provider_category_cd = '1783' then concat(tbp.provider_first_nm , ' ' , tbp.provider_last_nm) else tbp.provider_nm end )::character varying as provider_name , tp.placement_structure_id, tp.provider_id, tp.conversion_sw
+ from tb_placement tp join tb_services tbs on tbs.service_id = tp.placement_structure_id join tb_provider tbp on tbp.provider_id = tp.provider_id
+ where tp.client_id::bigint = al_client_id and tp.removal_id::bigint= al_removal_id AND tp.delete_sw = 'N' AND ( tp.void_sw = 'N' OR tp.void_sw IS NULL ) and tp.approval_status_cd = '3047'
+ AND ((tp.entry_dt between al_period_start_dt::date  and al_period_end_dt::date  ) or (tp.entry_dt < al_period_start_dt::date and tp.exit_dt is null) or (tp.exit_dt between al_period_start_dt::date  and al_period_end_dt::date) or (al_period_end_dt is null and tp.entry_dt >= al_period_start_dt::date))
+
+ loop
+ 
+ if plc.conversion_sw = 'Y'
+ then v_isplacementreimbursible = 'Y';
+ elseif plc.placement_structure_id in (8, 76)
+ then v_isplacementreimbursible = 'N';
+ else
+ 
+ select picklist_value_cd into v_prov_category from tb_provider_picklist where provider_id = plc.provider_id and delete_sw = 'N' and picklist_value_cd in ('1782', '1783', '1785', '3049', '3274', '3302');
+
+  if v_prov_category = '1783'
+  then
+   select approval_type_cd, approval_status_cd into vs_home_app, vs_app_status_cd from tb_provider_approval where provider_approval_id = (select max(provider_approval_id) from tb_provider_approval where provider_id = plc.provider_id and ha_approval_status_cd = '3047' and approval_status_cd in ('3579','3585', '3584') and delete_sw = 'N');
+   
+   if vs_home_app in ('3591', '3592' , '4989' , '4991') or vs_app_status_cd in ('3585', '3584')
+   then v_isplacementreimbursible = 'N';
+   else v_isplacementreimbursible = 'Y';
+   end if;
+  else 
+  select license_status_cd into vs_lic_status from tb_provider_licensing where site_id = plc.provider_id and plc.entry_dt between license_issue_dt and license_expiry_dt;
+   
+   if vs_lic_status in ('3263', '3266', '3260', '5503')
+   then v_isplacementreimbursible = 'Y';
+   else v_isplacementreimbursible = 'N';
+   end if;
+   
+  end if;
+ end if;
+ INSERT INTO Temp_worksheet_placemnets_info ( placementid, start_dt, end_dt, livingorplacement_type  , provider_nm , isplacementreimbursible, livingarrangementtype)
+ VALUES ( plc.placement_id, plc.entry_dt, plc.exit_dt, plc.service_nm , plc.provider_name, v_isplacementreimbursible, 'PLTR');
+ 
+ end loop;
+    select count(*) into lcount from Temp_worksheet_placemnets_info;
+    if lcount=0 THEN
+ for plc in select lva.livingstartdate, lva.livingenddate , lva.livingfirstname , lva.livinglastname , lva.livingarrangementtypekey  from livingarrangement lva join placement plmt on plmt.placementid = lva.placementid  join intakeservreqchildremoval iscr on iscr.intakeservreqchildremovalid = plmt.intakeservreqchildremovalid  join person per on per.personid = lva.personid
+ where per.cjamspid::bigint = al_client_id and iscr.removalid::bigint = al_removal_id AND iscr.activeflag = 1 and plmt.activeflag = 1
+ AND ((lva.livingstartdate <= al_period_start_dt::date and al_period_end_dt is null) or
+ (lva.livingstartdate between al_period_start_dt::date  and al_period_end_dt::date  )
+ )
+ 
+ loop
+ INSERT INTO Temp_worksheet_placemnets_info (start_dt, end_dt, provider_nm, livingarrangementtype, livingorplacement_type)
+ VALUES (plc.livingstartdate, plc.livingenddate, concat(plc.livingfirstname , plc.livinglastname), 'LA', (select rvs.value_text from referencevalues rvs where trim(rvs.ref_key) = plc.livingarrangementtypekey and rvs.referencetypeid = 76 and rvs.activeflag = 1 ));
+ end loop;
+    end if;
+
+ return query select * from Temp_worksheet_placemnets_info; 
+ truncate table Temp_worksheet_placemnets_info;
+end;
+
+ $function$
+

@@ -1,0 +1,1 @@
+create index Xie5_routing on routing(date(insertedon));

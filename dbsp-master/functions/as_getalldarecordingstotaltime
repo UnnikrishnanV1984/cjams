@@ -1,0 +1,94 @@
+CREATE OR REPLACE FUNCTION as_getalldarecordingstotaltime(searchjson json)
+ RETURNS TABLE(totalcontactstime interval)
+ LANGUAGE plpgsql
+AS $function$                                                               
+                                                                                    
+DECLARE v_GroupId CHAR(36);                                                                           
+v_IntakeServiceID character varying(50);                     
+v_RecordingStatusType  character varying(50);                        
+v_DateFrom TIMESTAMP;                        
+v_DateTo TIMESTAMP;                        
+v_Draft BOOLEAN;                        
+v_ContactFrom TIMESTAMP;                        
+v_ContactTo TIMESTAMP;   
+v_GroupActiveFlag INT;  
+v_GroupExpirationDate TIMESTAMP;
+v_liPageNumber  INT;                              
+v_liPageSize   INT;
+v_pageoffset int;
+v_pagenumber int;  
+v_progressnotereasontypekey  character varying; 
+v_caseworkername character varying;
+v_note character varying;
+v_sort_by  character varying;
+v_dir character varying;
+v_progresstype character varying;
+v_progresssubtype character varying;
+v_actor text;
+v_progressnoteInsertedby character varying;
+v_uuidornot character varying(50);
+BEGIN
+
+                   
+ -- Populate the variables from the temp table.  
+                                                                   
+v_liPageNumber        := searchjson ->> 'pagenumber' ;
+v_liPageSize          := searchjson ->> 'pagesize' ;                                                 
+v_Draft               := searchjson ->>'draft';                           
+v_IntakeServiceID     := searchjson ->>'servicerequestid';                       
+v_DateFrom            := searchjson ->>'datefrom';                                                              
+v_DateTo              := searchjson ->>'dateto';                       
+v_ContactFrom         := searchjson ->>'contactdatefrom';                                                              
+v_ContactTo           := searchjson ->>'contactdateto';                                                     
+v_RecordingStatusType := searchjson ->>'type';  
+v_progressnotereasontypekey := searchjson ->>'progressnotereasontypekey';
+v_caseworkername := searchjson ->>'workerName';
+v_note := searchjson ->>'note';
+v_sort_by := searchjson ->>'sortBy';
+v_dir := searchjson ->>'sortDir';
+v_pagenumber := v_liPageNumber-1;
+v_pageoffset = v_pagenumber * v_liPageSize;
+v_progresstype := searchjson ->> 'recordingtype'    ;
+v_progresssubtype := searchjson ->> 'recordingsubtype';
+v_actor := (searchjson ->> 'intakeservicerequestactorids') :: text;
+v_progressnoteInsertedby := searchjson ->> 'insertedby';
+
+raise notice 'v_actor %',v_actor;
+SELECT * into v_uuidornot from as_uuid_or_null('v_IntakeServiceID');
+
+RETURN QUERY
+                  
+SELECT Sum(endtime-starttime) --as totalContactsTime
+    FROM  ProgressNote AS PN 
+    
+    INNER JOIN ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId AND PNT.activeflag = 1 
+    LEFT JOIN UserProfile up on pn.insertedby = up.SecurityUsersId 
+            
+    WHERE 
+    --AND PNT.parentid is null
+    PN.activeflag = 1                    
+    AND (v_DateFrom IS NULL OR (CAST( PN.insertedon AS DATE) between CAST(v_DateFrom AS DATE) AND CAST(v_DateTo AS DATE)))                                                            
+    AND (v_ContactFrom IS NULL OR (CAST( PN.ContactDate AS DATE) between CAST(v_ContactFrom AS DATE) AND CAST(v_ContactTo AS DATE)))                                                               
+    AND (v_Draft IS NULL OR PN.SaveMode = v_Draft )  
+    AND (v_caseworkername  IS NULL OR lower(UP.DisplayName) LIKE '%'|| lower(v_caseworkername) || '%' ) 
+    AND (v_note  IS NULL OR lower(PN.description) LIKE '%'|| lower(v_note) || '%' ) 
+    AND (v_progressnotereasontypekey IS NULL OR PN.Progressnotereasontypekey LIKE '%'|| v_progressnotereasontypekey || '%' )
+    AND (lower(v_RecordingStatusType) IS NULL OR lower(COALESCE(PNT.ProgressNoteClassificationTypeKey,'User')) = lower(v_RecordingStatusType))
+    AND (v_progresssubtype IS NULL OR PN.progressnotesubtypeid:: character varying = v_progresssubtype )
+    AND (v_progresstype IS NULL OR PNT.progressnotetypeid:: character varying = v_progresstype )
+    and (v_progressnoteInsertedby IS NULL OR PN.insertedby:: character varying = v_progressnoteInsertedby OR PN.updatedby:: character varying = v_progressnoteInsertedby)
+    and (PN.EntityTypeId in ( v_IntakeServiceID :: character varying) OR 
+    (CASE WHEN v_uuidornot IS NULL THEN null ELSE PN.EntityTypeId in (
+    (SELECT DISTINCT intakeserviceid:: character varying FROM intakeservicerequest WHERE servicecaseid:: character varying =v_IntakeServiceID AND activeflag =1 LIMIT 1),
+    (SELECT DISTINCT intakenumber:: character varying FROM intakeservicerequestactor WHERE (servicecaseid:: character varying =v_IntakeServiceID OR intakeserviceid:: character varying =v_IntakeServiceID ) AND activeflag =1 LIMIT 1),
+    (SELECT DISTINCT servicecaseid:: character varying FROM intakeservicerequestactor WHERE (servicecaseid:: character varying =v_IntakeServiceID OR intakeserviceid:: character varying =v_IntakeServiceID ) AND activeflag =1 LIMIT 1)
+    ) END ))
+--                  ):: character varying = ANY (
+--  ( select * from jsonb_array_elements_text((v_actor):: jsonb))))
+
+;
+                       
+END;
+
+$function$
+

@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION getassignmentstatus(v_adoptioncaseid uuid)
+ RETURNS TABLE(responsibilitytypekey character varying, caseassignmentid uuid, casetype character varying, countyname character varying, teamname character varying, startdate timestamp without time zone, enddate timestamp without time zone, statustypekey character varying, remarks character varying, toteamid uuid, toworkeridno character varying, fromworkerdetails json, toworkerdetails json, loadnumber character varying, localdepartment character varying, childinfo json, servicecaseid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN  
+
+   RETURN  QUERY 
+  SELECT 
+    CA.responsibilitytypekey,
+    CA.caseassignmentid,
+    CA.objecttypekey as casetype,
+   '' ::character varying countyname,
+    T.teamname,
+    COALESCE(CA.startdate,CA.effectivedate)::timestamp,
+    CA.enddate,
+    CA.statustypekey,
+    CA.remarks,
+    CA.toteamid,
+    CA.toworkeridno,
+   (SELECT  json_agg(x)  FROM  (
+   SELECT 
+     cast(UP2.firstname || ' ' || UP2.lastname as character varying)as fromworkername,
+     UP2.email,
+     UP2.cjamspid,
+     UPA.county,
+     UPP.phonenumber
+    FROM  userprofile UP2  
+     LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = CA.fromworkeridno AND UPA.activeflag =1
+     LEFT JOIN userprofilephonenumber UPP ON UPP.securityusersid = CA.fromworkeridno AND UPP.activeflag =1 
+     WHERE UP2.securityusersid = COALESCE(CA.fromworkeridno,CA.fromsupervisoridno)  AND UP2.activeflag =1
+     )  AS  x  )  AS  fromworkerdetails,
+
+   
+  (SELECT  json_agg(y)  FROM  (
+   SELECT 
+    cast(UP.firstname || ' ' || UP.lastname as character varying)as toworkername,
+    UP.email,
+    UP.cjamspid,
+    UPA.county,
+    UPP.phonenumber
+   FROM   userprofile UP 
+    LEFT JOIN userprofileaddress UPA ON UPA.securityusersid = CA.toworkeridno AND UPA.activeflag =1
+    LEFT JOIN userprofilephonenumber UPP ON UPP.securityusersid = CA.toworkeridno AND UPP.activeflag =1  
+     
+    WHERE UP.securityusersid = CA.toworkeridno   AND UP.activeflag =1
+    )  AS  y  )  AS  toworkerdetails,
+   
+  (SELECT tm.loadnumber FROM teammember tm
+    INNER JOIN  teammemberassignment tma on tma.teammemberid = tm.teammemberid where tma.securityusersid = CA.toworkeridno limit 1
+  ) AS loadnumber,
+  (SELECT ld.teamname FROM team ld WHERE (ld.teamid = t.parentteamid OR ld.teamid = DT.teamid) AND ld.activeflag =1 AND ld.teamtypekey ='LDSS' LIMIT  1),
+  (SELECT  json_agg(x)  
+   FROM  (
+   SELECT  p.firstname,p.lastname,p.personid,isra.intakeservicerequestactorid 
+   FROM  caseassignmentactor CAA
+     INNER JOIN intakeservicerequestactor ISRA on isra.intakeservicerequestactorid = caa.intakeservicerequestactorid and isra.activeflag =1
+     INNER JOIN person P on p.personid = isra.personid and p.activeflag = 1
+   WHERE  CAA.caseassignmentid = CA.caseassignmentid AND CAA.activeflag =1  )  AS  x  
+  )  AS  childinfo,
+  CA.objectid as servicecaseid
+   
+ FROM caseassignment CA 
+ INNER JOIN adoptioncase ad ON ad.servicecaseid = ca.objectid AND ad.activeflag =1
+ LEFT JOIN team DT on DT.teamid = CA.toldssid and DT.activeflag = 1
+ LEFT JOIN team T on T.teamid = CA.toteamid AND T.activeflag =1
+ WHERE ad.adoptioncaseid = v_adoptioncaseid ORDER BY COALESCE(CA.enddate:: date,now() + interval '1' day ) desc ; 
+END;
+
+$function$
+

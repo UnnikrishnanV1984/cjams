@@ -1,0 +1,358 @@
+CREATE OR REPLACE FUNCTION cjams.getadoptionagreementlist(v_adoptionplanningid uuid, _page integer, _limit integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+--------------------------------------------------------------------------------------
+--09-01 - Addded agreementtyperefid field for the story CIDM-5203
+-- 06-29-2023 CIDM-5958 Veera The rejected subsidy rate is not listed in the Bio Case
+--07/26/2023 Umasankar Raavi --CIDM-7128-Fetching document other value
+--------------------------------------------------------------------------------------
+DECLARE                    
+_offset    integer;
+l_agreementdetails json ;
+v_adoptionagreementid uuid;
+v_adoptionagreementrevisionid uuid;
+v_lastfcpaymentamount numeric;
+v_cjamspid  bigint;
+BEGIN
+_offset  :=  (_page  -  1)  *  _limit;    
+
+
+select adoptionagreementid
+		into v_adoptionagreementid
+	from adoptionagreement 
+where adoptionplanningid = v_adoptionplanningid 
+	and activeflag = 1 ;
+
+select adoptionagreementrevisionid
+		into v_adoptionagreementrevisionid
+	from adoptionagreementrevision 
+where coalesce(approvalstatustypekey, '') <> '3047' 
+	and activeflag = 1
+	and adoptionagreementid = v_adoptionagreementid ;
+
+if coalesce(v_adoptionagreementrevisionid::character varying, '') = '' then
+	select adoptionagreementrevisionid, adoptionagreementid
+			into v_adoptionagreementrevisionid, v_adoptionagreementid
+		from adoptionagreementrevision 
+	where coalesce(approvalstatustypekey, '') <> '3047' 
+		and activeflag = 1
+		and adoptionplanningid = v_adoptionplanningid ;
+end if;
+
+-- Get Child's last foster care placement Payment amount - START
+v_lastfcpaymentamount := 2000;
+
+select pr.cjamspid
+		into v_cjamspid 
+	from adoptionplanning adp ,
+		intakeservicerequestactor inr,
+		person pr	
+where adp.intakeservicerequestactorid = inr.intakeservicerequestactorid 
+	and inr.personid = pr.personid
+	and adp.adoptionplanningid = v_adoptionplanningid
+	and adp.activeflag = 1 
+	and inr.activeflag = 1 
+	and pr.activeflag = 1 ;
+	
+IF v_cjamspid is not null THEN
+	select 
+		a_lastfcpaymentamount 
+	from cjams.f_get_lastfcpaymentamount(v_cjamspid) l
+		into v_lastfcpaymentamount;	
+END IF;	
+	
+IF v_adoptionagreementrevisionid IS NOT NULL THEN 	
+	SELECT json_agg(f)  INTO l_agreementdetails FROM(								
+	SELECT aa.adoptionagreementid,
+		aa.adoptionplanningid,
+		aa.isofferedsubsidy,
+		aa.offeraccepteddate,
+		aa.finalizationdate,
+		aa.isunderappeal,
+		aa.startdate,
+		aa.enddate,
+		aa.parent1signdate,
+		aa.parent2signdate, 
+		aa.singleparentadoptioncheck,
+		aa.parent1providerid, 
+		aa.parent2providerid, 
+		aa.parent1providername, 
+		aa.parent2providername,
+		aa.ldssdate,
+		aa.issubsidypaid,
+		aa.ismedassist,
+		aa.adoptiveparent1signature,
+		aa.adoptiveparent2signature,
+		aa.ldssdirectorsignature,
+		aa.agreementcomments,
+		(	SELECT rv.ref_key 
+				FROM referencevalues rv 
+			WHERE rv.ref_key = aa.childplacedby 
+				AND rv.referencetypeid = 901 
+				AND rv.activeflag = 1 
+			LIMIT 1
+		) AS childplacedby,
+		(	SELECT rv.ref_key 
+				FROM referencevalues rv 
+			WHERE rv.ref_key = aa.childplacedfrom 
+				AND rv.referencetypeid = 900 
+				AND rv.activeflag = 1 
+				LIMIT 1
+		) AS childplacedfrom,
+					(	SELECT rv.ref_key 
+					FROM referencevalues rv 
+				WHERE rv.ref_key = aa.agreementtyperefid 
+					AND rv.referencetypeid = 5465 
+					AND rv.activeflag = 1 
+					LIMIT 1
+			) AS agreementtyperefid,
+		(	case when aa.approvalstatustypekey = '3045' then
+				'Review'
+			 when aa.approvalstatustypekey = '3046' then
+				'Rejected'
+			 else
+				'Incomplete'
+			 end 
+		) AS routingstatus,
+		(	SELECT json_agg(doc) AS attachments   
+				FROM (  SELECT dp.filename, 
+							dp.title,  
+							dp.mime, 
+							dp.documentpropertiesid, 
+							dp.numberofbytes, 
+							dp.s3bucketpathname,  
+							dp.originalfilename,
+							dp.documentdate, 
+							dp.actualdocumentdate, 
+							dp.other,
+							dp.title,
+							(select up.fullname as insertedby from userprofile up where up.securityusersid = dp.insertedby),
+							dp.updatedon,
+							(select attachmentclassificationtypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+							(select attachmentclassificationsubtypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+							(select attachmenttypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+							dp.uploadstatus, dp.finalstatus,dp.ecmsdocumentid
+						from documentproperties dp 
+						where dp.objectid = aa.adoptionagreementid and dp.activeflag in (1,3,4,5)
+					) doc  
+		),
+		(	SELECT json_agg (e) 
+				FROM (	SELECT agr.adoptionagreementrateid,
+							agr.adoptionagreementid, 
+							agr.startdate,
+							agr.enddate,
+							agr.provider_id,
+							agr.paymentamout,
+							agr.isapproval,
+							agr.isssaapproved,
+							agr.ssaapproveddate,
+							agr.approvaldate,
+							agr.isspeacialneeds,
+							agr.parent1actorid::character varying as parent1actorid, 
+							agr.parent2actorid::character varying as parent2actorid, 
+							agr.childrelationship,
+							agr.notes,
+							agr.transactiondate,
+							agr.specialneedtypekey,
+							agr.status as typedescription
+						FROM  adoptionagreementrate agr 
+						WHERE agr.activeflag = 1 
+							AND agr.adoptionagreementid = aa.adoptionagreementid 
+							and (select count(1) 
+									from adoptionagreementraterevision rv
+								 where rv.adoptionagreementid = aa.adoptionagreementid
+									and rv.activeflag = 1
+									and coalesce(rv.approvalstatustypekey, '') not in ('3047')
+								 ) = 0	
+						union all	
+						SELECT rrv.adoptionagreementrateid,
+							rrv.adoptionagreementid, 
+							rrv.startdate,
+							rrv.enddate,
+							rrv.provider_id,
+							rrv.paymentamout,
+							rrv.isapproval,
+							rrv.isssaapproved,
+							rrv.ssaapproveddate,
+							rrv.approvaldate,
+							rrv.isspeacialneeds,
+							rrv.parent1providerid::character varying as parent1actorid, 
+							rrv.parent2providerid::character varying as parent2actorid, 
+							rrv.childrelationship,
+							rrv.notes,
+							rrv.transactiondate,
+							rrv.specialneedtypekey,
+							(case when rrv.approvalstatustypekey = '3045' then
+								'Review'
+							 when rrv.approvalstatustypekey = '3046' then
+								'Rejected'
+							 else
+								'Incomplete'
+							 end ) as typedescription
+						FROM adoptionagreementraterevision rrv 
+						WHERE rrv.activeflag = 1 
+							AND rrv.adoptionagreementid = aa.adoptionagreementid 
+							and coalesce(rrv.approvalstatustypekey, '') not in ('3047')
+						order by 4 asc	
+					) e
+		) :: json as agreementrate,
+		v_lastfcpaymentamount as lastfcpaymentamount
+	FROM adoptionagreementrevision aa
+	WHERE aa.adoptionagreementrevisionid = v_adoptionagreementrevisionid  
+	and aa.activeflag = 1 
+	order by aa.insertedon desc
+	LIMIT  _limit  OFFSET  _offset
+	)f;
+ELSE
+	SELECT json_agg(f)  INTO l_agreementdetails FROM(
+		SELECT aa.adoptionagreementid,
+			aa.adoptionplanningid,
+			aa.isofferedsubsidy,
+			aa.offeraccepteddate,
+			aa.finalizationdate,
+			aa.isunderappeal,
+			aa.startdate,
+			aa.enddate,
+			aa.parent1signdate,
+			aa.parent2signdate, 
+			aa.singleparentadoptioncheck,
+			aa.parent1providerid,
+			aa.parent2providerid,
+			aa.parent1providername,
+			aa.parent2providername,
+			aa.ldssdate,
+			aa.issubsidypaid,
+			aa.ismedassist,
+			aa.adoptiveparent1signature,
+			aa.adoptiveparent2signature,
+			aa.ldssdirectorsignature,
+			aa.agreementcomments,
+			(	SELECT rv.ref_key 
+					FROM referencevalues rv 
+				WHERE rv.ref_key = aa.childplacedby 
+					AND rv.referencetypeid = 901 
+					AND rv.activeflag = 1 
+				LIMIT 1
+			) AS childplacedby,
+			(	SELECT rv.ref_key 
+					FROM referencevalues rv 
+				WHERE rv.ref_key = aa.childplacedfrom 
+					AND rv.referencetypeid = 900 
+					AND rv.activeflag = 1 
+					LIMIT 1
+			) AS childplacedfrom,
+			(	SELECT rv.ref_key 
+					FROM referencevalues rv 
+				WHERE rv.ref_key = aa.agreementtyperefid 
+					AND rv.referencetypeid = 5465 
+					AND rv.activeflag = 1 
+					LIMIT 1
+			) AS agreementtyperefid,
+			(	SELECT rs.typedescription 
+					from routing r
+						INNER JOIN routingstatustype rs ON r.routingstatustypeid = rs.sequencenumber
+				WHERE r.eventcode = 'ASAR' 
+					AND r.objectid = aa.adoptionagreementid::character varying 
+					AND r.activeflag = 1 
+				order by r.insertedon desc 
+				LIMIT 1
+			) AS routingstatus,
+			(	SELECT json_agg(doc) AS attachments   
+					FROM (  SELECT dp.filename, 
+								dp.title,  
+								dp.mime,  
+								dp.documentpropertiesid,
+								dp.numberofbytes, 
+								dp.s3bucketpathname,  
+								dp.originalfilename,
+								dp.documentdate, 
+								dp.actualdocumentdate, 
+								dp.other, 
+								dp.title,
+								(select up.fullname as insertedby from userprofile up where up.securityusersid = dp.insertedby),
+								dp.updatedon,
+								(select attachmentclassificationtypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+								(select attachmentclassificationsubtypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+								(select attachmenttypekey from documentattachment where documentpropertiesid = dp.documentpropertiesid),
+								dp.uploadstatus, dp.finalstatus,dp.ecmsdocumentid
+
+							from documentproperties dp 
+							where dp.objectid = aa.adoptionagreementid and dp.activeflag in (1,3,4,5)
+						) doc  
+			),
+			(	SELECT json_agg (e) 
+					FROM (	SELECT agr.adoptionagreementrateid,
+								agr.adoptionagreementid, 
+								agr.startdate,
+								agr.enddate,
+								agr.provider_id,
+								agr.paymentamout,
+								agr.isapproval,
+								agr.isssaapproved,
+								agr.ssaapproveddate,
+								agr.approvaldate,
+								agr.isspeacialneeds,
+								agr.parent1actorid::character varying, 
+								agr.parent2actorid::character varying, 
+								agr.childrelationship,
+								agr.notes,
+								agr.transactiondate,
+								agr.specialneedtypekey,
+								agr.status as typedescription
+							FROM  adoptionagreementrate agr 
+							WHERE agr.activeflag = 1 
+								AND agr.adoptionagreementid = aa.adoptionagreementid 
+								and (select count(1) 
+										from adoptionrevision rv
+									 where rv.subsidyagreementrateid = agr.adoptionagreementrateid
+										and rv.activeflag = 1
+										and coalesce(rv.approvalstatustypekey, '') not in ('3047')
+									 ) = 0	
+							union all	
+							SELECT rrv.adoptionagreementrateid,
+								rrv.adoptionagreementid, 
+								rrv.startdate,
+								rrv.enddate,
+								rrv.provider_id,
+								rrv.paymentamout,
+								rrv.isapproval,
+								rrv.isssaapproved,
+								rrv.ssaapproveddate,
+								rrv.approvaldate,
+								rrv.isspeacialneeds,
+								rrv.parent1providerid::character varying as parent1actorid, 
+								rrv.parent2providerid::character varying as parent2actorid, 
+								rrv.childrelationship,
+								rrv.notes,
+								rrv.transactiondate,
+								rrv.specialneedtypekey,
+								(case when rrv.approvalstatustypekey = '3045' then
+									'Review'
+								 when rrv.approvalstatustypekey = '3046' then
+									'Rejected'
+								 else
+									'Incomplete'
+								 end ) as typedescription
+							FROM adoptionagreementraterevision rrv 
+							WHERE rrv.activeflag = 1 
+								AND rrv.adoptionagreementid = aa.adoptionagreementid 
+								and coalesce(rrv.approvalstatustypekey, '') not in ('3047')
+							order by 4 asc	
+						) e
+			) :: json as agreementrate,
+			v_lastfcpaymentamount as lastfcpaymentamount
+		FROM adoptionagreement aa 
+		WHERE aa.adoptionplanningid = v_adoptionplanningid 
+			and aa.activeflag = 1 
+		order by insertedon desc
+		LIMIT  _limit  OFFSET  _offset
+	)f;
+END IF;
+
+Return l_agreementdetails;
+ 
+  END;
+
+$function$
+;

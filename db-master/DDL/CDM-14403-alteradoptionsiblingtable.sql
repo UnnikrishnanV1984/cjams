@@ -1,0 +1,1 @@
+ALTER TABLE cjams.adoptionapplicabilitysiblinginfo ALTER COLUMN nameofsiblingchildsadoptiveplacement DROP NOT NULL;

@@ -1,0 +1,133 @@
+CREATE OR REPLACE FUNCTION sp_rs_acc_trans_calc(al_trans_cd character varying, al_client_account_id integer, start_dt timestamp without time zone, end_dt timestamp without time zone, al_client_id integer, OUT al_other_amt numeric, OUT al_adj_credit numeric, OUT al_adj_debit numeric, OUT al_stamped_amt numeric, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+--Author : Gayathri Rajkumar
+--Date of creation : '2009-05-15'
+--To Calculate child accounts
+--Gayathri Modified - '2009-06-04' date logic for already stamped amount
+------------------------------------------------------------------------
+
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE v_sqlcode int DEFAULT 0;--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_RS_ACC_TRANS_CALC';--
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+  /*  GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;--
+    SET v_sqlcode = -1 ;--
+    SET as_error = COALESCE(as_error ,'') || CHAR(CURRENT TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;--
+    SET as_error = COALESCE(as_error ,'') || '::RO ' || 'Client Account ID/ Payment Detail ID' || ' :: ' || COALESCE(char(al_client_account_id),'') || '/ ' || COALESCE(char(AL_CLIENT_ID),'');--
+    SET as_error = as_error || COALESCE(vs_message_text ,'');--*/
+ as_error:='';
+--END;--
+
+               SELECT COALESCE(SUM(TB.TRANSACTION_AMOUNT_NO),0)
+               INTO AL_OTHER_AMT
+               FROM TB_ACCOUNT_TRANSACTION TB
+            WHERE TB.CLIENT_ACCOUNT_ID =  AL_CLIENT_ACCOUNT_ID
+              AND TB.DELETE_SW = 'N'
+              AND TB.TRANSACTION_SOURCE_CD = AL_TRANS_CD
+              AND TB.BENEFIT_START_DT BETWEEN START_DT  and END_DT
+              AND LATE_ENTRY_SW = 'Y' ;--
+               
+             
+             SELECT COALESCE(SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)),0) 
+   INTO AL_adj_credit
+        FROM TB_ACCOUNT_TRANSACTION TR1
+          WHERE TR1.TRANSACTION_TYPE_CD = '588'
+          AND TR1.CREDIT_DEBIT_SW = 'C'
+          AND TR1.TRANSACTION_SOURCE_CD = '5473' 
+          AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+          AND TR1.REFERENCE_TRANSACTION_ID in
+     (
+       SELECT TR.TRANSACTION_ID
+      FROM TB_ACCOUNT_TRANSACTION TR
+       WHERE TR.CLIENT_ACCOUNT_ID =  AL_CLIENT_ACCOUNT_ID
+      AND TR.DELETE_SW = 'N'
+      AND TR.CREDIT_DEBIT_SW = 'C'
+      AND TR.TRANSACTION_SOURCE_CD =  AL_TRANS_CD
+      AND TR.BENEFIT_START_DT BETWEEN START_DT  and END_DT
+         AND LATE_ENTRY_SW = 'Y'
+     );--
+
+          SELECT COALESCE(SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)),0)
+          INTO AL_adj_DEBIT
+          FROM TB_ACCOUNT_TRANSACTION TR1
+          WHERE TR1.TRANSACTION_TYPE_CD = '588'
+          AND TR1.CREDIT_DEBIT_SW = 'D'
+          AND TR1.TRANSACTION_SOURCE_CD = '5473' 
+          AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+          AND TR1.REFERENCE_TRANSACTION_ID in
+     (
+       SELECT TR.TRANSACTION_ID
+      FROM TB_ACCOUNT_TRANSACTION TR
+             WHERE TR.CLIENT_ACCOUNT_ID = AL_CLIENT_ACCOUNT_ID
+      AND TR.DELETE_SW = 'N'
+      AND TR.CREDIT_DEBIT_SW = 'C'
+      AND TR.TRANSACTION_SOURCE_CD =  AL_TRANS_CD
+      AND TR.BENEFIT_START_DT BETWEEN  START_DT  and END_DT
+                                                AND LATE_ENTRY_SW = 'Y'  );--
+           
+    If   AL_TRANS_CD  = '587' then
+           SELECT   COALESCE( sum (  ssi_funding_amt) ,0)
+                                 INTO AL_stamped_amt
+                          FROM TB_fund_allocation_master  TF,
+                           TB_PAYMENT_DETAIL PD,
+                          TB_PAYMENT_HEADER PH
+                                 WHERE TF.PAYMENT_DETAIL_ID = pd.PAYMENT_DETAIL_ID
+        AND PH.PAYMENT_ID = PD.PAYMENT_ID  
+        AND PH.PAYMENT_TYPE_CD IN ('6','3294')
+        AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+        AND PD.FINAL_SERVICE_ID IS NOT NULL
+        AND TF.DELETE_SW = 'N'
+        AND PD.DELETE_SW = 'N'
+        AND PH.DELETE_SW = 'N'
+        AND Year(PH.PAYMENT_START_DT) = year(START_DT   )
+        AND MONTH(PH.PAYMENT_START_DT) = MONTH(START_DT)
+        AND PD.CLIENT_ID = AL_CLIENT_ID ;--
+
+    elseif  AL_TRANS_CD  = '586'        then
+            SELECT COALESCE( sum (  ssa_funding_amt) ,0)
+                                 INTO AL_stamped_amt
+                          FROM TB_fund_allocation_master  TF,
+                           TB_PAYMENT_DETAIL PD,
+                          TB_PAYMENT_HEADER PH
+                                 WHERE TF.PAYMENT_DETAIL_ID = pd.PAYMENT_DETAIL_ID
+      AND PH.PAYMENT_ID = PD.PAYMENT_ID  
+      AND PH.PAYMENT_TYPE_CD IN ('6','3294')
+      AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+      AND PD.FINAL_SERVICE_ID IS NOT NULL
+      AND TF.DELETE_SW = 'N'
+      AND PD.DELETE_SW = 'N'
+      AND PH.DELETE_SW = 'N'
+      AND Year(PH.PAYMENT_START_DT) = year(START_DT   )
+      AND MONTH(PH.PAYMENT_START_DT) = MONTH(START_DT)
+      AND PD.CLIENT_ID = AL_CLIENT_ID ;--
+    elseif AL_TRANS_CD  = '585'   then
+            SELECT   COALESCE( sum  (  coc_funding_amt),0)
+                                 INTO AL_stamped_amt
+                          FROM TB_fund_allocation_master  TF,
+                           TB_PAYMENT_DETAIL PD,
+                          TB_PAYMENT_HEADER PH
+                                 WHERE TF.PAYMENT_DETAIL_ID = pd.PAYMENT_DETAIL_ID
+      AND PH.PAYMENT_ID = PD.PAYMENT_ID  
+      AND PH.PAYMENT_TYPE_CD IN ('6','3294')
+      AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+      AND PD.FINAL_SERVICE_ID IS NOT NULL
+      AND TF.DELETE_SW = 'N'
+      AND PD.DELETE_SW = 'N'
+      AND PH.DELETE_SW = 'N'
+      AND Year(PH.PAYMENT_START_DT) = year(START_DT   )
+      AND MONTH(PH.PAYMENT_START_DT) = MONTH(START_DT)
+      AND PD.CLIENT_ID = AL_CLIENT_ID ;--
+                               end if;--
+
+END;
+
+$function$
+

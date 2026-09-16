@@ -1,0 +1,112 @@
+CREATE OR REPLACE FUNCTION usersservicerequest(userid character varying, page integer, pagelimit integer, searchval character varying, searchcol character varying, actiontype character varying, v_foldertypekey character varying, v_status character varying)
+ RETURNS TABLE(totalcount bigint, groupnumber character varying, intakeserviceid uuid, legalguardian character varying, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, displayname character varying, duedate timestamp without time zone, status character varying, accepteddate timestamp without time zone, routedon timestamp without time zone, ismaltreatment integer, approvaldate timestamp without time zone, foldertype character varying, isfatality integer, restrictstatus text, focusname character varying, fatalityinfo json, open_closed character varying, intakedaterecieved timestamp without time zone, county character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  v_pageoffset  int;
+
+v_pagenumber  int;
+l_actiontype  character  varying;
+
+BEGIN
+
+v_pagenumber := (page-1)*10;
+l_actiontype:=actiontype;
+
+--DROP TABLE IF EXISTS tmp_status;
+--
+--CREATE TEMP TABLE tmp_status ( statustypeid uuid);
+
+IF (searchcol!='servicerequestnumber') THEN  searchval:='';  END IF;
+--
+--IF (v_status IN ('pending','inprogress')) THEN
+-- INSERT INTO tmp_status(statustypeid)
+-- SELECT intakeserreqstatustypeid FROM intakeserreqstatustype WHERE activeflag=1 AND LOWER(intakeserreqstatustypekey) NOT IN ('closed', 'cancelled','completed');
+--ELSIF(v_status='closed') THEN
+-- INSERT INTO tmp_status(statustypeid)
+-- SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag=1  AND  LOWER(intakeserreqstatustypekey) IN  ('closed','completed');
+--ELSE
+-- INSERT INTO tmp_status (statustypeid)
+-- SELECT intakeserreqstatustypeid FROM intakeserreqstatustype WHERE activeflag=1 AND LOWER(intakeserreqstatustypekey) NOT IN  ('cancelled');
+--END IF;
+
+RETURN  QUERY
+
+SELECT * FROM (
+SELECT
+count(1) over() ,
+'':: character varying,
+ISR.intakeserviceid,
+(
+select concat_ws(' ',coalesce(per.firstname,null),coalesce(per.middlename,null),coalesce(per.lastname,null),coalesce(per.suffix,null) )
+from intakeservicerequestactor isra
+join person per on per.personid = isra.personid
+and isra.activeflag = 1  where  ISRA.intakeserviceid=ISR.intakeserviceid
+-- AND isra.intakeservicerequestpersontypekey='LG'
+AND  isra.isheadofhousehold=true LIMIT 1
+) :: character varying,
+ISR.servicerequestnumber,
+itsrt.description,
+srst.classkey,
+ISR.reporteddate::timestamp without time zone,
+'':: character varying,
+NULL::timestamp without time zone as duedate,
+CAST(CASE ISR.isaccepted WHEN    false  THEN  'Rejected' WHEN    true  THEN  'Assigned' ELSE  'Pending' END AS  character  varying)  AS  status,
+ISR.accepteddate,
+ISR.routedon,
+CASE  COALESCE((
+SELECT  COUNT(1)
+FROM  investigationallegation  ia
+INNER  JOIN  investigation  i  ON  i.investigationid=  ia.investigationid  AND  i.activeflag=1  AND  I.intakeserviceid  =  ISR.intakeserviceid
+WHERE  ia.activeflag=1  AND  COALESCE(ia.isproviderinvolved,0)  =1),0)
+WHEN  0  THEN  0  ELSE  1  END,  
+ISR.insertedon AS approvaldate,
+'':: character varying AS foldertype,
+0,
+(SELECT * FROM getRestrictedCaseStatus(ISR.intakeserviceid::text,userid)) AS restrictStatus,
+(
+select concat_ws(' ',coalesce(per.firstname,null),coalesce(per.middlename,null),coalesce(per.lastname,null),coalesce(per.suffix,null) )
+from intakeservicerequestactor isra
+join person per on per.personid = isra.personid
+and isra.activeflag = 1  where  ISRA.intakeserviceid=ISR.intakeserviceid
+AND isra.intakeservicerequestpersontypekey='AV' LIMIT 1
+) :: character VARYING,
+(SELECT T.fatalityinfo FROM getchildfatality (ISR.intakeserviceid::character varying,'servicerequest') T ),
+coalesce((
+SELECT case when ISRS.intakeserreqstatustypekey in ('Closed','Completed') then 'Closed' else 'In Progress' end::varchar as open_closed
+from  intakeserreqstatustype ISRS
+where ISRS.intakeserreqstatustypeid=ISR.intakeserreqstatustypeid
+), 'In Progress') as open_closed,
+--For new application use the intakedaterecieved, while chessie cases will have the reporteddate
+COALESCE(ISR.intakedaterecieved, ISR.reporteddate) as intakedaterecieved,
+(
+select distinct countyname from county where activeflag=1 and countyid = ca.toldssid limit 1
+) as county
+FROM intakeservicerequest as ISR  
+INNER JOIN caseassignment ca on ca.objectid = ISR.intakeserviceid and ca.toworkeridno = userid AND ((ca.enddate IS NULL) OR ca.enddate > now())
+--LEFT JOIN  intakedastatus  as  IDAS ON IDAS.intakenumber=ISR.intakenumber  and  IDAS.activeflag=1
+INNER JOIN intakeserreqstatustype ts ON ts.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid   AND ts.activeflag = 1
+INNER JOIN intakeservicerequesttype itsrt ON itsrt.intakeservreqtypeid = ISR.intakeservreqtypeid AND itsrt.activeflag = 1
+INNER JOIN servicerequestsubtype srst ON srst.servicerequestsubtypeid = ISR.intakeservicerequestclassid AND  srst.activeflag = 1    
+WHERE ISR.activeflag = 1 and ca.activeflag = 1
+--AND ISR.Intakeserviceid::character varying  in  (SELECT objectid FROM routing R WHERE R.tosecurityusersid = userid AND R.activeflag = 1 )
+AND LOWER(ISR.servicerequestnumber)  LIKE   '%' ||   LOWER(searchval)  ||  '%'
+AND LOWER( COALESCE(ISR.actiontype,'') ) = LOWER(l_actiontype)
+AND (COALESCE(v_foldertypekey,'') = '' OR LOWER(CAST( COALESCE(ISR.foldertypekey,'') as character varying)) = LOWER(COALESCE(v_foldertypekey,'')))
+   
+and case
+when (lower(v_status) = 'pending' or lower(v_status) = 'inprogress') THEN
+LOWER(ts.intakeserreqstatustypekey) NOT IN ('closed', 'cancelled','completed')
+when (lower(v_status) ='closed') THEN
+(ts.intakeserreqstatustypekey) IN  ('closed','completed')
+ELSE
+LOWER(ts.intakeserreqstatustypekey) NOT IN  ('cancelled')
+    end
+   
+   
+) AS datav WHERE datav.restrictStatus IN('INCL','INCLRES');
+ 
+END;
+ 
+$function$
+

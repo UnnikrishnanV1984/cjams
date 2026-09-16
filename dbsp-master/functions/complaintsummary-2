@@ -1,0 +1,87 @@
+CREATE OR REPLACE FUNCTION complaintsummary(i_personid uuid, pagenumber bigint, pagesize bigint, i_searchtext character varying, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, offensedate text, allegationname character varying[], adjudicateddecision json, complaintid character varying, intakeservicerequestevaluationid uuid, petitionid character varying, intakeservicerequestpetitionid uuid, petitiontype character varying, hearingtype character varying, hearingdatetime timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                                                                          
+                                                                                                                                                                                                                                                                                                                                                                       
+                                                                                                                                                                                                                                                                                                                                                                       
+ 
+DECLARE 
+   
+ v_pageoffset int;
+ v_personid uuid;
+ 
+BEGIN
+ 
+ 
+    v_pageoffset = pagenumber * pagesize;
+ 
+ IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+  pagenumber := 1; 
+ END IF;
+
+ Return query
+ 
+    SELECT  COUNT(1) over() AS totalcount,
+  CASE WHEN INTSRE.unknownrange=0 THEN 
+           to_char(INTSRE.offensedate,'MM/DD/YYYY') 
+    WHEN INTSRE.unknownrange=1 THEN 
+         '' :: character varying 
+    WHEN INTSRE.unknownrange=2 THEN 
+       to_char(INTSRE.begindate,'MM/DD/YYYY')|| '- ' || to_char(INTSRE.enddate,'MM/DD/YYYY')
+    END AS offensedate,
+   (SELECT array_agg(AG.name)  
+   FROM  allegation AG
+   INNER JOIN intakeservicerequestevaluationconfig ITSEC  ON ITSEC.allegationid=AG.allegationid AND AG.activeflag=1
+   WHERE  ITSEC.intakeservicerequestevaluationid=INTSRE.intakeservicerequestevaluationid AND ITSEC.activeflag=1 )AS allegationname,
+  (SELECT json_agg(x) 
+  FROM 
+  (SELECT AG."name" AS allegationname,ADT.description AS adjudicateddecisiontype,
+  (SELECT string_agg(CAT.description,',') AS courtActions 
+  FROM intakeservicerequestcourtactiontype INTSRCAT
+  INNER JOIN courtactiontype CAT ON CAT.courtactiontypekey=INTSRCAT.courtactiontypekey AND INTSRCAT.activeflag=1
+  WHERE  INTSRCAT.courtactionallegationconfigid=CAC.courtactionallegationconfigid AND INTSRCAT.activeflag=1) AS courtActions,
+  (SELECT string_agg(COTY.description,',') AS courtOrder 
+  FROM intakeservicerequestcourtordertypeconfig INTSRCOTC
+  INNER JOIN courtordertype COTY on COTY.courtordertypekey=INTSRCOTC.courtordertypekey 
+  AND INTSRCOTC.activeflag=1 WHERE  INTSRCOTC.courtactionallegationconfigid=CAC.courtactionallegationconfigid
+  AND INTSRCOTC.activeflag=1
+   ) AS courtOrder,
+  (SELECT string_agg(COTY.description,',') AS courtCondition 
+  FROM  intakeservicerequestcourtconditiontypeconfig INTSRCOTC
+  INNER JOIN conditiontype COTY on COTY.conditiontypekey=INTSRCOTC.conditiontypekey AND INTSRCOTC.activeflag=1
+  WHERE  INTSRCOTC.courtactionallegationconfigid=CAC.courtactionallegationconfigid AND INTSRCOTC.activeflag=1) as courtCondition
+  FROM courtactionallegationconfig CAC
+  INNER JOIN intakeservicerequestcourtaction INA on INA.intakeservicerequestcourtactionid=CAC.intakeservicerequestcourtactionid AND INA.activeflag=1
+  INNER JOIN allegation AG on AG.allegationid=CAC.allegationid AND AG.activeflag=1
+  INNER JOIN adjudicateddecisiontype ADT ON ADT.adjudicateddecisiontypekey=CAC.adjudicateddecisiontypekey AND ADT.activeflag=1
+  WHERE CAC.intakeservicerequestcourtactionid=INTSRCA.intakeservicerequestcourtactionid AND CAC.activeflag=1) as x ) as adjudicateddecision
+            ,INTSRE.complaintid ,INTSRE.intakeservicerequestevaluationid,INTSRP.petitionid,INTSRP.intakeservicerequestpetitionid, PT.description as petitiontype,HT.description as hearingtype,INTSRPH.hearingdatetime
+    FROM intakeservicerequestevaluation INTSRE  
+ LEFT  JOIN Intakeservreqevalpetitionconfig INTSREPC on INTSRE.intakeservicerequestevaluationid =INTSREPC.intakeservicerequestevaluationid and INTSREPC.activeflag=1 
+ LEFT join intakeservicerequestpetition INTSRP on INTSRP.intakeservicerequestpetitionid =INTSREPC.intakeservicerequestpetitionid and INTSRP.activeflag=1
+ LEFT join petitiontype PT on PT.petitiontypekey=INTSRP.petitiontypekey and PT.activeflag=1
+ LEFT join Intakeservreqpetitionhearingconfig INTSRPHC on INTSRPHC.intakeservicerequestpetitionid =INTSRP.intakeservicerequestpetitionid and INTSRPHC.activeflag=1
+ LEFT join Intakeservicerequestcourthearing INTSRPH on INTSRPH.intakeservicerequestcourthearingid = INTSRPHC.intakeservicerequestcourthearingid and INTSRPH.activeflag=1
+ INNER JOIN  hearingtype HT on INTSRPH.hearingtypekey=HT.hearingtypekey and HT.activeflag=1 and HT.description ='Adjudication'  
+ INNER JOIN intakeservicerequestcourtaction INTSRCA on INTSRCA.intakeservicerequestcourthearingid=INTSRPH.intakeservicerequestcourthearingid and INTSRCA.activeflag=1
+ WHERE INTSRE.intakenumber IN (
+        SELECT INTSR.intakenumber 
+        FROM intakeservicerequest INTSR 
+        INNER JOIN intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+        INNER JOIN actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+        INNER JOIN person p on Acc.personid=p.personid and p.activeflag=1
+        INNER JOIN focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+                  WHERE ACC.personid = v_personid 
+    AND  CASE WHEN  (i_searchtext  != ''  AND i_searchtext  IS NOT NULL ) THEN 
+           fp.focuspersonstatustypekey = i_searchtext  
+         ELSE 
+          1=1 END) 
+ LIMIT CASE WHEN v_nolimit = false  THEN pagesize END offset 
+          CASE WHEN v_nolimit = false  THEN v_pageoffset END;    
+ END;
+ $function$
+

@@ -1,0 +1,186 @@
+CREATE OR REPLACE FUNCTION prov_getcontractsproviderlist(searchobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+ 
+    v_provider_id INTEGER;    
+    v_providercategory character varying;
+    pagenumber integer;
+    pagesize integer;
+    v_pageoffset integer;
+    v_pagenumber integer;
+    v_program_type_cd character varying;
+    v_provider_status_cd character varying;  
+    v_program_nm character varying;
+   v_provider_nm character varying;
+  v_county_cd character varying;
+v_county character varying;
+v_toworkeridno character varying;
+v_toteamid character varying;
+    v_order_column character varying;
+    v_order_dir character varying;
+ v_affilitate_id character varying;
+    jsondata json;
+
+BEGIN
+
+ v_provider_id := searchobj ->> 'provider_id';
+ v_providercategory := (searchobj ->> 'providercategorycd')::character varying;
+ pagenumber := searchobj ->> 'pagenumber';
+ pagesize := searchobj ->> 'pagesize';
+ v_program_type_cd :=  searchobj ->>'program_type';
+ v_provider_status_cd := searchobj ->>'providerstatuscd';
+ v_county:=searchobj->>'county';
+ v_program_nm := searchobj ->> 'program_name';
+ v_provider_nm :=searchobj->>'provider_nm';
+ v_provider_nm='%' || trim(v_provider_nm) || '%';
+ v_toworkeridno = (searchobj->>'assignto')::character varying;
+ v_toteamid = (searchobj->>'teamid')::character varying;
+ v_order_column = (searchobj->>'order_column')::character varying;
+ v_order_dir = (searchobj->>'order_dir')::character varying;
+ v_affilitate_id = (searchobj->>'affiliate_provider_id');
+
+ RAISE NOTICE ' providercategorycd>>>>>  :%', searchobj->>'providercategorycd';
+ RAISE NOTICE ' provider_nm>>>>>  :%', searchobj->>'provider_nm';
+ RAISE NOTICE ' provider_id>>>>>  :%', searchobj->>'provider_id';
+ RAISE NOTICE ' v_toworkeridno>>>>>  :%', v_toworkeridno;
+ RAISE NOTICE ' searchobj>>>>>  :%', searchobj;
+
+ v_pagenumber := pagenumber-1;
+ v_pageoffset = v_pagenumber * pagesize;
+v_county_cd :=  v_county;
+
+
+SELECT  Json_agg(x)  INTO      jsondata  FROM      (  
+select count(1) over() as totalcount, a.* from (
+   
+  SELECT DISTINCT ON (TBP.provider_id) TBP.provider_id ,
+  TBP.provider_nm ,
+  TBP.provider_prefix_cd ,
+  TBP.provider_first_nm ,
+  TBP.provider_middle_nm ,
+  TBP.provider_last_nm ,
+  TBP.provider_suffix_cd ,
+  TBP.provider_status_cd,
+  TBP.adm_contact_prefix_cd ,
+  TBP.adm_contact_first_nm ,
+  TBP.adm_contact_middle_nm ,
+  TBP.adm_contact_last_nm ,
+  TBP.adm_contact_suffix_cd ,
+  TBP.adr_work_phone_tx ,
+  TBP.adr_work_xtn_tx ,
+  TBP.adr_home_phone_tx ,
+  TBP.adr_pager_tx ,
+  TBP.adr_email_tx ,
+  TBP.adr_fax_tx ,
+  TBP.adr_cell_phone_tx ,
+  TBP.adr_url_tx ,
+  TBP.adr_other_contact_tx ,
+  TBP.create_ts ,
+  TBP.create_user_id ,
+  TBP.update_ts ,
+  TBP.update_user_id ,
+  TBP.delete_sw ,
+  TBP.affiliate_provider_id ,
+  TBP.adm_work_phone_tx ,
+  TBP.adm_work_xtn_tx ,
+  TBP.adm_home_phone_tx ,
+  TBP.adm_pager_tx ,
+  TBP.adm_email_tx ,
+  TBP.adm_fax_tx ,
+  TBP.adm_cell_phone_tx ,
+  TBP.adm_url_tx ,
+                (select json_agg(x) from (
+                SELECT tpc1.contract_id,
+      tpc1.contract_number, 
+      tpc1.end_dt, 
+      tpc1.start_dt, 
+      tpc1.contract_term_status, 
+      tpc1.license_agency, 
+      tpc1.contract_agency,
+           (select json_agg(x) from (
+                   SELECT cp.program_id, cp.is_csa, cp.program_status_cd, cp.program_nm as program_name,cp.start_dt, cp.end_dt, cp.contract_license_type_status,
+                   (select json_agg(s) from (
+        SELECT cps.site_id, COALESCE(tp.provider_nm , concat(tp.provider_first_nm, tp.provider_last_nm)) as site_name
+        FROM tb_prov_program_sites cps 
+        INNER JOIN tb_provider tp on tp.provider_id = cps.site_id 
+         and tp.delete_sw = 'N'
+        where cps.program_id = cp.program_id
+                       and cps.delete_sw='N'
+                   ) s ) as site_list
+                   FROM tb_contract_program cp
+                   where cp.contract_id = tpc1.contract_id 
+                   and cp.delete_sw = 'N' 
+                   order by program_id desc
+           ) x ) as programs,
+           (select json_agg(x) from (
+                   SELECT cp.program_id, cp.is_csa, cp.program_status_cd, cp.program_nm as program_name, cp.start_dt, cp.end_dt,  cp.contract_license_type_status,
+                   (select json_agg(s) from (
+                   SELECT cps.site_id, COALESCE(tp.provider_nm , concat(tp.provider_first_nm, tp.provider_last_nm)) as site_name,
+                   (select json_agg(l) from (
+                       SELECT tpl.license_no, tpl.license_level, tpl.license_type, tpl.license_application_id, tpl.license_status_cd, tpl.license_issue_dt, tpl.license_expiry_dt
+                       FROM tb_provider_licensing tpl 
+                       where tpl.site_id = cps.site_id and tpl.active_sw = 'Y'
+                       and tpl.delete_sw = 'N'
+                       ) l ) as licenses
+                   FROM tb_prov_program_sites_snapshot cps 
+                   INNER JOIN tb_provider tp on tp.provider_id = cps.site_id 
+                       and tp.delete_sw = 'N'
+                   where cps.program_id = cp.program_id
+                       and cps.delete_sw='N'
+                   ) s ) as site_list
+                   FROM tb_contract_program_snapshot cp
+                   where cp.contract_id = tpc1.contract_id 
+                   and cp.delete_sw = 'N' 
+                   order by program_id desc
+           ) x ) as programshistory
+                FROM tb_provider_contracts tpc1 
+                where tpc1.provider_id = tbp.provider_id
+                and tpc1.delete_sw = 'N' 
+                order by contract_id desc
+        ) x ) as contracts
+  FROM tb_provider as TBP
+        inner join tb_provider_contracts tpc on tpc.provider_id = tbp.provider_id
+  INNER JOIN TB_PROVIDER_PICKLIST tpp 
+    ON tpp.provider_id = tbp.provider_id
+  WHERE 
+                TBP.affiliate_provider_id is  null 
+     and TBP.delete_sw <> 'Y'
+     and tpp.delete_sw <> 'Y'
+    and tpp.PICKLIST_TYPE_ID=155 and tpp.picklist_value_cd = '3049'
+    and (case when v_provider_nm is not null then 
+       tbp.provider_nm ilike v_provider_nm 
+     else true end )
+    AND (CASE WHEN v_provider_id IS NOT NULL THEN TBP.provider_id like '%' || v_provider_id ||'%' ELSE TRUE END)
+    AND (CASE WHEN v_provider_status_cd IS NOT NULL THEN TBP.provider_status_cd  = v_provider_status_cd ELSE TRUE END)   
+  ) a
+  order by (
+    CASE v_order_dir
+     WHEN 'asc'
+     THEN
+                         CASE v_order_column
+                            WHEN 'provider_id' THEN  cast(a.provider_id as character varying)
+                          WHEN 'provider_nm' THEN lower(a.provider_nm)
+               ELSE
+                      cast(a.provider_id as character varying)
+               END
+              END) ASC NULLS LAST,
+                (CASE v_order_dir
+                   WHEN 'desc'
+     THEN
+      CASE v_order_column
+                            WHEN 'provider_id' THEN  cast(a.provider_id as character varying)
+                          WHEN 'provider_nm' THEN lower(a.provider_nm)
+               ELSE
+                      cast(a.provider_id as character varying)
+               END
+                   END) DESC NULLS LAST
+ LIMIT pagesize OFFSET v_pageoffset
+ )  x;
+  
+return jsondata;
+ 
+END;
+$function$
+

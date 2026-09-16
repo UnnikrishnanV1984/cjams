@@ -1,0 +1,1 @@
+delete from routing where routingid ='b6dff35f-aa31-46a8-9495-bc16876bdb4f';

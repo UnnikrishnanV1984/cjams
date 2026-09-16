@@ -1,0 +1,1 @@
+update intakedastaging set status='clossed' where intakenumber='CW10256412' and activeflag=1;

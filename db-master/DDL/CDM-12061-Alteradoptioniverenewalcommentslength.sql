@@ -1,0 +1,1 @@
+ALTER TABLE cjams.Adoptioniverenewal ALTER COLUMN "comments" TYPE varchar(1000);

@@ -1,0 +1,84 @@
+DROP FUNCTION IF EXISTS cjams.sendServicePlanTargetNotifications();
+CREATE OR REPLACE FUNCTION cjams.sendServicePlanTargetNotifications() 
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+
+vs_message character varying;
+vs_err character varying;
+vl_output_sqlcode character varying;
+v_record record;
+v_subject character varying;
+v_body text;
+v_i number;
+
+BEGIN
+vs_message := '';
+vs_err := '';
+v_i := 0;
+VS_MESSAGE:= v_i||' notifications created.'; 
+RAISE NOTICE 'Service plan target enddate - batch job started.';
+
+
+for v_record in
+	select sp.targetenddate, sc.servicecaseid, sc.servicecasenumber, ca.fromworkeridno, ca.toworkeridno, sp.serviceplanid, sp.serviceplanname
+		from serviceplan sp
+		inner join servicecase sc 
+			on sc.servicecaseid = sp.objectid::uuid 
+			and sc.activeflag =1 
+			and sc.dispositioncode is null
+		inner join caseassignment ca 
+			on ca.objectid = sp.objectid::uuid 
+			and ca.activeflag =1 
+			and ca.enddate is null
+		where sp.activeflag = 1 
+			and sp.targetenddate::date - 30 = now()::date
+loop 
+	
+	v_subject := 'Service Plan - Target end date is approaching in 30 days';
+	v_body := 'Target end date is in 30 days for Service Plan "'||v_record.serviceplanname||'"';
+
+	BEGIN
+		SELECT
+			send_notification INTO
+				VS_MESSAGE
+		FROM
+			send_notification(
+			v_record.toworkeridno,
+			v_record.fromworkeridno, 
+			v_record.toworkeridno,
+			'System', 
+			'Normal', 
+			v_subject,
+			v_body , 
+			v_record.servicecaseid::character varying);
+		
+			if VS_MESSAGE = 'success' 
+				then 	v_i:=v_i+1;
+						VS_MESSAGE:= v_i||' notifications created.'; 
+			else 
+				VS_ERR:=VS_MESSAGE;
+				raise exception '%','Exception occurred when sending notification - ServicePlanId: '||v_record.serviceplanid||' ServiceCaseNumber: '||v_record.servicecasenumber||' '||VS_ERR; 
+			end if;
+			
+	END;
+
+end loop;
+
+
+if VS_ERR = '' 
+	then VS_MESSAGE := VS_MESSAGE||' Service Plan Target End date batch run successful.';
+	RAISE NOTICE 'Service plan target enddate - batch job completed.';
+	RETURN VS_MESSAGE;
+else 
+	RETURN VS_ERR;
+end if;
+
+RETURN VS_MESSAGE;
+
+END;
+
+$function$;
+

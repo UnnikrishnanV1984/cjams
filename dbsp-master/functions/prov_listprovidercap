@@ -1,0 +1,69 @@
+CREATE OR REPLACE FUNCTION prov_listprovidercap(capstatus character varying, pagenumber integer, pagelimit integer, capnumber character varying, recordstype character varying, siteid character varying, programtype character varying, questionnm character varying)
+ RETURNS TABLE(program_type character varying, question text, question_hint text, record_question_id uuid, record_id uuid, records_type character varying, provider_nm character varying, site_id character varying, frequency_deficiency character varying, scope_deficiency character varying, impact_deficiency character varying, reference_value_id character varying, reference_id uuid, violation_id uuid, deficiency_number character varying, cap_number character varying, comments text, isdraft boolean, cap_status character varying, cap_status_description character varying, planofcorrection character varying, disputecomarcitation character varying, targetdate timestamp without time zone, isdispute boolean, isacknowledged boolean, monitoring_id character varying, isnotificationsent boolean, provider_id integer, duedate timestamp without time zone, totalcount bigint)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+v_pageoffset int;
+v_pagenumber int;
+v_pagelimit int;
+v_limit int;
+totalcount integer;
+
+
+ BEGIN
+ v_limit= pagelimit;
+    v_pagenumber := pageNumber-1;
+    v_pageoffset = v_pagenumber * v_limit; 
+
+
+
+ RETURN QUERY 
+ 
+
+ select distinct tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,
+                    (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                    (case when tp.provider_id::character varying is null then pm.applicant_id else tp.provider_id::character varying end) as site_id,
+                    pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+                    pv.reference_value_id,
+                    pv.reference_id,
+                    pv.violation_id,
+                    pv.deficiency_number,
+                    pv.cap_number,
+                    pv.comments,
+                    pv.isdraft,
+                    pv.cap_status,
+                    pv.cap_status_description,
+                    pv.planofcorrection,
+                    pv.disputecomarcitation,
+                    pv.targetdate,
+                    pv.isdispute,
+                    pv.isacknowledged,
+                    m.monitoring_id,
+                    pv.isnotificationsent,
+                    m.provider_id,
+                    pv.duedate,count(1)  over()
+                from prov_record_question prq 
+                inner join prov_monitoring_record_data pmrd   on prq.record_question_id = pmrd.record_question_id 
+                inner join prov_monitoring_record_site pm     on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                inner join prov_monitoring m                  on pm.monitoring_id = m.monitoring_id
+                inner join prov_violation pv                  on pv.record_question_id = pmrd.record_question_id and (pv.site_id = pm.site_id or pv.applicant_id = pm.applicant_id)
+                 and pv.reference_value_id = pm.monitoring_id
+                inner join prov_record pr                     on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                left join tb_provider_applicant tpa           on tpa.applicant_id = pm.applicant_id   and tpa.delete_sw = 'N'
+                left join tb_provider tp                      on tp.provider_id = pm.site_id
+                where pr.module_name ='Record' 
+                    and pmrd.monitoring_record_value = 'Non-Compliance' 
+                    and pm.delete_sw = 'N'
+                    and pv.cap_number is not null
+and case when capstatus is null then true else pv.cap_status ilike '%' || trim(capstatus) ||'%' end 
+and case when capnumber is null then true else pv.cap_number ilike '%' || trim(capnumber) ||'%' end 
+and case when recordstype is null then true else pr.records_type ilike '%' || trim(recordstype) ||'%' end 
+and case when siteid is null then true else ( pm.site_id ilike '%' || trim(siteid) ||'%' or  pm.applicant_id ilike '%' || trim(siteid) ||'%')  end 
+and case when programtype is null then true else tpa.program_type ilike '%' || trim(programtype) ||'%' end 
+and case when questionnm is null then true else prq.question ilike '%' || trim(questionnm) ||'%' end 
+
+
+LIMIT v_limit OFFSET v_pageoffset ;            
+end;
+$function$
+

@@ -1,0 +1,81 @@
+CREATE OR REPLACE FUNCTION f_rpt_caseworker(al_client_id integer, al_entity_key_id integer, as_entity_type_cd character varying, adt_start_dt timestamp without time zone, adt_end_dt timestamp without time zone)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+VL_ASSIGNMENT_ID int;
+VL_ASSIGN_TO_STAFF_ID int;
+vd_end_dt date;
+Vl_case_cd character varying;
+vl_entity_type_cd character varying;
+
+BEGIN
+
+vl_case_cd= (select casetypekey from "case" where old_id=al_entity_key_id and activeflag = 1 );
+
+ if vl_case_cd='3333' then
+     vl_entity_type_cd ='5590';
+ else
+     vl_entity_type_cd ='2952'; 
+ end if;
+
+   if  ADT_END_DT is null then
+       vd_end_dt = current_date;
+     else
+         vd_end_dt =  ADT_END_DT  ;
+       end if;
+
+ 
+  VL_ASSIGNMENT_ID = (SELECT MAX(ASSIGNMENTID)
+   FROM ASSIGNMENTCLIENTS a,tb_assignment b
+   WHERE b.client_id = AL_CLIENT_ID  AND
+      ENTITYKEYID = AL_ENTITY_KEY_ID  AND
+     ENTITYTYPEkey = vl_entity_type_cd
+     and activeflag = 0 and
+   a.assignmentid=b.assignment_id
+         );
+
+IF VL_ASSIGNMENT_ID > 0 THEN
+  VL_ASSIGN_TO_STAFF_ID = (SELECT ASSIGN_TO_STAFF_ID 
+        FROM TB_ASSIGNMENT
+        WHERE ASSIGNMENT_ID = VL_ASSIGNMENT_ID   and delete_sw = 'N'
+         AND ( (START_DT <= vd_end_dt AND (END_DT >= vd_end_dt OR END_DT IS NULL) )
+       OR (START_DT IS NULL AND END_DT >= vd_end_dt)
+     )
+
+        );
+END IF;
+
+IF (VL_ASSIGNMENT_ID IS NULL OR VL_ASSIGNMENT_ID = 0) OR (VL_ASSIGN_TO_STAFF_ID IS NULL OR VL_ASSIGN_TO_STAFF_ID=0) THEN
+  VL_ASSIGN_TO_STAFF_ID = (SELECT ASSIGN_TO_STAFF_ID 
+     FROM TB_ASSIGNMENT
+     WHERE ASSIGNMENT_ID IN ( SELECT MAX(A.ASSIGNMENT_ID)
+           FROM TB_ASSIGNMENT A
+           WHERE   A.ENTITY_KEY_ID = AL_ENTITY_KEY_ID and a.delete_sw = 'N'
+             AND  A.ENTITY_TYPE_CD =vl_entity_type_cd
+             AND A.RESPONSIBILITY_CD = 'P'
+     AND ( (A.START_DT <= vd_end_dt AND (A.END_DT >= ADT_START_DT OR A.END_DT IS NULL) )
+       OR (A.START_DT IS NULL AND A.END_DT >= ADT_START_DT)  and delete_sw = 'N'
+     )
+
+        ) );
+
+END IF;
+
+if ( VL_ASSIGN_TO_STAFF_ID is null) then
+       VL_ASSIGN_TO_STAFF_ID = ( SELECT ASSIGN_TO_STAFF_ID 
+     FROM TB_ASSIGNMENT
+             WHERE   ENTITY_KEY_ID = AL_ENTITY_KEY_ID   and delete_sw = 'N'
+             AND  ENTITY_TYPE_CD =vl_entity_type_cd
+             AND RESPONSIBILITY_CD = 'P'
+             order by   assignment_id asc fetch first 1 row only );
+
+end if;
+
+RETURN VL_ASSIGN_TO_STAFF_ID;
+
+END
+
+ $function$
+

@@ -1,0 +1,2 @@
+update permanencyplan set intakeservicerequestactorid = '718cb917-3415-42fc-9556-520b2db3c882', updatedby = 'Data fix for CDM-11672', updatedon = now() 
+where permanencyplanid = '9687b9dd-6d3a-46d6-9e0a-cbf15ba22ae4' and servicecaseid = '123eb530-4518-445f-95a9-56b4fd2d5f32';

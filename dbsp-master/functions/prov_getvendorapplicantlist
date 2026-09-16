@@ -1,0 +1,94 @@
+CREATE OR REPLACE FUNCTION prov_getvendorapplicantlist(v_filter character varying, v_sort json, v_search json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, vendorid character varying, vendorapplicantid uuid, org_nm character varying, primary_first_nm character varying, primary_last_nm character varying, referraldate character varying, status character varying, submittedfor character varying, address character varying, approvaldate date, jurisdiction character varying, narrative text, providerid character varying, countyname character varying)
+ LANGUAGE plpgsql
+AS $function$
+  
+DECLARE
+     v_pagenumber int;
+     v_pageoffset int;
+    v_sortcolumn character varying;
+    v_direction character varying;
+    v_referralno CHARACTER VARYING;
+    v_org_nm CHARACTER VARYING;
+    v_ssn CHARACTER VARYING;
+  v_fein CHARACTER VARYING;
+  v_status CHARACTER VARYING[];
+  v_services character VARYING;
+   searchstring character varying(1000);
+  querytxt text;
+ v_orderby character varying;
+v_county character varying;
+v_vendortype character varying; 
+BEGIN
+        v_pagenumber := v_liPageNumber - 1;
+        v_pageoffset := v_pagenumber * v_liPageSize;
+       v_sortcolumn := v_sort ->> 'active';
+      v_direction := v_sort ->> 'direction';
+   v_referralno := v_search ->> 'referralno';
+  v_county:=coalesce(v_search->>'countycd',null);
+
+   raise notice 'v_county%',v_county;
+  v_vendortype:=v_search->>'vendortype';
+   v_org_nm := v_search ->> 'org_nm';
+   v_ssn := v_search ->> 'ssn';
+   v_fein := v_search ->> 'fein';
+   v_status := v_search ->> 'status';
+
+   raise notice 'vendor type%',v_vendortype;
+  
+return query 
+select count(1) over() as totalcount,va.vendorid,va.vendorapplicantid,va.org_nm,va.primary_first_nm,va.primary_last_nm,va.create_ts as referraldate,va.status,
+(SELECT up.displayname FROM routing r 
+INNER JOIN userprofile up ON up.securityusersid = r.tosecurityusersid AND up.activeflag = 1
+WHERE r.activeflag =1 AND r.objectid = va.vendorid LIMIT 1),
+ (select * from prov_get_formatted_applicantaddresses(va.vendorid))  as address,va.approvaldate,va.jurisdiction,va.narrative,va.providerid,
+--(c.countyname) as countyname
+(case when c.countyname is not null then c.countyname else (select ct.countyname from county ct where statecountycode=va.jurisdiction) end) as countyname
+
+from tb_vendor_applicant va
+left join providerassignment pva on pva.objectid = va.vendorid 
+left join team t on pva.toteamid = t.teamid
+left join county c on c.countyid::character varying = t.countyid::character varying
+where va.delete_sw='N' and 
+case when v_vendortype is not null then va.vendortype = v_vendortype::character varying else true end
+and (v_referralno is null or v_referralno = '' or va.vendorid::character VARYING like '%'||v_referralno||'%')
+and (v_ssn is null or v_ssn = '' or va.taxid::character VARYING like '%'||v_ssn||'%')
+--and (v_county is null or v_county = '' or va.jurisdiction::character VARYING like '%'||v_county||'%')
+and (case when (v_county is null or v_county = '') then true else  (c.statecountycode = v_county  or va.jurisdiction::character VARYING = v_county) end )
+and (v_fein is null or v_fein = '' or va.taxid::character VARYING like '%'||v_fein||'%')
+and (va.status::character VARYING = any(v_status))
+and (v_org_nm = '' or v_org_nm is null or (
+              lower(va.org_nm) like '%'||v_org_nm||'%' 
+                            or va.primary_first_nm like '%'||v_org_nm||'%' 
+                            or va.primary_middle_nm like '%'||v_org_nm||'%' 
+                            or va.primary_last_nm like '%'||v_org_nm||'%'
+        ) )
+order by (case v_direction when 'asc' then 
+         case v_sortcolumn when 'providerid' then cast(va.vendorid as character varying) 
+             when 'org_nm' then cast(va.org_nm||''||va.primary_first_nm||''||va.primary_last_nm as character varying) 
+             when 'approvaldate' then cast(va.create_ts as character varying)
+             when 'status' then cast(va.status as character varying)
+             when 'referraldate' then cast(va.create_ts as character varying)
+
+         else va.create_ts 
+         end
+    END) ASC NULLS LAST,
+    (case v_direction when 'desc' then 
+         case v_sortcolumn when 'providerid' then cast(va.vendorid as character varying) 
+             when 'org_nm' then cast(va.org_nm||''||va.primary_first_nm||''||va.primary_last_nm as character varying) 
+             when 'approvaldate' then cast(va.create_ts as character varying)
+             when 'status' then cast(va.status as character varying)
+             when 'referraldate' then cast(va.create_ts as character varying)
+         else va.create_ts
+         end
+    END) DESC NULLS LAST
+ LIMIT  v_liPageSize   OFFSET  v_pageoffset;
+
+
+
+
+
+END;
+
+$function$
+

@@ -1,0 +1,378 @@
+CREATE OR REPLACE FUNCTION as_sp_gap_worksheet_general_info(al_client_id bigint)
+ RETURNS TABLE(client_id bigint, approvedfosterparent character varying, dateoffullapprovalfp date, primaryguardianrelative boolean, primaryguardianrelationshipid integer, primaryguardianrelationship character varying, secondguardianrelative boolean, secondguardianrelationshipid integer, secondguardianrelationship character varying, childremovaldate timestamp without time zone, childunderage18atfinalization character varying, childage integer, childentercarebefore18 character varying, childinfcfor6monthspriorgap character varying, latestfcplacementstartdatewithperpectiveguardian timestamp without time zone, guardianshipapplicationdate timestamp without time zone, guardianshipfinalizationdate timestamp without time zone, isconsultationchildage boolean, isguardianattach boolean, isguardiantwoattach boolean, isreunificationremoved boolean, isadoptionremoved boolean, iscgprovidesafe boolean, childagency character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  vs_Procedure_nm             VARCHAR(100) DEFAULT 'sp_gap_worksheet_summary_info';
+  vs_apprvd_fstr_prnt            VARCHAR(250);
+  vd_full_apprvl_fp_dt           DATE;
+  vs_pri_grd_rltv             VARCHAR(20);
+  vn_pri_rltn_id             INTEGER;
+  vs_pri_rltn              VARCHAR(200);
+  vs_sec_grd_rltv             VARCHAR(20);
+  vn_sec_rltn_id             INTEGER;
+  vs_sec_rltn              VARCHAR(200);  
+  vd_child_rmvl_dt            TIMESTAMP;
+  vs_child_under_age_18_at_fnlztn         VARCHAR(20);
+  vn_chld_age              INTEGER;
+  vs_child_entr_care_bfr_18          VARCHAR(20);
+  vs_child_in_fc_for_6mnths_prior_gap        VARCHAR(20);
+  vd_ltst_fc_plcmt_st_dt_with_grd         TIMESTAMP;
+  vd_grd_appl_dt             TIMESTAMP;
+  vd_relation                            record;
+  v_guardianshipfinalizationdate         timestamp;
+     vs_age_appr_cnslt_pl boolean;
+     vs_chd_grd_attch boolean;
+     vs_chd_sec_grd_attch  boolean;
+     vs_reunfn_rmvd boolean;
+     vs_adp_rmvd    boolean;
+  vs_iscgprovidesafe boolean;
+  vs_chd_agcy              VARCHAR(50);
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_general_info ( 
+  client_id              BIGINT,
+  approvedfosterparent          VARCHAR(250),
+  dateoffullapprovalfp          DATE,
+  primaryguardianrelative          boolean,
+  primaryguardianrelationshipid        INTEGER,
+  primaryguardianrelationship         VARCHAR(200),
+  secondguardianrelative          boolean,
+  secondguardianrelationshipid        INTEGER,
+  secondguardianrelationship         VARCHAR(200),  
+  childremovaldate           TIMESTAMP,
+  childunderage18atfinalization        VARCHAR(20),
+  childage             INTEGER,
+  childentercarebefore18          VARCHAR(20),
+  childinfcfor6monthspriorgap         VARCHAR(20),
+  latestfcplacementstartdatewithperpectiveguardian   TIMESTAMP,
+  guardianshipapplicationdate         TIMESTAMP,
+  guardianshipfinalizationdate       timestamp without time zone,
+  isconsultationchildage                   boolean,
+  isguardianattach                         boolean,
+  isguardiantwoattach                      boolean,
+  isreunificationremoved                   boolean,
+  isadoptionremoved                        boolean,
+  iscgprovidesafe        boolean,
+     childagency           VARCHAR(50)
+ ); 
+ 
+-- Approved Foster Parent
+SELECT CONCAT(tp.formatted_first_nm, ' ', tp.formatted_middle_nm, ' ', tp.formatted_last_nm)  
+ INTO vs_apprvd_fstr_prnt
+   FROM tb_provider tp, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tpl, intakeservicerequestactor isra, person per     
+WHERE tp.provider_id = grd.guardianoneproviderid AND grd.activeflag = 1 AND tp.delete_sw = 'N'
+ AND grd.servicecaseid = pp.servicecaseid AND grd.permanencyplanid = pp.permanencyplanid AND pp.activeflag = 1 
+   AND tpl.case_id = sc.servicecasenumber::BIGINT AND tpl.delete_sw = 'N' AND tpl.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tpl.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY tp.update_ts DESC LIMIT 1;
+
+-- Foster Parent Full Approval Date  
+SELECT tpa.approval_dt
+ INTO vd_full_apprvl_fp_dt
+   FROM tb_provider_approval tpa, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tpl, intakeservicerequestactor isra, person per     
+WHERE tpa.provider_id = grd.guardianoneproviderid AND grd.activeflag = 1
+ AND grd.servicecaseid = pp.servicecaseid AND grd.permanencyplanid = pp.permanencyplanid AND pp.activeflag = 1 
+   AND tpl.case_id = sc.servicecasenumber::BIGINT AND tpl.delete_sw = 'N' AND tpl.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tpl.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY tpa.update_ts DESC LIMIT 1;
+
+-- Primary Guardian Relationship
+SELECT ( CASE WHEN (tigrd.priguardianrelationshipflag = 1) 
+    THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END )
+ INTO vs_pri_grd_rltv
+   FROM tb_iveguardianship tigrd, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+WHERE tigrd.gapid = grd.gapid AND grd.activeflag = 1
+ AND grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Primary Guardian Relationship ID 
+SELECT ( 
+--CASE WHEN (tigrd.priguardianrelationshipflag = 1)
+     --THEN ( 
+    SELECT rt.sequencenumber 
+       FROM relationshiptype rt
+       WHERE lower(rt.relationshiptypekey) = lower(grd.primaryrelationshipkey) 
+      --) 
+     --ELSE NULL END 
+    )
+ INTO vn_pri_rltn_id
+   FROM 
+ --tb_iveguardianship tigrd, 
+ guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+--WHERE 
+--tigrd.gapid = grd.gapid 
+ WHERE grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1 AND grd.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ;
+ --ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Primary Guardian Relationship 
+SELECT ( 
+--CASE WHEN (tigrd.priguardianrelationshipflag = 1)
+     --THEN ( 
+    SELECT rt.description::VARCHAR  
+       FROM relationshiptype rt
+       WHERE lower(rt.relationshiptypekey) = lower(grd.primaryrelationshipkey) 
+      --) 
+     --ELSE NULL END 
+    )
+ INTO vs_pri_rltn
+   FROM 
+ --tb_iveguardianship tigrd, 
+ guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+--WHERE tigrd.gapid = grd.gapid 
+ WHERE grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1 AND grd.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ;
+ --ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Secondary Guardian Relationship
+SELECT ( 
+CASE WHEN (tigrd.secguardianrelationshipflag = 1) 
+    THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END )
+ INTO vs_sec_grd_rltv
+   FROM tb_iveguardianship tigrd, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+WHERE tigrd.gapid = grd.gapid AND grd.activeflag = 1
+ AND grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Secondary Guardian Relationship ID
+SELECT ( 
+--CASE WHEN (tigrd.secguardianrelationshipflag = 1)
+     --THEN ( 
+    SELECT rt.sequencenumber 
+       FROM relationshiptype rt
+       WHERE lower(rt.relationshiptypekey) = lower(grd.secondaryrelationshipkey) 
+      --) 
+     --ELSE NULL END 
+    )
+ INTO vn_sec_rltn_id
+   FROM 
+ --tb_iveguardianship tigrd, 
+ guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+--WHERE tigrd.gapid = grd.gapid  
+ WHERE grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1 AND grd.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ;
+ --ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Secondary Guardian Relationship 
+SELECT ( 
+--CASE WHEN (tigrd.secguardianrelationshipflag = 1)
+     --THEN ( 
+    SELECT rt.description::VARCHAR
+       FROM relationshiptype rt
+       WHERE lower(rt.relationshiptypekey) = lower(grd.secondaryrelationshipkey) 
+      --) 
+     --ELSE NULL END 
+    )
+ INTO vs_sec_rltn
+   FROM 
+ --tb_iveguardianship tigrd, 
+ guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+--WHERE tigrd.gapid = grd.gapid 
+ WHERE grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1 AND grd.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ;
+ --ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Child VPA Removal Date
+SELECT vparemovaldate INTO vd_child_rmvl_dt 
+FROM tb_ive_fostercare_audit 
+WHERE 
+ sqnm_sw = 'I' AND approvalstatus = 'APPROVED' AND typeofremoval = 'Voluntary_Placement_Agreement' AND cjamspid::BIGINT = al_client_id
+ORDER BY insertedon DESC;
+
+-- Child Under Age 18 At Time Of Finalization
+SELECT (CASE WHEN (SELECT EXTRACT('years' FROM grd.cofinaldate)::int - EXTRACT('years' FROM per.dob)::int
+   FROM guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per 
+WHERE grd.servicecaseid = pp.servicecaseid AND grd.permanencyplanid = pp.permanencyplanid AND pp.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY grd.updatedon DESC LIMIT 1) < 18
+ THEN 'YES'::VARCHAR ELSE NULL END)
+ INTO vs_child_under_age_18_at_fnlztn;
+
+-- Child Age
+SELECT EXTRACT(YEAR FROM AGE(current_date,per.dob))::INT
+ INTO vn_chld_age
+ FROM person per
+WHERE per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+
+
+-- Child Agency
+SELECT (CASE WHEN teamtypekey = 'CW' THEN
+    'DHS'::VARCHAR 
+   WHEN teamtypekey = 'DJS' THEN
+    'DJS'::VARCHAR
+   ELSE NULL END)
+ INTO vs_chd_agcy  
+ FROM intakeservicerequest isr, permanencyplan pp, intakeservicerequestactor isra, person per 
+WHERE pp.servicecaseid = isr.servicecaseid AND pp.activeflag = 1
+ AND isra.intakeservicerequestactorid = pp.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+
+-- Child in FC for 6 Months Prior Guardianship
+SELECT ( CASE WHEN (tigrd.childinfcpriorgappflag = 1) THEN 
+    'YES'::VARCHAR 
+     WHEN (tigrd.childinfcpriorgappflag = 0) THEN 
+    'NO'::VARCHAR 
+     ELSE NULL END )
+ INTO vs_child_in_fc_for_6mnths_prior_gap     
+   FROM tb_iveguardianship tigrd, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+WHERE tigrd.gapid = grd.gapid AND grd.activeflag = 1
+ AND grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1 AND isra.servicecaseid = sc.servicecaseid
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY tigrd.updatedon DESC LIMIT 1;
+
+-- Latest Foster Care Placement Start Date With Perspective Relative Guardian
+-- SELECT tp.entry_dt
+--  INTO vd_ltst_fc_plcmt_st_dt_with_grd
+--    FROM gapdisclosure gdis, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per     
+-- WHERE gdis.gapid = grd.gapid AND gdis.activeflag = 1
+--  AND grd.servicecaseid = pp.servicecaseid AND grd.permanencyplanid = pp.permanencyplanid AND pp.activeflag = 1
+--  AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1 AND tp.client_id = al_client_id and tp.placement_structure_id = 503
+--  AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+--  AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1
+--  AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY gdis.updatedon DESC LIMIT 1;
+
+SELECT pl.startdatetime INTO vd_ltst_fc_plcmt_st_dt_with_grd FROM person p
+ INNER JOIN intakeservicerequestactor isra ON isra.personid = p.personid AND p.activeflag= 1
+ INNER JOIN placement pl ON pl.servicecaseid = isra.servicecaseid AND pl.activeflag = 1
+ INNER JOIN guardianship gs ON gs.servicecaseid = isra.servicecaseid AND gs.guardianoneproviderid = pl.altproviderid AND gs.activeflag = 1
+WHERE p.cjamspid::BIGINT = al_client_id ORDER BY pl.startdatetime DESC LIMIT 1;
+
+-- Guardian Application Date 
+SELECT gdis.disclosuredate
+ INTO vd_grd_appl_dt
+   FROM gapdisclosure gdis, guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per     
+WHERE gdis.gapid = grd.gapid AND gdis.activeflag = 1
+ AND grd.servicecaseid = pp.servicecaseid AND grd.permanencyplanid = pp.permanencyplanid AND pp.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' AND tp.approval_status_cd = '3047' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY grd.updatedon DESC LIMIT 1;
+ 
+--IsRelative (for Primary Guardian -info in this bracket for your information only)
+
+select (case 
+  when primaryrelationshipkey = '1001' then true
+  when primaryrelationshipkey = '1014' then true
+  else false
+   end) as isprimaryrelationshipkey,
+ (case 
+  when secondaryrelationshipkey = '1001' then true
+  when secondaryrelationshipkey = '1014' then true
+  else false
+   end) as issecondaryrelationshipkey
+   
+into vd_relation
+ from 
+guardianship g 
+inner join intakeservicerequest isrq on isrq.servicecaseid = g.servicecaseid
+inner join servicecase sc on sc.servicecaseid = isrq.servicecaseid
+inner join intakeservicerequestactor iac on iac.intakeserviceid = isrq.intakeserviceid
+inner join person p on p.personid = iac.personid
+where iac.intakeservicerequestpersontypekey = 'CHILD' 
+and p.cjamspid = al_client_id;
+
+-- 'guardianshipfinalizationdate'
+
+select  isrco.courtorderdate into v_guardianshipfinalizationdate from Intakeservreqcohearingoutcome hoc
+inner join intakeservreqcourtorder isrco on isrco.intakeservreqcourtorderid = hoc.intakeservreqcourtorderid
+inner join intakeservicerequestpetition pet on pet.intakeservicerequestpetitionid = isrco.intakeservicerequestpetitionid
+inner join intakeservicerequest isrq on isrq.servicecaseid = pet.servicecaseid
+inner join intakeservicerequestactor iac on iac.intakeserviceid = isrq.intakeserviceid
+inner join servicecase sc on sc.servicecaseid = isrq.servicecaseid
+inner join person p on p.personid = iac.personid
+where iac.intakeservicerequestpersontypekey = 'CHILD' 
+and hoc.hearingoutcometypekey in ('CUSGUA') 
+and p.cjamspid = al_client_id;
+
+ -- Age Appropriate Consult Place
+-- Child Guardian Attachment
+ -- Child Second Guardian Attachment  
+ -- Appropriate Permanency For Child For Not Being Returned Home      
+  -- Appropriate Permanency For Child For Being Adopted
+ SELECT ( CASE WHEN (gdis.isconsultationchildage = 'true')                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                 THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END ),
+( CASE WHEN (gdis.isguardianattach = 'true')                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+                                 THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END ),
+( CASE WHEN (gdis.isguardiantwoattach = 'true')                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+                                 THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END ),
+( CASE WHEN (gdis.isreunificationremoved = 'true')                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                 THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END ),
+( CASE WHEN (gdis.isadoptionremoved = 'true')                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+                                 THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END ),
+( CASE WHEN (gdis.iscgprovidesafe = 'true')                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+                                 THEN 'YES'::VARCHAR ELSE 'NO'::VARCHAR END )                 
+INTO
+vs_age_appr_cnslt_pl ,
+vs_chd_grd_attch,
+vs_chd_sec_grd_attch,
+vs_reunfn_rmvd,
+vs_adp_rmvd,
+vs_iscgprovidesafe
+         FROM gapdisclosure gdis, guardianship grd, intakeservicerequestactor isra, person per                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+ WHERE gdis.gapid = grd.gapid AND gdis.activeflag = 1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+         AND grd.servicecaseid = isra.servicecaseid AND grd.activeflag = 1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+         AND isra.intakeservicerequestpersontypekey = 'CHILD' AND isra.activeflag = 1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+         AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 LIMIT 1;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+ 
+INSERT INTO Temp_worksheet_general_info
+SELECT 
+  al_client_id,
+  vs_apprvd_fstr_prnt,
+  vd_full_apprvl_fp_dt,
+  vd_relation.isprimaryrelationshipkey,
+  vn_pri_rltn_id,
+  vs_pri_rltn,
+  vd_relation.issecondaryrelationshipkey,
+  vn_sec_rltn_id,
+  vs_sec_rltn,  
+  vd_child_rmvl_dt,
+  vs_child_under_age_18_at_fnlztn,
+  vn_chld_age,
+  vs_child_entr_care_bfr_18,
+  vs_child_in_fc_for_6mnths_prior_gap,
+  vd_ltst_fc_plcmt_st_dt_with_grd,
+  vd_grd_appl_dt,
+  v_guardianshipfinalizationdate,
+  vs_age_appr_cnslt_pl ,
+  vs_chd_grd_attch,
+  vs_chd_sec_grd_attch,
+  vs_reunfn_rmvd,
+  vs_adp_rmvd,
+  vs_iscgprovidesafe,
+  vs_chd_agcy;
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_general_info;
+              
+DROP TABLE Temp_worksheet_general_info;
+
+   END
+    $function$
+

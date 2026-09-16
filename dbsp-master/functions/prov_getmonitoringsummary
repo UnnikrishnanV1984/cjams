@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION prov_getmonitoringsummary(request json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_provider_id character varying;
+v_monitoring_id character varying;
+v_skip numeric;
+jsondata  json;
+wherejson json;
+
+BEGIN
+
+v_monitoring_id := request ->> 'monitoring_id';
+
+SELECT  Json_agg(a)  INTO      jsondata  FROM      ( 
+    select pm.monitoring_id , coalesce (tp.provider_nm, tpa.program_name) as provider_nm, coalesce (tpl.license_type , tpa.program_type) as license_type, coalesce (tp.provider_id::character varying ,  tpa.applicant_id) as site_id,
+        ps.first_nm ||' '||ps.last_nm  as staffname,
+        p.firstname ||' '||p.lastname as childname,
+                                 pr.records_type, 
+                                (select json_agg(r) from (
+                                    select count(1) over() as count, *
+                                    from prov_monitoring_record_data pmrd 
+                                    join prov_record_question prq   on prq.record_question_id = pmrd.record_question_id 
+                                    where  pmrd.monitoring_record_site_id = pm.monitoring_record_site_id and pmrd.monitoring_record_value = 'Pending'
+                                ) r ) as pending_record_questions, 
+                                (select json_agg(r) from (
+                                    select count(1) over() as count, *
+                                    from prov_monitoring_record_data pmrd 
+                                    join prov_record_question prq   on prq.record_question_id = pmrd.record_question_id 
+                                    where  pmrd.monitoring_record_site_id = pm.monitoring_record_site_id and pmrd.monitoring_record_value = 'Non-Compliance'
+                                ) r ) as noncompliant_record_questions, 
+                                (select json_agg(r) from (
+                                    select count(1) over() as count, *
+                                    from prov_monitoring_record_data pmrd 
+                                    join prov_record_question prq   on prq.record_question_id = pmrd.record_question_id 
+                                    where  pmrd.monitoring_record_site_id = pm.monitoring_record_site_id and pmrd.monitoring_record_value = 'Compliance'
+                                ) r ) as compliant_record_questions
+                    from prov_monitoring_record_site pm 
+                    inner join prov_record pr on pr.record_id = pm.record_id and pr.delete_sw ='N' and pr.module_name ='Record'
+                    left join tb_provider_applicant tpa on tpa.applicant_id = pm.applicant_id  and tpa.delete_sw = 'N'
+                    left join tb_provider_licensing tpl on tpl.site_id = pm.site_id  and tpl.delete_sw = 'N'  and tpl.active_sw = 'Y'
+                    left join tb_provider tp on tp.provider_id = pm.site_id
+                    left join providerstaff ps on provider_staff_id::character varying = pm.objectid and ps.delete_sw = 'N'
+                    left join person p on p.personid = pm.objectid :: uuid and p.activeflag = 1
+                    where  pm.monitoring_id = v_monitoring_id and pm.delete_sw = 'N'
+                    order by tp.provider_nm
+ )  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

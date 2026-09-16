@@ -1,0 +1,35 @@
+update actor set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update assessment set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update gapeligibilityinfo set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update hearingclients set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update intakeservicerequestactor set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update intakeservreqchildremoval set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update investigationallegationactor set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update investigationfinding set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update legalcustody set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update livingarrangement set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update meetingparticipants set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update meetingrecordingactor set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update personidentifier set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update personprogramarea set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update personrelation set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update personrole set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update placement set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update serviceagreementlist set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update servicelog set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update serviceplanactivity set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update serviceplanclients set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update serviceplanfostercarecandidacy set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update slpasnapshot set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update snapshothist set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update visitationlog set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update visitationlogclient set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update visitationplan set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update visitationplanclients set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update person set activeflag = 0, updatedby = 'CDM-5630', updatedon = now() where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update documentproperties set objectid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedby = 'CDM-5630', updatedon = now() where objectid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+update personphysicalattribute set personid = '71c0df37-5cce-4c4f-be4a-e5c8bf201212', updatedon = now(), updatedby = 'CDM-5630' where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+
+update person set activeflag = 0, updatedon = now(), updatedby = 'CDM-5630' where personid in ('507ad24d-6885-476c-a590-c0ec537b0e71', '3dcac879-e150-4d16-9431-153ffac73071');
+
+

@@ -1,0 +1,1 @@
+update cjams.routing set activeflag = 0 where objectid in ('1733888', '1733716', '1733690', '1731711', '1731411', '1730679') and activeflag = 1;

@@ -1,0 +1,754 @@
+-- DROP FUNCTION cjams.sp_ene_interface_generate_outbound(out varchar, out varchar);
+
+CREATE OR REPLACE FUNCTION cjams.sp_ene_interface_generate_outbound(OUT vs_message character varying, OUT vl_output_sqlcode character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created: 11/24/2020
+-- Description: To generate E&E Outbound data.
+
+-- Revision(s):
+-- 11/19/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+-- 05/24/2024 - Agathya - Error Handling changes - addressing null scenarios (CIDM-8906)
+------------------------------------------------------------------------
+-- VARIABLE DECLARATION
+DECLARE 
+	vts_previous_run_ts         	TIMESTAMP;
+	vts_current_run_ts          	TIMESTAMP;
+	VL_TRIGGER_ROWCOUNT         	INTEGER     	DEFAULT 0;
+	VL_TRANSACTION_SEQUENCE 		INTEGER 		DEFAULT 0;
+	VL_RECORD_SEQUENCE 				INTEGER 		DEFAULT 000;
+	VL_CASE_ID 						BIGINT; 
+	VL_CLIENT_ID 					INTEGER;
+	VL_CASE_CLIENT_ID 				INTEGER;
+	VS_TRANSACTION_TYPE_CD 			VARCHAR(2);
+	VS_BATCH_SEQ_NO 				VARCHAR(5);
+	VL_CIS_CLIENT_ROWCOUNT 			INTEGER 		DEFAULT 0;
+	VL_CIS_CASE_CLIENT_ROWCOUNT 	INTEGER 		DEFAULT 0;
+	VS_RECORD_TYPE_CD 				VARCHAR(2);
+	VD_TRANSACTION_TS 				TIMESTAMP;
+	VL_PARENT_EXISTS 				INTEGER 		DEFAULT 0;
+	VL_PAYMENT_MAINTENANCE 			INTEGER 		DEFAULT 0;
+	VDEC_PAYMENT_AMOUNT 			DECIMAL(10,2);
+	VDEC_PAYMENT_PREVIOUS_AMOUNT 	DECIMAL(10,2);
+	VL_PLACEMENT_EXISTS 			INTEGER 		DEFAULT 0;
+	VL_PLACEMENT_END_DATED_EXISTS 	INTEGER 		DEFAULT 0;
+	VS_NULL 						VARCHAR(10);
+	VS_INTERFACE_PROCESSED_FLAG 	CHAR(1) 		DEFAULT 'N';
+	vl_case_client_count 			INTEGER 		default 0;
+	vl_trigger_outbound_count 		INTEGER 		default 0;
+	VL_INTERFACES_ERROR_LOG_ID 		INTEGER 		DEFAULT 0;
+	VS_PROCESS_FLAG 				VARCHAR(1) 		DEFAULT  'N';
+	VL_CASE_PERSON_ID  				UUID;
+	ERROR_EXE_FLAG 					INTEGER;
+	ERROR_FLAG 						INTEGER;
+	VL_SERVICECASENUMBER			VARCHAR			DEFAULT NULL; 
+	VL_ADOPTIONCASENUMBER			VARCHAR			DEFAULT NULL; 
+
+
+--- DECLARE MAIN CURSOR FROM TRIGGER_OUTBOUND TABLE
+DECLARE TRIGGER_OUTBOUND CURSOR  FOR
+	select old_id, fk_id, transactiontypekey, transactionon
+		from eneoutboundtrigger
+	where statusflag = 'N'	
+		and activeflag = 1
+	order by transactionon asc
+	for update;
+
+-- DECLARE CURSOR FOR CASE_CLIENT	
+DECLARE CASE_CLIENT CURSOR FOR
+	select 	p.cjamspid, p.personid
+	from 	intakeservicerequestactor a, 
+			person p, 
+			intakeservicerequest c, 
+			--intakeservicerequestactor ta, 
+			servicecase sc
+	where 	a.personid = p.personid
+			and a.intakeserviceid = c.intakeserviceid
+			and c.servicecaseid = sc.servicecaseid
+			and sc.servicecasenumber = vl_case_id::character varying
+			and a.personid = p.personid
+			--and a.actorid = ta.actorid
+			and a.intakeservicerequestpersontypekey = 'CHILD'
+			and a.activeflag = 1 
+			and c.activeflag = 1
+			and p.activeflag = 1 and
+			exists (select 1 
+					from tb_placement tbp
+					where tbp.client_id = p.cjamspid
+						and tbp.exit_dt is null 
+						and tbp.entry_dt is not null
+						and tbp.placement_structure_id is not null
+						and tbp.approval_status_cd = '3047' 
+						and coalesce(tbp.void_sw, '') <> 'Y'
+						and tbp.delete_sw = 'N' );
+
+BEGIN
+	VL_OUTPUT_SQLCODE:=	'00000';
+	ERROR_EXE_FLAG := 	0;
+	
+	vts_previous_run_ts	:= CURRENT_TIMESTAMP;
+	vts_current_run_ts	:= CURRENT_TIMESTAMP;
+
+	
+	-- IF FIRST RUN, i.e. NO ROWS IN RUNTIMES_LOG, THEN LEAVE AS INITIALIZED
+	-- table changed to interfacesruntimeslog and column to interfaceid #26062019
+
+	IF EXISTS(SELECT 1 FROM cjams.interfacesruntimeslog) THEN
+		BEGIN	
+			select max(currentruntimestamp) --- changed from current_ts #28/06/2019 
+				into vts_previous_run_ts 
+			from cjams.interfacesruntimeslog
+			where interfaceid = 'ENE_OUTBOUND';
+		
+			EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+				VS_MESSAGE := 'SELECT MAX(currentruntimestamp) FAILED';
+		END;
+	END IF; 
+
+
+	BEGIN	
+	-- CHECK FOR ROWS TO INTERFACE, IF NONE THEN QUIT.
+		IF EXISTS (select 1 from cjams.eneoutboundtrigger) THEN
+			--ITERATE
+		ELSE
+			VS_MESSAGE := '(E&E) THERE ARE NO ROWS TO INTERFACE Trigger Table'  ;
+			ERROR_EXE_FLAG := -1;
+		END IF;
+		EXCEPTION WHEN OTHERS THEN 
+			VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+			VS_MESSAGE := '(E&E) SELECT eneoutboundtrigger Failed'  ;
+	END;
+	
+	-- DELETE RECORDS IN E&E INTERFACE TABLE
+	IF EXISTS( select 1 from cjams.eneoutboundinterface ) AND ERROR_EXE_FLAG <> -1 THEN
+		BEGIN	
+			-- Snaphot prior run data
+			Insert into eneoutboundinterfaceiss (batch_run_ts, batch_seq_no, ene_out_col1, ene_out_col10, ene_out_col100, ene_out_col101, ene_out_col102, ene_out_col103, ene_out_col104, ene_out_col105, ene_out_col106, ene_out_col107, ene_out_col108, ene_out_col109, ene_out_col11, ene_out_col110, ene_out_col111, ene_out_col112, ene_out_col113, ene_out_col114, ene_out_col115, ene_out_col116, ene_out_col117, ene_out_col118, ene_out_col119, ene_out_col12, ene_out_col120, ene_out_col13, ene_out_col14, ene_out_col15, ene_out_col16, ene_out_col17, ene_out_col18, ene_out_col19, ene_out_col2, ene_out_col20, ene_out_col21, ene_out_col22, ene_out_col23, ene_out_col24, ene_out_col25, ene_out_col26, ene_out_col27, ene_out_col28, ene_out_col29, ene_out_col3, ene_out_col30, ene_out_col31, ene_out_col32, ene_out_col33, ene_out_col34, ene_out_col35, ene_out_col36, ene_out_col37, ene_out_col38, ene_out_col39, ene_out_col4, ene_out_col40, ene_out_col41, ene_out_col42, ene_out_col43, ene_out_col44, ene_out_col45, ene_out_col46, ene_out_col47, ene_out_col48, ene_out_col49, ene_out_col5, ene_out_col50, ene_out_col51, ene_out_col52, ene_out_col53, ene_out_col54, ene_out_col55, ene_out_col56, ene_out_col57, ene_out_col58, ene_out_col59, ene_out_col6, ene_out_col60, ene_out_col61, ene_out_col62, ene_out_col63, ene_out_col64, ene_out_col65, ene_out_col66, ene_out_col67, ene_out_col68, ene_out_col69, ene_out_col7, ene_out_col70, ene_out_col71, ene_out_col72, ene_out_col73, ene_out_col74, ene_out_col75, ene_out_col76, ene_out_col77, ene_out_col78, ene_out_col79, ene_out_col8, ene_out_col80, ene_out_col81, ene_out_col82, ene_out_col83, ene_out_col84, ene_out_col85, ene_out_col86, ene_out_col87, ene_out_col88, ene_out_col89, ene_out_col9, ene_out_col90, ene_out_col91, ene_out_col92, ene_out_col93, ene_out_col94, ene_out_col95, ene_out_col96, ene_out_col97, ene_out_col98, ene_out_col99, ene_record_id, cis_client_id, record_seq_no, record_type_cd, status_cd, transaction_seq_no, transaction_ts, transaction_type_cd) 
+			(select batch_run_ts, batch_seq_no, ene_out_col1, ene_out_col10, ene_out_col100, ene_out_col101, ene_out_col102, ene_out_col103, ene_out_col104, ene_out_col105, ene_out_col106, ene_out_col107, ene_out_col108, ene_out_col109, ene_out_col11, ene_out_col110, ene_out_col111, ene_out_col112, ene_out_col113, ene_out_col114, ene_out_col115, ene_out_col116, ene_out_col117, ene_out_col118, ene_out_col119, ene_out_col12, ene_out_col120, ene_out_col13, ene_out_col14, ene_out_col15, ene_out_col16, ene_out_col17, ene_out_col18, ene_out_col19, ene_out_col2, ene_out_col20, ene_out_col21, ene_out_col22, ene_out_col23, ene_out_col24, ene_out_col25, ene_out_col26, ene_out_col27, ene_out_col28, ene_out_col29, ene_out_col3, ene_out_col30, ene_out_col31, ene_out_col32, ene_out_col33, ene_out_col34, ene_out_col35, ene_out_col36, ene_out_col37, ene_out_col38, ene_out_col39, ene_out_col4, ene_out_col40, ene_out_col41, ene_out_col42, ene_out_col43, ene_out_col44, ene_out_col45, ene_out_col46, ene_out_col47, ene_out_col48, ene_out_col49, ene_out_col5, ene_out_col50, ene_out_col51, ene_out_col52, ene_out_col53, ene_out_col54, ene_out_col55, ene_out_col56, ene_out_col57, ene_out_col58, ene_out_col59, ene_out_col6, ene_out_col60, ene_out_col61, ene_out_col62, ene_out_col63, ene_out_col64, ene_out_col65, ene_out_col66, ene_out_col67, ene_out_col68, ene_out_col69, ene_out_col7, ene_out_col70, ene_out_col71, ene_out_col72, ene_out_col73, ene_out_col74, ene_out_col75, ene_out_col76, ene_out_col77, ene_out_col78, ene_out_col79, ene_out_col8, ene_out_col80, ene_out_col81, ene_out_col82, ene_out_col83, ene_out_col84, ene_out_col85, ene_out_col86, ene_out_col87, ene_out_col88, ene_out_col89, ene_out_col9, ene_out_col90, ene_out_col91, ene_out_col92, ene_out_col93, ene_out_col94, ene_out_col95, ene_out_col96, ene_out_col97, ene_out_col98, ene_out_col99, ene_record_id, cis_client_id, record_seq_no, record_type_cd, status_cd,transaction_seq_no, transaction_ts, transaction_type_cd from eneoutboundinterface );
+		
+            delete from cjams.eneoutboundinterface  ;
+			
+			EXCEPTION WHEN OTHERS THEN 
+				VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+				VS_MESSAGE := 'DELETE FROM eneoutboundinterface Failed'  ;
+		END;
+	END IF;
+
+	-- COUNT ROWS IN TRIGGER_OUTBOUND TO LOOP IN CURSOR
+    select count(*) 
+		into vl_trigger_outbound_count 
+	from cjams.eneoutboundtrigger
+    where statusflag = 'N' 
+		and activeflag = 1   ;
+
+	-- OPEN MAIN CURSOR
+    OPEN TRIGGER_OUTBOUND;
+    <<TRIG_OUTBOUND>>
+    LOOP 
+		IF ERROR_EXE_FLAG = -1 THEN
+			-- ADD RECORD TO ERROR INTERFACE LOG
+			insert into cjams.interfaceserrorlog 
+				(	interfaceid,
+					currentruntimestamp,
+					batchnumber,
+					errorlineno,
+					errordescription,
+					errorsqlcode,
+					--payment_id,
+					old_id, --provider_id,
+					county_cd,
+					--client_id,
+					insertedon
+				)
+			values 								
+				(	'ENE_OUTBOUND',
+					current_timestamp,
+					'000',
+					0,
+-- 					Changed by Agathya - Handling null scenario.
+--					VS_MESSAGE || ' VL_client_id ' || VL_client_id::varchar || ' VL_CASE_CLIENT_ID ' || VL_CASE_CLIENT_ID,
+					coalesce(VS_MESSAGE,'Message - Null') || ' VL_client_id ' || coalesce(VL_client_id::varchar,'NULL') || ' VL_CASE_CLIENT_ID ' || coalesce(VL_CASE_CLIENT_ID::varchar,'NULL'),
+					VL_OUTPUT_SQLCODE,
+					--VL_CASE_CLIENT_ID,
+					VL_CASE_ID:: varchar,
+					'15',
+					--VL_client_id::Bigint , ---- #26062019 type cast -- table data type needs to be changed to bigint 
+					current_date
+				);	
+												
+		    RETURN ;
+		END IF;
+
+		IF VS_PROCESS_FLAG = 'Y' THEN -- 02/16/2007  #12329
+	
+			VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;
+        
+			BEGIN
+				
+				select 	* 
+					into VS_MESSAGE,
+						VL_OUTPUT_SQLCODE 
+                from sp_ene_outbound_interface_gen_data
+					(	VL_CLIENT_ID,
+						VL_CASE_ID,
+						VS_TRANSACTION_TYPE_CD::varchar,
+						VL_TRANSACTION_SEQUENCE,
+						VD_TRANSACTION_TS,
+						VL_SERVICECASENUMBER, -- PASSING THE NEW VARIABLE 
+						VL_ADOPTIONCASENUMBER
+					);
+
+                EXCEPTION WHEN OTHERS THEN 
+					VL_OUTPUT_SQLCODE := SQLSTATE;
+					VS_MESSAGE := '(E&E) FAILED TO GENERATE INTERFACE DATA (1st call) FOR TRANSACTION_TYPE_CD:- ' || SQLERRM || ' - ' || VS_TRANSACTION_TYPE_CD || ' -' || ' AND CLIENT_ID: ' || (VL_CLIENT_ID ::VARCHAR);
+					ERROR_EXE_FLAG := -1;
+				CONTINUE TRIG_OUTBOUND;
+			END;
+						
+                
+			BEGIN 
+				-- UPDATE STATUS
+				update cjams.eneoutboundtrigger 
+					set statusflag = 'P'
+				where current of TRIGGER_OUTBOUND;
+	
+				EXCEPTION WHEN OTHERS THEN 
+					VL_OUTPUT_SQLCODE := SQLSTATE;
+					VS_MESSAGE := '(E&E) UPDATE OF statusflag FAILED FOR TABLE eneoutboundtrigger- ' || SQLERRM  ;
+					ERROR_EXE_FLAG := -1;
+				CONTINUE TRIG_OUTBOUND;
+			END ;
+			VS_PROCESS_FLAG:='N';
+		END IF;
+
+		FETCH TRIGGER_OUTBOUND 
+		INTO VL_CASE_ID,--OLD ID 
+			VL_CLIENT_ID,--FK_ID 
+			VS_TRANSACTION_TYPE_CD, 
+			VD_TRANSACTION_TS ;
+			
+			
+		EXIT TRIG_OUTBOUND WHEN NOT FOUND;
+
+		---------- DETERMINE CIS_CLIENT EXISTS AND PLACEMENT (OPEN/ENDED) BOTH EXISTS -----------------
+		         
+		VL_PLACEMENT_EXISTS := 0 ;
+		VL_CIS_CLIENT_ROWCOUNT := 0 ;
+		VL_PLACEMENT_END_DATED_EXISTS := 0 ;
+
+        IF VL_CLIENT_ID > 0 THEN
+		    --COUNT CIS_CLIENT
+        	BEGIN
+				select count(*) 
+					into vl_cis_client_rowcount 
+				from person
+				where cjamspid = vl_client_id 
+					and length(cisclientid) > 0 
+					and activeflag = 1;
+						
+				EXCEPTION WHEN OTHERS THEN 
+					VL_OUTPUT_SQLCODE := SQLSTATE;
+					VS_MESSAGE := '(E&E) SELECT COUNT(*) FROM person FAILED FOR cjamspid:- ' || SQLERRM || ' - ' || (VL_CLIENT_ID ::VARCHAR);
+					ERROR_EXE_FLAG := -1;
+				CONTINUE TRIG_OUTBOUND;
+            END;
+
+			--COUNT PLACEMENT_OPEN+6
+			BEGIN
+				select count(*) 
+					into vl_placement_exists 
+				from tb_placement a 
+				where a.client_id = vl_client_id
+					and a.exit_dt is null 
+					and a.entry_dt is not null 
+					and a.placement_structure_id is not null
+					and a.approval_status_cd = '3047' 
+					and coalesce(a.void_sw, '') <> 'Y'
+					and a.delete_sw = 'N'  ;
+									
+				EXCEPTION WHEN OTHERS THEN 
+					VL_OUTPUT_SQLCODE := SQLSTATE;
+					VS_MESSAGE :=  '(E&E) SELECT COUNT(*) FROM tb_placement FAILED FOR client_id:- ' || SQLERRM || ' - ' || (VL_CLIENT_ID ::VARCHAR);
+					ERROR_EXE_FLAG := -1;
+				CONTINUE TRIG_OUTBOUND;
+			END;
+			--COUNT PLACEMENT ENDED
+			
+            BEGIN
+				select count(*) 
+					into vl_placement_end_dated_exists 
+				from tb_placement a
+				where a.client_id = vl_client_id 
+					and a.exit_dt is not null	
+					and a.entry_dt is not null 
+					and a.placement_structure_id is not null 
+					and a.approval_status_cd = '3047' 
+					and coalesce(a.void_sw, '') <> 'Y'
+					and a.delete_sw = 'N' ;
+									
+				EXCEPTION WHEN OTHERS THEN 
+					VL_OUTPUT_SQLCODE := SQLSTATE;
+					VS_MESSAGE := '(E&E) SELECT COUNT(*) FOR END DATED PLACEMENT FAILED FOR client_id:- ' || SQLERRM || ' - ' || (VL_CLIENT_ID ::VARCHAR);
+					ERROR_EXE_FLAG := -1;
+				CONTINUE TRIG_OUTBOUND;
+			END;
+
+			BEGIN
+				select a.adoptioncasenumber 
+					into vl_adoptioncasenumber
+				from adoptioncase a, 
+					adoptioncaseactor b , 
+					person c , 
+					servicecase d , 
+					intakeservicerequestactor e 
+				where a.adoptioncaseid = b.adoptioncaseid 
+					and b.personid = c.personid	
+					and d.servicecaseid = e.servicecaseid  
+					and e.personid = c.personid 
+					and d.servicecasenumber = VL_CASE_ID::varchar;
+									
+				EXCEPTION WHEN OTHERS THEN 
+					VL_OUTPUT_SQLCODE := SQLSTATE;
+					VS_MESSAGE := '(E&E) Get ADOPTION CASE NUMBER FAILED FOR client_id:- ' || SQLERRM || ' - ' || (VL_CLIENT_ID ::VARCHAR);
+					ERROR_EXE_FLAG := -1;
+				CONTINUE TRIG_OUTBOUND;
+			END;
+
+			------- SUBSIDY GUARDIANSHIP ----------
+            IF VS_TRANSACTION_TYPE_CD = '15' THEN -- #12174
+                IF VL_CIS_CLIENT_ROWCOUNT <= 0 THEN -- UPDATE STATUS TO 'I'
+                                    
+					VS_PROCESS_FLAG := 'N';  --02/16/2007  #12329
+					CONTINUE TRIG_OUTBOUND;
+                ELSIF 
+					EXISTS(	select 	1 
+								from tb_guardian_subsidy a 
+							where a.client_id = vl_client_id
+								and a.subsidy_start_dt is not null 
+								and a.subsidy_end_dt is not null
+								and a.check_list_approval_status_cd = '3047' 
+								and a.susbsidy_approval_status_cd = '3047'
+								and a.delete_sw = 'N') THEN
+						
+					VS_PROCESS_FLAG := 'Y'; -- 02/16/2007  #12329
+                    CONTINUE TRIG_OUTBOUND;-- ****CALL GENDATA TO PROCESS AND CHANGE STATUS TO 'P'.
+                END IF;
+                        
+			ELSIF VS_TRANSACTION_TYPE_CD IN ('10','70','20','40','50','62') THEN
+						
+                IF ( VL_CIS_CLIENT_ROWCOUNT <= 0 OR (VL_PLACEMENT_EXISTS <= 0 AND VS_TRANSACTION_TYPE_CD <> '70')) THEN
+					IF VL_PLACEMENT_EXISTS <= 0 AND VS_TRANSACTION_TYPE_CD <> '70' THEN -- #12463
+						-- UPDATE STATUS TO 'I'
+						VS_PROCESS_FLAG := 'N';
+
+						BEGIN
+							update eneoutboundtrigger 
+								set statusflag = 'I' 
+							where current of TRIGGER_OUTBOUND;
+	
+							EXCEPTION WHEN OTHERS THEN 
+								VL_OUTPUT_SQLCODE := SQLSTATE;
+								VS_MESSAGE :=  '(E&E) UPDATE OF statusflag FAILED FOR TABLE eneoutboundtrigger- ' || SQLERRM  ;
+								ERROR_EXE_FLAG := -1;
+							CONTINUE TRIG_OUTBOUND;
+						END;
+					END IF;
+                ELSIF 	
+					VL_CIS_CLIENT_ROWCOUNT > 0 AND 
+					((VL_PLACEMENT_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD <> '70') OR 
+					(VL_PLACEMENT_END_DATED_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD = '70')) THEN
+                                        
+					IF 	LENGTH	(VS_TRANSACTION_TYPE_CD) > 0 THEN
+						IF VS_TRANSACTION_TYPE_CD = '40' THEN
+												
+							select sc.servicecasenumber
+								into vl_servicecasenumber
+							from servicecase sc,
+								tb_payment_detail pd
+							where pd.case_id = sc.servicecasenumber::bigint	
+								and pd.payment_id = VL_CASE_ID;
+
+							VL_PAYMENT_MAINTENANCE := 0 ;
+                            BEGIN
+								select count(*) 
+									into vl_payment_maintenance 
+								from tb_payment_header
+								where payment_id = vl_case_id -- type cast to integer #26062019	 
+									and payment_type_cd = '6'
+									and payment_dt is not null 
+									and delete_sw = 'N';
+
+								EXCEPTION WHEN OTHERS THEN 
+									VL_OUTPUT_SQLCODE := SQLSTATE;
+									VS_MESSAGE :='(E&E) SELECT MAINTENANCE PAYMENT FAILED FOR TABLE TB_PAYMENT_HEADER- ' || SQLERRM ;
+									ERROR_EXE_FLAG := -1;
+								CONTINUE TRIG_OUTBOUND;
+							END;
+                                                        
+							IF 	VL_PAYMENT_MAINTENANCE <= 0 THEN -- UPDATE DELETE STATUS
+								VS_PROCESS_FLAG := 'N';
+															
+								BEGIN     
+									update eneoutboundtrigger 
+										set activeflag = 0
+									where current of TRIGGER_OUTBOUND;
+
+									EXCEPTION WHEN OTHERS THEN 
+										VL_OUTPUT_SQLCODE := SQLSTATE;
+										VS_MESSAGE := '(E&E) DELETE OF RECORD FAILED FOR TABLE eneoutboundtrigger- ' || SQLERRM ;
+										ERROR_EXE_FLAG := -1;
+									CONTINUE TRIG_OUTBOUND;
+								END;
+	
+                                CONTINUE TRIG_OUTBOUND;
+                                                        
+							ELSIF VL_PAYMENT_MAINTENANCE > 0 THEN
+                                                               
+								BEGIN 
+									select sum(final_amount_no) 
+										into vdec_payment_amount
+									from tb_payment_detail
+									where client_id = vl_client_id 
+										and payment_id = vl_case_id	
+										and delete_sw = 'N';
+
+										EXCEPTION WHEN OTHERS THEN 
+											VL_OUTPUT_SQLCODE := SQLSTATE;
+											VS_MESSAGE :=  '(E&E) SELECT PAYMENT SUM FAILED FOR TABLE TB_PAYMENT_DETAIL- ' || SQLERRM  ;
+											ERROR_EXE_FLAG := -1;
+                                        CONTINUE TRIG_OUTBOUND;
+                                END;
+															 
+								BEGIN	
+									select sum(final_amount_no) 
+										into vdec_payment_previous_amount
+									from tb_payment_detail 
+									where client_id = vl_client_id	
+										and delete_sw = 'N' 			
+										and payment_id = (	select max(a.payment_id)
+															from tb_payment_detail a, 
+																tb_payment_header b
+															where a.client_id = vl_client_id and 
+																a.payment_id = b.payment_id and 
+																a.payment_id < vl_case_id and 
+																b.payment_type_cd = '6' and 
+																b.payment_dt is not null and 
+																a.delete_sw = 'N' AND 
+																b.delete_sw = 'N');
+																	
+									EXCEPTION WHEN OTHERS THEN 
+										VL_OUTPUT_SQLCODE := SQLSTATE;
+										VS_MESSAGE := '(E&E) SELECT PREVIOUS PAYMENT SUM FAILED FOR TABLE TB_PAYMENT_DETAIL- ' || SQLERRM  ;
+										ERROR_EXE_FLAG := -1;
+									CONTINUE TRIG_OUTBOUND;
+								END;	
+	
+                                IF 	VDEC_PAYMENT_AMOUNT IS NOT NULL	AND VDEC_PAYMENT_PREVIOUS_AMOUNT IS NOT NULL THEN
+                                                                     
+									IF VDEC_PAYMENT_AMOUNT = VDEC_PAYMENT_PREVIOUS_AMOUNT THEN
+                                    	-- UPDATE DELETE STATUS
+										VS_PROCESS_FLAG := 'N';
+																				
+                                        BEGIN
+											update eneoutboundtrigger 
+												set activeflag = 0
+											where current of TRIGGER_OUTBOUND;
+
+											EXCEPTION WHEN OTHERS THEN 
+												VL_OUTPUT_SQLCODE := SQLSTATE;
+												VS_MESSAGE :=  '(E&E) DELETE OF RECORD FAILED FOR TABLE eneoutboundtrigger- ' || SQLERRM  ;
+												ERROR_EXE_FLAG := -1;
+											CONTINUE TRIG_OUTBOUND;
+										END;
+
+										VS_PROCESS_FLAG := 'N';
+										CONTINUE TRIG_OUTBOUND;
+                                    END IF;
+                                END IF;-- VDEC_PAYMENT_AMT IS NOT NULL AND PREV_AMT IS NOT NULL
+                            END IF;-- VL_PAYMENT_MAINTENANCE >0
+                        END IF;-- IF TRANSACTION_TYPE = 40
+												
+	                    VS_PROCESS_FLAG := 'Y';
+											
+                        CONTINUE TRIG_OUTBOUND;-- ****CALL GENDATA TO PROCESS AND CHANGE STATUS TO 'P'.
+                    END IF;-- IF TRANSACTION TYPE CODE > 0
+                END IF;-- MAIN CIS_CLIENT CONDITION
+            ELSIF 	VS_TRANSACTION_TYPE_CD = '64' THEN
+                                
+				IF VL_CIS_CLIENT_ROWCOUNT > 0 AND VL_PLACEMENT_EXISTS > 0 AND VS_TRANSACTION_TYPE_CD = '64' THEN
+                                
+					VS_PROCESS_FLAG := 'Y';
+                    CONTINUE TRIG_OUTBOUND; -- ****CALL GENDATA TO PROCESS AND CHANGE STATUS TO 'P'.
+				END IF;
+            END IF;
+        ELSIF VL_CLIENT_ID <= 0 OR VL_CLIENT_ID IS NULL 
+			OR VS_TRANSACTION_TYPE_CD IN ('60','64') AND VS_TRANSACTION_TYPE_CD NOT IN ('40','50') THEN
+	                
+			IF  VL_CASE_ID > 0 THEN
+				VL_PLACEMENT_EXISTS := 0 ;
+						
+                BEGIN                 
+					select count(*)
+						into vl_placement_exists
+					from intakeservicerequestactor a,
+						person p,  
+						servicecase s,
+						intakeservicerequest c 
+					where  a.personid = p.personid 
+						and a.intakeserviceid = c.intakeserviceid              
+						and a.intakeservicerequestpersontypekey = 'CHILD'  
+						and s.servicecasenumber = vl_case_id::character varying  
+						and s.servicecaseid = c.servicecaseid 
+						and a.activeflag = 1
+						and c.activeflag = 1
+						and p.activeflag = 1
+						and
+							exists (    select 1
+										from tb_placement tbp, 
+											person p
+										where tbp.client_id = p.cjamspid 
+											and tbp.exit_dt is null 
+											and tbp.entry_dt is not null
+											and tbp.placement_structure_id is not null
+											and tbp.approval_status_cd = '3047' 
+											and coalesce(tbp.void_sw, '') <> 'Y'
+											and tbp.delete_sw = 'N' 
+									);
+															
+					EXCEPTION WHEN OTHERS THEN 
+						VL_OUTPUT_SQLCODE := SQLSTATE;
+						VS_MESSAGE := '(E&E) SELECT COUNT(*) FROM intakeservicerequestactor FAILED FOR case_id:- ' || SQLERRM || ' - ' || (VL_CASE_ID::VARCHAR);
+						ERROR_EXE_FLAG := -1;
+					CONTINUE TRIG_OUTBOUND;
+				END;	
+	
+                IF 	VL_PLACEMENT_EXISTS <= 0 THEN -- UPDATE STATUS TO 'I'
+                                
+					BEGIN                                       
+						update eneoutboundtrigger 
+							set statusflag = 'I' 
+						where current of TRIGGER_OUTBOUND;
+
+						EXCEPTION WHEN OTHERS THEN 
+							VL_OUTPUT_SQLCODE := SQLSTATE;
+							VS_MESSAGE := '(E&E) UPDATE OF statusflag FAILED FOR TABLE eneoutboundtrigger- ' || SQLERRM  ;
+							ERROR_EXE_FLAG := -1;
+						CONTINUE TRIG_OUTBOUND;
+					END;
+                    CONTINUE TRIG_OUTBOUND ;
+                END IF;
+
+                -- Added code 22/05
+                select count(*) 
+					into vl_case_client_count 
+                from intakeservicerequestactor a, 
+					intakeservicerequest c, 
+					actor ta 
+				where a.intakeserviceid = c.intakeserviceid	
+					and ta.actorid = a.actorid
+					and c.servicerequestnumber = vl_case_id::varchar
+					and ta.actortype = 'CHILD'
+					and a.activeflag = 1
+					and c.activeflag = 1
+					and exists (	select 	1 
+									from tb_placement tbp, 
+										person p, 
+										intakeservicerequestactor a, 
+										intakeservicerequest c
+									where tbp.case_id ::varchar = c.servicerequestnumber
+										and a.intakeserviceid = c.intakeserviceid
+										and a.actorid = p.personid
+										and tbp.client_id = p.cjamspid
+										and tbp.exit_dt is null 
+										and tbp.entry_dt is not null 
+										and tbp.delete_sw = 'N' 
+										and p.activeflag = 1 
+										and a.activeflag = 1
+										and tbp.placement_structure_id is not null
+										and tbp.approval_status_cd = '3047'
+										and coalesce(tbp.void_sw, '') <> 'Y'
+									);
+															
+                OPEN  CASE_CLIENT;
+                <<CASE_CLIENT_LABEL>> 
+								
+				WHILE vl_case_client_count > 0 LOOP
+				FETCH CASE_CLIENT INTO VL_CASE_CLIENT_ID, VL_CASE_PERSON_ID;
+								
+					EXIT CASE_CLIENT_LABEL WHEN NOT FOUND;
+		
+					IF 	VL_CASE_CLIENT_ID > 0 THEN
+										
+						VL_CIS_CASE_CLIENT_ROWCOUNT := 0 ;
+						VL_PARENT_EXISTS := 0 ;
+		                                
+						BEGIN
+							select count(*)  
+								into vl_cis_case_client_rowcount  
+							from person p
+							where p.cjamspid = vl_case_client_id 
+								and length(p.cisclientid) > 0 
+								and p.activeflag = 1;
+
+							EXCEPTION WHEN OTHERS THEN 
+								VL_OUTPUT_SQLCODE := SQLSTATE;
+								VS_MESSAGE := '(E&E) SELECT COUNT(*) FROM person FAILED FOR cjamspid:- ' || SQLERRM || ' - ' || (VL_CASE_CLIENT_ID::VARCHAR);
+								ERROR_EXE_FLAG := -1;
+							CONTINUE TRIG_OUTBOUND;
+                        END;
+	
+                        IF 	VL_CIS_CASE_CLIENT_ROWCOUNT <= 0 THEN
+							-- ITERATE CASE_CLIENT_LABEL;
+							IF VS_TRANSACTION_TYPE_CD = '64' THEN
+								-- INSERT INTO OUTBOUND_TRIGGER
+                                BEGIN            
+								
+									INSERT INTO eneoutboundtrigger	
+										(	old_id,
+											fk_id,
+											transactionon,
+											transactiontypekey,
+											statusflag,
+											activeflag
+										)
+									VALUES	
+										(	VL_CASE_ID,
+											VL_CASE_CLIENT_ID,
+											current_timestamp,
+											'64',
+											'N',
+											1
+										);
+
+									EXCEPTION WHEN OTHERS THEN 
+										VL_OUTPUT_SQLCODE := SQLSTATE;
+										VS_MESSAGE := '(E&E) INSERT INTO eneoutboundtrigger FAILED- ' || SQLERRM ;
+										ERROR_EXE_FLAG := -1;
+									CONTINUE TRIG_OUTBOUND;
+                                END;
+	
+								VS_INTERFACE_PROCESSED_FLAG := 'Y' ;
+							END IF;
+						ELSIF VL_CIS_CASE_CLIENT_ROWCOUNT > 0 THEN
+							IF LENGTH(VS_TRANSACTION_TYPE_CD) > 0 THEN
+								IF VS_TRANSACTION_TYPE_CD = '60' THEN
+                                                                    
+									BEGIN                                                                       
+										select count(*) 
+											into vl_parent_exists 
+										from actorrelationship acr, 
+											person p  
+										where p.personid = acr.client2id 
+											and p.cjamspid = vl_client_id  
+											and client1id = vl_case_person_id
+											and relationshiptypekey IN ('3447','3449', 'BGCHLD') 
+											and acr.activeflag = 1 
+											and p.activeflag = 1;
+
+										EXCEPTION WHEN OTHERS THEN 
+											VL_OUTPUT_SQLCODE := SQLSTATE;
+											VS_MESSAGE := '(E&E) SELECT PARENT EXISTS COUNT FAILED FOR TABLE actorrelationship- ' || SQLERRM;
+											ERROR_EXE_FLAG := -1;
+										CONTINUE TRIG_OUTBOUND;
+									END;
+
+                                    IF VL_PARENT_EXISTS <= 0 THEN
+										VL_case_client_count := VL_case_client_count - 1;
+										CONTINUE  CASE_CLIENT_LABEL;
+									END IF ;
+
+                                    VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;
+                                                                    
+									BEGIN                                                                       
+										select 	* 
+											into vs_message,
+												vl_output_sqlcode 
+										from sp_ene_outbound_interface_gen_data
+											(	VL_CASE_CLIENT_ID,
+												VL_CLIENT_ID,
+												VS_TRANSACTION_TYPE_CD,
+												VL_TRANSACTION_SEQUENCE,
+												VD_TRANSACTION_TS,
+												VL_SERVICECASENUMBER, --PASSING THE NEW VARIABLE
+												VL_ADOPTIONCASENUMBER
+											);
+										
+										EXCEPTION WHEN OTHERS THEN 
+											VL_OUTPUT_SQLCODE := SQLSTATE;
+											VS_MESSAGE := '(E&E) FAILED TO GENERATE INTERFACE DATA (2nd call) FOR TRANSACTION_TYPE_CD:- '|| SQLERRM || ' - ' || VS_TRANSACTION_TYPE_CD || ' AND CLIENT_ID: ' || (VL_CASE_CLIENT_ID::VARCHAR);
+											ERROR_EXE_FLAG := -1;
+										CONTINUE TRIG_OUTBOUND;
+									END;
+																	
+                                ELSE
+                                    VL_TRANSACTION_SEQUENCE := VL_TRANSACTION_SEQUENCE + 1 ;
+																		 
+									BEGIN 
+										select	* 
+										into vs_message,
+											vl_output_sqlcode 
+										from sp_ene_outbound_interface_gen_data 
+											( 	VL_CASE_CLIENT_ID,
+												VL_CASE_ID,
+												VS_TRANSACTION_TYPE_CD,
+												VL_TRANSACTION_SEQUENCE,
+												VD_TRANSACTION_TS,
+												VL_SERVICECASENUMBER,--- PASSING THE NEW VARIABLE 
+												VL_ADOPTIONCASENUMBER
+											);
+											
+										EXCEPTION WHEN OTHERS THEN 
+											VL_OUTPUT_SQLCODE := SQLSTATE;
+											VS_MESSAGE := '(E&E) FAILED TO GENERATE INTERFACE DATA (3rd call) FOR TRANSACTION_TYPE_CD:- ' || SQLERRM || ' - ' || VS_TRANSACTION_TYPE_CD || ' AND CLIENT_ID: ' || (VL_CASE_CLIENT_ID::VARCHAR);
+											ERROR_EXE_FLAG := -1;
+										CONTINUE TRIG_OUTBOUND;
+									END;
+
+								END IF;
+	
+                                VS_INTERFACE_PROCESSED_FLAG := 'Y' ;
+							END IF;-- VS_TRANSACTION_TYPE_CD > 0
+                        END IF;--VL_CIS_CASE_CLIENT_ROWCOUNT > 0
+                    END IF;--VL_CASE_CLIENT_ID> 0
+										
+                    VL_case_client_count := VL_case_client_count - 1;
+									
+                END LOOP;
+                CLOSE CASE_CLIENT;
+
+                IF (VL_OUTPUT_SQLCODE = '00000') AND VS_INTERFACE_PROCESSED_FLAG = 'Y' THEN
+                		-- UPDATE STATUS TO 'P'
+						BEGIN  
+							update eneoutboundtrigger 
+								set statusflag = 'P' 
+							where current of TRIGGER_OUTBOUND;
+
+							EXCEPTION WHEN OTHERS THEN 
+								VL_OUTPUT_SQLCODE := SQLSTATE;
+								VS_MESSAGE := '(E&E) UPDATE OF statusflag FAILED FOR TABLE eneoutboundtrigger- ' || SQLERRM ;
+								ERROR_EXE_FLAG := -1;
+							CONTINUE TRIG_OUTBOUND;
+						END;
+				END IF;
+								
+                VS_INTERFACE_PROCESSED_FLAG := 'N' ;
+			END IF; -- CASE_ID <=0
+        END IF; -- CLIENT_ID <=0 OR CLIENT_ID ID NULL
+	END LOOP;		
+    CLOSE TRIGGER_OUTBOUND;
+
+    
+	IF ERROR_EXE_FLAG <> -1 then 
+		VL_OUTPUT_SQLCODE := '00000';
+		VS_MESSAGE := '(E&E) THE RUN WAS SUCCESSFUL.';
+	end if;
+	return;
+END;
+
+$function$
+;

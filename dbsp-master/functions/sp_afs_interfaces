@@ -1,0 +1,1712 @@
+CREATE OR REPLACE FUNCTION sp_afs_interfaces(OUT vs_message character varying, OUT vl_output_sqlcode character varying, OUT a timestamp without time zone, OUT b timestamp without time zone)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+--------------------------------------------------------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author: Mohan\r
+-- Date Created :04/26/2005\r
+-- generates AFS Interface payment records\r
+-- Revision\r
+-- Mohan    10/24/05  - AFS - Previous payments are re-sent if no data in current day(Incident 4687)\r
+-- Mohan    12/29/05  - #5267\r
+-- Mohan    13/01/06  - #6025\r
+-- MOhan    01/18/06    #6095\r
+-- Mohan    01/18/06    #6138\r
+-- Mohan    01/25/06    #6211\r
+-- sandhya  05/23/06    #7581 (rectified)\r
+-- sandhya  05/23/06    #7621  (populate error table)\r
+-- sandhya  06/12/06    #7573, #7574, #7575, #7716  --  Error log  table\r
+-- sandhya  07/08/06    #8464  --  Truncated vendor name columns to 20 char and added error logging\r
+-- Hema     07/17/06    #8759 -- Modified error messages and ADDED EXCEP MESSAGE FOR ADDRESS TYPE\r
+-- Hema     07/24/06    #8759 -- Modified Exceptional Messages to add county name, provider and client name\r
+-- Hema     08/01/06    #8759 -- Modified county code to county name\r
+-- Hema     08/10/06    #8759 -- If updating tb_payment_status fails write exception record and if any sql fails\r
+                                 -- write error messages without interupting the program run.\r
+-- Hema     08/23/06    #9676 -- Insert one exception record per payment\r
+\r
+-- Hema     08/28/06    #9752 -- User friendly error message client_name and missing column seperate by '-'\r
+-- Hema     09/11/06    #9903 -- For county code map payment_id instead of client_id and reinitialize\r
+                              -- vl_output_sqlcode.\r
+-- Hema    09/19/06    #10001 -- Fixed\r
+-- Hema    09/25/06    #10001 -- modified zipcode5 error message\r
+-- Hema    10/02/2006  #10094  -- fixed\r
+-- Hema    12/07/06    #11127  -- Modified code not to get subsidized guardianship payments\r
+-- sandhya 02/05/2007  #12174 exclude montgomery county\r
+-- Sandhya 02/20/07  - #12174 Not to exception Child disbursement payments whose payee number is zero (added child disbursement flag)\r
+-- sandhya - 02/22/07 --#12174 - commented cursors.. provider & client\r
+-- Sandhya - 08/07/2007 -- #13427 - change the length of Vendor Name and Payee Short Name to 40 from the original 20.\r
+-- Sandhya - 08/29/2007 -- #15672 - REMOVED DISTINCT FROM THE CURSOR DUE TO SINGLE RECORDS IN THE ERROR LOG TABLE check payid : 46706 in reportsdb\r
+-- Sandhya - 08/29/2007 -- #15672 - Added condition for validating Final Amount.  Check if Final Amt is null along with the check final amt =0\r
+-- sandhya - 06/04/2008 -  COUNTY ROLL-UP\r
+-- Sandhya - 10/14/2008 - #18816 -(CIS-18129) For System Adjustment payments, check if the linked payment ID is released, if so, mark the new paymnet as 'RELS'\r
+-- Sandhya - 12/01/2008 - #19071 - Pad Zip codes with leading zeros.\r
+-- Sandhya - 02/20/2009 - #19508 - Payment_detail_id added to cursor and also in the INSERT\r
+-- Raghu T   12/10/2010 - #Prj-01179 1) Replacing payment_detail_id with payment_id\r
+--                                   2) Replacing zero provider_id with client_id for CHAC types.\r
+-- 07/25/2012 Samir Patil PRJ-02667 - MD CHESSIE Batch Process Redesign - To change Return 0 on success\r
+-- 01/21/2019 Vineet Tirodkar - B-28317 - AFS interface Modernization\r
+--     Modification to populate newly added columns in TB_AFS_INTERFACES for New AFS system Interface\r
+-- 03/09/2019 Raghuveer Reddy Dachani CJAMS implementation converted from DB2 - POSTGRESQL\r
+-- 10/11/2019 H. S.     CJAMS - For Child Account change the Location ID to match the Vendor ACCOUNT\r
+--                            - Change Approve by from 100 to 200\r
+-- 05/21/2020 Tanmay M - CJAMS - Handling Foreign Address Zip Code\r
+-- 07/30/2020 Vineet Tirodkar - CJAMS - To fix error of Provider address Street number greater than 5 characters\r
+-- 11/03/2020 Vineet Tirodkar - CDM-4627 - To update JOURNAL_DESC as unique timestamp values\r
+-- 12/16/2020 Vineet Tirodkar - Changes to first look for provider_nm column else provider_first_nm and provider_last_nm (CDM-3556)\r
+---------------------------------------------------------------------------------------------------------------------------\r
+-- VARIABLE DECLARATION\r
+\r
+DECLARE VS_OUTPUT_STATE VARCHAR(5) DEFAULT '00000';\r
+DECLARE vts_previous_run_ts timestamp;\r
+DECLARE vts_current_run_ts timestamp ;\r
+DECLARE VL_ROWCOUNT INTEGER DEFAULT 0;\r
+DECLARE VS_USER_ID  VARCHAR(10)  DEFAULT 'interface';\r
+DECLARE VL_INTERFACE_ROWCOUNT INTEGER DEFAULT 0;\r
+DECLARE li_provider_id INTEGER DEFAULT 0;\r
+DECLARE ls_county Varchar(4) DEFAULT '0000';\r
+DECLARE ls_county_cd Varchar(2) DEFAULT '99';\r
+DECLARE ls_provider_nm Varchar(500);\r
+DECLARE ls_INDICATOR_1099_SW Varchar(3);\r
+DECLARE ls_Provider_last_nm  Varchar(100);\r
+DECLARE ls_Provider_first_nm Varchar(100);\r
+DECLARE ls_Provider_middle_nm Varchar(100);\r
+DECLARE ls_person_nm Varchar(100);\r
+DECLARE ls_org_nm Varchar(100);\r
+DECLARE ls_vendor_nm Varchar(100);\r
+DECLARE li_vendor_ln_1 INTEGER;\r
+DECLARE li_vendor_ln_2 INTEGER;\r
+DECLARE ls_payment_method_cd  CHAR(1);\r
+DECLARE LS_LINK_PAYMENT_STATUS  VARCHAR(4); -- new\r
+DECLARE li_linked_pymnt_id  INTEGER; -- new\r
+DECLARE li_payment_id  INTEGER;\r
+DECLARE ls_payment_id  VARCHAR(20);\r
+DECLARE li_afs_interface_record_id  INTEGER;\r
+DECLARE ld_Payment_dt  DATE  ;\r
+DECLARE ld_final_service_dt DATE  ;\r
+DECLARE li_client_id    INTEGER;\r
+DECLARE ls_client_first_nm  VARCHAR(100);\r
+DECLARE ls_client_last_nm   VARCHAR(100);\r
+DECLARE ls_client_nm   VARCHAR(100);\r
+DECLARE li_client_nm   INTEGER;\r
+DECLARE li_final_amount_no  DECIMAL(13,2) DEFAULT 0.0;\r
+DECLARE ls_prov_tax_type_cd  VARCHAR(4);\r
+DECLARE ls_TYPE_1099_CD  VARCHAR(5);\r
+DECLARE ls_FINAL_FISCAL_CATEGORY_CD  VARCHAR(5);\r
+DECLARE li_TAX_ID_NO  INTEGER;\r
+DECLARE ls_TAX_ID_NO  Varchar(100);\r
+DECLARE li_STORE_RECEIPT_ID INTEGER;\r
+DECLARE ls_STORE_RECEIPT_ID  VARCHAR(100);\r
+DECLARE ls_ADR_WORK_PHONE_TX VARCHAR(20);\r
+DECLARE ls_ADR_HOME_PHONE_TX  VARCHAR(20);\r
+DECLARE ls_ADR_CELL_PHONE_TX  VARCHAR(20);\r
+DECLARE ls_PHONE_TX  VARCHAR(20);\r
+DECLARE ls_adr_type_cd  VARCHAR(5);\r
+DECLARE ls_Adr_format_cd VARChar(5);\r
+DECLARE li_Adr_street_no  Integer Default 0;\r
+DECLARE li_Adr_Box_no     Integer Default 0;\r
+DECLARE ls_Adr_pre_dir_cd VARChar(5);\r
+DECLARE ls_Adr_street_nm   VARChar(50) ;\r
+DECLARE ls_Adr_street_suffix_cd VARChar(5);\r
+DECLARE ls_Adr_post_dir_cd VARChar(5);\r
+DECLARE ls_Adr_unit_type_cd VARChar(5);\r
+DECLARE ls_Adr_unit_no_tx   VARChar(5);\r
+DECLARE ls_Adr_city_nm      VARChar(50);\r
+DECLARE ls_adr_state_cd  VARChar(5);\r
+DECLARE ls_Adr_foreign_tx VArChar(500);\r
+DECLARE ls_Adr_foreign_state_tx VARChar(50);\r
+DECLARE ls_Adr_country_tx VARChar(50);\r
+DECLARE li_Adr_zip5_no Integer ;\r
+DECLARE li_Adr_zip4_no Integer;\r
+DECLARE ls_address_1  VARChar(100);\r
+DECLARE ls_Adr_zip5_no   VarChar(5);\r
+DECLARE ls_Adr_zip4_no   Varchar(4);\r
+DECLARE ls_Adr_street_no  Varchar(10) ; -- Changed from Varchar(5) 07/30/2020\r
+DECLARE ls_Adr_street_no1  Varchar(50) ;\r
+DECLARE ls_Adr_Box_no     Varchar(15) ;\r
+DECLARE ls_address_2  VARChar(100);\r
+DECLARE ls_zip_code  Varchar(50);\r
+DECLARE li_payment_count  Integer;\r
+DECLARE li_client_count  Integer;\r
+DECLARE ls_pay_to_affiliate_cd  Varchar(5);\r
+DECLARE li_check Integer default 0;\r
+DECLARE li_address_1  Integer;\r
+DECLARE li_address_2  Integer;\r
+DECLARE li_city  Integer;\r
+DECLARE ls_payee_nbr Varchar(10);\r
+DECLARE li_payee_nbr Integer;\r
+DECLARE ls_REPORT_1099_SW  Varchar(1);\r
+DECLARE ls_payment_type_cd  Varchar(5);\r
+DECLARE ls_manual_sw Char(1);\r
+DECLARE li_length  INTEGER default 0;\r
+DECLARE ls_alternate_adr_type_cd  VARCHAR(5);\r
+DECLARE li_temp_provider_id  INTEGER Default 0;\r
+DECLARE li_affiliate_provider_id INTEGER Default 0;\r
+DECLARE VS_PAYEE_SHORT_NM   VARCHAR(100);\r
+DECLARE VS_PAYMENT_TYPE_CD  VARCHAR(5) DEFAULT '0000';\r
+DECLARE VL_PAYMENT_COUNT    INTEGER DEFAULT 0;\r
+DECLARE VL_ERROR_COUNT    INTEGER DEFAULT 0;\r
+DECLARE VL_INTERFACES_ERROR_LOG_ID    INTEGER DEFAULT 0;\r
+DECLARE VL_ERROR_LOGGED    INTEGER DEFAULT 0;\r
+DECLARE VS_EXCEP_MESSAGE VARCHAR(2000)  default '' ;\r
+Declare VS_EXC_ADR_TYPE varchar(100) DEFAULT '';\r
+DECLARE LS_COUNTY_NAME VARCHAR(25) DEFAULT  '' ;\r
+DECLARE LS_ERROR_PROVNAME VARCHAR(2)DEFAULT  '' ;\r
+DECLARE LS_ERROR_CHILDNAME VARCHAR(2)DEFAULT  '' ;\r
+DECLARE VS_EXCEP_MESSAGE1 VARCHAR(500)DEFAULT  '' ;\r
+DECLARE VS_CHILD_DISBURSEMENT varchar (1) default 'N';\r
+DECLARE li_payment_detail_id  INTEGER;\r
+-- B-28317\r
+DECLARE ld_amount_1099 DECIMAL(10,2);\r
+DECLARE ls_code_1099 VARCHAR(10);\r
+DECLARE ls_account_type VARCHAR(10);\r
+DECLARE ll_address_id BIGINT;\r
+DECLARE ls_address_id_tx VARCHAR(20);\r
+DECLARE ls_approved VARCHAR(5);\r
+DECLARE ls_approved_by VARCHAR(5);\r
+DECLARE ls_currency VARCHAR(5);\r
+DECLARE ls_invoice VARCHAR(20);\r
+DECLARE ls_invoice_desc VARCHAR(100);\r
+DECLARE ls_journal_desc VARCHAR(50);\r
+DECLARE ls_payor_company VARCHAR(5);\r
+DECLARE ls_offset_account VARCHAR(30);\r
+DECLARE ls_offset_account_type VARCHAR(10);\r
+DECLARE ls_posting_profile VARCHAR(10);\r
+DECLARE ls_terms_of_payment VARCHAR(5);\r
+DECLARE ls_vendoraccount VARCHAR(15);\r
+DECLARE ls_childacc_id VARCHAR; --04072019\r
+\r
+DECLARE PAYMENT_CUR CURSOR  FOR\r
+ SELECT  HDR.PAYMENT_id,\r
+  DTL.LINKED_PYMNT_HDR_ID,\r
+  HDR.provider_id,\r
+  HDR.PAYMENT_METHOD_CD,\r
+  DTL.client_id,\r
+  DTL.TYPE_1099_CD,\r
+  DTL.FINAL_FISCAL_CATEGORY_CD,\r
+  HDR.STORE_RECEIPT_ID,\r
+  DTL.FINAL_AMOUNT_NO,\r
+  HDR.PAYMENT_DT,\r
+  DTL.FINAL_SERVICE_END_DT,\r
+  DTL.REPORT_1099_SW,\r
+  HDR.PAYMENT_TYPE_CD,\r
+  HDR.MANUAL_SW      ,\r
+  DTL.PAYMENT_DETAIL_ID\r
+ FROM TB_PAYMENT_HEADER as HDR,\r
+  TB_PAYMENT_DETAIL as DTL,\r
+  TB_PAYMENT_STATUS\r
+ WHERE HDR.Payment_id = Dtl.Payment_id\r
+  AND HDR.Delete_sw = 'N'\r
+  AND (TB_PAYMENT_STATUS.PAYMENT_STATUS_CD = '1634' )\r
+  AND HDR.Delete_sw = 'N'\r
+  AND DTL.Delete_sw = 'N'\r
+  AND TB_PAYMENT_STATUS.Delete_sw = 'N'\r
+  AND HDR.Payment_id = TB_PAYMENT_STATUS.Payment_id\r
+  AND HDR.PAYMENT_TYPE_CD  NOT IN ('6','5689','7')   -- 12/07/06 #11127\r
+  -- VINEET 04/21/2020 - To exclude payments created in MD CHESSIE\r
+  AND HDR.PAYMENT_id >= 2896828 -- First CJAMS Payment ID\r
+  --AND btrim(DTL.county_cd) IN ( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE )\r
+  /*\r
+  and  dtl.create_ts::date >= (select min(golivedate)\r
+         from county\r
+         where activeflag = 1\r
+         and golivedate is not null\r
+         and statecountycode is not null\r
+         )\r
+  */       \r
+ ORDER BY  HDR.PAYMENT_ID;\r
+\r
+BEGIN\r
+ vts_previous_run_ts := CURRENT_TIMESTAMP;\r
+ vts_current_run_ts := CURRENT_TIMESTAMP;\r
+ ld_Payment_dt := '1900-01-01'::DATE;\r
+ ld_final_service_dt := '1900-01-01'::DATE;\r
+ VL_OUTPUT_SQLCODE := '00000';\r
+\r
+ --  if first run, i.e., no rows in log, then leave as initialized\r
+ IF EXISTS (SELECT 1 FROM INTERFACESRUNTIMESLOG) THEN\r
+ BEGIN\r
+  SELECT MAX(CURRENTRUNTIMESTAMP) INTO vts_previous_run_ts FROM INTERFACESRUNTIMESLOG ;\r
+  EXCEPTION WHEN OTHERS THEN\r
+   VS_MESSAGE := 'SELECT MAX(CURRENTRUNTIMESTAMP) FAILED '||SQLERRM  ;\r
+   VL_OUTPUT_SQLCODE := SQLSTATE;\r
+   INSERT INTO interfaceserrorlog(INTERFACEID, CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE,\r
+    ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id, payment_amount)\r
+   VALUES ('AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0',\r
+     VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id ,\r
+     li_final_amount_no);\r
+   RETURN;\r
+  END;\r
+ END IF;\r
+\r
+-- DELETE Of the Output table AFS_INTERFACES -- takes place on the script which call the procedure\r
+\r
+-- Check for rows to interface, if none then quit.\r
+BEGIN\r
+ IF EXISTS ( SELECT 1\r
+    FROM TB_PAYMENT_DETAIL as DTL,\r
+     TB_PAYMENT_HEADER as HDR,\r
+     TB_PAYMENT_STATUS, TB_PROVIDER\r
+    WHERE ( HDR.PAYMENT_ID = DTL.PAYMENT_ID ) and\r
+     ( HDR.PAYMENT_ID = TB_PAYMENT_STATUS.PAYMENT_ID ) and\r
+     ( TB_PAYMENT_STATUS.PAYMENT_STATUS_CD = '1634' ) and\r
+     ( TB_PROVIDER.PROVIDER_ID = HDR.PROVIDER_ID ) AND\r
+     HDR.Delete_sw = 'N'\r
+     AND DTL.Delete_sw = 'N'\r
+     AND TB_PAYMENT_STATUS.Delete_sw = 'N'\r
+     AND TB_PROVIDER.DELETE_SW  = 'N'\r
+     -- TANMAY 05/21/2020 - To exclude payments created in MD CHESSIE\r
+     AND HDR.PAYMENT_TYPE_CD  NOT IN ('6','5689','7')\r
+     AND HDR.PAYMENT_id >= 2896828 -- First CJAMS Payment ID\r
+     --AND DTL.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE )\r
+     /*and  dtl.create_ts::date >= (select min(golivedate)\r
+             from county\r
+             where activeflag = 1\r
+             and golivedate is not null\r
+             and statecountycode is not null\r
+             )\r
+     */\r
+    ) THEN\r
+  --\r
+ ELSE\r
+  VS_MESSAGE := 'THERE ARE NO ROWS TO INTERFACE; PAYMENT_STATUS_CD <> 1634'  ;\r
+ END IF;\r
+\r
+ EXCEPTION WHEN OTHERS THEN\r
+  VS_MESSAGE := 'SELECT OF ROWS TO INTERFACE COUNT(*) FAILED '||SQLERRM  ;\r
+  VL_OUTPUT_SQLCODE := SQLSTATE;\r
+  INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE,\r
+   ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+  VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0',\r
+   VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+  RETURN;\r
+END;\r
+\r
+\r
+-- Delete the existing records in the interface table\r
+-- Insert records into the TB_AFS_INTERFACES table from\r
+-- the TB_PAYMENT DETAIL, TB_PAYMENT_HEADER, and TB_PROVIDER\r
+-- when the status code is 1634.\r
+-- Update the records with "interfaced" status.\r
+-- Insert new record in interface log with the date/time of the run.\r
+SELECT COUNT(*) INTO VL_PAYMENT_COUNT\r
+ FROM TB_PAYMENT_HEADER as HDR,\r
+  TB_PAYMENT_DETAIL as DTL,\r
+  TB_PAYMENT_STATUS\r
+WHERE HDR.Payment_id = Dtl.Payment_id\r
+ AND HDR.Delete_sw = 'N'\r
+ AND ( TB_PAYMENT_STATUS.PAYMENT_STATUS_CD = '1634' )\r
+ AND HDR.Delete_sw = 'N'\r
+ AND DTL.Delete_sw = 'N'\r
+ AND TB_PAYMENT_STATUS.Delete_sw = 'N'\r
+ AND HDR.Payment_id = TB_PAYMENT_STATUS.Payment_id\r
+ AND HDR.PAYMENT_TYPE_CD NOT IN  ('6','5689','7') --12/07/06 #11127\r
+ -- TANMAY 05/21/2020 - To exclude payments created in MD CHESSIE\r
+ AND HDR.PAYMENT_id >= 2896828 -- First CJAMS Payment ID\r
+ --AND DTL.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE )\r
+ /*and  dtl.create_ts::date >= (select min(golivedate)\r
+         from county\r
+         where activeflag = 1\r
+         and golivedate is not null\r
+         and statecountycode is not null\r
+        );\r
+ */\r
+ ;\r
+\r
+OPEN PAYMENT_CUR;\r
+ <<PAYMENT>>\r
+WHILE VL_PAYMENT_COUNT > 0  LOOP\r
+ -- #10001\r
+ li_payment_id := 0;\r
+ li_provider_id := 0;\r
+ ls_payment_method_cd := '';\r
+ li_client_id := 0;\r
+ ls_TYPE_1099_CD := '';\r
+ LS_FINAL_FISCAL_CATEGORY_CD := '';\r
+ ls_STORE_RECEIPT_ID := '';\r
+ li_final_amount_no := 0 ;\r
+ ld_Payment_dt := NULL ;\r
+ ld_final_service_dt := NULL;\r
+ ls_REPORT_1099_SW := '';\r
+ ls_payment_type_cd := '';\r
+ ls_manual_sw := '';\r
+ li_linked_pymnt_id := 0;          --new\r
+ LS_LINK_PAYMENT_STATUS := '';     --new\r
+ li_payment_detail_id := 0;\r
+\r
+ FETCH PAYMENT_CUR INTO  li_payment_id,\r
+       li_linked_pymnt_id,\r
+       li_provider_id,\r
+       ls_payment_method_cd,\r
+       li_client_id ,\r
+       ls_TYPE_1099_CD,\r
+       ls_FINAL_FISCAL_CATEGORY_CD,\r
+       ls_STORE_RECEIPT_ID,\r
+       li_final_amount_no,\r
+       ld_Payment_dt,\r
+       ld_final_service_dt,\r
+       ls_REPORT_1099_SW,\r
+       ls_payment_type_cd,\r
+       ls_manual_sw,\r
+       li_payment_detail_id;\r
+\r
+ EXIT PAYMENT WHEN NOT FOUND;\r
+\r
+ LI_CLIENT_COUNT := 0; -- #10001\r
+\r
+ li_provider_id := COALESCE(li_provider_id,0);\r
+ -- added 09/08/06\r
+\r
+ ls_provider_nm := '' ;\r
+ ls_Provider_last_nm := '';\r
+ ls_Provider_first_nm := '';\r
+ ls_Provider_middle_nm := '';\r
+ ls_INDICATOR_1099_SW := '';\r
+ ls_ADR_WORK_PHONE_TX := '';\r
+ ls_ADR_HOME_PHONE_TX := '';\r
+ ls_ADR_CELL_PHONE_TX := '';\r
+ ls_prov_tax_type_cd := '';\r
+ li_TAX_ID_NO := 0;\r
+ ls_pay_to_affiliate_cd := '';\r
+\r
+ IF li_provider_id > 0 THEN   -- Provider Information\r
+  VS_CHILD_DISBURSEMENT := 'N';\r
+\r
+  BEGIN\r
+   SELECT  TB_PROVIDER.PROVIDER_NM,\r
+    TB_PROVIDER.Provider_last_nm,\r
+    TB_PROVIDER.Provider_First_nm,\r
+    TB_PROVIDER.Provider_middle_nm\r
+   INTO ls_provider_nm,\r
+    ls_Provider_last_nm,\r
+    ls_Provider_first_nm,\r
+    ls_Provider_middle_nm\r
+   FROM TB_PROVIDER\r
+   WHERE TB_PROVIDER.provider_id  = li_provider_id\r
+    AND TB_PROVIDER.Delete_sw  = 'N' ;\r
+\r
+\r
+   SELECT DISTINCT TB_PROVIDER.INDICATOR_1099_SW,\r
+    TB_PROVIDER.ADR_WORK_PHONE_TX,\r
+    TB_PROVIDER.ADR_HOME_PHONE_TX,\r
+    TB_PROVIDER.ADR_CELL_PHONE_TX,\r
+    coalesce (TB_PROVIDER.prov_tax_type_cd,\r
+       (select TB_PROVIDER.prov_tax_type_cd\r
+        from tb_provider\r
+       where provider_id = (select affiliate_provider_id from tb_provider\r
+        where provider_id = li_provider_id))) as prov_tax_type_cd,\r
+    coalesce (TB_PROVIDER.TAX_ID_NO,\r
+       (select TAX_ID_NO\r
+        from tb_provider\r
+       where provider_id = (select affiliate_provider_id from tb_provider\r
+        where provider_id = li_provider_id)))as TAX_ID_NO,\r
+    pay_to_affiliate_cd\r
+   INTO ls_INDICATOR_1099_SW,\r
+    ls_ADR_WORK_PHONE_TX,\r
+    ls_ADR_HOME_PHONE_TX,\r
+    ls_ADR_CELL_PHONE_TX,\r
+    ls_prov_tax_type_cd,\r
+    li_TAX_ID_NO,\r
+    ls_pay_to_affiliate_cd\r
+   FROM TB_PROVIDER\r
+   WHERE TB_PROVIDER.provider_id  = li_provider_id\r
+    AND TB_PROVIDER.Delete_sw  = 'N';\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'Error in fetching Provider Information '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+    RETURN;\r
+  END;\r
+\r
+  IF VL_PAYMENT_COUNT > 0 THEN\r
+   li_check := 1;\r
+  END IF;\r
+\r
+  IF ls_prov_tax_type_cd = '2517' THEN\r
+   ls_prov_tax_type_cd := '1';\r
+  ELSIF ls_prov_tax_type_cd = '2518' THEN\r
+   ls_prov_tax_type_cd := '2';\r
+  ELSE\r
+   ls_prov_tax_type_cd := LPAD('',1);\r
+  END IF;\r
+\r
+  IF ls_TYPE_1099_CD = '3155' THEN\r
+   ls_TYPE_1099_CD := '1';\r
+  ELSIF ls_TYPE_1099_CD = '3156' THEN\r
+   ls_TYPE_1099_CD := '6';\r
+  ELSIF ls_TYPE_1099_CD = '3157' THEN\r
+   ls_TYPE_1099_CD := '7';\r
+  ELSE\r
+   ls_TYPE_1099_CD := NULL;\r
+  END IF;\r
+\r
+  ls_tax_id_no := Substring(RTRIM(LTRIM(li_TAX_ID_NO::VARCHAR)),1,9);\r
+  li_length := LENGTH(RTRIM(ls_tax_id_no));\r
+  IF li_length < 9 THEN\r
+   li_length := 9 - li_length ;\r
+   WHILE li_length > 0 LOOP\r
+    ls_tax_id_no := '0' || ls_tax_id_no;\r
+    li_length := li_length - 1;\r
+   END LOOP;\r
+  END IF;\r
+\r
+  ls_STORE_RECEIPT_ID := RTRIM(LTRIM((ls_STORE_RECEIPT_ID)));\r
+\r
+  CASE WHEN LENGTH(ls_ADR_WORK_PHONE_TX) = 0 THEN\r
+   ls_phone_tx := COALESCE( ls_ADR_CELL_PHONE_TX, ls_ADR_HOME_PHONE_TX );\r
+  ELSE\r
+   ls_phone_tx := ls_ADR_WORK_PHONE_TX;\r
+  END CASE;\r
+\r
+  ls_provider_last_nm := RTRIM(LTRIM(ls_provider_last_nm));\r
+  ls_provider_first_nm := RTRIM(LTRIM(ls_provider_first_nm));\r
+  ls_provider_middle_nm := RTRIM(LTRIM(ls_provider_middle_nm));\r
+\r
+  CASE WHEN LENGTH(ls_provider_last_nm) = 0 THEN\r
+   ls_provider_last_nm := '';\r
+  ELSE\r
+   ls_provider_last_nm := COALESCE(ls_provider_last_nm,'');\r
+  END CASE;\r
+\r
+  IF ls_provider_last_nm <> '' THEN\r
+   ls_provider_last_nm := ls_provider_last_nm;\r
+  END IF;\r
+\r
+  CASE WHEN length(ls_provider_first_nm) = 0 THEN\r
+   ls_provider_first_nm := '';\r
+  ELSE\r
+   ls_provider_first_nm := COALESCE(ls_provider_first_nm,'');\r
+  END CASE;\r
+\r
+  IF ls_provider_first_nm <> '' THEN\r
+   ls_provider_first_nm := ls_provider_first_nm;\r
+  END IF;\r
+\r
+  CASE WHEN length(ls_provider_middle_nm) = 0 THEN\r
+   ls_provider_middle_nm := '';\r
+  ELSE\r
+   ls_provider_middle_nm := COALESCE(ls_provider_middle_nm,'');\r
+  END CASE;\r
+\r
+  IF ls_provider_middle_nm <> '' THEN\r
+   ls_provider_middle_nm := ',' || ' ' || ls_provider_middle_nm;\r
+  END IF;\r
+\r
+  CASE WHEN length(ls_provider_nm) = 0 THEN\r
+   ls_provider_nm := '';\r
+  ELSE\r
+   ls_provider_nm := COALESCE(ls_provider_nm,'');\r
+  END CASE;\r
+\r
+  ls_person_nm :=  COALESCE(RTRIM(LTRIM(ls_provider_last_nm)),'') || ',' || ' ' ||\r
+  COALESCE(RTRIM(LTRIM(ls_provider_first_nm)),'') ;\r
+\r
+  -- Current Code\r
+  /*\r
+  IF ls_person_nm = ','  THEN\r
+  ls_person_nm := ' ';\r
+  END IF;\r
+  */\r
+\r
+  -- New Code\r
+  IF ls_person_nm = ', '  THEN\r
+   ls_person_nm := '';\r
+  END IF;\r
+\r
+  ls_org_nm := COALESCE(RTRIM(LTRIM(ls_provider_nm)),'');\r
+  VS_PAYEE_SHORT_NM :=  COALESCE(RTRIM(LTRIM(ls_provider_first_nm)),'') || ' ' ||\r
+     COALESCE(RTRIM(LTRIM(ls_provider_last_nm)),'');\r
+\r
+  CASE WHEN length(ls_person_nm) = 0 THEN\r
+   ls_person_nm := '';\r
+  ELSE\r
+   ls_person_nm := COALESCE(ls_person_nm,'');\r
+  END CASE;\r
+\r
+  CASE WHEN length(ls_org_nm) = 0 THEN\r
+   ls_org_nm := '';\r
+  ELSE\r
+   ls_org_nm := COALESCE(ls_org_nm,'');\r
+  END CASE;\r
+  \r
+  -- CDM-3556\r
+  IF ls_org_nm <> '' THEN\r
+   ls_vendor_nm := ls_org_nm;\r
+   VS_PAYEE_SHORT_NM := ls_org_nm;\r
+  ELSIF ls_person_nm <> '' THEN\r
+   ls_vendor_nm := ls_person_nm;\r
+  END IF;\r
+  -- Old code\r
+  /*\r
+  IF ls_person_nm <> '' THEN\r
+   ls_vendor_nm := ls_person_nm;\r
+  ELSIF ls_org_nm <> '' THEN\r
+   ls_vendor_nm := ls_org_nm;\r
+   VS_PAYEE_SHORT_NM := ls_org_nm;\r
+  END IF;\r
+  */\r
+  \r
+  li_vendor_ln_1 := Length(ls_vendor_nm);\r
+  li_vendor_ln_2 := Length(ls_vendor_nm);\r
+\r
+  IF li_vendor_ln_1 > 40 OR li_vendor_ln_1 = 40 THEN  -- #13427\r
+   li_vendor_ln_1 := 40 ;\r
+  END IF;\r
+\r
+  IF li_vendor_ln_2 > 40 OR li_vendor_ln_2 = 40 THEN  -- #13427\r
+   li_vendor_ln_2 := 40;\r
+  END IF;\r
+\r
+  ls_payment_id := RTRIM(LTRIM((li_payment_id::VARCHAR)));\r
+\r
+  BEGIN\r
+   CASE WHEN ls_pay_to_affiliate_cd IN ('3366') THEN    --  For LDSS\r
+    ls_alternate_adr_type_cd := '3357';\r
+    li_temp_provider_id := li_provider_id;\r
+   WHEN ls_pay_to_affiliate_cd IN ('3367') THEN  --  For Private Department\r
+    ls_alternate_adr_type_cd := '3356';\r
+    li_temp_provider_id := li_provider_id;\r
+   WHEN ls_pay_to_affiliate_cd IN ('3368') THEN\r
+    li_affiliate_provider_id := 0;  --#10001\r
+\r
+\r
+   SELECT DISTINCT TB_PROVIDER.Affiliate_Provider_ID\r
+    INTO li_affiliate_provider_id\r
+   FROM TB_PROVIDER\r
+   WHERE TB_PROVIDER.provider_id = li_provider_id\r
+    AND TB_PROVIDER.Delete_sw  = 'N';\r
+\r
+\r
+   IF li_affiliate_provider_id > 0 THEN\r
+    ls_pay_to_affiliate_cd := ''; -- #10001\r
+\r
+    SELECT pay_to_affiliate_cd\r
+     INTO ls_pay_to_affiliate_cd\r
+    FROM TB_PROVIDER\r
+    WHERE Affiliate_Provider_ID = li_affiliate_provider_id\r
+     AND provider_id = li_provider_id\r
+     AND delete_sw = 'N';\r
+\r
+\r
+    CASE WHEN ls_pay_to_affiliate_cd in ('3366') THEN    --  For LDSS\r
+     ls_alternate_adr_type_cd := '3357';\r
+     li_temp_provider_id := li_provider_id;\r
+    WHEN ls_pay_to_affiliate_cd IN ('3367') THEN  --  For Private Department\r
+     ls_alternate_adr_type_cd := '3356'     ;\r
+     li_temp_provider_id := li_provider_id;\r
+    WHEN ls_pay_to_affiliate_cd IN ('3368') THEN\r
+     ls_pay_to_affiliate_cd := '' ; -- #10001\r
+\r
+     SELECT pay_to_affiliate_cd\r
+      INTO ls_pay_to_affiliate_cd\r
+     FROM TB_PROVIDER\r
+     WHERE provider_id = li_affiliate_provider_id\r
+      AND delete_sw  = 'N';\r
+\r
+      --VL_OUTPUT_SQLCODE := 0 ; -- 09/08/06\r
+\r
+      CASE WHEN ls_pay_to_affiliate_cd in ('3366') THEN    --  For LDSS\r
+       ls_alternate_adr_type_cd := '3357';\r
+       li_temp_provider_id := li_affiliate_provider_id;\r
+      WHEN ls_pay_to_affiliate_cd IN ('3367') THEN  --  For Private Department\r
+       ls_alternate_adr_type_cd := '3356'     ;\r
+       li_temp_provider_id := li_affiliate_provider_id;\r
+      ELSE\r
+       ls_alternate_adr_type_cd := lpad('',4);\r
+      END CASE;\r
+     ELSE\r
+      ls_alternate_adr_type_cd := lpad('',4);\r
+     END CASE;\r
+    END IF;  --  If affiliate provider is zero\r
+   ELSE\r
+    ls_alternate_adr_type_cd := lpad('',4);\r
+   END CASE;\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'Error in fetching  Affiliate Provider for Private Department '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+\r
+  END;\r
+\r
+  -- ADDED EXCEP MESSAGE FOR ADDRESS TYPE  07/14/06\r
+  IF ls_alternate_adr_type_cd = '3356' Then\r
+   VS_EXC_ADR_TYPE := 'Provider Payment address ' ;\r
+  ELSIF ls_alternate_adr_type_cd = '3357' Then\r
+   VS_EXC_ADR_TYPE := 'Provider Location address ' ;\r
+  ELSE\r
+   VS_EXC_ADR_TYPE := 'Provider address ' ;\r
+  END IF;\r
+\r
+  -- B-28317\r
+  ll_address_id := NULL; -- for AddressCode\r
+  -- 09/19/06 #10001\r
+  ls_Adr_type_cd := '';\r
+  ls_Adr_format_cd := '';\r
+  ls_Adr_street_no := '';\r
+  li_Adr_Box_no := 0 ;\r
+  ls_Adr_pre_dir_cd := '';\r
+  ls_Adr_street_nm := '';\r
+  ls_Adr_street_suffix_cd := '';\r
+  ls_Adr_post_dir_cd := '';\r
+  ls_Adr_unit_type_cd := '';\r
+  ls_Adr_unit_no_tx := '';\r
+  ls_Adr_city_nm := '';\r
+  ls_Adr_state_cd := '';\r
+  ls_Adr_foreign_tx := '';\r
+  ls_Adr_foreign_state_tx := '';\r
+  ls_Adr_country_tx := '';\r
+  li_Adr_zip5_no := 0;\r
+  li_Adr_zip4_no := 0;  -- #10001\r
+  BEGIN\r
+   SELECT DISTINCT ADDRESS_ID,\r
+    Adr_type_cd,\r
+    Adr_format_cd,\r
+    Adr_street_tx,\r
+    Adr_Box_no,\r
+    Adr_pre_dir_cd,\r
+    Adr_street_nm,\r
+    Adr_street_suffix_cd,\r
+    Adr_post_dir_cd,\r
+    Adr_unit_type_cd,\r
+    Adr_unit_no_tx,\r
+    Adr_city_nm,\r
+    Adr_state_cd,\r
+    Adr_foreign_tx,\r
+    Adr_foreign_state_tx,\r
+    Adr_country_tx,\r
+    Adr_zip5_no,\r
+    Adr_zip4_no\r
+   INTO ll_address_id,\r
+    ls_Adr_type_cd,\r
+    ls_Adr_format_cd,\r
+    ls_Adr_street_no,\r
+    li_Adr_Box_no,\r
+    ls_Adr_pre_dir_cd,\r
+    ls_Adr_street_nm,\r
+    ls_Adr_street_suffix_cd,\r
+    ls_Adr_post_dir_cd,\r
+    ls_Adr_unit_type_cd,\r
+    ls_Adr_unit_no_tx,\r
+    ls_Adr_city_nm,\r
+    ls_Adr_state_cd,\r
+    ls_Adr_foreign_tx,\r
+    ls_Adr_foreign_state_tx,\r
+    ls_Adr_country_tx,\r
+    li_Adr_zip5_no,\r
+    li_Adr_zip4_no\r
+   FROM TB_PROVIDER_ADDRESSES,TB_PROVIDER\r
+   WHERE TB_PROVIDER_ADDRESSES.parent_key_id = li_temp_provider_id::character varying\r
+    AND TB_PROVIDER_ADDRESSES.Delete_sw = 'N'\r
+    AND TB_PROVIDER_ADDRESSES.ADR_DEFAULT_SW = 'Y'\r
+    AND Adr_type_cd = ls_alternate_adr_type_cd  ;\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'Error in fetching Provider Address '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO,\r
+     ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd,\r
+     client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE,\r
+     VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+  END;\r
+\r
+\r
+  CASE WHEN LENGTH(ls_Adr_street_no) = 0 THEN\r
+   ls_Adr_street_no := '';\r
+  ELSE\r
+   ls_Adr_street_no := COALESCE(ls_Adr_street_no,'');\r
+  END CASE;\r
+\r
+  IF li_Adr_Box_no > 0 THEN\r
+   ls_Adr_Box_no := 'P.O. Box ' || RTRIM(LTRIM((li_Adr_Box_no::VARCHAR))) ;\r
+  ELSE\r
+   ls_Adr_Box_no := '      '; --lpad('',6);\r
+  END IF;\r
+\r
+  --  Based on the Address Format Get the values\r
+  CASE WHEN ls_Adr_format_cd = 'S' THEN\r
+   ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_street_no)),'')    || ' '||\r
+   UPPER(COALESCE(F_PDESC(ls_Adr_pre_dir_cd,69),''))        || ' '||\r
+   UPPER(RTRIM(LTRIM(ls_Adr_street_nm)))   || ' '||\r
+   UPPER(COALESCE(F_PDESC(ls_Adr_street_suffix_cd,212),'')) || ' '||\r
+   UPPER(COALESCE(F_PDESC(ls_Adr_post_dir_cd,69) ,''));\r
+   ls_address_1 := COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40));\r
+  WHEN ls_Adr_format_cd = 'R' THEN\r
+   ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_street_no)),'')    || ' '||\r
+   COALESCE(RTRIM(LTRIM(ls_Adr_Box_no)),'') ;\r
+   ls_address_1 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40))) ;\r
+  WHEN ls_Adr_format_cd = 'P' THEN\r
+   ls_address_1 := 'P.O. Box ' || RTRIM(LTRIM((li_Adr_Box_no::VARCHAR)));\r
+   ls_address_1 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40)));\r
+  WHEN ls_Adr_format_cd = 'F' THEN\r
+   ls_address_1 := RTRIM(LTRIM(ls_Adr_foreign_tx));\r
+   ls_address_1 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40))) ;\r
+   ls_Adr_state_cd := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_Adr_foreign_tx)),1,2),LPAD('',2))) ;\r
+   li_Adr_zip5_no := -1 ;\r
+  ELSE\r
+   ls_address_1 := LPAD('',40);\r
+  END CASE;\r
+\r
+  --Get For the Address Line 2\r
+  ls_address_2 := UPPER(COALESCE(F_PDESC(ls_Adr_unit_type_cd,250), '') || ' '|| ls_Adr_unit_no_tx);\r
+  ls_address_2 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_2)),1,40),LPAD('',40)));\r
+  li_length := 0;\r
+\r
+  IF li_Adr_zip5_no > 0 THEN\r
+   ls_Adr_zip5_no := RTRIM(LTRIM(li_Adr_zip5_no::VARCHAR));\r
+   -- 19071\r
+   li_length := LENGTH (ls_Adr_zip5_no);\r
+   IF li_length < 5 THEN\r
+    li_length := 5 - li_length ;\r
+    WHILE li_length > 0 LOOP\r
+     ls_Adr_zip5_no := '0' || ls_Adr_zip5_no;\r
+     li_length := li_length - 1;\r
+    END LOOP;\r
+   END IF;\r
+   -- 19071\r
+   ls_zip_code := COALESCE(ls_Adr_zip5_no,'00000');\r
+  ELSE\r
+   ls_Adr_zip5_no := '00000';\r
+   ls_zip_code := ls_Adr_zip5_no;\r
+  END IF;\r
+\r
+  li_length := 0;\r
+  IF li_Adr_zip4_no > 0 THEN\r
+   ls_Adr_zip4_no := RTRIM(LTRIM((li_Adr_zip4_no::VARCHAR)));\r
+   -- 19071\r
+   li_length := LENGTH (ls_Adr_zip4_no);\r
+   IF li_length < 4 THEN\r
+    li_length := 4 - li_length ;\r
+    WHILE li_length > 0 LOOP\r
+     ls_Adr_zip4_no :=  '0' || ls_Adr_zip4_no;\r
+     li_length := li_length - 1;\r
+    END LOOP;\r
+   END IF;\r
+   -- 19071\r
+   ls_zip_code := LPAD('',5);\r
+   ls_zip_code := COALESCE(ls_Adr_zip5_no,'00000')   || '-'  ||COALESCE(ls_Adr_zip4_no,'');\r
+  END IF;\r
+\r
+  li_length := 0;\r
+  li_length := LENGTH(ls_zip_code);\r
+  IF li_length < 7 THEN\r
+   ls_zip_code := Substring(ls_zip_code,1,5);\r
+  END IF;\r
+\r
+ ELSE -- if no provider for payment_id then Child Disbrusment Account\r
+  -- ADDED 07/14/06 EXCEP ADDRESS TYPE\r
+  VS_EXC_ADR_TYPE := 'Child Account Disbursement address' ;\r
+\r
+  -- #10001\r
+  ls_provider_nm := '';\r
+  ls_prov_tax_type_cd := '';\r
+  li_TAX_ID_NO := 0;\r
+  VS_CHILD_DISBURSEMENT := 'Y'   ;                -- 02/20/07  - #12174\r
+\r
+  BEGIN\r
+   SELECT DISTINCT TB_CHILD_ACCOUNT_DISBURSEMENT.PAYEE_NM,\r
+    TB_CHILD_ACCOUNT_DISBURSEMENT.tax_type_cd,\r
+    TB_CHILD_ACCOUNT_DISBURSEMENT.TAX_ID_NO\r
+   INTO ls_provider_nm,\r
+    ls_prov_tax_type_cd,\r
+    li_TAX_ID_NO\r
+   FROM TB_CHILD_ACCOUNT_DISBURSEMENT\r
+   WHERE TB_CHILD_ACCOUNT_DISBURSEMENT.PAYMENT_ID = li_payment_id\r
+    AND TB_CHILD_ACCOUNT_DISBURSEMENT.Delete_sw = 'N';\r
+\r
+   IF VL_PAYMENT_COUNT > 0 THEN\r
+    li_check := 1;\r
+   END IF;\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'Error in fetching Child Account Disbursement Information '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+  END;\r
+\r
+  IF ls_prov_tax_type_cd = '2517' THEN\r
+   ls_prov_tax_type_cd := '1';\r
+  ELSIF  ls_prov_tax_type_cd = '2518' THEN\r
+   ls_prov_tax_type_cd := '2';\r
+  ELSE\r
+   ls_prov_tax_type_cd := LPAD('',1);\r
+  END IF;\r
+\r
+  IF ls_TYPE_1099_CD = '3155' THEN\r
+   ls_TYPE_1099_CD := '1';\r
+  ELSIF ls_TYPE_1099_CD = '3156' THEN\r
+   ls_TYPE_1099_CD := '6';\r
+  ELSIF ls_TYPE_1099_CD = '3157' THEN\r
+   ls_TYPE_1099_CD := '7';\r
+  ELSE\r
+   ls_TYPE_1099_CD := NULL;\r
+  END IF;\r
+\r
+  ls_tax_id_no := Substring(RTRIM(LTRIM((li_TAX_ID_NO::VARCHAR))),1,9);\r
+  li_length := LENGTH(RTRIM(ls_tax_id_no));\r
+  IF li_length < 9 THEN\r
+   li_length := 9 - li_length ;\r
+   WHILE li_length > 0 LOOP\r
+    ls_tax_id_no :=  '0' ||   ls_tax_id_no;\r
+    li_length := li_length - 1;\r
+   END LOOP;\r
+  END IF;\r
+\r
+  ls_STORE_RECEIPT_ID := RTRIM(LTRIM(ls_STORE_RECEIPT_ID));\r
+  ls_org_nm := COALESCE(RTRIM(LTRIM(ls_provider_nm)),'');\r
+\r
+  CASE WHEN length(ls_org_nm) = 0 THEN\r
+   ls_org_nm := '';\r
+  ELSE\r
+   ls_org_nm := COALESCE(ls_org_nm,'');\r
+  END CASE;\r
+  --#6095\r
+  IF ls_org_nm <> '' THEN\r
+   ls_vendor_nm := ls_org_nm;\r
+   VS_PAYEE_SHORT_NM  := ls_org_nm;\r
+  END IF;\r
+\r
+  li_vendor_ln_1 := Length(ls_vendor_nm);\r
+  li_vendor_ln_2 := Length(ls_vendor_nm);\r
+\r
+  IF li_vendor_ln_1 > 40 OR li_vendor_ln_1 = 40 THEN  -- #13427\r
+   li_vendor_ln_1 := 40 ;\r
+  END IF;\r
+\r
+  IF li_vendor_ln_2 > 40 OR li_vendor_ln_2 = 40  THEN  -- #13427\r
+   li_vendor_ln_2 := 40;\r
+  END IF;\r
+\r
+  ls_payment_id := RTRIM(LTRIM((li_payment_id::VARCHAR)));\r
+  -- B-28317\r
+  ll_address_id := -1; -- for AddressCode\r
+  -- 09/19/06 #10001\r
+  ls_Adr_type_cd := '';\r
+  ls_Adr_format_cd := '';\r
+  ls_Adr_street_no := '';\r
+  li_Adr_Box_no := 0 ;\r
+  ls_Adr_pre_dir_cd := '';\r
+  ls_Adr_street_nm := '';\r
+  ls_Adr_street_suffix_cd := '';\r
+  ls_Adr_post_dir_cd := '';\r
+  ls_Adr_unit_type_cd := '';\r
+  ls_Adr_unit_no_tx := '';\r
+  ls_Adr_city_nm := '';\r
+  ls_Adr_state_cd := '';\r
+  ls_Adr_foreign_tx := '';\r
+  ls_Adr_foreign_state_tx := '';\r
+  ls_Adr_country_tx := '';\r
+  li_Adr_zip5_no := 0 ;\r
+  li_Adr_zip4_no := 0;  -- #10001\r
+  BEGIN\r
+   SELECT  Adr_type_cd,\r
+    Adr_format_cd,\r
+    Adr_street_tx,\r
+    Adr_Box_no,\r
+    Adr_pre_dir_cd,\r
+    Adr_street_nm,\r
+    Adr_street_suffix_cd,\r
+    Adr_post_dir_cd,\r
+    Adr_unit_type_cd,\r
+    Adr_unit_no_tx,\r
+    Adr_city_nm,\r
+    Adr_state_cd,\r
+    Adr_foreign_tx,\r
+    Adr_foreign_state_tx,\r
+    Adr_country_tx,\r
+    Adr_zip5_no,\r
+    Adr_zip4_no,\r
+    adr_street_no\r
+   INTO    ls_Adr_type_cd,\r
+    ls_Adr_format_cd,\r
+    ls_Adr_street_no,\r
+    li_Adr_Box_no,\r
+    ls_Adr_pre_dir_cd,\r
+    ls_Adr_street_nm,\r
+    ls_Adr_street_suffix_cd,\r
+    ls_Adr_post_dir_cd,\r
+    ls_Adr_unit_type_cd,\r
+    ls_Adr_unit_no_tx,\r
+    ls_Adr_city_nm,\r
+    ls_Adr_state_cd,\r
+    ls_Adr_foreign_tx,\r
+    ls_Adr_foreign_state_tx,\r
+    ls_Adr_country_tx,\r
+    li_Adr_zip5_no,\r
+    li_Adr_zip4_no,\r
+    ls_adr_street_no1\r
+   FROM TB_CHILD_ACCOUNT_DISBURSEMENT\r
+   WHERE TB_CHILD_ACCOUNT_DISBURSEMENT.payment_id  =  li_payment_id\r
+    AND TB_CHILD_ACCOUNT_DISBURSEMENT.Delete_sw = 'N';\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'Error in fetching Child Account Disbursement Address '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+  END;\r
+\r
+\r
+  CASE WHEN length(ls_Adr_street_no) = 0 THEN\r
+   ls_Adr_street_no := '';\r
+  ELSE\r
+   ls_Adr_street_no := COALESCE(ls_Adr_street_no,'');\r
+  END CASE;\r
+\r
+  IF li_Adr_Box_no > 0 THEN\r
+   ls_Adr_Box_no := 'P.O. Box ' || RTRIM(LTRIM(li_Adr_Box_no::VARCHAR)) ;\r
+  ELSE\r
+   ls_Adr_Box_no := LPAD('',6);\r
+  END IF;\r
+\r
+  -- Modified on 02/21/2020\r
+  -- CJAMS child account disbursement screen is not have Address format Code logic - START\r
+  -- Get the Address Line 1\r
+  ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_street_nm)),'');\r
+  ls_address_1 := COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40));\r
+\r
+  -- Get the Address Line 2\r
+  ls_address_2 := UPPER(COALESCE(ls_adr_street_no1, ''));\r
+  ls_address_2 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_2)),1,40),LPAD('',40)));\r
+\r
+  /*\r
+  --  Based on the Address Format Get the values\r
+  CASE WHEN ls_Adr_format_cd = 'S' THEN\r
+   ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_street_no)),'')    || ' '||\r
+   UPPER(COALESCE(F_PDESC(ls_Adr_pre_dir_cd,69),''))        || ' '||\r
+   UPPER(RTRIM(LTRIM(ls_Adr_street_nm)))   || ' '||\r
+   UPPER(COALESCE(F_PDESC(ls_Adr_street_suffix_cd,212),'')) || ' '||\r
+   UPPER(COALESCE(F_PDESC(ls_Adr_post_dir_cd,69) ,''));\r
+   ls_address_1 := COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40));\r
+  WHEN ls_Adr_format_cd = 'R' THEN\r
+   ls_address_1 := COALESCE(RTRIM(LTRIM(ls_Adr_street_no)),'')    || ' '||\r
+   COALESCE(RTRIM(LTRIM(ls_Adr_Box_no)),'') ;\r
+   ls_address_1 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40))) ;\r
+  WHEN ls_Adr_format_cd = 'P' THEN\r
+   ls_address_1 := 'P.O. Box ' ||  RTRIM(LTRIM((li_Adr_Box_no::VARCHAR)));\r
+   ls_address_1 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40)));\r
+  WHEN ls_Adr_format_cd = 'F' THEN\r
+   ls_address_1 := RTRIM(LTRIM(ls_Adr_foreign_tx));\r
+   ls_address_1 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_1)),1,40),LPAD('',40))) ;\r
+   ls_Adr_state_cd := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_Adr_foreign_tx)),1,2),LPAD('',2))) ;\r
+  ELSE\r
+   ls_address_1 := LPAD('',40);\r
+  END CASE;\r
+\r
+  --Get For the Address Line 2\r
+  ls_address_2 := UPPER(COALESCE(F_PDESC(ls_Adr_unit_type_cd,250), '') || ' '|| ls_Adr_unit_no_tx);\r
+  ls_address_2 := UPPER(COALESCE(Substring(RTRIM(LTRIM(ls_address_2)),1,40),LPAD('',40)));\r
+  */\r
+  -- CJAMS child account disbursement screen is not have Address format Code logic - END\r
+\r
+  li_length := 0;           --19071\r
+\r
+  IF li_Adr_zip5_no > 0 THEN\r
+   ls_Adr_zip5_no := RTRIM(LTRIM((li_Adr_zip5_no::VARCHAR)));\r
+   -- 19071\r
+   li_length := LENGTH (ls_Adr_zip5_no);\r
+   IF li_length < 5 THEN\r
+    li_length := 5 - li_length ;\r
+    WHILE li_length > 0 LOOP\r
+     ls_Adr_zip5_no := '0' || ls_Adr_zip5_no;\r
+     li_length := li_length - 1;\r
+    END LOOP;\r
+   END IF;\r
+   -- 19071\r
+             ls_zip_code := COALESCE(ls_Adr_zip5_no,'00000');\r
+  ELSE\r
+   ls_Adr_zip5_no := '00000';\r
+   ls_zip_code := ls_Adr_zip5_no;\r
+  END IF;\r
+  li_length := 0;\r
+\r
+  IF li_Adr_zip4_no > 0 THEN\r
+   ls_Adr_zip4_no := RTRIM(LTRIM((li_Adr_zip4_no::VARCHAR)));\r
+   -- 19071\r
+   li_length := LENGTH (ls_Adr_zip4_no);\r
+   IF li_length < 4 THEN\r
+    li_length := 4 - li_length ;\r
+    WHILE li_length > 0 LOOP\r
+     ls_Adr_zip4_no :=  '0' || ls_Adr_zip4_no;\r
+     li_length := li_length - 1;\r
+    END LOOP;\r
+   END IF;\r
+   -- 19071\r
+   ls_zip_code := LPAD('',5);\r
+   ls_zip_code := COALESCE(ls_Adr_zip5_no,'00000')   || '-'  || COALESCE(ls_Adr_zip4_no,'');\r
+  END IF;\r
+  li_length := 0;\r
+\r
+  li_length := LENGTH(ls_zip_code);\r
+  IF li_length < 7 THEN\r
+   ls_zip_code := Substring(ls_zip_code,1,5);\r
+  END IF;\r
+ END IF; -- Provider Information\r
+\r
+ --Payment Type\r
+ LS_COUNTY_NAME := '' ;\r
+ ls_county_cd := ''; -- 07/24/06\r
+ IF ls_payment_type_cd = '3294' AND ls_manual_sw = 'N'  THEN\r
+  ls_payment_method_cd := '1';\r
+  ls_REPORT_1099_SW := 'N';\r
+  ls_TYPE_1099_CD := NULL;\r
+ END IF;\r
+\r
+ SELECT DISTINCT DTL.COUNTY_CD\r
+  INTO ls_county\r
+ FROM TB_PAYMENT_DETAIL as DTL\r
+ WHERE DTL.PAYMENT_ID = li_payment_id  -- added 09/08/06\r
+  AND DTL.Delete_sw = 'N'\r
+  AND (DTL.COUNTY_CD IS NOT NULL AND LENGTH(DTL.COUNTY_CD) > 0);\r
+\r
+\r
+\r
+ CASE WHEN ls_county ='1427' THEN  ls_county_cd := '01';   LS_COUNTY_NAME := 'Allegany';    -- 07/24/06\r
+ WHEN ls_county ='1428'  THEN  ls_county_cd := '02';   LS_COUNTY_NAME := 'Anne Arundel';\r
+ WHEN ls_county ='1430'  THEN  ls_county_cd := '03';   LS_COUNTY_NAME := 'Baltimore County';\r
+ WHEN ls_county ='1431'  THEN  ls_county_cd := '04';   LS_COUNTY_NAME := 'Calvert';\r
+ WHEN ls_county ='1432'  THEN  ls_county_cd := '05';   LS_COUNTY_NAME := 'Caroline';\r
+ WHEN ls_county ='1433'  THEN  ls_county_cd := '06';   LS_COUNTY_NAME := 'Carroll';\r
+ WHEN ls_county ='1434'  THEN  ls_county_cd := '07';   LS_COUNTY_NAME := 'Cecil';\r
+ WHEN ls_county ='1435'  THEN  ls_county_cd := '08';   LS_COUNTY_NAME := 'Charles';\r
+ WHEN ls_county ='1436'  THEN  ls_county_cd := '09';   LS_COUNTY_NAME := 'Dorchester';\r
+ WHEN ls_county ='1437'  THEN  ls_county_cd := '10';   LS_COUNTY_NAME := 'Frederick';\r
+ WHEN ls_county ='1438'  THEN  ls_county_cd := '11';   LS_COUNTY_NAME := 'Garrett';\r
+ WHEN ls_county ='1439'  THEN  ls_county_cd := '12';   LS_COUNTY_NAME := 'Harford';\r
+ WHEN ls_county ='1440'  THEN  ls_county_cd := '13';   LS_COUNTY_NAME := 'Howard';\r
+ WHEN ls_county ='1441'  THEN  ls_county_cd := '14';   LS_COUNTY_NAME := 'Kent';\r
+ WHEN ls_county ='1442'  THEN  ls_county_cd := '15';   LS_COUNTY_NAME := 'Montgomery';\r
+ WHEN ls_county ='1443'  THEN  ls_county_cd := '16';   LS_COUNTY_NAME := 'Prince George';\r
+ WHEN ls_county ='1444'  THEN  ls_county_cd := '17';   LS_COUNTY_NAME := 'Queen Anne';\r
+ WHEN ls_county ='1446'  THEN  ls_county_cd := '18';   LS_COUNTY_NAME := 'St. Marys';\r
+ WHEN ls_county ='1445'  THEN  ls_county_cd := '19';   LS_COUNTY_NAME := 'Somerset';\r
+ WHEN ls_county ='1447'  THEN  ls_county_cd := '20';   LS_COUNTY_NAME := 'Talbot';\r
+ WHEN ls_county ='1448'  THEN  ls_county_cd := '21';   LS_COUNTY_NAME := 'Washington';\r
+ WHEN ls_county ='1449'  THEN  ls_county_cd := '22';   LS_COUNTY_NAME := 'Wicomico';\r
+ WHEN ls_county ='1450'  THEN  ls_county_cd := '23';   LS_COUNTY_NAME := 'Worcester';\r
+ WHEN ls_county ='1429'  THEN  ls_county_cd := '30';   LS_COUNTY_NAME := 'Baltimore City';\r
+ ELSE\r
+ ls_county_cd  :='99'  ;\r
+ END CASE   ;\r
+ -- # 10001\r
+ ls_client_first_nm := '';\r
+ ls_client_last_nm := '';\r
+ SELECT  FIRSTNAME,\r
+  LASTNAME\r
+ INTO ls_client_first_nm,\r
+  ls_client_last_nm\r
+ FROM person\r
+ WHERE cjamspid = li_client_id AND ACTIVEFLAG = 1;\r
+ --Raise Notice '1026  %',  li_client_id;\r
+ --Raise Notice '1027  %',  ls_client_first_nm;\r
+ --Raise Notice '1028  %',  ls_client_last_nm;\r
+ ls_Client_nm := COALESCE(RTRIM(LTRIM(ls_client_last_nm)),'') || ',' || ' '||\r
+    COALESCE(RTRIM(LTRIM(ls_client_first_nm)),'');\r
+\r
+ IF ls_Client_nm = ','  THEN\r
+  ls_Client_nm  := ' ';\r
+ END IF; -- 07/25/06\r
+\r
+ CASE WHEN length(ls_Client_nm) = 0 THEN\r
+  ls_Client_nm := '';\r
+ ELSE\r
+  ls_Client_nm := COALESCE(ls_Client_nm,'');\r
+ END CASE;\r
+\r
+ li_Client_nm :=  Length(ls_Client_nm);\r
+ IF li_Client_nm > 40 OR li_Client_nm = 40 THEN\r
+  li_Client_nm := 40 ;\r
+ END IF;\r
+\r
+ li_address_1 := Length(RTRIM(LTRIM(ls_address_1)));\r
+ li_address_2 := Length(RTRIM(LTRIM(ls_address_2)));\r
+ li_city := Length(RTRIM(LTRIM(ls_Adr_city_nm)));\r
+\r
+ IF li_address_1 > 40 OR li_address_1 = 40 THEN\r
+  li_address_1 := 40 ;\r
+ END IF;\r
+\r
+ IF li_address_2 > 40 OR li_address_2 = 40 THEN\r
+  li_address_2 := 40;\r
+ END IF;\r
+\r
+ IF li_city > 30 OR li_city = 30 THEN\r
+  li_city := 30 ;\r
+ END IF;\r
+\r
+ CASE WHEN length(ls_REPORT_1099_SW) = 0 THEN\r
+  ls_REPORT_1099_SW := 'N';\r
+ ELSE\r
+  ls_REPORT_1099_SW := COALESCE(ls_REPORT_1099_SW,'N');\r
+ END CASE;\r
+\r
+ ls_payee_nbr := COALESCE(Substring(RTRIM(LTRIM((li_PROVIDER_ID::VARCHAR))),1,10), '0');\r
+ li_payee_nbr := Length(RTRIM(LTRIM(ls_payee_nbr)));\r
+\r
+ IF li_payee_nbr > 10 OR li_payee_nbr = 10 THEN\r
+  li_payee_nbr := 10 ;\r
+ END IF;\r
+\r
+ --#6025\r
+ CASE ls_payment_type_cd WHEN '3294' THEN\r
+  IF ls_manual_sw = 'Y' THEN\r
+   VS_PAYMENT_TYPE_CD := 'MNAD';\r
+  ELSIF ls_manual_sw IS NULL THEN\r
+   VS_PAYMENT_TYPE_CD := 'SYAD';\r
+  ELSIF ls_manual_sw = 'N' THEN\r
+   VS_PAYMENT_TYPE_CD := 'SYAD';\r
+  END IF;\r
+ WHEN '4' THEN\r
+  VS_PAYMENT_TYPE_CD := 'ANCL';\r
+ ELSE\r
+  VS_PAYMENT_TYPE_CD := 'CHAC';\r
+ END CASE;\r
+\r
+ ---- // #18816 - New changes for Withhold & Release Payments\r
+ IF VS_PAYMENT_TYPE_CD = 'SYAD' THEN\r
+  IF li_linked_pymnt_id > 0 THEN\r
+   SELECT PAYMENT_STATUS_CD INTO LS_LINK_PAYMENT_STATUS\r
+    FROM TB_PAYMENT_STATUS\r
+   WHERE PAYMENT_ID = li_linked_pymnt_id AND DELETE_SW = 'N' ;\r
+\r
+   IF LS_LINK_PAYMENT_STATUS = '1639' THEN\r
+    VS_PAYMENT_TYPE_CD := 'RELS' ;\r
+   ELSE\r
+    VS_PAYMENT_TYPE_CD := 'SYAD';\r
+   END IF;\r
+  END IF;\r
+ END IF;\r
+ ------///////\r
+\r
+ -- B-28317 - Fields for new AFS System - Start\r
+ -- 1099Amount & 1099Code\r
+ ld_amount_1099 := NULL;\r
+ ls_code_1099 := NULL;\r
+\r
+ IF ls_REPORT_1099_SW = 'Y' THEN\r
+  ld_amount_1099 := li_final_amount_no;\r
+\r
+  IF ls_TYPE_1099_CD = '1' THEN -- 1 - Rental (Code '3155')\r
+   ls_code_1099 := 'MISC-01';\r
+  ELSIF ls_TYPE_1099_CD = '6' THEN -- 6 - Med Exp (Code '3156')\r
+   ls_code_1099 := 'MISC-06';\r
+  ELSIF ls_TYPE_1099_CD = '7' THEN -- 7 - Misc. (Code '3157')\r
+   ls_code_1099 := 'MISC-07';\r
+  END IF;\r
+\r
+ END IF;\r
+ -- AccountType\r
+ ls_account_type := 'Vendor';\r
+ -- Approved\r
+ ls_approved := 'Yes';\r
+ -- ApprovedBy\r
+ ls_approved_by := '200';    -- 10112019 Change from 100 to 200, 100 was for Chessie\r
+ -- Currency\r
+ ls_currency := 'USD';\r
+ -- Invoice\r
+ ls_invoice := NULL;\r
+ ls_invoice := RTRIM(LTRIM((li_payment_id::VARCHAR)));\r
+ -- InvoiceDescription\r
+ ls_invoice_desc := NULL;\r
+ -- JournalDescription -- (see the below code after cursor statement)\r
+ ls_journal_desc := NULL;\r
+ -- PayorCompany\r
+ ls_payor_company := NULL;\r
+ ls_payor_company := 'N' || RTRIM(LTRIM(ls_county_cd));\r
+ -- OffsetAccount\r
+ ls_offset_account := NULL;\r
+ ls_offset_account := RTRIM(LTRIM(ls_FINAL_FISCAL_CATEGORY_CD)) ;\r
+ -- OffsetAccountType\r
+ ls_offset_account_type := 'Ledger';\r
+ -- PostingProfile\r
+ ls_posting_profile := 'APSTD';\r
+ -- TermsOfPayment\r
+ ls_terms_of_payment := 'N00';\r
+ -- VendorAccount\r
+ ls_vendoraccount := NULL;\r
+ --04/07/2019\r
+ if li_provider_id <=0  then\r
+\r
+  IF EXISTS( SELECT 1 FROM TB_AFS_CHILD_ACCOUNT_MAPID TAC  WHERE TAC.CJAMSPID = LI_CLIENT_ID ) THEN\r
+   SELECT TAC.CHILDACCOUNTID INTO LS_CHILDACC_ID FROM TB_AFS_CHILD_ACCOUNT_MAPID TAC\r
+   WHERE TAC.CJAMSPID = LI_CLIENT_ID ;\r
+  ELSE\r
+   INSERT INTO TB_AFS_CHILD_ACCOUNT_MAPID(CJAMSPID,\r
+    CHILDACCOUNTID,\r
+    CREATE_TS,\r
+    CREATE_USER_ID)\r
+   VALUES (\r
+    LI_CLIENT_ID,\r
+    NEXTVAL('SQ_AFS_CHILD_ACCOUNT'),\r
+    NOW(),\r
+    VS_USER_ID\r
+    );\r
+\r
+   SELECT TAC.CHILDACCOUNTID INTO LS_CHILDACC_ID FROM TB_AFS_CHILD_ACCOUNT_MAPID TAC\r
+   WHERE TAC.CJAMSPID = LI_CLIENT_ID ;\r
+  END IF;\r
+\r
+ END IF;\r
+\r
+\r
+ IF li_provider_id > 0 THEN\r
+  ls_vendoraccount := 'CH' || RTRIM(LTRIM((li_provider_id::VARCHAR)));\r
+ ELSE\r
+  --ls_vendoraccount := 'CH' || RTRIM(LTRIM((li_client_id::VARCHAR))); 04/07/2019\r
+  ls_vendoraccount := 'CH' || RTRIM(LTRIM((ls_childacc_id::VARCHAR)));\r
+ END IF;\r
+ -- AddressCode\r
+ ls_address_id_tx := NULL;\r
+ IF li_provider_id > 0 THEN\r
+  ls_address_id_tx := RTRIM(LTRIM(ll_address_id::VARCHAR));\r
+ ELSE\r
+  ls_address_id_tx := 'CH' || RTRIM(LTRIM((ls_childacc_id::VARCHAR)));  --101119 - Set same as Vendor Account\r
+  --ls_address_id_tx := 'CH' || RTRIM(LTRIM(li_client_id::VARCHAR));    --101119\r
+ END IF;\r
+ -- B-28317 - Fields for new AFS System - END\r
+\r
+ VS_PAYMENT_TYPE_CD := COALESCE(VS_PAYMENT_TYPE_CD,'0000');\r
+ VS_MESSAGE := '';\r
+ VS_EXCEP_MESSAGE := '';\r
+ LS_ERROR_PROVNAME := 'p';\r
+ LS_ERROR_CHILDNAME := 'c';\r
+\r
+ -- Get Interface data          --\r
+ IF li_afs_interface_record_id = 0 THEN\r
+  --SET VS_MESSAGE  =   'AFS-Interface-Record-ID :'     ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := 'AFS-Interface-Record-ID is missing; ' ;\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_county_cd is null OR ls_county_cd = '' OR ls_county_cd = '99' THEN\r
+  --SET VS_MESSAGE  = VS_MESSAGE ||  'County / LDSS code :' ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE ||'County/LDSS code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_payment_method_cd='0' OR ls_payment_method_cd = '' OR ls_payment_method_cd IS NULL THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE || 'Payment Method Code : '   ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Payment Method Code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_payment_id = '0' OR ls_payment_id IS NULL OR ls_payment_id = '' THEN\r
+  --SET  VS_MESSAGE  =  VS_MESSAGE || 'Payment Id : '    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Payment ID is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+ IF VS_CHILD_DISBURSEMENT = 'Y' THEN               -- 02/20/07  - #12174\r
+  ls_payee_nbr := (li_client_id::VARCHAR);     -- #Prj-01179\r
+ ELSE\r
+  IF ls_payee_nbr ='0' OR ls_payee_nbr IS NULL OR ls_payee_nbr='' THEN\r
+   -- SET VS_MESSAGE  = VS_MESSAGE ||  'Payee Number : '  ||  'ISNULL ; ';\r
+   VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Payee Number is missing; ';\r
+   li_check := 0;\r
+  END IF;\r
+ END IF;\r
+\r
+ IF VS_PAYEE_SHORT_NM ='0' OR VS_PAYEE_SHORT_NM IS NULL OR VS_PAYEE_SHORT_NM ='' THEN\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||  'Payee Short Name : '   ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Provider/Payee Name is missing; ';\r
+  li_check := 0;\r
+  LS_ERROR_PROVNAME := '';\r
+ END IF;\r
+\r
+ IF ls_vendor_nm ='0' OR ls_vendor_nm IS NULL OR ls_vendor_nm ='' THEN\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||  'Vendor Name : '   ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Vendor name is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_address_1 ='0' OR ls_address_1 IS NULL OR ls_address_1 ='' THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE || 'Address Line 1 : '    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE ||VS_EXC_ADR_TYPE || 'line 1 is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_Adr_city_nm ='0' OR ls_Adr_city_nm IS NULL OR ls_Adr_city_nm ='' THEN\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||  'City Name : '    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE ||VS_EXC_ADR_TYPE|| 'city name is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_Adr_state_cd ='0' OR ls_Adr_state_cd IS NULL OR ls_Adr_state_cd ='' THEN\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||   'State code :'    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE ||VS_EXC_ADR_TYPE || 'state code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ -- IF ls_zip_code ='00000' OR ls_zip_code IS NULL OR ls_zip_code ='' THEN  -- added ls_zip_code ='00000' #10001\r
+ IF li_Adr_zip5_no = 0 OR li_Adr_zip5_no IS NULL then  -- #10094\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||   'Zip Code :'    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE ||VS_EXC_ADR_TYPE || 'zip code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_prov_tax_type_cd ='0' OR ls_prov_tax_type_cd IS NULL OR ls_prov_tax_type_cd ='' THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE ||  'Prov Tax Type Code : '   ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Prov Tax Type code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_TAX_ID_NO ='0' OR ls_TAX_ID_NO IS NULL OR ls_TAX_ID_NO = '' THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE ||  'Tax ID No. : '   ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Tax ID No is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_FINAL_FISCAL_CATEGORY_CD ='0' OR ls_FINAL_FISCAL_CATEGORY_CD IS NULL OR ls_FINAL_FISCAL_CATEGORY_CD ='' THEN\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||   'Final Fiscal Category Code : '    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Final Fiscal Category code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_REPORT_1099_SW ='0' OR ls_REPORT_1099_SW IS NULL OR ls_REPORT_1099_SW ='' THEN\r
+  -- SET VS_MESSAGE  = VS_MESSAGE ||   'REPORT 1099 SW :'    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'REPORT 1099 SW is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF li_final_amount_no = 0 OR li_final_amount_no IS NULL THEN           -- #15672\r
+  -- SET VS_MESSAGE  =   VS_MESSAGE ||  'Final Amount : '    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Final Amount is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF RTRIM(LTRIM((ld_Payment_dt::varChar))) ='01/01/1900' THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE ||   'Payment Date :'    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Payment Date is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF RTRIM(LTRIM((ld_final_service_dt::VARChar)))= '01/01/1900'  THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE ||   'Final Service Date :'  ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Final Service Date is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ IF ls_Client_nm ='0' OR ls_Client_nm IS NULL OR ls_Client_nm ='' THEN\r
+  -- SET VS_MESSAGE  =  VS_MESSAGE ||   'Client Name :'   ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Client Name is missing; ';\r
+  li_check := 0;\r
+  LS_ERROR_CHILDNAME := '';\r
+ END IF;\r
+\r
+ IF VS_PAYMENT_TYPE_CD ='0' OR VS_PAYMENT_TYPE_CD IS NULL OR VS_PAYMENT_TYPE_CD ='' THEN\r
+  -- SET VS_MESSAGE  =   VS_MESSAGE ||  'Payment Type code :'    ||  'ISNULL ; ';\r
+  VS_EXCEP_MESSAGE := VS_EXCEP_MESSAGE || 'Payment Type code is missing; ';\r
+  li_check := 0;\r
+ END IF;\r
+\r
+ ------------ INSERT INTO ERROR LOG TABLE FOR ALL PREVIOUS MESSAGES\r
+ VL_ERROR_LOGGED := 0;\r
+ --07/24/06\r
+ VS_EXCEP_MESSAGE1 := '';\r
+ IF ls_county_cd <> '99' THEN\r
+  VS_EXCEP_MESSAGE1 := 'County Name: ' || ls_county_name || '; ';\r
+ END IF;\r
+\r
+ IF LS_ERROR_PROVNAME <> '' THEN\r
+  VS_EXCEP_MESSAGE1 := VS_EXCEP_MESSAGE1 ||'Provider/Payee Name: ' || VS_PAYEE_SHORT_NM || '; ';\r
+ END IF;\r
+\r
+ IF LS_ERROR_CHILDNAME <> '' THEN\r
+  VS_EXCEP_MESSAGE1 :=  VS_EXCEP_MESSAGE1 ||'Client Name: ' || ls_Client_nm || '; ';\r
+ END IF;\r
+ --08/25/06  #9752\r
+\r
+ VS_EXCEP_MESSAGE1 := Substring((VS_EXCEP_MESSAGE1),1,LENGTH(VS_EXCEP_MESSAGE1)-2) ||' - ' ;\r
+ -- IF VS_MESSAGE <> '' AND VS_MESSAGE IS NOT NULL THEN\r
+ IF li_check = 0 AND VS_EXCEP_MESSAGE <> '' AND VS_EXCEP_MESSAGE IS NOT NULL THEN\r
+  VS_EXCEP_MESSAGE :=  VS_EXCEP_MESSAGE1 || VS_EXCEP_MESSAGE;\r
+\r
+  --SET VS_EXCEP_MESSAGE = 'County Code: ' || ls_county_cd || '; ' || VS_EXCEP_MESSAGE ;\r
+  -- #9676 uncommented\r
+  VL_ERROR_LOGGED := 1;\r
+\r
+  BEGIN\r
+\r
+   VL_OUTPUT_SQLCODE := '00000';    --09/08/06\r
+   INSERT INTO INTERFACESERRORLOG(\r
+    --ERRORID,\r
+    INTERFACEID,\r
+    CURRENTRUNTIMESTAMP,\r
+    BATCHNUMBER,\r
+    ERRORLINENO,\r
+    ERRORCODE,\r
+    ERRORSQLCODE,\r
+    ERRORDESCRIPTION ,\r
+    payment_id,\r
+    provider_id,\r
+    county_cd,\r
+    client_id,\r
+    payment_amount)\r
+   VALUES (\r
+    --NEXTVAL('SQ_INTERFACES_ERROR_LOG') ,\r
+    'AFS_INTERFACES',\r
+    current_timestamp,\r
+    '000',\r
+    li_payment_id,\r
+    '0',\r
+    VL_OUTPUT_SQLCODE,\r
+    VS_EXCEP_MESSAGE,\r
+    li_payment_id,\r
+    li_provider_id,\r
+    ls_county,\r
+    li_client_id ,\r
+    li_final_amount_no);\r
+\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := VS_MESSAGE || '. INSERT FAILED INTO INTERFACESERRORLOG '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO INTERFACESERRORLOG(INTERFACEid,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+  END;\r
+\r
+ END IF;\r
+ Raise Notice '1364  %',  ls_client_nm;\r
+ --------------------------------------------\r
+ IF li_check > 0 THEN\r
+  VS_PAYEE_SHORT_NM := Substring(VS_PAYEE_SHORT_NM, 1, 40);    -- #13427\r
+  ls_vendor_nm := Substring(ls_vendor_nm, 1, 40);    -- #13427\r
+  vl_output_sqlcode := '00000'; -- 07/24/06\r
+\r
+  SELECT NEXTVAL('SQ_AFS_INTERFACES')\r
+   INTO li_afs_interface_record_id\r
+  ;\r
+  BEGIN\r
+   INSERT INTO TB_AFS_INTERFACES(\r
+    AFS_INTERFACE_RECORD_ID,\r
+    LDSS_NM,\r
+    PAYMENT_METHOD_CD,\r
+    PAYMENT_ID,\r
+    PAYEE_NBR,\r
+    PAYEE_NM,\r
+    PAYEE_ALPHA_SORT_NM,\r
+    ADR_LINE_1,\r
+    ADR_LINE_2,\r
+    ADR_CITY_NM,\r
+    ADR_STATE_CD,\r
+    ADR_ZIP5_NO,\r
+    PHONE_TX,\r
+    TAXPAYER_TYPE_CD,\r
+    TAXPAYER_ID,\r
+    BUDGET_CD,\r
+    IND_1099_SW,\r
+    TYPE_1099_SW,\r
+    INVOICE_NBR_TX,\r
+    PAYMENT_AMT,\r
+    Payment_Approval_Dt,\r
+    Payment_Service_DT,\r
+    Client_Name,\r
+    CREATE_TS,\r
+    CREATE_USER_ID,\r
+    UPDATE_TS,\r
+    UPDATE_USER_ID,\r
+    DELETE_SW,\r
+    PAYMENT_TYPE_CD,\r
+    PAYMENT_DETAIL_ID,\r
+    AMOUNT_1099,\r
+    CODE_1099,\r
+    ACCOUNT_TYPE,\r
+    ADDRESS_ID,\r
+    APPROVED,\r
+    APPROVED_BY,\r
+    CURRENCY,\r
+    INVOICE,\r
+    INVOICE_DESC,\r
+    JOURNAL_DESC,\r
+    PAYOR_COMPANY,\r
+    OFFSET_ACCOUNT,\r
+    OFFSET_ACCOUNT_TYPE,\r
+    POSTING_PROFILE,\r
+    TERMS_OF_PAYMENT,\r
+    VENDORACCOUNT\r
+    )\r
+\r
+   SELECT\r
+    li_afs_interface_record_id,\r
+    ls_county_cd,\r
+    ls_payment_method_cd,\r
+    ls_payment_id,\r
+    ls_payee_nbr,\r
+    VS_PAYEE_SHORT_NM,\r
+    ls_vendor_nm,\r
+    ls_address_1,\r
+    UPPER(coalesce(Substring(RTRIM(LTRIM(ls_address_2)),1,li_address_2),LPAD('',40))),\r
+    ls_Adr_city_nm,\r
+    UPPER(ls_Adr_state_cd),\r
+    ls_zip_code,\r
+    ls_PHONE_TX,\r
+    ls_prov_tax_type_cd,\r
+    ls_TAX_ID_NO,\r
+    ls_FINAL_FISCAL_CATEGORY_CD,\r
+    ls_REPORT_1099_SW,\r
+    ls_TYPE_1099_CD,\r
+    ls_STORE_RECEIPT_ID,\r
+    li_final_amount_no,\r
+    ld_Payment_dt,\r
+    ld_final_service_dt,\r
+    ls_Client_nm,\r
+    CURRENT_TIMESTAMP,\r
+    VS_USER_ID,\r
+    CURRENT_TIMESTAMP,\r
+    VS_USER_ID,\r
+    'N',\r
+    VS_PAYMENT_TYPE_CD,\r
+    li_payment_detail_id,\r
+    ld_amount_1099,\r
+    ls_code_1099,\r
+    ls_account_type,\r
+    ls_address_id_tx,\r
+    ls_approved,\r
+    ls_approved_by,\r
+    ls_currency,\r
+    ls_invoice,\r
+    ls_invoice_desc,\r
+    ls_journal_desc,\r
+    ls_payor_company,\r
+    ls_offset_account,\r
+    ls_offset_account_type,\r
+    ls_posting_profile,\r
+    ls_terms_of_payment,\r
+    ls_vendoraccount\r
+   ;\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'INSERT FAILED INTO TB_AFS_INTERFACES  '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+  END;\r
+\r
+  BEGIN\r
+\r
+   UPDATE TB_PAYMENT_STATUS\r
+   SET PAYMENT_STATUS_CD = '1636',\r
+    PAYMENT_STATUS_DT = vts_current_run_ts::DATE,\r
+    UPDATE_TS = CURRENT_TIMESTAMP\r
+   WHERE (TB_PAYMENT_STATUS.PAYMENT_STATUS_CD = '1634' )\r
+    AND PAYMENT_ID = li_payment_id\r
+    AND DELETE_SW = 'N';\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VS_MESSAGE := 'Error in updating Payment Status  '||SQLERRM  ;\r
+    VL_OUTPUT_SQLCODE := SQLSTATE;\r
+    INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+    VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+  END;\r
+\r
+\r
+ END IF;    -- li check  >0\r
+\r
+\r
+\r
+ li_check   := 0;\r
+ --  SET li_payment_count   = li_payment_count - 1;\r
+ VS_CHILD_DISBURSEMENT := 'N';\r
+ ls_person_nm    := '';\r
+ ls_org_nm       := '';\r
+ VS_PAYEE_SHORT_NM  := '';\r
+ VS_MESSAGE   :=  '';\r
+ --     COMMIT; --  ADDED ON 01/18/06\r
+\r
+\r
+ VL_INTERFACE_ROWCOUNT := VL_INTERFACE_ROWCOUNT - 1;\r
+ VS_PAYMENT_TYPE_CD := '0000';\r
+ VL_PAYMENT_COUNT := VL_PAYMENT_COUNT - 1 ;\r
+END LOOP;\r
+CLOSE PAYMENT_CUR;\r
+\r
+\r
+-- B-28317 - To update JOURNAL_DESC as unique Timestamp on each file (system adjustments & Ancillary)\r
+-- Ancillary & other payments\r
+BEGIN\r
+ UPDATE TB_AFS_INTERFACES\r
+  SET JOURNAL_DESC = 'MD CJAMS ' || CURRENT_TIMESTAMP\r
+ WHERE AFS_INTERFACE_RECORD_ID \r
+  IN ( SELECT AFS.AFS_INTERFACE_RECORD_ID\r
+    FROM TB_AFS_INTERFACES AFS,\r
+     TB_PAYMENT_HEADER PH\r
+    WHERE RTRIM(AFS.PAYMENT_ID)::INTEGER= PH.PAYMENT_ID\r
+    --AND PH.PAYMENT_TYPE_CD <> '3294'  --OR (PH.PAYMENT_TYPE_CD = '3294' AND PH.MANUAL_SW = 'Y'))\r
+    AND (PH.PAYMENT_TYPE_CD <> '3294' OR (PH.PAYMENT_TYPE_CD = '3294' AND PH.MANUAL_SW = 'Y'))\r
+   );\r
+ EXCEPTION WHEN OTHERS THEN\r
+  VS_MESSAGE := 'Error in updating TB_AFS_INTERFACES --> JOURNAL_DESC (Ancillary & other payments)  '||SQLERRM  ;\r
+  VL_OUTPUT_SQLCODE := SQLSTATE;\r
+  INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+  VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+END;\r
+\r
+\r
+-- System Adjustments\r
+BEGIN\r
+ UPDATE TB_AFS_INTERFACES\r
+  SET JOURNAL_DESC = 'MD CJAMS ' || CURRENT_TIMESTAMP + interval '5000 microseconds'\r
+ WHERE AFS_INTERFACE_RECORD_ID \r
+  IN ( SELECT AFS.AFS_INTERFACE_RECORD_ID\r
+    FROM TB_AFS_INTERFACES AFS,\r
+     TB_PAYMENT_HEADER PH\r
+    WHERE RTRIM(AFS.PAYMENT_ID)::INTEGER= PH.PAYMENT_ID\r
+    --AND (PH.PAYMENT_TYPE_CD = '3294' AND (PH.MANUAL_SW IS NULL OR PH.MANUAL_SW = 'Y' OR PH.MANUAL_SW = 'N'))\r
+    AND (PH.PAYMENT_TYPE_CD = '3294' AND (PH.MANUAL_SW IS NULL OR PH.MANUAL_SW <> 'Y'))\r
+   );\r
+ EXCEPTION WHEN OTHERS THEN\r
+  VS_MESSAGE := 'Error in updating TB_AFS_INTERFACES --> JOURNAL_DESC (System Adjustments)  '||SQLERRM  ;\r
+  VL_OUTPUT_SQLCODE := SQLSTATE;\r
+  INSERT INTO interfaceserrorlog(INTERFACEID,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+  VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+END;\r
+\r
+BEGIN\r
+ INSERT INTO INTERFACESRUNTIMESLOG\r
+ ( INTERFACEID,\r
+  CURRENTRUNTIMESTAMP,\r
+  PREVIOUSRUNTIMESTAMP,\r
+  BATCHNUMBER,\r
+  INSERTEDON,\r
+  INSERTEDBY,\r
+  UPDATEDON,\r
+  UPDATEDBY,\r
+  ACTIVEFLAG  )\r
+ SELECT\r
+  'AFS',\r
+  vts_current_run_ts,\r
+  vts_previous_run_ts,\r
+  '000',\r
+  CURRENT_TIMESTAMP,\r
+  VS_USER_ID,\r
+  CURRENT_TIMESTAMP,\r
+  VS_USER_ID,\r
+  1\r
+  ;\r
+\r
+ EXCEPTION WHEN OTHERS THEN\r
+  VS_MESSAGE := 'INSERT INTO INTERFACESRUNTIMESLOG FAILED  '||SQLERRM  ;\r
+  VL_OUTPUT_SQLCODE := SQLSTATE;\r
+  INSERT INTO INTERFACESERRORLOG(INTERFACEid,CURRENTRUNTIMESTAMP, BATCHNUMBER, ERRORLINENO, ERRORCODE, ERRORSQLCODE, ERRORDESCRIPTION, payment_id, provider_id, county_cd, client_id,  payment_amount)\r
+  VALUES ( 'AFS_INTERFACES', current_timestamp, '000', li_payment_id, '0', VL_OUTPUT_SQLCODE, VS_MESSAGE, li_payment_id, li_provider_id, ls_county, li_client_id , li_final_amount_no);\r
+\r
+END;\r
+\r
+IF VL_OUTPUT_SQLCODE='00000' then\r
+\r
+ VS_MESSAGE := 'The run was successful';\r
+ a := vts_current_run_ts;\r
+ b :=  vts_previous_run_ts;\r
+END IF;\r
+\r
+END ;\r
+$function$
+

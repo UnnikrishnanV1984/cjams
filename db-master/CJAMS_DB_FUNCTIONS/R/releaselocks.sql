@@ -1,0 +1,28 @@
+ CREATE OR REPLACE FUNCTION public.releaselocks()                                  
+  RETURNS void                                                                     
+  LANGUAGE plpgsql                                                                 
+ AS $function$                                                                     
+                                                                                   
+ DECLARE                                                                           
+                                                                                   
+ v_activeFlag INT;                                                                 
+ v_returnInt INT;                                                                  
+ rec RECORD;                                                                       
+                                                                                   
+ BEGIN                                                                             
+ v_returnInt := 1;                                                                 
+                                                                                   
+                                                                                   
+  FOR rec IN                                                                       
+  SELECT distinct l.pid as pid                                                     
+     FROM pg_locks l                                                               
+    JOIN pg_stat_all_tables t ON l.relation = t.relid                              
+   WHERE t.schemaname <> 'pg_toast'::name AND t.schemaname <> 'pg_catalog'::name   
+   LOOP                                                                            
+   SELECT pg_terminate_backend(rec.pid);                                           
+   SELECT pg_terminate_backend(rec.pid);                                           
+    END LOOP;                                                                      
+                                                                                   
+ END;                                                                              
+ $function$                                                                        
+

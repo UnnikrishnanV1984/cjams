@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION as_routinggroupda(appeventcode character varying, groupid uuid, fromuserid character varying, waiting boolean, v_assignedsecurityid character varying, j_assignfolder json DEFAULT '{}'::json)
+ RETURNS routeda_temp_type
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+result routeda_temp_type;
+v_groupid uuid;
+v_intakeserreqid uuid;
+v_intakesecurityid character varying;
+  
+ 
+l_groupnumber character varying;
+ 
+v_notifystatus character varying;
+v_metadata json;
+v_auditlog  character varying;
+v_createduser  character varying;
+v_reqid_rec RECORD;
+BEGIN
+v_groupid:=groupid;
+ 
+SELECT cast( lastname ||',' || firstname as character varying)  INTO v_createduser 
+FROM userprofile 
+WHERE SecurityUsersId=fromuserid and activeflag =1;
+SELECT intakeserviceid into  v_intakeserreqid FROM IntakeServiceRequestGroupDetails IRGD
+      WHERE  IRGD.groupid =v_groupid limit 1;
+         RAISE NOTICE ' rrr %', v_intakeserreqid;
+
+     FOR v_reqid_rec IN SELECT intakeserviceid  FROM IntakeServiceRequestGroupDetails IRGD
+      WHERE  IRGD.groupid =v_groupid
+        LOOP 
+        v_intakeserreqid = v_reqid_rec.intakeserviceid;
+        RAISE NOTICE ' result %', v_intakeserreqid;
+            Select caseworker_name,loadnumber,teamname into result.caseworker_name,
+            result.loadnumber, result.teamname 
+            from 
+            as_routingda(appeventcode,v_intakeserreqid,fromuserid,v_assignedsecurityid,j_assignfolder,false);
+     END loop;
+  RAISE NOTICE ' result %', result.caseworker_name;  
+        SELECT GROUPNUMBER,insertedby  into l_groupnumber,v_intakesecurityid from  IntakeServiceRequestGroup IRG  
+                    where  IRG.groupid=v_groupid;  
+                    
+    SELECT as_send_notification into v_notifystatus from as_send_notification(fromuserid,fromuserid,
+                                                                        v_assignedsecurityid ,
+            'System', 'Normal', 'Group DA('||coalesce(l_groupnumber,'')|| ') Routed to '|| result.caseworker_name ,
+             'Group DA('||coalesce(l_groupnumber,'')|| ')  Routed to '|| result.caseworker_name ,
+             cast(v_groupid as character varying));
+
+       SELECT send_notification into v_notifystatus
+       from as_send_notification(v_assignedsecurityid, 
+                              v_assignedsecurityid,
+                              fromuserid,
+            'System', 'Normal',   'New Group case('||coalesce(l_groupnumber,'')|| ')  is assigned by '|| v_createduser ,
+               'New Group case('||coalesce(l_groupnumber,'')|| ')  is assigned by '|| v_createduser,
+             cast(v_groupid as character varying));
+
+
+
+        /*AUDIT LOG */   
+
+
+        SELECT json_agg(e) from (SELECT result.caseworker_name  caseworkername,result.loadnumber  loadnumber, l_groupnumber  intakenumber, result.teamname teamname)e INTO v_metadata;
+
+        SELECT auditlog into v_auditlog from auditlog
+        ('IR','Group DA('|| l_groupnumber ||')  Routed to '|| result.caseworker_name,null,l_groupnumber,null,
+         fromuserid,
+         v_metadata,
+         null,
+         true,false,false);
+         
+RETURN result;
+END;
+
+$function$
+

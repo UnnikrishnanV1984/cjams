@@ -1,0 +1,162 @@
+CREATE OR REPLACE FUNCTION sp_nytd_served_population(run_dt date, OUT al_sqlcode integer, OUT vs_message character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author          : Vineet Tirodkar\r
+-- Date            : 10/21/2014\r
+-- Description     : Stored Procedure to populate NYTD served_population\r
+\r
+-- Requests #      : N/A\r
+-- Argument(s):\r
+-- 1) IN RUN_DT (NYTD Period End Date)\r
+-- 2) OUT al_sqlcode (SQL code for error handling)\r
+-- 3) OUT as_error (Error Text)\r
+\r
+-- Revision:\r
+-- 10/16/2020 - Vineet Tirodkar - Changes to exclude cjamspid with multiple persons & for Performance improvements\r
+------------------------------------------------------------------------\r
+DECLARE \r
+ SQLSTATE     CHAR(5) DEFAULT '00000';\r
+ vl_output_sqlcode  varchar;\r
+ vl_client_id   bigint;\r
+ v_reporttypecd   bigint;\r
+ v_reportingperiod  bigint;\r
+ -- vl_count    integer;\r
+ vl_client_cnt   integer;\r
+ vs_err_message   character varying;\r
+ vs_nytd_client_chk  varchar(1);\r
+ \r
+ CUR_NYTD_SERVED_refcur REFCURSOR;\r
+\r
+BEGIN \r
+ OPEN CUR_NYTD_SERVED_refcur FOR\r
+  select pr.cjamspid\r
+   from person pr\r
+        where pr.cjamspid > 0\r
+   and pr.activeflag = 1\r
+   /*\r
+   -- and pr.clientflag = 1\r
+   and sp_nytd_client_chk(cjamspid, run_dt) = 'S'\r
+   and cjamspid not in \r
+    ( select cjamspid\r
+     from person\r
+     where activeflag = 1\r
+     group by cjamspid\r
+     having count(*) > 1 \r
+    )\r
+   */ \r
+   and f_age(run_dt, pr.dob) > 13\r
+   and f_age(run_dt, pr.dob) < 22\r
+  order by pr.cjamspid;\r
+  \r
+  LOOP\r
+   FETCH CUR_NYTD_SERVED_refcur INTO vl_client_id;\r
+   exit when not found;\r
+\r
+   raise notice 'vl_client_id%,',vl_client_id;\r
+   \r
+   BEGIN \r
+    -- Verify Duplicate cjamspid\r
+    vl_client_cnt := 0 ;\r
+    vs_err_message := '';\r
+    \r
+    select count(*)\r
+     into vl_client_cnt\r
+    from person\r
+    where activeflag = 1\r
+     and cjamspid = vl_client_id ;\r
+\r
+    IF vl_client_cnt > 1 THEN\r
+     vs_err_message := 'Duplicate Persons found for cjamspid --> ' || Btrim(to_char(vl_client_id)) ;\r
+     \r
+     INSERT INTO interfaceserrorlog\r
+      ( interfaceid,\r
+       currentruntimestamp,\r
+       batchnumber,\r
+       errorlineno,\r
+       errordescription,\r
+       insertedon\r
+      )\r
+     VALUES\r
+      ( 'SP_NYTD_SERVED_POPULATION',\r
+       clock_timestamp,\r
+       '000',\r
+       0,\r
+       vs_err_message,\r
+       current_date\r
+      );\r
+       \r
+    ELSE\r
+     -- Verify Client is eligible for Served Population\r
+     vs_nytd_client_chk := '';\r
+     select sp_nytd_client_chk(vl_client_id::bigint, run_dt::date)\r
+      into vs_nytd_client_chk;\r
+ \r
+     IF Btrim(vs_nytd_client_chk) <> 'S' THEN\r
+      -- Do nothing\r
+     ELSE\r
+      BEGIN\r
+       select * \r
+        into vs_message\r
+       from sp_nytd_data_population(vl_client_id, run_dt::character varying,'D');\r
+       \r
+       EXCEPTION WHEN OTHERS THEN \r
+        VL_OUTPUT_SQLCODE := SQLSTATE;\r
+        al_sqlcode := -1 ;\r
+        VS_MESSAGE := 'SP_NYTD_DATA_POPULATION FAILED FOR CLIENT ID :: '|| (vl_client_id::VARCHAR) || ' ERROR CODE ::' || (VL_OUTPUT_SQLCODE::VARCHAR);\r
+\r
+        INSERT INTO interfaceserrorlog\r
+         ( interfaceid,\r
+          currentruntimestamp,\r
+          batchnumber,\r
+          errorlineno,\r
+          errordescription,\r
+          insertedon\r
+         )\r
+        VALUES\r
+         ( 'SP_NYTD_SERVED_POPULATION',\r
+          clock_timestamp,\r
+          '000',\r
+          0,\r
+          VS_MESSAGE,\r
+          current_date\r
+         );\r
+      END; \r
+     END IF;   \r
+    END IF;   \r
+   END ;\r
+  END LOOP;\r
+ CLOSE CUR_NYTD_SERVED_refcur;\r
+\r
+ select (case when date_part('month', RUN_DT) = 3 then\r
+    '13054' --    Services-March\r
+   else\r
+    '13055' --    Services-September\r
+   end ) as report_type_cd,\r
+   (case when date_part('month', RUN_DT) = 3 then\r
+    date_part('year', RUN_DT)::character varying || '03'\r
+   else\r
+    date_part('year', RUN_DT)::character varying || '09'\r
+   end ) as reporting_period\r
+  into v_reporttypecd,  \r
+  v_reportingperiod;\r
+\r
+  update personnytdsummary\r
+   set validationflag = 1, \r
+   verifiedstaffid = 1, \r
+   updatedby = 'ADMIN',\r
+   updatedon = now()   \r
+ where activeflag = 1 \r
+  and reporttypekey = v_reporttypecd \r
+  and reportingperiod = v_reportingperiod \r
+  and date(insertedon) = CURRENT_DATE \r
+  and coalesce(validationflag, 0) <>  1;\r
+ \r
+ al_sqlcode:= 0;\r
+\r
+END ;\r
+$function$
+

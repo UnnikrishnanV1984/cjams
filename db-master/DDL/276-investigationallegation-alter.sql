@@ -1,0 +1,1 @@
+alter table investigationallegation add column if not exists law_enforcement_inv text null;

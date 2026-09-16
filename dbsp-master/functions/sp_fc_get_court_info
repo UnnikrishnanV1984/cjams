@@ -1,0 +1,159 @@
+CREATE OR REPLACE FUNCTION sp_fc_get_court_info(courtorderid character varying, v_courtlanguagetype character varying, a_client_id bigint, a_removal_id bigint, a_period_type character varying)
+ RETURNS TABLE(dateofcourthearing timestamp without time zone, ctwdecision character varying, dtoffindingctwdecision timestamp without time zone, courtorderdelayremoval character varying, courtorderdelaytimedays integer, reasonableeffortsmade character varying, reasonableeffortsnotnecessaryduetoemergentcircumstances character varying, dtofreasonableeffortscourthearing timestamp without time zone, fostercarepermanencyplan character varying, fostercarepermanencyplandesc character varying, magistrateorjudgename character varying, dateofnexthearing timestamp without time zone, issignedbyjudge character varying, dtofjudicialfindingofrefpp timestamp without time zone, dateofsubsequentjudicialfindingofrefpp timestamp without time zone, dtofcurrentjudicialfindingofbestinterest timestamp without time zone, dateofsubsequentfindingofbestinterest timestamp without time zone, dateofpreviousjudicialfindingofrefpp timestamp without time zone, dateofpreviousbestinterestfinding timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  vs_Procedure_nm         VARCHAR(100) DEFAULT 'sp_fc_get_court_info';
+  vd_crt_hrng_dt         TIMESTAMP;
+  vs_ctw_dcsn          VARCHAR(50);
+  vd_ctw_dt          TIMESTAMP;
+  vs_crt_ord_dly_rmvl        VARCHAR(50);
+  vn_crt_ord_dly_tm_dys       INTEGER;
+  vs_re_mde          VARCHAR(50);
+  vs_re_emrgnt_crcmst        VARCHAR(50);
+  vd_rsnbl_efrts_crt_hrng       TIMESTAMP;
+  vs_fc_prmncy_pln        VARCHAR(50);
+  vs_fc_prmncy_pln_desc       VARCHAR;
+  vs_mgs_jdg_nm         VARCHAR(50);
+  vd_nxt_hrng_dt         TIMESTAMP;
+  vs_jdg_sgn          VARCHAR(50);
+  vd_jd_refpp          TIMESTAMP;
+  vd_sub_jd_refpp         TIMESTAMP;
+  v_dt_ct_best_int        TIMESTAMP;
+  v_dt_sub_best_int        TIMESTAMP;
+  vs_ho_ct           INTEGER;
+  vd_id_ctw_dt         UUID;
+  v_id_ct_best_int        UUID;
+  vd_id_jd_refpp         UUID;
+  v_dt_pre_best_int        TIMESTAMP;
+  vd_pre_jd_refpp         TIMESTAMP;
+  vd_sqnm_sw           VARCHAR;
+    
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_court_info ( 
+  dateofcourthearing           TIMESTAMP,
+  ctwdecision             VARCHAR(50),
+  dateoffindingctwdecision         TIMESTAMP,
+  courtorderdelayremoval          VARCHAR(50),
+  courtorderdelaytimedays          INTEGER,
+  reasonableeffortsmade          VARCHAR(50),
+  reasonableEffortsnotnecessaryduetoemergentcircumstances  VARCHAR(50),
+  dateofreasonableeffortscourthearing       TIMESTAMP,
+  fostercarepermanencyplan         VARCHAR(50),
+  fostercarepermanencyplandesc        VARCHAR,
+  magistrateorjudgename          VARCHAR(50),
+  dateofnexthearing           TIMESTAMP,
+  issignedbyjudge            VARCHAR(50),
+  dateofjudicialfindingofrefpp                                TIMESTAMP,
+  dateofsubsequentjudicialfindingofrefpp                      TIMESTAMP,
+  dateofcurrentjudicialfindingofbestinterest     TIMESTAMP,
+  dateofsubsequentfindingofbestinterest      TIMESTAMP,
+  dateofpreviousjudicialfindingofrefpp      TIMESTAMP,
+  dateofpreviousbestinterestfinding       TIMESTAMP
+ );
+
+IF (v_courtlanguagetype = 'CTW')
+THEN
+ select isrco.intakeservreqcourtorderid, isrco.courtorderdate , 'Y' , (CASE when (isrco.courtorderdelayremoval) then'Yes' else 'No' end), isrco.courtorderdelaytimeframe, isrch.judgename ,
+ isrch.nexthearingdate, isrch.hearingdatetime,
+ (select (case when iscod.isselected = 1 then 'No' else 'Yes' end) AS judgesignflag from intakeservreqcourtorderdetails iscod where iscod.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+ AND (iscod.checklisttypekey = 'COPP' AND iscod.checklistid = '041def29-b981-4fd2-9c9c-5baafb37e253' and iscod.activeflag = 1) order by iscod.updatedon desc limit 1) -- judge signed flag
+ into vd_id_ctw_dt, vd_ctw_dt , vs_ctw_dcsn, vs_crt_ord_dly_rmvl, vn_crt_ord_dly_tm_dys, vs_mgs_jdg_nm , vd_nxt_hrng_dt, vd_crt_hrng_dt , vs_jdg_sgn
+ FROM  intakeservreqcourtorder isrco  
+ join intakeservicerequestcourthearing isrch on isrch.intakeservicerequestcourthearingid = isrco.intakeservicerequesthearingid
+ WHERE isrco.intakeservreqcourtorderid::VARCHAR = courtorderid;
+
+END IF;
+
+IF (v_courtlanguagetype = 'RPR')
+THEN
+ select 'Y' AS reasonableeffortsmade, isrco.courtorderdate AS dateofreasonableeffortscourthearing,
+ (select 'Y' AS reasonableeffortsnotnecessaryduetoemergentcircumstances from intakeservreqcourtorderdetails iscod where iscod.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = 'e4c3f3a6-6756-4123-82a4-f676399e80ce' and iscod.activeflag = 1 AND iscod.isselected = 1))
+ into  vs_re_mde , vd_rsnbl_efrts_crt_hrng, vs_re_emrgnt_crcmst
+ FROM  intakeservreqcourtorder isrco  
+ join intakeservicerequestcourthearing isrch on isrch.intakeservicerequestcourthearingid = isrco.intakeservicerequesthearingid
+ WHERE isrco.intakeservreqcourtorderid::VARCHAR = courtorderid;
+
+END IF;
+
+IF (v_courtlanguagetype = 'JD')
+THEN
+ select isrco.intakeservreqcourtorderid, isrco.courtorderdate , isrch.nexthearingdate, isrco.childpermanencyplankey, rtd.description as fosterpermanancyplan, isrch.judgename ,isrch.hearingdatetime,
+ (select ((date_trunc('month',isrco.courtorderdate) + interval '1 month') - interval '1 day') + interval '1 year'),
+ (select (case when iscod.isselected = 1 then 'No' else 'Yes' end) AS judgesignflag from intakeservreqcourtorderdetails iscod where iscod.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+ AND (iscod.checklisttypekey = 'COPP' AND iscod.checklistid = '041def29-b981-4fd2-9c9c-5baafb37e253' and iscod.activeflag = 1) order by iscod.updatedon desc limit 1 ) -- judge signed flag
+ into vd_id_jd_refpp, vd_jd_refpp , vd_nxt_hrng_dt,vs_fc_prmncy_pln, vs_fc_prmncy_pln_desc, vs_mgs_jdg_nm, vd_crt_hrng_dt, vd_sub_jd_refpp , vs_jdg_sgn
+ FROM  intakeservreqcourtorder isrco  
+ join intakeservicerequestcourthearing isrch on isrch.intakeservicerequestcourthearingid = isrco.intakeservicerequesthearingid
+ left join referencevalues rtd on rtd.ref_key=isrco.childpermanencyplankey and rtd.referencetypeid=137 and rtd.activeflag=1 
+ WHERE isrco.intakeservreqcourtorderid::VARCHAR = courtorderid;
+
+ IF(a_period_type not in ('I' , 'R1' , '18BDAY'))
+ THEN
+     IF length(a_period_type) = 3 
+  then 
+  vd_sqnm_sw = 'R1' || (right(a_period_type, 1)::int -1);
+  else 
+  vd_sqnm_sw = 'R' || (right(a_period_type, 1)::int -1);
+  end if;
+  select (case when tfcj.dateofjudicialfindingofrefpp is not null then tfcj.dateofjudicialfindingofrefpp else tfcj.dateofpreviousjudicialfindingofrefpp end)  into vd_pre_jd_refpp  from tb_foster_care_judicial tfcj where tfcj.client_id = a_client_id and tfcj.removal_id = a_removal_id and tfcj.period_type = vd_sqnm_sw;
+  If(vd_sqnm_sw = 'R1' and vd_pre_jd_refpp is null) then
+   select tfcj.dateofreasonableeffortscourthearing into vd_pre_jd_refpp  from tb_foster_care_judicial tfcj where tfcj.client_id = a_client_id and tfcj.removal_id = a_removal_id and tfcj.period_type = vd_sqnm_sw;
+  END IF;
+ END IF;
+
+END IF;
+
+IF (v_courtlanguagetype = 'VPA')
+THEN
+ select isrco.intakeservreqcourtorderid, isrco.courtorderdate , isrch.nexthearingdate, isrco.childpermanencyplankey, rtd.description as fosterpermanancyplan, isrch.judgename ,isrch.hearingdatetime,
+ (select ((date_trunc('month',isrco.courtorderdate) + interval '1 month') - interval '1 day') + interval '1 year'),
+ (select (case when iscod.isselected = 1 then 'No' else 'Yes' end) AS judgesignflag from intakeservreqcourtorderdetails iscod where iscod.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+ AND (iscod.checklisttypekey = 'COPP' AND iscod.checklistid = '041def29-b981-4fd2-9c9c-5baafb37e253' and iscod.activeflag = 1) order by iscod.updatedon desc limit 1 ) -- judge signed flag
+ into v_id_ct_best_int, v_dt_ct_best_int, vd_nxt_hrng_dt,vs_fc_prmncy_pln, vs_fc_prmncy_pln_desc, vs_mgs_jdg_nm, vd_crt_hrng_dt, v_dt_sub_best_int , vs_jdg_sgn
+ FROM  intakeservreqcourtorder isrco  
+ join intakeservicerequestcourthearing isrch on isrch.intakeservicerequestcourthearingid = isrco.intakeservicerequesthearingid
+ left join referencevalues rtd on rtd.ref_key=isrco.childpermanencyplankey and rtd.referencetypeid=137 and rtd.activeflag=1 
+ WHERE isrco.intakeservreqcourtorderid::VARCHAR = courtorderid;
+
+ IF(a_period_type not in ('I' , 'R1' , '18BDAY'))
+ THEN
+ vd_sqnm_sw = 'R' || (right(a_period_type, 1)::int -1);
+ select (case when tfcj.dateofcurrentjudicialfindingofbestinterest is not null then tfcj.dateofcurrentjudicialfindingofbestinterest else tfcj.dateofpreviousbestinterestfinding end) into v_dt_pre_best_int  from tb_foster_care_judicial tfcj where tfcj.client_id = a_client_id and tfcj.removal_id = a_removal_id and tfcj.period_type = vd_sqnm_sw;
+ END IF;
+END IF;
+
+INSERT INTO Temp_worksheet_court_info
+SELECT 
+  vd_crt_hrng_dt,
+  vs_ctw_dcsn,
+  vd_ctw_dt,
+  vs_crt_ord_dly_rmvl,
+  vn_crt_ord_dly_tm_dys,
+  (select case when vs_re_mde is null then 'N' else vs_re_mde end),
+  (select case when vs_re_emrgnt_crcmst is null then 'N' else vs_re_emrgnt_crcmst end),
+  vd_rsnbl_efrts_crt_hrng,
+  vs_fc_prmncy_pln,
+  vs_fc_prmncy_pln_desc,
+  vs_mgs_jdg_nm,
+  vd_nxt_hrng_dt,
+  (select case when (vs_jdg_sgn is null and (vd_id_ctw_dt is not null or vd_id_jd_refpp is not null or v_id_ct_best_int is not null)) then 'Yes' else vs_jdg_sgn end),
+  vd_jd_refpp,
+  vd_sub_jd_refpp,
+  v_dt_ct_best_int,
+  v_dt_sub_best_int,
+  vd_pre_jd_refpp,
+  v_dt_pre_best_int;
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_court_info;
+              
+DROP TABLE Temp_worksheet_court_info;
+
+   END
+$function$
+

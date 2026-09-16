@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION prov_licensedjs(v_applicant_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+v_details json;
+v_address json;
+v_address_1 json;
+v_accomodation json;
+v_staff json;
+v_license_signature json;
+begin 
+
+
+select json_agg(a) into v_details from (select ta.*,tapp.scheduled_visit_date, tapp.scheduled_visit_time,app.document_send_by_date , tpl.license_issue_dt, TO_CHAR(tpl.license_issue_dt, 'MONTH') AS "licenseIssueMnth",
+tpl.license_expiry_dt,TO_CHAR(tpl.license_expiry_dt, 'MONTH') AS "licenseExpiryMnth",prvdec.decisiondate,TO_CHAR(decisiondate, 'MONTH') AS "decisionMonth",tb.provider_referral_nm as provider_nm,tpl.license_no
+--,(select pra.execsignature from tb_prov_accomodation pra where pra.license_application_id = tpl.license_application_id and pra.delete_sw='N' limit 1)
+from tb_provider_applicant ta
+left join tb_provider_referral tb on ta.provider_id = tb.provider_id and tb.provider_referral_id in(select referral_id from tb_prov_ref_program_type tprpt where applicant_id=v_applicant_id and activeflag = '1')
+left join tb_provider_licensing tpl on tpl.site_id = ta.site_id
+left join tb_provider_decision prvdec on prvdec.objectid = v_applicant_id and prvdec.status in ('Rejected','Approved','Denied')
+left join prov_application_details app on ta.applicant_id = app.application_id
+left join schedule_monitoring_visits tapp on ta.applicant_id = tapp.application_id and tapp.schedulemonitoringvisitsid in (select schedulemonitoringvisitsid from schedule_monitoring_visits where application_id = ta.applicant_id and active_sw = 'Y' order by create_ts desc limit 1)
+where ta.applicant_id = v_applicant_id and ta.delete_sw = 'N' order by prvdec.updatedon desc )a;
+
+
+select json_agg(a) into v_accomodation from (
+select acc.*, (EXTRACT(year FROM age(requested_license_end_date,requested_license_effective_date))*12 + EXTRACT(month FROM age(requested_license_end_date,requested_license_effective_date))) as date_diff,
+list.description_tx as gender_name,TO_CHAR(requested_license_end_date, 'MONTH') AS "requested_license_end_month", TO_CHAR(requested_license_effective_date, 'MONTH') AS "requested_license_effective_month"
+ from tb_prov_applicant_accomodation acc
+ left join tb_picklist_values list on list.picklist_value_cd=gender_cd  where acc.provider_applicant_id = v_applicant_id and acc.delete_sw = 'N')a;
+
+select json_agg(a) into v_address from (
+select * from prov_get_formatted_applicantaddresses_djs(v_applicant_id))a;
+select json_agg(a) into v_address_1 from (
+select * from prov_get_formatted_applicantaddresses(v_applicant_id))a;
+
+select jsonb_agg(a) into v_staff from ( 
+select m.username,m.email,(select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) from userprofilephonenumber u where  u.securityusersid in (select toworkeridno from providerassignment where objectid = v_applicant_id and activeflag = '1'  order by startdate desc limit 1)) as phonenumber,r.name from muser m left join userprofilephonenumber u 
+on u.securityusersid =m.securityusersid join rolemapping r2 on r2.principalid = m.id and r2.activeflag = '1' and r2.teamtypekey not in ('CW','ASPROV','AS')
+  join role r on r.id = r2.roleid
+ where   m.securityusersid in (select toworkeridno from providerassignment where objectid = v_applicant_id and activeflag = '1'  order by startdate desc limit 1)
+)a;
+
+select jsonb_agg(a) into v_license_signature from (
+select * from tb_provider_decision ta where ta.objectid = v_applicant_id and ta.activeflag = 1
+)a; 
+
+return (json_build_object('details',v_details,'address',v_address,'address_1',v_address_1,'accomodation',v_accomodation,'staff',v_staff,'license_signature',v_license_signature));
+END;
+$function$
+

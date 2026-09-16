@@ -1,0 +1,63 @@
+-- FUNCTION: cjams.f_prim_worker(integer, character varying)
+
+-- DROP FUNCTION cjams.f_prim_worker(integer, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.f_prim_worker(
+	ai_entity_id bigint,
+	as_entity_type_cd character varying)
+    RETURNS character varying
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+ 
+BEGIN 
+
+ RETURN
+    CASE
+      when as_entity_type_cd = '2955' then
+        (select id from (
+SELECT row_number() over() as num, muser.id
+	    FROM intakeservicerequestactor, 
+            intakeservicerequest,		   
+            person,
+	    caseassignment,
+		servicecase,
+	    muser  
+  WHERE ( servicecase.servicecaseid = intakeservicerequest.servicecaseid ) and  
+            ( person.personid = intakeservicerequestactor.personid )  and
+	    ( caseassignment.objecttypekey = 'servicecase') and
+	    ( caseassignment.objectid = servicecase.servicecaseid) and 
+	    ( caseassignment.responsibilitytypekey = 'child') and 
+	    ( caseassignment.enddate IS NULL) and 
+	    ( muser.securityusersid = caseassignment.toworkeridno) and 
+ 	    --( person.cjamspid = AI_ENTITY_ID) and
+	    ( intakeservicerequest.activeflag = 1) and
+	    ( person.activeflag = 1) and
+	    ( caseassignment.activeflag = 1) and
+	    ( muser.activeflag = 1))as er where num=1	)
+        
+	
+    else
+	 (select id from (
+SELECT  row_number() over() as num, muser.id
+	    FROM  caseassignment,
+		      servicecase,
+        	  muser
+	    WHERE ( caseassignment.objecttypekey = AS_ENTITY_TYPE_CD) and
+            ( caseassignment.objectid = servicecase.servicecaseid) and
+			(servicecase.servicecasenumber = AI_ENTITY_ID::VARCHAR) and
+            (caseassignment.responsibilitytypekey = 'child') and
+            ( caseassignment.enddate IS NULL) and
+            ( muser.securityusersid = caseassignment.toworkeridno)  and
+            ( caseassignment.activeflag = 1) and
+            ( muser.activeflag = 1) ) as ty where num=1)
+
+    END;
+END;
+
+$BODY$;
+
+ALTER FUNCTION cjams.f_prim_worker(integer, character varying)
+    OWNER TO welfareadmin;

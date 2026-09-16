@@ -1,0 +1,29 @@
+CREATE OR REPLACE FUNCTION as_getpersonaddress(v_personid uuid, v_personaddresstypekey character varying, _page integer, _limit integer)
+ RETURNS TABLE(personaddress json)
+ LANGUAGE plpgsql
+AS $function$     
+    
+DECLARE
+_offset    integer;
+
+BEGIN
+_offset  :=  (_page  -  1)  *  _limit;  
+RETURN QUERY
+
+SELECT json_agg(A) FROM 
+  (select COUNT(1)OVER() as totalcount,paa.*,s.statename,pat.typedescription as personaddresstypedesc,
+  (select count(pds.personaddressid) from personaddress as pds where  pds.addressid=paa.addressid and pds.addressstatus=false) as countval
+  from(
+SELECT pa.*, row_number() OVER (PARTITION BY pa.addressid::uuid ORDER BY pa.insertedon::timestamp with time zone DESC) as createdorder
+from personaddress as pa where personid=v_personid) as paa
+left join state as s on paa.state=s.stateabbr 
+left join personaddresstype as pat on paa.personaddresstypekey=pat.personaddresstypekey
+where paa.createdorder=1 and paa.activeflag=1
+and case when v_personaddresstypekey!='' then paa.personaddresstypekey=v_personaddresstypekey else 1=1 end
+order by paa.insertedon desc
+LIMIT  _limit  OFFSET  _offset
+) as A;
+    
+END;
+$function$
+

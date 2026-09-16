@@ -1,0 +1,261 @@
+CREATE OR REPLACE FUNCTION getintakehearingdetailsjson(intakenum character varying, pagenumber bigint, pagesize bigint, sortcolumn character varying, sortorder character varying, searchjson json, sptype character varying)
+ RETURNS TABLE(totalcount bigint, complaintid character varying, petitionid character varying, hearingtype character varying, worker character varying, adjudicationdecision character varying, terminationdate timestamp without time zone, adjudicationdate timestamp without time zone, hearingdate timestamp without time zone, courtactions text, courtorder text, adjudicatedoffense character varying, courtdate timestamp without time zone, allegationname character varying[], offensedate text)
+ LANGUAGE plpgsql
+AS $function$
+
+declare 
+v_pagenumber bigint;
+v_pageoffset bigint;
+searchcomp text;
+ searchcomplaintID character varying;
+ searchpetitionID character varying;
+ searchhearingType character varying; 
+ searchworker character varying;
+ searchadjudicationDecision character varying;
+ searchterminationDate  character varying;
+ searchadjudicationDate character varying;
+ searchhearingDate character varying;
+ searchcourtActions text;
+ searchcourtOrder text;
+ searchadjudicatedOffense text;
+ searchcourtDate character varying;
+ queryforlegal text;
+ queryforpetition text;
+
+
+--CREATE TEMP TABLE sp_searchfilter(
+--complaintID character varying,
+-- petitionID character varying, 
+-- hearingType character varying, 
+-- worker character varying,
+-- adjudicationDecision character varying,
+--  terminationDate   timestamp without time zone,
+-- adjudicationDate  timestamp without time zone,
+-- hearingDate  timestamp without time zone,
+-- courtActions text, 
+-- courtOrder text,
+-- adjudicatedOffense text
+--)
+--drop table if exists sp_searchfilter;
+--insert into table sp_searchfilter 
+--(complaintID , petitionID ,  hearingType,  worker, adjudicationDecision, terminationDate, adjudicationDate , hearingDate,courtActions , courtOrder , adjudicatedOffense) values
+--(searchjson ->> 'complaintID',searchjson ->> 'petitionID',,searchjson ->> 'hearingType',searchjson ->> 'worker',searchjson ->> 'adjudicationDecision',
+--(searchjson ->> 'terminationDate')::date,(searchjson ->> 'adjudicationDate')::date,(searchjson ->> 'hearingDate')::date,searchjson ->> 'courtActions',searchjson ->> 'courtOrder'
+--,searchjson ->> 'adjudicatedOffense');
+  
+begin
+ 
+  RAISE NOTICE 'Parsing %', searchjson ->> 'complaintID' ;
+ if((searchjson ->> 'complaintID') is not null and (searchjson ->> 'complaintID') != '')
+  then 
+  searchcomp := searchjson ->> 'complaintID';
+         searchcomplaintID:=  ' AND INTSRE.complaintid ilike  ''' || searchcomp || '%'''; 
+         RAISE NOTICE 'Parsing %', searchcomplaintID ;
+    else searchcomplaintID:=  '';
+  end if;  
+
+ if((searchjson ->> 'petitionID') is not null and (searchjson ->> 'petitionID') != '')
+  then 
+  searchcomp := searchjson ->> 'petitionID';
+         searchpetitionID:=  ' AND INTSRP.petitionid ilike  ''' || searchcomp || '%'''; 
+         RAISE NOTICE 'Parsing %', searchpetitionID ;
+         else searchpetitionID:=  '';
+ end if; 
+
+ if((searchjson ->> 'hearingType') is not null and (searchjson ->> 'hearingType') != '')
+  then 
+   searchcomp:= searchjson ->> 'hearingType';
+         searchhearingType:=  ' AND INTSRPH.hearingtypekey = ''' || searchcomp || ''''; 
+         RAISE NOTICE 'Parsing %', searchhearingType ;
+          else searchhearingType:=  '';
+ end if; 
+ if((searchjson ->> 'worker') is not null and (searchjson ->> 'worker') != '')
+  then 
+   searchcomp:= searchjson ->> 'worker';
+         searchworker:=  ' AND INTSRCA.workername ilike  ''' || searchcomp || '%'''; 
+         RAISE NOTICE 'Parsing %', searchworker ;
+          else searchworker:=  '';
+ end if; 
+ if((searchjson ->> 'adjudicationDecision') is not null and (searchjson ->> 'adjudicationDecision') != '')
+  then 
+   searchcomp:= searchjson ->> 'adjudicationDecision';
+         searchadjudicationDecision:=  ' AND INTSRCA.adjudicationdecision =  ''' || searchcomp || ''''; 
+         RAISE NOTICE 'Parsing %', searchadjudicationDecision ;
+          else searchadjudicationDecision:=  '';
+ end if;
+ if((searchjson ->> 'adjudicatedOffense') is not null and (searchjson ->> 'adjudicatedOffense') != '')
+  then 
+   searchcomp:= searchjson ->> 'adjudicatedOffense';
+         searchadjudicatedOffense:=  ' AND INTSRCA.allegationid =  ''' || searchcomp || '''::uuid'; 
+         RAISE NOTICE 'Parsing %', searchadjudicatedOffense ;
+          else searchadjudicatedOffense:=  '';
+ end if;
+ if((searchjson ->> 'terminationDate') is not null and (searchjson ->> 'terminationDate') != '')
+  then 
+   searchcomp:= searchjson ->> 'terminationDate';
+         searchterminationDate:=  ' AND INTSRCA.terminationdatetime ::date =''' || searchcomp || '''::date'; 
+         RAISE NOTICE 'Parsing %', searchterminationDate ;
+          else searchterminationDate:=  '';
+ end if;
+ if((searchjson ->> 'adjudicationDate') is not null and (searchjson ->> 'adjudicationDate') != '')
+  then 
+   searchcomp:= searchjson ->> 'adjudicationDate';
+         searchadjudicationDate:=  ' AND INTSRCA.adjudicationdatetime ::date =''' || searchcomp || '''::date'; 
+         RAISE NOTICE 'Parsing %', searchadjudicationDate ;
+          else searchadjudicationDate:=  '';
+ end if;
+ if((searchjson ->> 'hearingDate') is not null and (searchjson ->> 'hearingDate') != '')
+  then 
+   searchcomp:= searchjson ->> 'hearingDate';
+         searchhearingDate:=  ' AND INTSRPH.hearingdatetime ::date =''' || searchcomp || '''::date'; 
+         RAISE NOTICE 'Parsing %', searchhearingDate ;
+          else searchhearingDate:=  '';
+ end if;
+ if((searchjson ->> 'courtDate') is not null and (searchjson ->> 'courtDate') != '')
+  then 
+   searchcomp:= searchjson ->> 'courtDate';
+         searchcourtDate:=  ' AND INTSRCA.courtorderdatetime ::date =''' || searchcomp || '''::date'; 
+         RAISE NOTICE 'Parsing %', searchcourtDate ;
+          else searchcourtDate:=  '';
+ end if;
+ 
+ --v_pagelimit := pagenumber-1; courtDate
+     -- v_pagenumber = v_pageoffset * pagesize;
+        v_pagenumber := (pagenumber-1)*   10;
+ 
+ 
+ 
+  
+  queryforlegal := 'select count(1) over() as totalcount, INTSRE.complaintid as complaintID,INTSRP.petitionid as petitionID,HT.description as hearingType 
+   ,INTSRCA.workername as worker ,ADT.description as adjudicationDecision,
+   INTSRCA.terminationdatetime as terminationDate,INTSRCA.adjudicationdatetime as adjudicationDate ,INTSRPH.hearingdatetime as hearingDate,
+
+   (case when HT.description =''Adjudication''
+  then 
+   (select string_agg(CAT.description,'','') as courtActions from  intakeservicerequestcourtactiontype INTSRCAT
+    left join  courtactiontype CAT on CAT.courtactiontypekey=INTSRCAT.courtactiontypekey and INTSRCAT.activeflag=1 
+    left join intakeservicerequestcourtaction INAC on INTSRCAT.intakeservicerequestcourtactionid=INAC.intakeservicerequestcourtactionid and INAC.activeflag=1
+    left join courtactionallegationconfig CAC on CAC.intakeservicerequestcourtactionid =INAC.intakeservicerequestcourtactionid and CAC.activeflag=1
+    where  CAC.intakeservicerequestcourtactionid = INTSRCA.intakeservicerequestcourtactionid and INTSRCAT.activeflag=1)  
+    else
+    
+    (select string_agg(CAT.description,'','') as courtActionsv from  intakeservicerequestcourtactiontype INTSRCAT
+    left join  courtactiontype CAT on CAT.courtactiontypekey=INTSRCAT.courtactiontypekey and INTSRCAT.activeflag=1 
+    where  INTSRCAT.intakeservicerequestcourtactionid = INTSRCA.intakeservicerequestcourtactionid and INTSRCAT.activeflag=1) 
+    
+    end)
+    ,
+    (case when HT.description =''Adjudication''
+  then 
+   (select string_agg(COTY.description,'','') as courtOrder from  intakeservicerequestcourtordertypeconfig INTSRCOTC 
+    left join courtordertype COTY on COTY.courtordertypekey=INTSRCOTC.courtordertypekey and INTSRCOTC.activeflag=1
+    left join intakeservicerequestcourtaction INAC on INTSRCOTC.intakeservicerequestcourtactionid=INAC.intakeservicerequestcourtactionid and INAC.activeflag=1
+    left join courtactionallegationconfig CAC on CAC.intakeservicerequestcourtactionid =INAC.intakeservicerequestcourtactionid and CAC.activeflag=1
+    where  CAC.intakeservicerequestcourtactionid = INTSRCA.intakeservicerequestcourtactionid and INTSRCOTC.activeflag=1)  
+    else
+    
+    (select string_agg(COTY.description,'','') as courtOrder from  intakeservicerequestcourtordertypeconfig INTSRCOTC 
+    left join courtordertype COTY on COTY.courtordertypekey=INTSRCOTC.courtordertypekey and INTSRCOTC.activeflag=1
+    where  INTSRCOTC.intakeservicerequestcourtactionid =INTSRCA.intakeservicerequestcourtactionid and INTSRCOTC.activeflag=1)
+    
+    end)
+--   (select string_agg(CAT.description,'','') as caction from  intakeservicerequestcourtactiontype INTSRCAT
+--    left join  courtactiontype CAT on CAT.courtactiontypekey=INTSRCAT.courtactiontypekey and INTSRCAT.activeflag=1 
+--    where  INTSRCAT.intakeservicerequestcourtactionid = INTSRCA.intakeservicerequestcourtactionid and INTSRCAT.activeflag=1) as courtActions
+--     ,(select string_agg(COTY.description,'','') as corder from  intakeservicerequestcourtordertypeconfig INTSRCOTC 
+--    left join courtordertype COTY on COTY.courtordertypekey=INTSRCOTC.courtordertypekey and INTSRCOTC.activeflag=1
+--    where  INTSRCOTC.intakeservicerequestcourtactionid =INTSRCA.intakeservicerequestcourtactionid and INTSRCOTC.activeflag=1) as courtOrder 
+    ,AG.name as adjudicatedOffense,INTSRCA.courtorderdatetime as courtDate,
+    (select array_agg(AG.name)  from  allegation AG
+      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+      where  ITSEC.intakeservicerequestevaluationid=INTSRE.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as allegationname,
+case when INTSRE.unknownrange=0 then to_char(INTSRE.offensedate,''MM/DD/YYYY'') 
+ when INTSRE.unknownrange=1 then '''' :: character varying 
+  when INTSRE.unknownrange=2 then to_char(INTSRE.begindate,''MM/DD/YYYY'')|| ''- '' || to_char(INTSRE.enddate,''MM/DD/YYYY'')
+end as offensedate 
+   from intakeservicerequestevaluation INTSRE  
+   left join Intakeservreqevalpetitionconfig INTSREPC on INTSRE.intakeservicerequestevaluationid =INTSREPC.intakeservicerequestevaluationid and INTSREPC.activeflag=1
+   left join intakeservicerequestpetition INTSRP on INTSRP.intakeservicerequestpetitionid =INTSREPC.intakeservicerequestpetitionid and INTSRP.activeflag=1
+   left join Intakeservreqpetitionhearingconfig INTSRPHC on INTSRPHC.intakeservicerequestpetitionid =INTSRP.intakeservicerequestpetitionid and INTSRPHC.activeflag=1
+   left join Intakeservicerequestcourthearing INTSRPH on INTSRPH.intakeservicerequestcourthearingid = INTSRPHC.intakeservicerequestcourthearingid and INTSRPH.activeflag=1
+   left join  hearingtype HT on INTSRPH.hearingtypekey=HT.hearingtypekey and HT.activeflag=1
+   
+   
+   left join intakeservicerequestcourtaction INTSRCA on INTSRCA.intakeservicerequestcourthearingid=INTSRPH.intakeservicerequestcourthearingid and INTSRCA.activeflag=1
+   left join allegation AG on INTSRCA.allegationid=AG.allegationid and AG.activeflag=1
+    left join adjudicateddecisiontype ADT on INTSRCA.adjudicationdecision=ADT.adjudicateddecisiontypekey
+   where INTSRE.activeflag=1 and INTSRE.intakenumber in  
+   (   
+   select INTSR.intakenumber from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1
+   where 
+     ACC.personid in
+   (   
+   select P.personid from intakeservicerequest ISR
+   join intakeservicerequestactor ISRA on ISRA.intakeserviceid=ISR.intakeserviceid and ISRA.activeflag=1
+   left join actor AC on ISRA.actorid = AC.actorid  and AC.activeflag=1
+   left join person P on P.personid = AC.personid and P.activeflag=1
+   where ISR.intakenumber='''||Intakenum||''' and ISR.activeflag=1 and Lower(AC.actortype) = ''youth''))   '||searchcomplaintID||''||searchpetitionID||''||searchworker||'
+   '||searchadjudicationDecision||''||searchadjudicatedOffense||''||searchterminationDate||''||searchterminationDate||''||searchadjudicationDate||''||searchhearingDate||''||searchhearingType||''||searchcourtDate||'
+   order by INTSRE.updatedon desc 
+   LIMIT '||pagesize||' OFFSET '||v_pagenumber;
+   --order by ' ||sortcolumn||''|| sortorder||'  
+   
+  
+  
+  queryforpetition := 'select count(1) over() as totalcount, INTSRE.complaintid as complaintID,INTSRP.petitionid as petitionID,HT.description as hearingType 
+   ,INTSRCA.workername as worker ,ADT.description as adjudicationDecision,
+   INTSRCA.terminationdatetime as terminationDate,INTSRCA.adjudicationdatetime as adjudicationDate ,INTSRPH.hearingdatetime as hearingDate,
+
+   (select string_agg(CAT.description,'','') as caction from  intakeservicerequestcourtactiontype INTSRCAT
+    left join  courtactiontype CAT on CAT.courtactiontypekey=INTSRCAT.courtactiontypekey and INTSRCAT.activeflag=1 
+    where  INTSRCAT.intakeservicerequestcourtactionid = INTSRCA.intakeservicerequestcourtactionid and INTSRCAT.activeflag=1) as courtActions
+     ,(select string_agg(COTY.description,'','') as corder from  intakeservicerequestcourtordertypeconfig INTSRCOTC 
+    left join courtordertype COTY on COTY.courtordertypekey=INTSRCOTC.courtordertypekey and INTSRCOTC.activeflag=1
+    where  INTSRCOTC.intakeservicerequestcourtactionid =INTSRCA.intakeservicerequestcourtactionid and INTSRCOTC.activeflag=1) as courtOrder 
+    ,AG.name as adjudicatedOffense,INTSRCA.courtorderdatetime as courtDate,
+    (select array_agg(AG.name)  from  allegation AG
+      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+      where  ITSEC.intakeservicerequestevaluationid=INTSRE.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as allegationname,
+case when INTSRE.unknownrange=0 then to_char(INTSRE.offensedate,''MM/DD/YYYY'') 
+ when INTSRE.unknownrange=1 then '''' :: character varying 
+  when INTSRE.unknownrange=2 then to_char(INTSRE.begindate,''MM/DD/YYYY'')|| ''- '' || to_char(INTSRE.enddate,''MM/DD/YYYY'')
+end as offensedate 
+   from intakeservicerequestevaluation INTSRE  
+   left join Intakeservreqevalpetitionconfig INTSREPC on INTSRE.intakeservicerequestevaluationid =INTSREPC.intakeservicerequestevaluationid and INTSREPC.activeflag=1
+   left join intakeservicerequestpetition INTSRP on INTSRP.intakeservicerequestpetitionid =INTSREPC.intakeservicerequestpetitionid and INTSRP.activeflag=1
+   left join Intakeservreqpetitionhearingconfig INTSRPHC on INTSRPHC.intakeservicerequestpetitionid =INTSRP.intakeservicerequestpetitionid and INTSRPHC.activeflag=1
+   left join Intakeservicerequestcourthearing INTSRPH on INTSRPH.intakeservicerequestcourthearingid = INTSRPHC.intakeservicerequestcourthearingid and INTSRPH.activeflag=1
+   left join  hearingtype HT on INTSRPH.hearingtypekey=HT.hearingtypekey and HT.activeflag=1
+   
+    left join Intakeservreqpetitioncourtconfig INTSRPCC on INTSRPCC.intakeservicerequestpetitionid = INTSRP.intakeservicerequestpetitionid  and INTSRPCC.activeflag=1
+    left join intakeservicerequestcourtaction INTSRCA on INTSRCA.intakeservicerequestcourtactionid=INTSRPCC.intakeservicerequestcourtactionid and INTSRCA.activeflag=1
+          left join courtactionallegationconfig CAC on CAC.intakeservicerequestevaluationconfigid =INTSREPC.intakeservicerequestevaluationconfigid and CAC.activeflag=1
+   left join allegation AG on INTSRCA.allegationid=AG.allegationid and AG.activeflag=1
+    left join adjudicateddecisiontype ADT on INTSRCA.adjudicationdecision=ADT.adjudicateddecisiontypekey
+   where INTSRE.activeflag=1 and INTSRP.petitionstatustypekey=''OP'' and INTSRE.intakenumber in  
+   (   
+   select INTSR.intakenumber from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1
+   where INTSR.intakenumber!='''||Intakenum||''' and
+     ACC.personid in
+   (   
+   select P.personid from intakeservicerequest ISR
+   join intakeservicerequestactor ISRA on ISRA.intakeserviceid=ISR.intakeserviceid and ISRA.activeflag=1
+   left join actor AC on ISRA.actorid = AC.actorid  and AC.activeflag=1
+   left join person P on P.personid = AC.personid and P.activeflag=1
+   where ISR.intakenumber='''||Intakenum||''' and ISR.activeflag=1 and Lower(AC.actortype) = ''youth''))   '||searchcomplaintID||''||searchpetitionID||''||searchworker||'
+   '||searchadjudicationDecision||''||searchadjudicatedOffense||''||searchterminationDate||''||searchterminationDate||''||searchadjudicationDate||''||searchhearingDate||''||searchhearingType||''||searchcourtDate||'
+   order by INTSRE.updatedon desc 
+   LIMIT '||pagesize||' OFFSET '||v_pagenumber;
+   
+   if(sptype='legal') then  RETURN QUERY  execute queryforlegal;
+   else if(sptype='associate') then RETURN QUERY  execute queryforpetition;
+   end if;
+   end if;
+   
+   end
+$function$
+

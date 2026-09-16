@@ -1,0 +1,111 @@
+CREATE OR REPLACE FUNCTION cjams.assignadoptioncase(appeventcode character varying, v_adoptioncaseid uuid, v_fromuserid character varying, v_assignedsecurity json)
+ RETURNS TABLE(statuscode integer, status_description character varying)
+ LANGUAGE plpgsql
+AS $function$  
+
+DECLARE
+statuscode  integer;
+status_description  character   varying;
+v_teamid uuid;
+v_toroletypekey  character varying;
+v_team_member_id  uuid;
+v_fromroletypekey character varying;
+v_routingid uuid;
+v_status  int;
+v_adoptioncasenumber character varying;
+i json;
+l_fromteamid uuid;
+l_fromldssid uuid;
+l_toldssid uuid;
+
+BEGIN
+
+	v_status:= 4;
+	SELECT  adoptioncasenumber
+	INTO v_adoptioncasenumber
+	FROM adoptioncase  
+	WHERE adoptioncaseid = v_adoptioncaseid AND activeflag =1 LIMIT 1;
+
+	SELECT  tm.teamid, t.countyid  INTO  l_fromteamid, l_fromldssid
+    FROM    teammemberassignment tma 
+    INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+    INNER JOIN team t on t.teamid = tm.teamid  and t.activeflag =1
+    WHERE  tma.SecurityUsersId = v_fromuserid
+    AND   tma.activeflag =1;
+
+	select role.roletypekey INTO v_fromroletypekey  from rolemapping rm
+	join role on role.id = rm.roleid and role.activeflag = 1 
+	join muser on muser.id = rm.principalid::int and muser.activeflag = 1 and rm.activeflag = 1 and rm.teamtypekey = 'CW'
+	where muser.securityusersid = v_fromuserid;
+	
+ 	SELECT routingid INTO v_routingid 
+    FROM routing r WHERE tosecurityusersid = v_fromuserid 
+    AND activeflag =1
+    AND r.objectid  = v_adoptioncaseid :: character varying
+    ORDER BY insertedon desc limit 1;
+       
+	/*Mark previous data as inactive and mark as accepted*/	   
+      UPDATE routing SET activeflag =0 WHERE routingid = v_routingid ;
+
+	/*Routing to  user*/
+	FOR  i  IN  SELECT  *  FROM  Json_array_elements(v_assignedsecurity::json)  
+	  LOOP
+	  
+	/*Assigned user team details*/
+
+	SELECT   tm.teamid
+    INTO  v_teamid FROM    teammemberassignment tma 
+    INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+    INNER JOIN  team t ON t.teamid = tm.teamid  AND t.activeflag =1
+    INNER JOIN  teammemberroletype tmrt ON tmrt.roletypekey =tm.roletypekey 
+    WHERE  tma.SecurityUsersId = (i->>'userid')
+    AND   tma.activeflag =1;
+
+	select role.roletypekey INTO v_toroletypekey  from rolemapping rm
+	join role on role.id = rm.roleid and role.activeflag = 1 
+	join muser on muser.id = rm.principalid::int and muser.activeflag = 1 and rm.activeflag = 1 and rm.teamtypekey = 'CW'
+	where muser.securityusersid = (i->>'userid');
+
+   
+	 INSERT INTO routing(
+					eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+					fromroleid, toroleid,objectid , routingstatustypeid,
+					insertedby,  updatedby , servicerequestnumber,objecttypekey,routeddescription)
+
+	VALUES(appeventcode,v_fromuserid,(i->>'userid'),v_teamid,
+	   v_fromroletypekey,v_toroletypekey,v_adoptioncaseid,v_status,
+	   v_fromuserid,v_fromuserid,v_adoptioncasenumber,'adoptioncase','Adoptioncase Created');
+
+	UPDATE caseassignment SET enddate = now()::date WHERE fromworkeridno=v_fromuserid AND objectid= v_adoptioncaseid AND objecttypekey = 'adoptioncase' AND enddate IS NULL ;
+	UPDATE caseassignment SET enddate = now()::date WHERE objectid= v_adoptioncaseid AND assignmenttype = 'T' AND enddate IS NULL ;
+
+	-- Get the ldssid (countyid) for the worker assigned
+	SELECT t.countyid  INTO  l_toldssid
+    FROM    teammemberassignment tma 
+    INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+    INNER JOIN team t on t.teamid = tm.teamid  and t.activeflag =1
+    WHERE  tma.SecurityUsersId = (i->>'userid')
+    AND   tma.activeflag =1;
+
+
+	INSERT INTO caseassignment
+	(fromworkeridno, toworkeridno, insertedby, updatedby, insertedon, updatedon,startdate, objecttypekey, objectid,responsibilitytypekey,fromteamid,toteamid,fromldssid,toldssid,assignmenttype,assigndate)
+	VALUES(v_fromuserid,(i->>'userid'),v_fromuserid,v_fromuserid,now(),now(),now(),'adoptioncase',v_adoptioncaseid,(i->>'responsibilitytypekey'),l_fromteamid,v_teamid,l_fromldssid,l_toldssid,'W',now()::date);
+	
+	END LOOP;
+
+	UPDATE    adoptioncase
+    SET statustypekey = 'Open', updatedon = now(), updatedby = v_fromuserid
+	WHERE    adoptioncaseid = v_adoptioncaseid
+    AND activeflag = 1;
+
+   statuscode := 200;
+   status_description := 'Adoption Case Assigned Successfully';
+
+  RETURN query
+  SELECT statuscode,
+       status_description;
+
+END;
+$function$
+;

@@ -1,0 +1,1 @@
+update  intakeservicerequestactor set isheadofhousehold = true, updatedby = 'CDM-12434',updatedon = now() WHERE personid = '504dfc8f-2f66-4e4a-88a9-e9db7155266a' AND intakeservicerequestactorid = '7b72e74e-5e9a-43c3-a554-4cbb9664d77e';

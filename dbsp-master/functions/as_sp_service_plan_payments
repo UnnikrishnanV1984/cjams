@@ -1,0 +1,590 @@
+CREATE OR REPLACE FUNCTION as_sp_service_plan_payments(OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 09/14/2020 
+-- Adult Services Monthly Service Plan Payments Stored Procedure 
+-- To Generate Adult Services Monthly Service Plan Payments
+
+-- Arguments   : 1) OUT al_sqlcode - SQLCode for error handling
+--     2) OUT as_error - Error text
+
+-- Revision(s)
+-- 07/09/2021 - Vineet Tirodkar - Modifications for DB Upgrade (Postgres 9.6 to 10.8 upgrade) - B-107196
+--          Changes to Distinct ..Order By clause 
+------------------------------------------------------------------------
+-- Log Error
+DECLARE SQLCODE INT DEFAULT 0;
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;
+p_sp_error CHAR(5);
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';
+DECLARE vl_ret_status INTEGER DEFAULT 0;
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'AS_SP_SERV_PLAN_PAYMENTS';
+DECLARE vs_identity_column VARCHAR(100);
+DECLARE vs_identity_val VARCHAR(100);
+
+DECLARE vs_user_id VARCHAR(10) DEFAULT 'asfinance'; 
+DECLARE vs_pay_to_affiliate_cd VARCHAR(5);       
+DECLARE vs_county_cd VARCHAR(5);
+DECLARE vs_change_type VARCHAR(5);
+DECLARE vs_rate_type VARCHAR(5) DEFAULT '5700';  -- Monthly AS Service Plan Payment 
+DECLARE vs_payment_type VARCHAR(5) DEFAULT '22'; --  referencetypeid: 20003 -> ref_key: 22 (Service Plan Payment)
+DECLARE vs_unit_type VARCHAR(5) DEFAULT '6000'; -- Hourly ref_key: 1316
+DECLARE vs_draft_final_type CHAR(10) DEFAULT 'as-srvpln'; -- Monthly AS Service Plan Payment 
+DECLARE vs_service_month CHAR(2);
+DECLARE vs_service_year CHAR(4);
+
+DECLARE v_monthly_report_id uuid;
+
+DECLARE vl_rowcount INTEGER DEFAULT 0;
+DECLARE vl_as_sp_rowcount INTEGER DEFAULT 0;
+DECLARE vl_unit_no INTEGER;
+DECLARE vl_payment_detail_count INTEGER;
+
+DECLARE vl_pay_header_id BIGINT;
+DECLARE vl_provider_id BIGINT;
+DECLARE vl_payment_to_provider_id BIGINT DEFAULT 0;
+DECLARE vl_service_plan_id BIGINT;
+DECLARE vl_client_id BIGINT;
+DECLARE vl_linked_pymnt_hdr_id BIGINT ;  
+DECLARE vl_reference_payment_detail_id BIGINT; 
+DECLARE vl_service_id BIGINT; 
+
+DECLARE vdc_gross_amount DECIMAL(10,2) DEFAULT 0.00;
+DECLARE vdc_monthly_amount DECIMAL(10,2);
+DECLARE vdc_unit_rate DECIMAL(10,2);
+DECLARE vdc_total_final_amount DECIMAL(10,2);
+
+DECLARE vd_previous_month_start_dt DATE;
+DECLARE vd_previous_month_end_dt DATE;
+DECLARE vd_current_service_start_dt DATE;
+DECLARE vd_current_service_end_dt DATE;
+
+DECLARE vts_previous_run_ts TIMESTAMP;
+DECLARE vts_current_run_ts TIMESTAMP;
+
+DECLARE SKIP_BATCH_RUN integer default 0;
+
+cur_as_providers_refcur REFCURSOR;
+cur_as_provider record;
+cur_as_sevice_plans_refcur REFCURSOR;
+cur_as_sevice_plan record;
+cur_as_sevices_refcur REFCURSOR;
+cur_as_sevices record;
+  
+  
+BEGIN
+ BEGIN
+  EXCEPTION WHEN OTHERS THEN
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+  as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;
+  as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');
+  as_error := as_error || COALESCE(vs_message_text ,'');
+
+  select SP_BATCH_ERROR_LOG ( vs_Procedure_nm,
+         NULL::bigint,
+         NULL::bigint,
+         NULL::character varying,
+         NULL::INTEGER,
+         NULL::character varying,
+         SQLSTATE::character varying,
+         as_error::character varying,
+         vs_user_id::character varying) INTO
+         vl_ret_status;
+           
+  as_error := '';
+  al_sqlcode := -1;
+  RETURN;
+ END;
+ 
+ -- Verify if AS Monthly Service Plan Payment batch log - START 
+ -- Monthly COP Placement Payment batch must run prior to under/over batch
+ select count(*)
+  into vl_as_sp_rowcount
+ from tb_payment_runtimes_log
+ where upper(payment_tx) = vs_Procedure_nm
+  and delete_sw = 'N' 
+  and date_part('month', payment_current_run_ts::date) = date_part('month', current_date)
+  and date_part('year', payment_current_run_ts::date) = date_part('year', current_date) ;
+
+ IF vl_as_sp_rowcount > 0 THEN
+  select SP_BATCH_ERROR_LOG (
+    vs_Procedure_nm,
+    NULL::bigint,
+    NULL::bigint,
+    NULL::character varying,
+    NULL::INTEGER,
+    NULL::character varying,
+    SQLSTATE::character varying,
+    'AS Monthly Service Plan Payment batch run previously completed for this month.',
+    vs_user_id::character varying
+    ) 
+  into vl_ret_status;
+    /*
+    ( 
+     vs_Procedure_nm,
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     'AS Monthly Service Plan Payment batch run previously completed for this month.',
+     vs_user_id::character varying,
+     vl_ret_status 
+    )
+    */
+  SKIP_BATCH_RUN := 1;
+ END IF;
+ -- Verify if AS Monthly Service Plan Payment batch log - END 
+ 
+ -- Check Monthly COP Placement Payment batch run count - START 
+ IF( SKIP_BATCH_RUN = 1 ) THEN
+  raise notice '>>>>>>>>>>SKIP_BATCH_RUN --> AS Monthly Service Plan Payment batch run previously completed for this month.';
+  as_error := 'AS Monthly Service Plan Payment batch run previously completed for this month';
+  al_sqlcode := -1;
+  RETURN;
+ ELSE 
+  raise notice '>>>>>>>>>>AS Monthly Service Plan Payment batch processing start'; 
+  
+  -- INITIAL VALUE
+  vts_current_run_ts := current_timestamp;
+  vts_previous_run_ts := current_timestamp;
+  
+  select count(*)
+   into vl_rowcount
+  from tb_payment_runtimes_log
+  where upper(payment_tx) = vs_Procedure_nm
+   and delete_sw = 'N' ;
+
+  IF vl_rowcount > 0 THEN
+   select max(TO_TIMESTAMP(payment_current_run_ts,'YYYY-MM-DD-HH24.MI.SS'))
+    into vts_previous_run_ts
+   from tb_payment_runtimes_log
+   where upper(payment_tx) = vs_Procedure_nm
+    and delete_sw = 'N' ;
+  END IF;
+  
+  -- Insert Into PAYMENT Runtime log --> PROGRAM STARTED
+  insert into tb_payment_runtimes_log
+   ( payment_runtimes_log_id,
+    payment_tx,
+    payment_current_run_ts,
+    payment_previous_run_ts,
+    payment_batch_no,
+    payment_successful_sw,
+    create_ts,
+    create_user_id,
+    update_ts,
+    update_user_id,
+    delete_sw,
+    payment_other_tx)
+  select  NEXTVAL('sq_payment_runtimes_log'),
+    vs_Procedure_nm,
+    vts_current_run_ts,
+    vts_previous_run_ts,
+    '',
+    '',
+    current_timestamp,
+    vs_user_id,
+    current_timestamp,
+    vs_user_id,
+    'N',
+    vs_Procedure_nm || ' -->  PROGRAM STARTED';
+  
+  al_sqlcode := SQLCODE;   
+  IF al_sqlcode <> 0 THEN
+   as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM STARTED';
+   vs_identity_column := '';
+   vs_identity_val := '';
+  END IF;
+ 
+  -- Get the last month start date and end date
+  select (date_trunc('month', now()) - interval '1 month')::date,
+   (date_trunc('month', now())::date - 1)
+  into vd_previous_month_start_dt,
+   vd_previous_month_end_dt ;
+   
+  RAISE NOTICE '%  previous_month_start_dt', vd_previous_month_start_dt;
+  RAISE NOTICE '% previous_month_end_dt', vd_previous_month_end_dt;
+  
+  -- Distinct Provider & County combination
+  OPEN cur_as_providers_refcur FOR      
+   select distinct 
+      pr.provider_id,
+      f_prim_county(cs.servicerequestnumber::bigint, '') as county_cd, 
+      pr.pay_to_affiliate_cd, 
+      pr.affiliate_provider_id as provider_organization_id,
+      f_ename('2953', pr.provider_id) as provider_name,
+      date_part('month',reportedmonthyear::date)::integer as service_month,
+      date_part('year',reportedmonthyear::date)::integer as service_year
+   from ihasprovidermonthlyreport mrpt,
+     serviceplanlog svlg,
+     tb_provider pr,
+     intakeservicerequest cs
+   where mrpt.serviceplanlogid = svlg.serviceplanlogid
+    and mrpt.provider_id = pr.provider_id
+    and mrpt.intakeserviceid = cs.intakeserviceid
+    and mrpt.totalinvoiceamount > 0 
+    and mrpt.status = 'Approved'
+    and mrpt.activeflag = 1
+    and svlg.activeflag = 1
+    and pr.delete_sw = 'N'
+    and cs.activeflag = 1
+    and  (  mrpt.reportedmonthyear::date between vd_previous_month_start_dt and vd_previous_month_end_dt
+      OR
+      COALESCE(mrpt.ispaid, 'N') <> 'Y' -- to process late approved Service Plans 
+      ) 
+    and mrpt.reportedmonthyear::date < (date_trunc('month', now()))::date  
+    and mrpt.isvendorapproved = true   
+   order by pr.provider_id, 
+    county_cd,
+    -- reportedmonthyear::date 
+    date_part('year',reportedmonthyear::date)::integer,
+    date_part('month',reportedmonthyear::date)::integer
+    ;
+  LOOP
+   FETCH cur_as_providers_refcur INTO cur_as_provider;
+   EXIT WHEN NOT FOUND;
+   
+   vl_pay_header_id := 0;
+   IF cur_as_provider.pay_to_affiliate_cd = '3366' THEN -- Same as provider
+    vl_payment_to_provider_id := cur_as_provider.provider_id;
+   ELSEIF cur_as_provider.pay_to_affiliate_cd = '3367' THEN -- A different address
+    vl_payment_to_provider_id := cur_as_provider.provider_id;--
+   ELSEIF cur_as_provider.pay_to_affiliate_cd = '3368' THEN -- send payment to affiliate org
+    vl_payment_to_provider_id := cur_as_provider.provider_organization_id;
+   ELSE -- Case NULL or Any value other than above
+    vl_payment_to_provider_id := cur_as_provider.provider_id;
+   END IF;
+
+   vl_provider_id := cur_as_provider.provider_id;
+   vs_county_cd := Btrim(cur_as_provider.county_cd);
+   vs_service_month = btrim(cur_as_provider.service_month::character varying);
+   vs_service_month = lpad(vs_service_month, 2, 0);
+   vs_service_year = btrim(cur_as_provider.service_year::character varying);
+      
+   SELECT f_daymonth((vs_service_year || '-' || vs_service_month || '-01')::date ,'F','C'),
+     f_daymonth((vs_service_year || '-' || vs_service_month || '-01')::date ,'L','C')
+   INTO vd_current_service_start_dt,
+    vd_current_service_end_dt ;
+  
+   select ph.payment_id
+     into vl_pay_header_id
+      from tb_payment_header ph,
+     tb_payment_detail pd
+   where ph.payment_id = pd.payment_id
+    and ph.provider_id = vl_payment_to_provider_id
+    and ph.delete_sw = 'N'
+    and pd.delete_sw = 'N'
+    and ph.payment_start_dt = vd_current_service_start_dt
+    and ph.payment_end_dt = vd_current_service_end_dt
+    and ph.payment_type_cd = vs_payment_type 
+    and pd.county_cd = vs_county_cd 
+    and ph.payment_dt = current_date ;
+
+   IF vl_pay_header_id IS NULL OR vl_pay_header_id = 0 THEN
+    SELECT a.al_header_id,
+     a.al_sqlcode,
+     a.as_error 
+    FROM sp_payment_header_insert(  vl_provider_id::bigint,
+              vs_payment_type::varchar,
+              vd_current_service_start_dt::date,
+              vd_current_service_end_dt::date          
+             ) a 
+    INTO vl_pay_header_id, 
+     al_sqlcode, 
+     as_error;
+
+    IF al_sqlcode = - 1 THEN
+     as_error := as_error || ' (SP-1)';
+     IF as_error is NULL OR as_error = '' THEN
+       as_error := 'SP_PAYMENT_HEADER_INSERT failed. (SP-1)'  ;
+     END IF;
+     --SIGNAL p_sp_error;
+    END IF ;
+   END IF ;
+   
+    -- Get all Service Plans for Provider/County
+   OPEN cur_as_sevice_plans_refcur FOR
+    select mrpt.ihasprovidermonthlyreportid,
+       svlg.alternateid as service_plan_id,
+       cl.cjamspid as client_id 
+    from ihasprovidermonthlyreport mrpt,
+      serviceplanlog svlg,
+      intakeservicerequest cs,
+      serviceplanactivity spac,
+      person cl
+    where mrpt.serviceplanlogid = svlg.serviceplanlogid
+     and mrpt.intakeserviceid = cs.intakeserviceid
+     and spac.serviceplanactivityid = svlg.serviceplanactivityid
+     and spac.personsinvolvedid = cl.personid
+     and mrpt.totalinvoiceamount > 0 
+     and mrpt.status = 'Approved'
+     and mrpt.activeflag = 1
+     and svlg.activeflag = 1
+     and cs.activeflag = 1
+     and spac.activeflag = 1
+     and cl.activeflag = 1
+     and mrpt.reportedmonthyear::date between vd_current_service_start_dt and vd_current_service_end_dt
+     and COALESCE(mrpt.ispaid, 'N') <> 'Y'
+     and mrpt.isvendorapproved = true
+     and mrpt.provider_id = vl_provider_id
+     and f_prim_county(cs.servicerequestnumber::bigint, '') = vs_county_cd
+    order by cl.cjamspid ; 
+   LOOP
+    FETCH cur_as_sevice_plans_refcur INTO cur_as_sevice_plan;
+    EXIT WHEN NOT FOUND;
+    v_monthly_report_id = cur_as_sevice_plan.ihasprovidermonthlyreportid ;
+    vl_service_plan_id := cur_as_sevice_plan.service_plan_id;
+    vl_client_id := cur_as_sevice_plan.client_id;
+    vdc_gross_amount := 0; 
+    
+    -- Get all Services from Plan
+    OPEN cur_as_sevices_refcur FOR
+     select srvdtl.service_id,
+      (  coalesce((case when btrim(srvdtl.day01) = '' then '0' else srvdtl.day01 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day02) = '' then '0' else srvdtl.day02 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day03) = '' then '0' else srvdtl.day03 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day04) = '' then '0' else srvdtl.day04 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day05) = '' then '0' else srvdtl.day05 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day06) = '' then '0' else srvdtl.day06 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day07) = '' then '0' else srvdtl.day07 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day08) = '' then '0' else srvdtl.day08 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day09) = '' then '0' else srvdtl.day09 end ),'0')::numeric 
+       +
+       coalesce((case when btrim(srvdtl.day10) = '' then '0' else srvdtl.day10 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day11) = '' then '0' else srvdtl.day11 end ),'0')::numeric 
+       + 
+       coalesce((case when btrim(srvdtl.day12) = '' then '0' else srvdtl.day12 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day13) = '' then '0' else srvdtl.day13 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day14) = '' then '0' else srvdtl.day14 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day15) = '' then '0' else srvdtl.day15 end ),'0')::numeric 
+       +
+       coalesce((case when btrim(srvdtl.day16) = '' then '0' else srvdtl.day16 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day17) = '' then '0' else srvdtl.day17 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day18) = '' then '0' else srvdtl.day18 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day19) = '' then '0' else srvdtl.day19 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day20) = '' then '0' else srvdtl.day20 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day21) = '' then '0' else srvdtl.day21 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day22) = '' then '0' else srvdtl.day22 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day23) = '' then '0' else srvdtl.day23 end ),'0')::numeric 
+       + 
+       coalesce((case when btrim(srvdtl.day24) = '' then '0' else srvdtl.day24 end ),'0')::numeric 
+       +
+       coalesce((case when btrim(srvdtl.day25) = '' then '0' else srvdtl.day25 end ),'0')::numeric 
+       + 
+       coalesce((case when btrim(srvdtl.day26) = '' then '0' else srvdtl.day26 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day27) = '' then '0' else srvdtl.day27 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day28) = '' then '0' else srvdtl.day28 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day29) = '' then '0' else srvdtl.day29 end ),'0')::numeric
+       + 
+       coalesce((case when btrim(srvdtl.day30) = '' then '0' else srvdtl.day30 end ),'0')::numeric
+       +
+       coalesce((case when btrim(srvdtl.day31) = '' then '0' else srvdtl.day31 end ),'0')::numeric
+      ) as total_hours,
+      COALESCE(srvdtl.total::numeric, 0) as service_amount,
+      COALESCE(srvdtl.hourly_rate::numeric, 0) as unit_rate
+     from ihasprovidedmonthlyreportdaysconfig srvdtl
+     where srvdtl.ihasprovidermonthlyreportid = v_monthly_report_id
+      and srvdtl.activeflag = 1
+      and COALESCE(srvdtl.total::numeric, 0) > 0 ;
+    LOOP
+     FETCH cur_as_sevices_refcur INTO cur_as_sevices;
+     EXIT WHEN NOT FOUND;
+     vl_service_id := cur_as_sevices.service_id;
+     vl_unit_no := cur_as_sevices.total_hours; 
+     vdc_monthly_amount := cur_as_sevices.service_amount; 
+     vdc_unit_rate := cur_as_sevices.unit_rate; 
+     
+     
+     -- Create Payment Detail Records
+     RAISE NOTICE 'SP_PAYMENT_DETAIL_INSERT started';
+     
+     RAISE NOTICE '% vl_pay_header_id',vl_pay_header_id;
+     RAISE NOTICE '% vl_provider_id',vl_provider_id;
+     RAISE NOTICE '% vs_county_cd',vs_county_cd;
+     RAISE NOTICE '% vl_service_plan_id',vl_service_plan_id;
+     RAISE NOTICE '% vl_client_id',vl_client_id;
+     RAISE NOTICE '% vd_current_service_start_dt',vd_current_service_start_dt;
+     RAISE NOTICE '% vd_current_service_end_dt',vd_current_service_end_dt;
+     RAISE NOTICE '% vl_unit_no',vl_unit_no;
+     RAISE NOTICE '% vdc_monthly_amount',vdc_monthly_amount;
+     RAISE NOTICE '% vs_unit_type',vs_unit_type;
+     RAISE NOTICE '% vdc_unit_rate',vdc_unit_rate;
+     RAISE NOTICE '% vs_draft_final_type',vs_draft_final_type;
+     RAISE NOTICE '% vs_rate_type',vs_rate_type;
+     RAISE NOTICE '% vl_linked_pymnt_hdr_id',vl_linked_pymnt_hdr_id;
+     RAISE NOTICE '% vl_reference_payment_detail_id',vl_reference_payment_detail_id;
+     RAISE NOTICE '% vs_change_type',vs_change_type;
+     RAISE NOTICE '% vl_service_id',vl_service_id;
+          
+     SELECT a.al_sqlcode,
+       a.as_error 
+     FROM as_sp_payment_detail_insert(
+       vl_service_plan_id,
+       vl_pay_header_id,
+       vl_service_id,
+       vd_current_service_start_dt,
+       vd_current_service_end_dt,
+       vdc_monthly_amount,
+       vl_unit_no,
+       vs_unit_type,
+       vdc_unit_rate,
+       vs_draft_final_type,
+       vs_rate_type,
+       vl_linked_pymnt_hdr_id,
+       vl_reference_payment_detail_id,
+       vs_change_type,
+       vs_county_cd  ) a 
+     INTO al_sqlcode,
+      as_error;
+
+     RAISE NOTICE '% Payment details insert  al_sqlcode', al_sqlcode;
+     RAISE NOTICE '% Payment details insert  as_error', as_error;
+     
+     IF al_sqlcode = - 1 THEN
+      as_error := as_error  || ' (SP-2)';
+      IF as_error is NULL OR as_error = '' THEN
+       as_error := 'SP_PAYMENT_DETAIL_INSERT failed. (SP-2)'  ;
+      END IF;
+      --SIGNAL p_sp_error  ;
+     END IF ;
+    
+    END LOOP; -- FOR cur_as_sevices_refcur
+    CLOSE cur_as_sevices_refcur;
+    
+    UPDATE ihasprovidermonthlyreport
+     SET payment_id = vl_pay_header_id,
+      ispaid = 'Y',
+      updatedby = vs_user_id,
+      updatedon= current_timestamp
+    WHERE ihasprovidermonthlyreportid = v_monthly_report_id 
+     and activeflag = 1;
+      
+    al_sqlcode := SQLCODE;
+    IF al_sqlcode <> 0 THEN
+     as_error := 'Error in Updating ihasprovidermonthlyreport (SQL-1)' ;
+     vs_identity_column := 'Service Plan ID';
+     vs_identity_val := TO_CHAR(vl_service_plan_id);
+     --SIGNAL p_sp_error;
+    END IF ;
+   END LOOP; -- FOR cur_as_sevice_plans_refcur 
+   CLOSE cur_as_sevice_plans_refcur;
+  
+   -- Getting the sum of all the payment needed
+   SELECT SUM(final_amount_no)
+    INTO vdc_total_final_amount
+   FROM tb_payment_detail 
+   WHERE payment_id = vl_pay_header_id 
+    AND delete_sw = 'N' ;     
+
+   al_sqlcode := SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error := 'Error in getting Total Final Amount. (SQL-2)'  ;
+    vs_identity_column := 'Payment ID';
+    vs_identity_val := TO_CHAR(vl_pay_header_id);
+    --SIGNAL p_sp_error  ;
+   END IF ;
+
+   -- Update Payment Header table
+   UPDATE tb_payment_header
+    SET gross_amount_no = vdc_total_final_amount
+   WHERE payment_id = vl_pay_header_id ;
+
+   al_sqlcode := SQLCODE;
+   IF al_sqlcode <> 0 THEN
+    as_error := 'Error in Updating TB_PAYMENT_HEADER. (SQL-3)'  ;
+    vs_identity_column := 'Payment Header ID';
+    vs_identity_val := TO_CHAR(vl_pay_header_id);
+    --SIGNAL p_sp_error  ;
+   END IF ;
+
+   -- Check if there is any payment header created without detail delete then
+   SELECT COUNT(*)
+    INTO vl_payment_detail_count
+   FROM tb_payment_detail 
+   WHERE payment_id = vl_pay_header_id 
+    AND delete_sw = 'N' ; 
+
+   IF vl_payment_detail_count = 0  THEN
+    DELETE FROM tb_payment_status WHERE payment_id = vl_pay_header_id AND delete_sw = 'N';
+    DELETE FROM tb_payment_detail WHERE payment_id = vl_pay_header_id AND delete_sw = 'N';
+    DELETE FROM tb_payment_header WHERE payment_id = vl_pay_header_id AND delete_sw = 'N';
+   END IF;
+  
+  --COMMIT;
+  END LOOP; -- FOR cur_as_providers_refcur
+  CLOSE cur_as_providers_refcur;
+  
+  
+  -- Insert Into PAYMENT Runtime log --> PROGRAM ENDED
+  INSERT INTO tb_payment_runtimes_log
+  ( PAYMENT_RUNTIMES_LOG_ID,
+   PAYMENT_TX,
+   PAYMENT_CURRENT_RUN_TS,
+   PAYMENT_PREVIOUS_RUN_TS,
+   PAYMENT_BATCH_NO,
+   PAYMENT_SUCCESSFUL_SW,
+   CREATE_TS,
+   CREATE_USER_ID,
+   UPDATE_TS,
+   UPDATE_USER_ID,
+   DELETE_SW,
+   PAYMENT_OTHER_TX)
+  SELECT  NEXTVAL('sq_payment_runtimes_log'),
+    vs_Procedure_nm,
+    vts_current_run_ts,
+    current_timestamp,
+    '',
+    '',
+    current_timestamp,
+    vs_user_id,
+    current_timestamp,
+    vs_user_id,
+    'N',
+    vs_Procedure_nm || ' --> PROGRAM ENDED';
+   
+        
+  al_sqlcode := SQLCODE;
+  IF al_sqlcode <> 0 THEN
+   as_error := 'Error in inserting PAYMENT RUNTIMES LOG -->  PROGRAM ENDED' ;
+   vs_identity_column := '';
+   vs_identity_val := '';
+   --SIGNAL p_sp_error  ;
+  END IF ;
+  
+  raise notice '>>>>>>>>>>AS Monthly Service Plan Payment batch processing End'; 
+ END IF;
+
+ al_sqlcode:=0;
+ RETURN;
+END
+;
+
+$function$
+

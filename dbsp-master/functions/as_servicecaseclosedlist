@@ -1,0 +1,67 @@
+CREATE OR REPLACE FUNCTION as_servicecaseclosedlist(v_usersid character varying, v_status character varying, v_page integer, v_limit integer, servicecaseno character varying)
+ RETURNS TABLE(totalcount bigint, servicecaseid uuid, servicecasenumber character varying, caseheadname character varying, startdate timestamp without time zone, statustypekey character varying, enddate timestamp without time zone, assignedusername text, insertedon timestamp without time zone, program json, subprogram json, casetype character varying, servicerequesttypekey character varying, legalguardian json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+v_offset    integer;
+v_routingstatustypeid integer;
+err_context text;
+
+BEGIN
+v_offset  :=  (v_page  -  1)  *  v_limit;
+
+ 
+
+ RETURN  query
+
+        SELECT 
+   count(1) over(),
+   sc.servicecaseid, 
+   sc.servicecasenumber, 
+   sc.caseheadname, 
+   sc.startdate, 
+   case when lower(v_status) ='closed' then 'Closed' else sc.statustypekey end,    
+   sc.enddate,
+            (SELECT up.firstname || ' ' || up.lastname assignedusername FROM userprofile up 
+                        WHERE up.securityusersid = sc.tosecurityusersid AND  up.activeflag =1 limit 1), 
+   sc.insertedon,
+   (SELECT json_agg(t) FROM (
+    SELECT  apa.programname, apa.programkey 
+    FROM agencyprogramarea apa 
+    INNER JOIN servicecaserequest scr ON scr.servicecaseid=sc.servicecaseid AND scr.activeflag=1
+    WHERE apa.programkey = scr.programkey AND apa.activeflag =1 
+   ) AS t
+   ),
+   (SELECT json_agg(e) FROM (
+    SELECT  rv.description subprogramname, rv.ref_key subprogramkey 
+    FROM referencevalues rv 
+    INNER JOIN servicecaserequest scr ON scr.servicecaseid=sc.servicecaseid AND scr.activeflag=1
+    WHERE  rv.ref_key=scr.subprogramkey AND rv.activeflag=1 AND referencetypeid =12 ) AS e
+   ),
+   'Servicecase' :: character varying,
+   (Select  classkey FROM servicecaserequest SR INNER JOIN servicerequestsubtype SRT ON SRT.servicerequestsubtypeid = SR.servicerequestsubtypeid
+   and SRT.intakeservreqtypeid = SRT.intakeservreqtypeid AND SR.servicecaseid = sc.servicecaseid
+   AND SRT.activeflag =1 AND SR.activeflag =1 limit 1) servicerequesttypekey ,
+   (select getcasepersonname from getcasepersonname ('servicecase',sc.servicecaseid:: CHARACTER VARYING)) AS legalguardian
+        FROM ( SELECT r.tosecurityusersid ,sc.* FROM servicecase sc
+     inner JOIN routing r ON r.objectid = sc.servicecaseid ::character varying AND r.activeflag =1  
+      AND r.routingstatustypeid in (4)
+      AND  r.eventcode = 'SRVC' 
+      AND   r.fromsecurityusersid = v_usersid 
+      inner join servicecasedisposition scd on scd.servicecaseid=sc.servicecaseid
+      
+     WHERE scd.intakeserreqstatustypekey = 'Closed'
+       AND SC.servicecasenumber  LIKE  servicecaseno  ||'%'
+       AND sc.activeflag = 1
+      
+   ) sc
+    ORDER BY sc.insertedon DESC
+        LIMIT v_limit OFFSET v_offset;
+ 
+END;
+ 
+$function$
+

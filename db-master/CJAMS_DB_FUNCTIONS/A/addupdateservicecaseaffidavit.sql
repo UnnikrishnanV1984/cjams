@@ -1,0 +1,131 @@
+CREATE OR REPLACE FUNCTION cjams.addupdateservicecaseaffidavit(v_input json, v_userid uuid)
+ RETURNS TABLE(message character varying, code integer)
+ LANGUAGE plpgsql
+AS $function$
+	
+BEGIN
+       
+	IF (v_input  ->> 'servicecaseaffidavitid') IS NULL then
+			
+		INSERT INTO servicecaseaffidavit (
+		    typekey,
+			objectid,
+			objectkey,
+			caregiverid,
+			caregivername,
+			caregiverdob,
+			caregiveraddress,
+			childrendata,
+			isbloodrelationship,
+			ischildfriend,
+			ischildfamilfriend,
+			hasstrongbondwithchild,
+			hasstrongbondwithfamily,
+			hasregularcontactwithchild,
+			hasregularcontactwithfamily,
+			description,
+			applicant1name,
+			applicant1signature,
+			applicant1date,
+			applicant2name,
+			applicant2signature,
+			applicant2date,
+			parent1name,
+			parent1signature,
+			parent1date,
+			parent2name,
+			parent2signature,
+			parent2date,
+			childname,
+			childsignature,
+			childdate,
+			isapplicantsignatureavailable,
+			insertedby,
+			updatedby,
+			updatedon, 
+			insertedon
+		) VALUES (
+			( v_input  ->> 'typekey')::character varying,
+			( v_input  ->> 'objectid')::uuid,
+			( v_input  ->> 'objectkey')::character varying,
+			( v_input  ->> 'caregiverid')::uuid,
+			( v_input  ->> 'caregivername')::character varying,
+			( v_input  ->> 'caregiverdob')::timestamp,
+			( v_input  ->> 'caregiveraddress')::character varying,
+			( v_input  ->> 'childrendata')::json,
+			( v_input  ->> 'isbloodrelationship')::boolean,
+			( v_input  ->> 'ischildfriend')::boolean,
+			( v_input  ->> 'ischildfamilfriend')::boolean,
+			( v_input  ->> 'hasstrongbondwithchild')::boolean,
+			( v_input  ->> 'hasstrongbondwithfamily')::boolean,
+			( v_input  ->> 'hasregularcontactwithchild')::boolean,
+			( v_input  ->> 'hasregularcontactwithfamily')::boolean,
+			( v_input  ->> 'description')::character varying,
+			( v_input  ->> 'applicant1name')::character varying,
+			( v_input  ->> 'applicant1signature')::character varying,
+			( v_input  ->> 'applicant1date')::timestamp,
+			( v_input  ->> 'applicant2name')::character varying,
+			( v_input  ->> 'applicant2signature')::character varying,
+			( v_input  ->> 'applicant2date')::timestamp,
+			( v_input  ->> 'parent1name')::character varying,
+			( v_input  ->> 'parent1signature')::character varying,
+			( v_input  ->> 'parent1date')::timestamp,
+			( v_input  ->> 'parent2name')::character varying,
+			( v_input  ->> 'parent2signature')::character varying,
+			( v_input  ->> 'parent2date')::timestamp,
+			( v_input  ->> 'childname')::character varying,
+			( v_input  ->> 'childsignature')::character varying,
+			( v_input  ->> 'childdate')::timestamp,
+			( v_input  ->> 'isapplicantsignatureavailable')::boolean,
+			v_userid ::character varying,
+			v_userid ::character varying,
+			now(), now()
+		);
+
+	
+	ELSE
+
+	
+		UPDATE servicecaseaffidavit
+		SET caregiverid = ( v_input  ->> 'caregiverid')::uuid,
+			caregivername = ( v_input  ->> 'caregivername')::character varying,
+			caregiverdob = ( v_input  ->> 'caregiverdob')::timestamp,
+			caregiveraddress = ( v_input  ->> 'caregiveraddress')::character varying,
+			childrendata = ( v_input  ->> 'childrendata')::json,
+			isbloodrelationship = ( v_input  ->> 'isbloodrelationship')::boolean,
+			ischildfriend = ( v_input  ->> 'ischildfriend')::boolean,
+			ischildfamilfriend = ( v_input  ->> 'ischildfamilfriend')::boolean,
+			hasstrongbondwithchild = ( v_input  ->> 'hasstrongbondwithchild')::boolean,
+			hasstrongbondwithfamily = ( v_input  ->> 'hasstrongbondwithfamily')::boolean,
+			hasregularcontactwithchild = ( v_input  ->> 'hasregularcontactwithchild')::boolean,
+			hasregularcontactwithfamily = ( v_input  ->> 'hasregularcontactwithfamily')::boolean,
+			description = ( v_input  ->> 'description')::character varying,
+			applicant1name = ( v_input  ->> 'applicant1name')::character varying,
+			applicant1signature = ( v_input  ->> 'applicant1signature')::character varying,
+			applicant1date = ( v_input  ->> 'applicant1date')::timestamp,
+			applicant2name = ( v_input  ->> 'applicant2name')::character varying,
+			applicant2signature = ( v_input  ->> 'applicant2signature')::character varying,
+			applicant2date = ( v_input  ->> 'applicant2date')::timestamp,
+			parent1name = ( v_input  ->> 'parent1name')::character varying,
+			parent1signature = ( v_input  ->> 'parent1signature')::character varying,
+			parent1date = ( v_input  ->> 'parent1date')::timestamp,
+			parent2name = ( v_input  ->> 'parent2name')::character varying,
+			parent2signature = ( v_input  ->> 'parent2signature')::character varying,
+			parent2date = ( v_input  ->> 'parent2date')::timestamp,
+			childname = ( v_input  ->> 'childname')::character varying,
+			childsignature = ( v_input  ->> 'childsignature')::character varying,
+			childdate = ( v_input  ->> 'childdate')::timestamp,
+			isapplicantsignatureavailable = ( v_input  ->> 'isapplicantsignatureavailable')::boolean,
+			updatedby = v_userid ::character varying,
+			updatedon = now()
+		WHERE servicecaseaffidavitid = ( v_input  ->> 'servicecaseaffidavitid')::uuid;
+	
+	
+	END IF;
+
+RETURN QUERY
+	SELECT (case when (v_input  ->> 'servicecaseaffidavitid') IS NULL then 'Affidavit for Potential Kinship Caregiver Added Successfully' else 'Affidavit for Potential Kinship Caregiver Updated Successfully' end)::character varying, 200;
+
+END;
+
+$function$;

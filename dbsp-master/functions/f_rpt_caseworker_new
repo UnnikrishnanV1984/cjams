@@ -1,0 +1,94 @@
+CREATE OR REPLACE FUNCTION f_rpt_caseworker_new(al_entity_key_id uuid, adt_start_dt timestamp without time zone, adt_end_dt timestamp without time zone)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+VL_ASSIGNMENT_ID uuid;
+VL_ASSIGN_TO_STAFF_ID uuid;
+vd_end_dt date;
+Vl_case_cd character varying;
+vl_entity_type_cd character varying;
+AL_SERVICE_CASE int4;
+AL_ADOPTION_CASE int4;
+
+BEGIN
+
+ --- CASE ID
+ SELECT count(*) 
+ INTO AL_SERVICE_CASE
+ FROM servicecase 
+ WHERE servicecaseid = al_entity_key_id AND activeflag = 1;
+
+ SELECT count(*)
+ INTO AL_ADOPTION_CASE
+ FROM adoptioncase
+ WHERE adoptioncaseid = al_entity_key_id AND activeflag = 1;
+
+ IF AL_SERVICE_CASE = 1
+ THEN
+  vl_case_cd = 'servicecase';
+ ELSE 
+  vl_case_cd = 'adoptioncase'; 
+ END IF; 
+ 
+ if vl_case_cd = 'adoptioncase' then
+     vl_entity_type_cd ='adoptioncase';
+ else
+     vl_entity_type_cd ='servicecase'; 
+ end if;
+
+   IF  ADT_END_DT IS NULL THEN
+       vd_end_dt = now();
+   ELSE
+         vd_end_dt =  ADT_END_DT  ;
+   END IF;
+
+ 
+  VL_ASSIGNMENT_ID = (SELECT caseassignmentid 
+     FROM caseassignment a 
+     WHERE a.objecttypekey = vl_entity_type_cd AND 
+      a.objectid = AL_ENTITY_KEY_ID AND 
+      a.activeflag = 1
+         );
+
+IF VL_ASSIGNMENT_ID IS NOT NULL THEN
+  VL_ASSIGN_TO_STAFF_ID = ( select toworkeridno
+       FROM caseassignment
+       WHERE caseassignmentid = VL_ASSIGNMENT_ID AND 
+        activeflag = 1 AND 
+        ((startdate <= vd_end_dt AND 
+         (enddate >= vd_end_dt OR enddate IS NULL)) OR 
+         (startdate IS NULL AND enddate >= vd_end_dt)));
+END IF;
+
+IF (VL_ASSIGNMENT_ID IS NULL) OR (VL_ASSIGN_TO_STAFF_ID IS NULL) THEN
+  VL_ASSIGN_TO_STAFF_ID = ( SELECT toworkeridno
+       FROM caseassignment A
+       WHERE A.objectid = AL_ENTITY_KEY_ID AND 
+        A.activeflag = 1 AND 
+        A.objecttypekey = vl_entity_type_cd AND 
+        A.responsibilitytypekey = 'family' AND 
+        ((A.startdate <= vd_end_dt AND 
+         (A.enddate >= ADT_START_DT OR A.enddate IS NULL)) OR 
+         (A.startdate IS NULL AND A.enddate >= ADT_START_DT)));
+
+END IF;
+
+IF ( VL_ASSIGN_TO_STAFF_ID IS NULL) THEN
+       VL_ASSIGN_TO_STAFF_ID = ( SELECT toworkeridno 
+        FROM caseassignment
+        WHERE objectid = AL_ENTITY_KEY_ID AND 
+         activeflag = 1 AND 
+         objecttypekey = vl_entity_type_cd AND 
+         responsibilitytypekey = 'family' 
+        ORDER BY caseassignmentid ASC FETCH FIRST 1 ROW ONLY );
+
+END IF;
+
+RETURN VL_ASSIGN_TO_STAFF_ID;
+
+END;
+
+ $function$
+

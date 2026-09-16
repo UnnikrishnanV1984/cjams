@@ -1,0 +1,162 @@
+CREATE OR REPLACE FUNCTION prov_reconsiderationapplication(v_providerid character varying, v_applicantid character varying, v_referralid character varying, v_securityuserid text, v_application_type character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+ 
+ declare
+ response json;
+ addressId text;
+ addressType text;
+ v_counter json;
+ returnStatus text;
+ householdmemberid text;
+ householdsubdata json;
+ householdhistchec json; 
+ householdpersonid text; 
+v_randomuuid uuid;
+v_placementstructures jsonb;
+v_oldapplicantid character varying;
+v_appinformation jsonb;
+ v_agegroup jsonb;
+ res json;
+ v_service json;
+ serviceCategory text; 
+ serviceCost text;     
+ serviceDescription text;      
+ serviceId text;       
+ servicePaidBy text;       
+ serviceUnit text;     
+ serviceClassification text;      
+ serviceStartDate text;      
+ serviceEndDate text;      
+ serviceStatus text;
+ 
+ 
+ BEGIN
+ 
+ IF LENGTH(v_providerid) > 1 
+ THEN
+ 
+  INSERT INTO publicproviderhomeplacementspecification
+   (object_id, min_age_yr, max_age_yr, min_age_months, max_age_months, capacity, gender, is_interested_respite)
+  SELECT
+   v_applicantId, pphps.min_age_yr, pphps.max_age_yr, pphps.min_age_months, pphps.max_age_months, pphps.capacity, pphps.gender, pphps.is_interested_respite
+  FROM
+   publicproviderhomeplacementspecification pphps
+  WHERE 
+   pphps.object_id = v_providerid and active_flag=1 and delete_sw='N';
+  
+ RAISE NOTICE '%',v_providerid;
+ RAISE NOTICE '%',v_applicantId;
+ RAISE NOTICE '%',v_referralid;
+  
+ --insert address
+ select gen_random_uuid() into v_randomuuid;  
+   --insert into providerapprovalphaserecord
+   select applicant_id into v_oldapplicantid from providerapprovalphaserecord where provider_id=v_providerid and active_flag=1 order by create_ts desc limit 1;
+  
+   update providerapprovalphaserecord set active_flag=0 where provider_id=v_providerid;
+   INSERT INTO providerapprovalphaserecord
+   (provider_approval_record_id, referral_id, applicant_id, provider_id, is_referral_accepted, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+   VALUES(gen_random_uuid(), v_referralId, v_applicantId, v_providerid, true, now(), v_securityUserId, now(), v_securityUserId, 'N'::bpchar, 1);
+   
+   ---insert into publicproviderhomeinfo
+   INSERT INTO publicproviderhomeinfo
+   (home_info_id, home_info_children_no, home_info_bedroom_no, is_home_water, is_home_swimming_pool, home_info_pool_location, home_is_other_agency, home_info_agency_nm, 
+   is_child_care_provider, home_info_child_care_details,home_phone, interested_in, explanatory_text, is_previously_applied, previous_state, previous_source, create_ts, 
+   create_user_id, update_ts, update_user_id, delete_sw, active_flag, object_id, ownerorrenter, propertybuiltyear)
+   select gen_random_uuid(), home_info_children_no, home_info_bedroom_no, is_home_water, is_home_swimming_pool, home_info_pool_location, home_is_other_agency, 
+   home_info_agency_nm, is_child_care_provider, home_info_child_care_details, home_phone, interested_in, explanatory_text, is_previously_applied, previous_state, previous_source, 
+    now(), v_securityUserId, now(), v_securityUserId,'N'::bpchar, 1, v_applicantId, ownerorrenter, propertybuiltyear
+   from publicproviderhomeinfo WHERE object_id=v_oldapplicantid;
+  
+  -- Insert addresses
+--INSERT INTO tb_provider_applicant_addresses
+--(parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx,
+--adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx , adr_county_cd_tx,adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx,  adr_postal_code_tx,  adr_default_sw, adr_start_dt, adr_end_dt )
+--select v_applicantId, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, 
+--adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_country_tx, now(), v_securityuserid, now(), v_securityuserid, 'N', adr_street_tx , adr_county_cd_tx,adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx,  adr_postal_code_tx,  adr_default_sw, adr_start_dt, adr_end_dt 
+--FROM tb_provider_addresses pra
+--WHERE pra.parent_key_id = v_providerId and delete_sw='N';
+
+--insert contacts While approving the application move the trainings from application to provider
+INSERT INTO tb_provider_contacts ( object_id, type_of_contact, purpose_of_contact, person_contacted_name, title_of_person_contacted, communication_date, narrative, communication_location, phone_of_contact, email_of_contact, create_ts, create_user_id, update_ts, update_user_id, delete_sw, activeflag) 
+SELECT  v_applicantId, type_of_contact, purpose_of_contact, person_contacted_name, title_of_person_contacted, communication_date, narrative, communication_location, phone_of_contact, email_of_contact, now(), v_securityuserid, now(), v_securityuserid, 'N',1 FROM tb_provider_contacts
+where object_id=v_applicantid and delete_sw='N';
+
+  
+ --update training While approving the application move the trainings from application to provider
+ 
+ -- INSERT INTO providerorientationtrainingattendance ( orientation_training_id, training_number, object_id, 
+ -- narrative, phase, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag, is_attended, is_intent_to_attend,
+ -- personid, personrole) 
+ -- select  trattend.orientation_training_id, trattend.training_number, v_providerId, trattend.narrative, trattend.phase, trattend.create_ts, trattend.create_user_id, trattend.update_ts, trattend.update_user_id, 'N',
+ -- trattend.active_flag, trattend.is_attended, trattend.is_intent_to_attend, personid, personrole
+ -- from providerorientationtrainingattendance trattend
+ -- left join  providerorientationtraining prtrng on trattend.orientation_training_id=prtrng.orientation_training_id and (session_type='PRIDE' or training_type='In-Service Training')
+ -- where object_id =v_applicantid and trattend.delete_sw='N';
+-- (select applicant_id from providerapprovalphaserecord where provider_id=v_providerid);
+--
+-- INSERT INTO providerorientationtrainingattendance ( orientation_training_id, training_number, object_id, 
+-- narrative, phase, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag, is_attended, is_intent_to_attend,
+-- personid, personrole) 
+-- select  trattend.orientation_training_id, trattend.training_number, v_applicantid, trattend.narrative, trattend.phase, trattend.create_ts, trattend.create_user_id, trattend.update_ts, trattend.update_user_id, 'N',
+-- trattend.active_flag, trattend.is_attended, trattend.is_intent_to_attend, personid, personrole
+-- from providerorientationtrainingattendance trattend
+-- left join  providerorientationtraining prtrng on trattend.orientation_training_id=prtrng.orientation_training_id 
+-- where object_id =v_providerid;
+
+ INSERT INTO publicproviderpetinfo
+ (object_id, pet_type_tx, pet_breed_tx, pet_nm, age_of_pet_tx, rabies_certificate_expiry_dt,
+  create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag,hasnopets)
+ SELECT v_applicantId, pet_type_tx, pet_breed_tx, pet_nm, age_of_pet_tx, 
+ rabies_certificate_expiry_dt, now(), create_user_id, update_ts, update_user_id, 'N', 1,hasnopets
+ FROM publicproviderpetinfo 
+ where object_id =v_oldapplicantid and delete_sw='N';
+ 
+ --bg check information
+ if (v_application_type<>'REOPENPROV') then
+  select json_agg(x) from (SELECT *  FROM pubprovapphouseholdbgchecks where objectid=v_providerid  and active_sw='Y' ) as X  into response;
+  
+  
+  raise notice '%s',  response;
+   
+  for v_counter in select * from json_array_elements(response)
+  loop
+  raise notice '% v_counter',  v_counter;
+     householdmemberid := v_counter ->> 'household_member_id';
+    householdsubdata := v_counter ->> 'submission_data';
+    householdhistchec := v_counter ->> 'criminal_history_check_data';  
+    householdpersonid := v_counter ->> 'personid';  
+   
+    INSERT INTO pubprovapphouseholdbgchecks ( household_member_id, submission_data, criminal_history_check_data, personid, objectid) 
+    VALUES( householdmemberid::int,householdsubdata,householdhistchec,householdpersonid::uuid, v_applicantId);
+  
+  END LOOP;
+ end if;
+ --insert services
+select json_agg(distinct(service_nm)) into v_placementstructures from tb_provider_services tps
+left join tb_services svc on tps.service_id=svc.service_id and svc.structure_service_cd = 'P' where provider_id=v_providerid;
+
+select app_information,age_group into v_appinformation,v_agegroup from tb_public_provider_applicant where applicant_id=v_oldapplicantid;
+
+update tb_public_provider_applicant set placement_structures=v_placementstructures,app_information=v_appinformation,age_group=v_agegroup  where  applicant_id=v_applicantId;
+INSERT INTO providerassignment
+( fromworkeridno, fromsupervisoridno, toworkeridno, tosupervisoridno, objecttypekey, objectid, activeflag, startdate, enddate, fromteamid, toteamid, remarks, statustypekey, fromldssid, toldssid, assigndate, isrestricted, assigndescription, summary, insertedby, updatedby, insertedon, updatedon)
+       SELECT fromworkeridno, fromsupervisoridno, toworkeridno, tosupervisoridno, objecttypekey, v_applicantId::character varying, activeflag, startdate, enddate, fromteamid, toteamid, remarks, statustypekey, fromldssid, toldssid, assigndate, isrestricted, assigndescription, summary, insertedby, updatedby, insertedon, updatedon
+FROM providerassignment
+WHERE objectid = v_oldapplicantid::character varying and  fromworkeridno is not null and fromworkeridno <> '' and fromworkeridno <> 'null' and 
+toworkeridno is not null and toworkeridno <> '' and toworkeridno <> 'null' and (enddate is null or enddate > now() );
+ 
+ ELSE
+  returnStatus:= 'Failure';
+ 
+ END IF;
+  returnStatus:= v_applicantId;
+ 
+ RETURN returnStatus;
+                                                       
+ END;
+ 
+ $function$
+

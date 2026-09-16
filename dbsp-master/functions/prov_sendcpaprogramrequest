@@ -1,0 +1,105 @@
+CREATE OR REPLACE FUNCTION prov_sendcpaprogramrequest(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_subject character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_tousersid json;
+v_effective_date timestamp without time zone;
+v_eventcode character varying;
+v_phase character varying;
+v_sign json;
+v_appstatus character varying;
+response CHARACTER varying;
+currentRow record;
+v_type character varying;
+v_username CHARACTER VARYING;
+v_appstatustext CHARACTER VARYING;
+v_objectname CHARACTER VARYING;
+v_decisiondate character varying;
+v_providerid character varying;
+v_providername character varying;
+v_cpaid character varying;
+v_cpaname character varying;
+v_programid character varying;
+v_programname character varying;
+v_tousers json;
+effective_date character varying;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_eventcode := objectls->>'eventcode';
+
+v_cpaid := objectls->>'cpa_home_id';
+v_programid := objectls->>'program_id';
+v_effective_date := objectls->>'effective_date';
+
+select to_char( v_effective_date, 'DD-MON-YYYY') into effective_date;
+select 
+tp.provider_id  ,
+cpa.provider_id  ,
+cpa.provider_nm || cpa.provider_first_nm || ' '|| cpa.provider_last_nm,
+tp.provider_nm  into 
+ v_providerid,
+ v_cpaid,
+ v_cpaname,
+ v_providername
+from tb_provider cpa 
+inner join tb_provider tp on cpa.affiliate_provider_id = tp.provider_id
+where cpa.provider_id = v_cpaid;
+
+select 
+tcp.program_id  ,
+tcp.program_nm into 
+v_programid, 
+v_programname
+from tb_contract_program tcp  
+where tcp.program_id = v_programid;
+
+-- if v_eventcode = 'CPAREQ'
+-- then
+   v_subject := 'Contract Program "'||v_programid||':'||v_programname||'" Request recieved for CPA Home '||v_cpaid||':'||v_cpaname||', Effective date '||effective_date||', for Provider "'|| v_providerid||':'||v_providername||'"';
+-- else 
+--    v_subject := 'Contract Program "'||v_programid||':'||v_programname||'" Request approved for CPA Home '||v_cpaid||':'||v_cpaname||', for Provider "'|| v_providerid||':'||v_providername||'"';
+-- end if;
+   
+for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+        from muser mu 
+        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+        join role r on r.id = rm.roleid and r.activeflag = 1
+        where r.name in  ('SSA_CONTRACT_ADM',
+                        'SSA_CONTRACT_ADM_SUP',
+                        'SSA_CONTRACT_PM',
+                        'SSA_CONTRACT_EXE') 
+        and mu.activeflag =1
+loop
+    BEGIN
+        SELECT prov_send_notification into v_success
+        FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_subject, v_programid,  false, false, v_eventcode, v_providerid);
+    END;
+end loop;
+
+
+select json_agg(a) into v_tousers from ( 
+    SELECT distinct mu.securityusersid as toworkeridno 
+    , mu.email 
+        from muser mu 
+        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+        join role r on r.id = rm.roleid and r.activeflag = 1
+        where r.name in  ('SSA_CONTRACT_ADM',
+                        'SSA_CONTRACT_ADM_SUP',
+                        'SSA_CONTRACT_PM',
+                        'SSA_CONTRACT_EXE') 
+        and mu.activeflag =1
+
+)a;
+RETURN json_build_object('response',v_success, 'ROLE_WORKERS', v_tousers,
+    'workersubject', v_subject, 
+    'workerbody', v_subject);
+end;
+$function$
+

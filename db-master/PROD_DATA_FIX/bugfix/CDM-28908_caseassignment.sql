@@ -1,0 +1,11 @@
+/*
+   Issue Description: CDM-28908
+   Category/ Module  :Case Assignment 
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+*/
+
+INSERT INTO cjams.caseassignment
+(eventidno_fk, eventdttmkey_fk, fromworkeridno, fromsupervisoridno, fromofficecode, toworkeridno, tosupervisoridno, toofficecode, caseassigncode, effectivedate, effectivetime, frombizunitidno, tobizunitidno, old_id, foldergroupindc, cmfldrgrpasgnkey, insertedby, updatedby, insertedon, updatedon, objecttypekey, objectid, responsibilitytypekey, activeflag, startdate, enddate, fromteamid, toteamid, remarks, statustypekey, fromldssid, toldssid, assignmenttype, fk_id, assigndate, isrestricted, assigndescription, summary, isnew, expungementflag, entityopendate, etl_userid, etl_load_date, servicetype)
+VALUES(NULL, NULL, '38ef2748-75db-4001-95b3-3250ffec78b6', NULL, NULL, '22f78177-19c0-4bb2-a921-c133de3590cd', NULL, NULL, NULL, now(), now(), NULL, NULL, NULL, NULL, NULL, '38ef2748-75db-4001-95b3-3250ffec78b6', 'CDM-28908', now(), now(), 'servicerequest', 'cc069fe5-c141-42a0-9d92-abe35cda1383', NULL, 1, now(), NULL, '13235932-5e81-4427-a9d0-affbc6001410', '13235932-5e81-4427-a9d0-affbc6001410', NULL, NULL, 'f5214cb2-953e-41a9-a4ad-71341501e2ad', 'f5214cb2-953e-41a9-a4ad-71341501e2ad', 'W', NULL, now(), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);

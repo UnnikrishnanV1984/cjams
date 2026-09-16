@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION prov_updateplacementstructureenddate(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+providerId numeric;
+v_providertype text;
+v_enddate date;
+createdBy CHARACTER VARYING;
+v_service_nm text;
+returnStatus text;
+v_approval_nm text;
+
+
+BEGIN
+
+providerId=insertedtlsobj->>'provider_id';
+v_providertype =insertedtlsobj->>'provider_type';
+v_enddate= insertedtlsobj->>'end_dt';
+createdBy = insertedtlsobj->>'create_user_id';
+
+if v_providertype = 'Keep Adoptive Home Only'
+then
+v_service_nm = 'Adoptive Home';
+v_approval_nm = 'Adoptive Home Approval';
+end if;
+
+if v_providertype = 'Keep Guardianship Home Only'
+then
+v_service_nm = 'Guardianship Assistance Program';
+v_approval_nm = 'Guardianship Home Approval';
+end if;
+
+-- update the end date of all other services except the selected one
+update tb_provider_services set end_dt=v_enddate,update_ts=now(),update_user_id=createdBy 
+where provider_id = providerId 
+and service_id  in (select service_id from tb_services ts where ts.structure_service_cd = 'P' and  ts.service_nm != v_service_nm);
+
+--update the next reconsideration date also to null except the selected one
+update tb_provider_approval set next_recon_dt = null,update_ts=now(),update_user_id=createdBy  
+where provider_approval_id in (select provider_approval_id 
+ from tb_provider_approval tpa
+  left join tb_picklist_values tpv on trim(tpv.picklist_value_cd) = trim(tpa.approval_type_cd) and tpv.picklist_type_id='367'
+  left join tb_picklist_values tpv1 on trim(tpv1.picklist_value_cd) = trim(tpa.approval_status_cd) and tpv1.picklist_type_id='368'
+ -- left outer join tb_public_provider_applicant tppp on tppp.applicant_id=v_applicantid
+  where tpa.provider_id = providerId and tpa.delete_sw='N' and tpa.approval_dt is not null 
+  and tpv.value_tx != v_approval_nm
+order by tpa.approval_dt desc, tpa.create_ts desc);
+
+returnStatus:= 'Success';
+
+RETURN returnStatus;
+                                                      
+END;
+
+$function$
+

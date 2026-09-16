@@ -1,0 +1,147 @@
+CREATE OR REPLACE FUNCTION sp_ive_fc_periods(al_client_id character varying, al_removal_id character varying)
+ RETURNS TABLE(key_id integer, sqnm_sw character varying, start_dt timestamp without time zone, end_dt timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+
+ v_intakeservicerequestactorid  uuid;
+ v_removal_dt      timestamp;
+ vd_anniversary_dt     timestamp;
+ vd_removal_type_cd    VARCHAR(5);
+ vd_18th_bday     timestamp;
+ vd_21st_bday     timestamp;
+ v_Row_Num       INT := 1; 
+ vd_start_dt      timestamp;
+ vd_end_dt        timestamp;
+ v_redet_cntr     INT := 1;
+ pl_rec       RECORD;
+ vd_pl_entry_Dt     DATE;
+ vd_pl_exit_dt     DATE;
+ v_pl_cntr      INT := 1;
+  
+BEGIN
+ CREATE TABLE IF NOT EXISTS
+ Temp_IVE_Periods ( key_id integer, sqnm_sw varchar(10), start_dt date, end_dt date );
+ 
+
+ select intakeservicerequestactorid into v_intakeservicerequestactorid
+ from intakeservicerequestactor 
+ where fk_id = al_client_id;
+
+
+ SELECT ISRCR.removaldate, 
+     ISRCR.removaldate + interval '1 Year', 
+     ISRCR.removalreasontypeid 
+ INTO   v_removal_dt, vd_anniversary_dt, vd_removal_type_cd 
+ FROM   intakeservreqchildremoval ISRCR 
+ WHERE  old_id = al_removal_id 
+     AND intakeservicerequestactorid = v_intakeservicerequestactorid;
+ raise notice '%', v_removal_dt;    
+ SELECT PERSN.dob + interval '18 years', 
+     PERSN.dob + interval '21 years' 
+ INTO   vd_18th_bday, vd_21st_bday 
+ FROM   person PERSN 
+ WHERE  PERSN.cjamspid = al_client_id::bigint 
+     AND PERSN.activeflag = 1;
+     
+ -- Inserting Initial determination
+ INSERT INTO Temp_IVE_Periods (key_id, sqnm_sw, start_dt, end_dt)
+ VALUES(v_Row_Num, 'I', v_removal_dt, NULL :: date);
+  
+ vd_start_dt = v_removal_dt; 
+ vd_end_dt = ( date_trunc('month', vd_start_dt) + interval '1 year' ) - interval '1 day';
+ v_Row_Num = v_Row_Num + 1;
+ 
+ WHILE ( current_date > vd_end_dt ) 
+ LOOP    -- Begin of removal logic
+  INSERT INTO Temp_IVE_Periods
+  VALUES ( v_Row_Num, 'R' || v_redet_cntr, vd_start_dt, vd_end_dt);
+  
+  FOR pl_rec IN
+   SELECT PL.entry_dt, 
+       PL.exit_dt 
+   FROM   tb_placement PL 
+   WHERE  PL.removal_id = al_removal_id::integer
+       AND PL.delete_sw = 'N' 
+       AND ( PL.void_sw = 'N' 
+        OR PL.void_sw IS NULL ) 
+       AND PL.exit_dt IS NOT NULL 
+       AND PL.entry_dt IS NOT NULL 
+       AND ( PL.entry_dt 
+       BETWEEN vd_start_dt AND vd_end_dt 
+       OR PL.exit_dt 
+       BETWEEN vd_start_dt AND vd_end_dt ) 
+   ORDER  BY 1, 2
+   
+  LOOP  -- Begin of placement logic
+   vd_pl_entry_dt = pl_rec.entry_dt;
+   vd_pl_exit_dt = pl_rec.exit_dt;
+  
+   IF vd_pl_entry_dt  
+    BETWEEN vd_start_dt AND vd_end_dt AND vd_pl_exit_dt 
+    BETWEEN vd_start_dt AND vd_end_dt THEN 
+    INSERT INTO Temp_IVE_Periods
+    VALUES (v_Row_Num, 'R' || v_redet_cntr || 'E' || v_pl_cntr, vd_pl_entry_dt, vd_pl_exit_dt);
+    
+   ELSIF vd_pl_entry_dt 
+    BETWEEN vd_start_dt AND vd_end_dt AND vd_pl_exit_dt 
+    NOT BETWEEN vd_start_dt AND vd_end_dt THEN
+    INSERT INTO Temp_IVE_Periods
+    VALUES (v_Row_Num, 'R' || v_redet_cntr || 'E' || v_pl_cntr, vd_pl_entry_dt, vd_end_dt);
+
+   ELSIF vd_pl_entry_dt 
+    NOT BETWEEN vd_start_dt AND vd_end_dt AND vd_pl_exit_dt 
+    BETWEEN vd_start_dt AND vd_end_dt THEN
+    INSERT INTO Temp_IVE_Periods
+    VALUES (v_Row_Num, 'R' || v_redet_cntr || 'E' || v_pl_cntr, vd_start_dt, vd_pl_exit_dt);
+    
+   END IF;
+   
+   v_pl_cntr = v_pl_cntr + 1;
+  END LOOP; -- End of placement logic
+  
+  vd_start_dt = date_trunc ( 'month', vd_start_dt ) + interval '1 year';
+  vd_end_dt = vd_end_dt + interval '1 year';
+  v_Row_Num = v_Row_Num + 1;
+  
+  v_redet_cntr = v_redet_cntr + 1;
+  v_pl_cntr = 1;  
+ END LOOP;   -- End of removal logic
+ 
+  -- 18th/21st Birthday
+ IF ( vd_18th_bday < CURRENT_DATE ) THEN
+  v_row_num = (
+    SELECT max(a.key_id) + 1 
+    FROM temp_ive_periods a
+  );
+  
+  INSERT INTO Temp_IVE_Periods 
+  SELECT DISTINCT
+   v_Row_Num, 'I', v_removal_dt, NULL :: date;
+   
+ ELSIF ( vd_21st_bday < CURRENT_DATE ) THEN
+  v_row_num = (
+    SELECT Max(a.key_id) + 1 
+    FROM temp_ive_periods a
+  );
+  
+  INSERT INTO temp_ive_periods 
+  SELECT DISTINCT 
+   v_row_num, '21BDAY', vd_21st_bday, NULL::timestamp;
+       
+ END IF;
+
+ RETURN query 
+ SELECT * 
+ FROM temp_ive_periods 
+ ORDER BY key_id; 
+       
+ DROP TABLE temp_ive_periods;
+
+ EXCEPTION 
+ WHEN OTHERS THEN
+  RAISE NOTICE '% %', SQLSTATE, SQLERRM;
+END
+
+$function$
+

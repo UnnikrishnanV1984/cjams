@@ -1,0 +1,96 @@
+CREATE OR REPLACE FUNCTION as_searchcaseworkerattachments_as(v_servicecaseid character varying, v_servicerequestid character varying, v_objecttypekey character varying, v_category character varying, v_title character varying, v_subcategory character varying, v_worker character varying, pageno integer, pagesize integer, v_sortcol character varying, v_sortorder character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ jsondata json;
+ v_servicerequestid_uuid uuid;
+
+BEGIN
+ SELECT as_uuid_or_null INTO v_servicerequestid_uuid FROM as_uuid_or_null(v_servicerequestid);
+
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+  SELECT COUNT(1) over(),
+  dp.documentpropertiesid, dp.objecttypekey, dp.title, dp.documenttypekey, dp.insertedon, dp.updatedon, dp.insertedby,  
+  dp.updatedby, dp.documentdate, dp.mime, dp.insertedby, dp.s3bucketpathname, dp.description, dp.filename, 
+  dp.numberofbytes, dp.originalfilename, dp.servicecaseid, dp.ecmsdocumentid,
+  (
+   SELECT json_agg (e) FROM 
+   (
+    select da.documentpropertiesid, da.attachmenttypekey, da.attachmentclassificationtypekey,da.attachmentclassificationsubtypekey 
+    from documentattachment da where da.documentpropertiesid = dp.documentpropertiesid and da.activeflag=1 
+   )as  e 
+  ) as documentattachment,
+  (
+   SELECT json_agg (e) FROM
+   ( 
+    select securityusersid, firstname, lastname, displayname from userprofile up 
+    where up.securityusersid = dp.insertedby and up.activeflag=1 
+   )as  e 
+  ) as userprofile ,
+  (
+   SELECT json_agg (e) FROM( select securityusersid, firstname, lastname, displayname from userprofile up 
+   where up.securityusersid = dp.updatedby and up.activeflag=1 )as  e 
+  ) as updateduserprofile
+  FROM documentproperties dp 
+  left join documentattachment d on d.documentpropertiesid = dp.documentpropertiesid and d.activeflag = 1
+  LEFT JOIN userprofile up on up.securityusersid = d.insertedby and up.activeflag=1
+  WHERE dp.activeflag=1  
+  and dp.servicerequestid=v_servicerequestid_uuid 
+  and CASE WHEN v_objecttypekey is not null and (v_objecttypekey='AS-COURT' or 
+  v_objecttypekey = 'AS-COURT ORDER' or v_objecttypekey = 'AS-APGRB')
+  THEN (dp.objecttypekey=v_objecttypekey) ELSE true END
+  AND CASE WHEN v_category IS NOT NULL and v_category!='' THEN 
+   (d.attachmentclassificationtypekey = any (v_category :: text[])) ELSE true end
+  AND CASE WHEN v_subcategory IS NOT NULL and v_subcategory!='' THEN 
+   (d.attachmentclassificationsubtypekey  = any (v_subcategory :: text[])) ELSE true END
+  AND case when v_worker is not null and v_worker!='' THEN up.displayname ilike '%' || v_worker || '%' else true end 
+  and CASE WHEN v_title IS NOT NULL THEN dp.title like v_title ELSE true END 
+  ORDER BY (
+   case
+    v_sortorder
+    when 'asc' then
+    case v_sortcol
+    when 'title' then COALESCE(dp.title  ,'')
+    when 'documenttypekey' then COALESCE(dp.documenttypekey ,'')
+    when 'insertedon' then dp.insertedon :: character varying
+    when 'updatedon' then dp.updatedon :: character varying
+    when 'insertedby' then COALESCE(dp.insertedby  ,'')
+    when 'updatedby' then COALESCE(dp.updatedby ,'')
+    when 'documentdate' then dp.documentdate :: character varying
+    when 'mime' then COALESCE(dp.mime ,'')
+    when 'description' then COALESCE(dp.description ,'')
+    when 'filename' then COALESCE(dp.filename ,'')
+    when 'originalfilename' then COALESCE(dp.originalfilename ,'')
+     else dp.updatedon  :: character varying
+    end
+    else  NULL 
+   end) ASC,
+   (
+   case
+    v_sortorder
+    when 'desc' then
+    case
+     v_sortcol
+    when 'title' then COALESCE(dp.title  ,'')
+    when 'documenttypekey' then COALESCE(dp.documenttypekey ,'')
+    when 'insertedon' then dp.insertedon :: character varying
+    when 'updatedon' then dp.updatedon :: character varying
+    when 'insertedby' then COALESCE(dp.insertedby ,'')
+    when 'updatedby' then COALESCE(dp.updatedby ,'')
+    when 'documentdate' then dp.documentdate :: character varying
+    when 'mime' then COALESCE(dp.mime ,'')
+    when 'description' then COALESCE(dp.description ,'')
+    when 'filename' then COALESCE(dp.filename ,'')
+    when 'originalfilename' then COALESCE(dp.originalfilename ,'')
+     else dp.updatedon  :: character varying
+    end
+    else NULL
+   end ) DESC
+   LIMIT pagesize OFFSET (pageno - 1) * pagesize ) AS pla;
+ RETURN jsondata ;
+END;
+
+$function$
+

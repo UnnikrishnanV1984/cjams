@@ -1,0 +1,162 @@
+CREATE OR REPLACE FUNCTION as_usernotificationbatch()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+declare 
+ v_allrows record ;
+ v_allrowsprogress record;
+ v_currentdate timestamp without time zone ;
+ v_isnoimmed_physicalabuse boolean;
+ v_isnoimmed_sexualabuse boolean;
+ v_isnoimmed_neglectresponse boolean;
+ v_isnoimmed_mentalinjury boolean;
+ v_narrativeupdateddate timestamp without time zone;
+ v_intakeactorcount bigint;
+ v_contactintakeactorcount bigint;
+ v_tosecurityusersid character varying;
+ v_fromsecurityusersid character varying;
+
+ v_subject character varying;
+ v_subjectcondition character varying;
+ v_body character varying;
+ v_casenumber character varying;
+ v_intakeserviceid character varying;
+ v_status character varying; 
+ 
+ v_attemptindicator boolean;
+ v_progressnote boolean;
+ v_usernotificationcount bigint;
+
+begin
+ v_currentdate  := (select now())  ;
+
+for v_allrows in select intakeserviceid,narrativeupdateddate,servicerequestnumber as intakenumber 
+from intakeservicerequest where narrativeupdateddate is not null and activeflag=1 --and intakeserviceid='90e79286-f277-4df1-8bb8-c79b4d538d80' limit 2
+
+
+   
+loop
+
+ 
+ v_intakeserviceid = v_allrows.intakeserviceid :: character varying;
+ 
+ select isnoimmed_physicalabuse,isnoimmed_sexualabuse,isnoimmed_neglectresponse,isnoimmed_mentalinjury
+ into v_isnoimmed_physicalabuse,v_isnoimmed_sexualabuse,v_isnoimmed_neglectresponse,v_isnoimmed_mentalinjury
+ FROM  intakeservicerequestsdm  sdm  WHERE  sdm.intakeserviceid  =v_allrows.intakeserviceid and sdm.activeflag=1
+ ORDER    BY  sdm.insertedon  DESC ;
+
+ 
+ if(v_isnoimmed_neglectresponse = true or  v_isnoimmed_mentalinjury = true) then 
+   v_narrativeupdateddate = v_allrows.narrativeupdateddate + interval '5 days';
+ end if;
+
+ 
+
+
+ if(v_isnoimmed_physicalabuse = true or v_isnoimmed_sexualabuse= true) then 
+   v_narrativeupdateddate = v_allrows.narrativeupdateddate + interval '1 days'; 
+ end if;
+
+ 
+ select tosecurityusersid,fromsecurityusersid 
+ into v_tosecurityusersid,v_fromsecurityusersid  
+ from routing where objectid = v_intakeserviceid order by insertedon desc limit 1; 
+
+ if(v_tosecurityusersid  is not null and v_fromsecurityusersid is not null  ) then
+  
+  if(v_currentdate > v_narrativeupdateddate  ) then
+   
+  RAISE NOTICE 'v_narrativeupdateddate 11 %',v_narrativeupdateddate; 
+  RAISE NOTICE 'v_currentdate 11%',v_currentdate; 
+
+ 
+   select count(intakeservicerequestactorid) into v_intakeactorcount from intakeservicerequestactor  
+   where intakeserviceid = v_allrows.intakeserviceid  and activeflag=1;
+ 
+
+   select count(cp.intakeservicerequestactorid) into v_contactintakeactorcount FROM contactparticipant cp 
+   where cp.activeflag=1 and cp.intakeservicerequestactorid in
+   (select ia.intakeservicerequestactorid from intakeservicerequestactor ia where 
+    ia.intakeserviceid = v_allrows.intakeserviceid and ia.activeflag=1)   ;
+ 
+   
+    for v_allrowsprogress in select PN.AttemptIndicator attemptindicator,PNT.progressnotetypekey progressnotetypekey 
+          FROM  ProgressNote AS PN 
+          INNER JOIN ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId   
+                and PN.entitytypeid= v_intakeserviceid and PN.activeflag=1 and PNT.activeflag=1 
+   
+   loop
+   
+     RAISE NOTICE 'v_attemptindicator   %',v_attemptindicator; 
+     RAISE NOTICE 'v_progressnote   %',v_progressnote; 
+  
+  
+    if(v_allrowsprogress.attemptindicator !=null and v_allrowsprogress.progressnotetypekey!=null) then 
+     if (v_allrowsprogress.progressnotetypekey =='Initialfacetoface' || 
+      v_allrowsprogress.progressnotetypekey =='Face To Face' || v_allrowsprogress.progressnotetypekey =='Phone') then 
+    
+       v_attemptindicator=true;
+       v_progressnote = true;
+  
+     end if;
+    end if;
+   end loop;
+     
+   
+   RAISE NOTICE 'v_contactintakeactorcount   %',v_contactintakeactorcount; 
+   RAISE NOTICE 'v_intakeactorcount  %',v_intakeactorcount; 
+ 
+ 
+   if(v_intakeactorcount!=v_contactintakeactorcount ) then 
+   
+    v_casenumber =  v_allrows.intakenumber ;
+    v_subject = 'Timeline to complete Face To Face for investigation ' ||  v_casenumber ||  ' elapsed on ' ||  CAST(to_char(v_narrativeupdateddate,'MM/DD/YYYY hh:mm:ss AM') as character varying) ;
+    v_subjectcondition = 'Timeline to complete Face To Face for investigation ' ||  v_casenumber ||  ' elapsed on ' ;
+    v_body = 'Timeline to complete Face To Face for investigation '  ||   v_casenumber  ||  ' elapsed on ' ||  CAST(to_char(v_narrativeupdateddate,'MM/DD/YYYY hh:mm:ss AM') as character varying);
+  
+    RAISE NOTICE 'v_casenumber 11 %',v_casenumber; 
+    RAISE NOTICE 'v_subject 11%',v_subject; 
+    RAISE NOTICE 'v_body 11 %',v_body; 
+ 
+   
+    select count(objectid) into v_usernotificationcount 
+    from usernotification
+    where objectid=v_intakeserviceid and securityusersid= v_tosecurityusersid and insertedby=v_fromsecurityusersid 
+    and subject like '%' || v_subjectcondition || '%';
+  
+    RAISE NOTICE 'v_usernotificationcount  %',v_usernotificationcount; 
+ 
+    if  v_usernotificationcount < 1 then  
+      select send_notification INTO v_status  
+      from    as_send_notification(v_tosecurityusersid, v_fromsecurityusersid, v_tosecurityusersid, 'System', 'High', v_subject, v_body, v_intakeserviceid,  false);
+  
+      select send_notification INTO v_status  
+      from    as_send_notification(v_fromsecurityusersid, v_tosecurityusersid, v_fromsecurityusersid, 'System', 'High', v_subject, v_body, v_intakeserviceid,  false);
+  
+         end if ;
+  /*      else 
+        
+          INSERT INTO auditlog( logtypekey,  intakeserviceid,servicerequestnumber, referenceid, description, 
+            isnew,isedit, isdelete, insertedby, updatedby,insertedon,updatedon, metadata,ipaddress, old_id,
+          modifieddata, objectid, objecttype)
+      VALUES   
+     ('WL020',v_intakeserviceid::uuid, null,NULL,concat('Face To Face Completed  for investigation CASE ', v_casenumber,' with ', v_persondescription),
+      false, true,false, v_securityuserid,v_securityuserid,now(),now(),null,null,NULL,
+      null,null,null);   */
+   end if; 
+    
+
+ end if;
+
+end if ;
+
+
+
+
+end loop ;
+
+ RETURN 'success' ;   
+
+end $function$
+

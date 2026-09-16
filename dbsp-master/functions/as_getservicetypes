@@ -1,0 +1,44 @@
+CREATE OR REPLACE FUNCTION as_getservicetypes(v_intakeservreqtypeid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+ v_result json;
+ 
+BEGIN      
+  
+ SELECT json_agg(s1) into v_result FROM  
+  (SELECT  
+   itas.intakeagencyservid,
+   itas.intakeservid, 
+   itas.activeflag,
+   (SELECT json_agg(x1) FROM
+    (SELECT it1.intakeservid, it1.description, it1.intakeservtypekey, it1.activeflag, 
+      (SELECT json_agg(a1) FROM
+       (SELECT itss.intakeservid, itss.intakeservsubtypeid, itss.intakeservsubtypekey, itss.typedescription ,itss.activeflag
+       FROM intakeservsubtype itss
+       WHERE itss.activeflag = 1 and itss.intakeservsubtypekey != 'NA'
+       and (itss.intakeservid = it1.intakeservid 
+        OR (CASE WHEN it1.intakeservtypekey IN ('24H','5D') THEN 
+        itss.intakeservid = (SELECT it2.intakeservid FROM intakeserv it2 WHERE it2.intakeservtypekey = 'APS' LIMIT 1)
+        ELSE false END))
+       ORDER by itss.typedescription ) a1) 
+      as intakeservsub,
+      (SELECT json_agg(a2) FROM
+       (SELECT ast.activeflag, ast.servcassessmenttemplatemapid, ast.assessmenttemplateid, ast.external_templateid
+       FROM agencyservcassessmenttemplatemap ast
+       WHERE ast.intakeagencyservid = itas.intakeagencyservid) a2) 
+     as agencyservcassessmenttemplatemap
+     FROM intakeserv it1 WHERE it1.intakeservid = itas.intakeservid) x1  
+   ) as intakeserv
+  from intakeserv its
+   join intakeagencyserv itas on  its.intakeservid = itas.intakeservid
+  where itas.teamtypekey = 'AS'
+   and itas.activeflag = 1
+   and itas.intakeservreqtypeid = v_intakeservreqtypeid
+  ) s1;
+   
+ RETURN v_result;
+END;
+$function$
+

@@ -1,0 +1,114 @@
+CREATE OR REPLACE FUNCTION prov_getallcpahomes(searchobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$        
+         
+declare
+
+v_siteid bigint;      
+v_listdata json;
+v_sortdirection character varying;
+v_sortcolumn CHARACTER VARYING;
+v_cpa_type_id character varying;
+v_cpa_status character varying;
+v_applicant_name CHARACTER VARYING;
+v_providerid CHARACTER VARYING;
+v_searchstring CHARACTER VARYING;
+
+BEGIN
+v_siteid := searchObj->>'cpa_siteid';
+v_sortdirection := searchObj->>'sortOrder';
+v_sortcolumn := searchObj->>'sortColumn';
+v_providerid := searchObj->>'provider_id';
+v_cpa_type_id := searchObj->>'cpa_type_id';
+v_cpa_status := searchObj->>'cpaStatus';
+v_applicant_name:= searchObj->>'applicant_name';
+v_searchstring := searchObj->>'searchstring';
+
+
+select json_agg(x) into v_listdata from (
+select a.* from (select 
+tps.*,
+tpp2.picklist_value_cd as cpa_type_id,
+(select * from prov_get_formatted_addresses(tp.provider_id)) as formatted_address,
+
+tp.provider_id as cpa_provider_id,
+tp.provider_id as cpa_provider_id_new,
+tp.provider_status_cd,
+
+provider_last_nm || ' ,' || provider_first_nm  applicantname,
+
+COALESCE (NULLIF (concat_ws(' ', trim(tp.provider_first_nm),trim(tp.provider_last_nm)), ' '), tp.provider_nm)  as applicant_person_name,
+tp.provider_first_nm , tp.provider_last_nm , tp.co_first_nm , tp.co_last_nm , tp.provider_nm,
+
+(select count(*) noofpersons from tb_prov_cpa_adop_person x
+    where provider_id=tp.provider_id and delete_sw <> 'Y' ) as noofpersons,
+
+(select json_agg(x) from 
+( select tpr.provider_id, tpr.provider_nm from tb_cpa_office_homes toh 
+ inner join tb_provider tpr on tpr.provider_id = toh.cpa_office_id 
+ where toh.cpa_home_id  = tp.provider_id 
+ and toh.delete_sw = 'N' ) x) as sites
+
+from tb_provider tp
+left join tb_provider_picklist pp on pp.provider_id = tp.provider_id and pp.picklist_type_id = 155 and pp.delete_sw = 'N'
+left join tb_provider_picklist tpp2 on tpp2.provider_id = tp.provider_id and tpp2.picklist_type_id = 455 and tpp2.delete_sw = 'N'
+left join tb_cpa_home_sanctions tps on tps.cpa_provider_id  = tp.provider_id and tps.active_flag = 1
+where 
+
+tp.affiliate_provider_id=v_providerid
+and tp.delete_sw = 'N' 
+and (v_siteid is null or 
+ exists( select 1 from tb_cpa_office_homes toh 
+  where toh.cpa_home_id  = tp.provider_id 
+  and toh.delete_sw = 'N' 
+  and toh.cpa_office_id = v_siteid )
+ )
+and (v_cpa_status = '' or v_cpa_status = null or tp.provider_status_cd=v_cpa_status)
+and (tp.provider_category_cd=1782 or (pp.picklist_value_cd = 1782 and pp.picklist_type_id=155))
+and (v_cpa_type_id = '' or v_cpa_type_id = null or tpp2.picklist_value_cd is null or tpp2.picklist_value_cd=v_cpa_type_id)
+and (v_applicant_name is null or v_applicant_name ='' or LOWER(tp.provider_last_nm) like '%'||lower(v_applicant_name)||'%' 
+       or lower(tp.provider_first_nm) like '%'||lower(v_applicant_name)||'%'
+       or lower(tp.provider_nm) like '%'||lower(v_applicant_name)||'%')  
+
+  order by
+    (CASE v_sortdirection
+     WHEN ''
+     THEN   
+                      tp.update_ts
+              END) DESC NULLS last ,
+    (CASE v_sortdirection
+     WHEN 'asc'
+     THEN                    
+      (CASE v_sortcolumn
+       WHEN 'provider_id'
+       THEN                    
+        cast(tp.provider_id as CHARACTER VARYING)
+       WHEN 'applicant_person_name'
+       THEN                    
+        LOWER(trim(tp.provider_first_nm||tp.provider_last_nm||tp.provider_nm))
+      END)
+              END) ASC NULLS LAST,
+                (CASE v_sortdirection
+     WHEN 'desc'
+     THEN                    
+      (CASE v_sortcolumn
+       WHEN 'provider_id'
+       THEN                    
+        cast(tp.provider_id as CHARACTER VARYING)
+       WHEN 'applicant_person_name'
+       THEN                    
+        LOWER(trim(tp.provider_first_nm||tp.provider_last_nm||tp.provider_nm))
+      END)
+              END) DESC NULLS last )a where (v_searchstring is null or v_searchstring='' or LOWER(a.provider_last_nm) like '%'||lower(v_searchstring)||'%'
+or LOWER(a.provider_first_nm) like '%'||lower(v_searchstring)||'%'
+or LOWER(a.cpa_provider_id_new) like '%'||lower(v_searchstring)||'%'
+or LOWER(a.formatted_address) like '%'||lower(v_searchstring)||'%')
+
+)x;
+
+return v_listdata;
+END;
+
+$function$
+

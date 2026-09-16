@@ -1,0 +1,24 @@
+
+/*
+Issue Description: Expungement
+Category/Module: Expungement 
+Root cause: User requested to expunge the case.
+Fix provided: Data fix done to expunge the case.
+Data/Code fix ticket#: CJAMS-67339
+Regression Impacts: N/A
+Is Code fix Required?: No
+Code fix ticket#: N/A
+Reason why no related code fix: User error
+*/
+select vl_sqlcode, vs_err_message
+from cjams.expungcaserequest
+	(	'IR'::character varying,
+		'CW2251305'::character varying,
+		null::date
+	);
+select vl_sqlcode, vs_err_message
+from cjams.expungcaserequest
+	(	'IR'::character varying,
+		'CW2251304'::character varying,
+		null::date
+	);

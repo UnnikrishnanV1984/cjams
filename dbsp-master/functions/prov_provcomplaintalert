@@ -1,0 +1,84 @@
+CREATE OR REPLACE FUNCTION prov_provcomplaintalert(v_securityuserid character varying, v_provider_id integer, v_complaint_dt character varying, v_complaint_no character varying)
+ RETURNS TABLE(v_staffmail character varying, v_agencyalert json, v_notifymsg character varying, v_msg character varying, v_alertstatus character varying, v_providernm character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+v_providernm character varying;
+v_notifymsg character varying;
+v_msg character varying;
+v_username character varying;
+v_agencyalert json;
+v_staffmail character varying;
+v_agency character varying;
+v_provideruserid character varying;
+v_alertstatus character varying;
+v_prov_id integer;
+v_compt_dt character varying; 
+v_typedescription character varying;
+v_hasattachments boolean default false;
+
+BEGIN  
+
+select provider_id,complaint_date,rts.typedescription into v_prov_id,v_compt_dt , v_typedescription
+from tb_provider_complaint tpc join routingstatustype rts on rts.sequencenumber ::character varying = tpc.complaint_status
+where  complaint_number =v_complaint_no;
+
+if(v_provider_id is null or v_complaint_no is null  )then
+v_provider_id := v_prov_id;
+v_complaint_dt := v_compt_dt;
+end if;
+RAISE NOTICE 'v_prov_id:%', v_complaint_dt;   
+RAISE NOTICE 'v_compt_dt:%', v_compt_dt;   
+
+select tp.agency into v_agency
+from tb_provider tp where tp.agency is not null and provider_id = v_provider_id;
+
+if(v_agency = 'OLM')then
+select json_agg(x) into v_agencyalert from (select mu.username,mu.securityusersid,mu.email
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  t.teamtypekey in ('OLM'))x ;
+elseif(v_agency = 'DJS') then
+select json_agg(x) into v_agencyalert from (select mu.username,mu.securityusersid,mu.email
+from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  t.teamtypekey in ('DJS'))x ;
+end if;
+
+--select jsonb_agg(x) into v_staffmail from (
+--select distinct staff_email from providerstaff p where p.employee_type = 'Program Administrator' and object_id = v_provider_id::character varying)x;
+
+-- Subject and Body for Email
+ SELECT coalesce(lastname,'')||', '|| coalesce(firstname,'')into v_username                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+     FROM userprofile WHERE securityusersid = v_securityuserid;
+    
+select tp.provider_id,tp.adr_email_tx, (CASE WHEN (tp.provider_nm is null OR tp.provider_nm='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) ELSE tp.provider_nm END) AS provider_nms
+into v_provideruserid,v_staffmail, v_providernm 
+from tb_provider tp inner join 
+tb_provider_userconfig tpu on tp.provider_id = tpu.provider_id  where tp.agency is not null and tp.provider_id = v_provider_id;
+if(v_typedescription ='Complaint Sent')then
+v_notifymsg := 'A complaint ('|| v_complaint_no ||') was received by OLM for '|| coalesce(v_providernm,'') || ' ('|| v_provider_id ||'), on '|| TO_char(coalesce(v_complaint_dt,v_compt_dt)::date, 'Month DD, YYYY') || '. Complaint sent to you and Document has been Generated.';
+v_hasattachments := true;
+else
+v_notifymsg := ''|| coalesce(v_providernm,'') || '-'|| v_provider_id ||' has a new complaint. The complaint identification number is '|| v_complaint_no ||'';
+end if;
+if(v_typedescription = 'Referral Approved') then
+v_msg := 'A complaint ('|| v_complaint_no ||') was received by OLM for ('|| coalesce(v_providernm,'') || '-'|| v_provider_id ||'), on '|| TO_char(coalesce(v_complaint_dt,v_compt_dt)::date, 'Month DD, YYYY') || '.The QA Coordinator will contact you regarding the investigation.';
+else
+v_msg :=  'Provider Complaint ('|| v_complaint_no || ')' || v_typedescription ||' by '|| coalesce(v_username,'')  ; 
+end if;
+
+RAISE NOTICE 'v_msg:%', v_notifymsg;    
+SELECT prov_send_notification into v_alertstatus  FROM prov_send_notification(v_provideruserid,v_securityuserid, v_provideruserid,
+   'System', 'High', v_msg,v_notifymsg , v_complaint_no,false,v_hasattachments);
+
+return query
+
+select v_staffmail,v_agencyalert,v_notifymsg,v_msg,v_alertstatus,v_providernm ;
+
+END;
+$function$
+

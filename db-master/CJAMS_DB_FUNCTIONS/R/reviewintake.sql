@@ -1,0 +1,503 @@
+DROP FUNCTION IF EXISTS reviewintake(jsonb, jsonb);
+-------------------------------------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION cjams.reviewintake(intakejson jsonb, reviewjson jsonb)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+ 
+#variable_conflict use_column 
+ ----------------------------------------------------------------------------------------------------------
+ --CIDM-8272-Smitha Somasekharan -SDM trafficking radio button user story changes 
+
+ --CIDM-10651-Smitha Somasekharan -Supervisor decision for return to worker, Need more information is not updated in routing table issue fixes
+ ----------------------------------------------------------------------------------------------------------     
+DECLARE   
+ 
+l_IntakeNumber character varying;  
+l_DateRecieved timestamp;          
+l_Narrative character varying;     
+l_RAName character varying;        
+l_EntityName character varying;    
+l_arrPerson json;       
+l_Data character varying;          
+l_Status text;          
+i json;    
+l_Firstname character varying;     
+l_Lastname character varying;      
+l_focuspersonid uuid;   
+v_securityuserid character varying;
+v_user_role character varying;
+l_draftCount bigint;    
+l_stagCount bigint;     
+l_versionNumber bigint; 
+v_status int;
+v_dadispositioncode character varying;          
+v_dadispositiontext character varying;          
+v_dastatustext character varying;  
+v_intakeuser character varying;    
+v_date timestamp without time zone;
+l_receiveddelay  character varying;
+l_submissiondelay character varying; 
+l_teamtypekey character varying;   
+																																																																	 
+v_auditlog character varying;      
+v_metadata  json;       
+v_intakeworker character varying;  
+v_msg character varying;
+v_username character varying;      
+appeventcode character varying;    
+status character varying;          
+commenttext character varying;     
+bpreintake boolean;     
+bmanualrouting boolean; 
+v_assignsecurityuserid character varying;       
+																																																																	 
+arr_appointments json;  
+v_notifystatus  character varying; 
+																																																																 
+j_evaluation json;      
+v_evaluationstatus character varying;
+--v_clwstatus integer;  
+v_clwstatus character varying;     
+v_isclw boolean;        
+v_clwstatusmsg character varying;  
+v_notification_msg character varying;
+v_intakeservicerequestevaluationid uuid;        
+v_signedoffdate timestamp without time zone;    
+j_saoresponse json;     
+v_saoresponsestatus character varying;          
+v_sstastatustypekey character varying;          
+v_personaddstatus character varying; 
+v_requestofservice character varying;
+v_agencyname character varying;    
+v_reqforservconfigcount bigint;    
+v_reqforserdispostion character varying;        
+v_focuspersoneventcode character varying;       
+v_savefocuspersoncasestatus Character varying;  
+v_teamtypekey character varying;   
+i_isdetentioncount int; 
+v_alertnotes character varying;    
+j_saoresponsestatustypekey character varying;   
+v_userprofileaddressid uuid; -- DJS Intake Office - Choose the work Location       
+v_reasonforassignmenttypekey character varying; -- DJS Reason For Assignment. referencevalues key    
+l_routingCount bigint;
+l_approved_count bigint;
+v_isoverride bool;
+v_supervisor_flag  character varying;
+
+v_concernfortrafficking character varying;
+v_selecttrafficking character varying;
+v_traffickingupdated character varying;
+v_childfatality character varying;
+v_childfatalityupdated character varying;
+v_maltreatmentupdated character varying;
+v_ismaltreatment character varying;
+v_isfclivingarrangement character varying;
+v_isschool character varying;
+v_islicenseddaycare character varying;
+v_isprivateplacement character varying; 
+v_isfcplacementsetting character varying;
+v_providerinfo json;
+v_providerdetails json;
+v_fatalitypersons json;
+
+v_supDisposition character varying;
+
+BEGIN
+
+v_date:= now() ;        
+appeventcode =reviewjson ->> 'appevent';        
+v_focuspersoneventcode = appeventcode;          status =reviewjson ->> 'status';   
+commenttext =reviewjson->> 'commenttext';       
+bpreintake =reviewjson ->> 'ispreintake';       
+
+bmanualrouting=reviewjson ->> 'ismanualrouting';
+
+v_assignsecurityuserid=reviewjson ->> 'assignsecurityuserid';
+l_IntakeNumber := intakejson -> 'General' ->> 'IntakeNumber';
+l_DateRecieved := intakejson -> 'General' ->> 'RecivedDate'; 
+l_Narrative := intakejson -> 'General' ->> 'Narrative';    
+l_arrPerson := intakejson ->>'persons';
+
+
+v_supervisor_flag := intakejson -> 'General' ->> 'supervisorflag';
+v_isoverride := intakejson -> 'General' ->> 'overriderequest';
+-- v_securityuserid := COALESCE(intakejson->>'securityuserid','S-1-5-21-152097760-152508613-1969071786-555');
+v_securityuserid := intakejson->>'securityuserid';
+v_user_role := intakejson ->>'userrole';
+v_dadispositioncode:= intakejson-> 'disposition'->>'dispositioncode';   
+
+v_dastatustext:= intakejson-> 'General'->>'statustext';    
+
+l_DateRecieved:= regexp_replace(l_DateRecieved::text, '[^[:ascii:]]', ' ', 'g') ::timestamp without time zone;
+l_receiveddelay := intakejson -> 'General' ->> 'receiveddelay';         
+l_submissiondelay := intakejson -> 'General' ->> 'submissiondelay';     
+l_teamtypekey := intakejson -> 'General' ->> 'Agency';     
+
+v_intakeworker := intakejson -> 'General' ->> 'Author';    
+
+arr_appointments := intakejson ->> 'appointments';         
+
+j_evaluation := intakejson ->> 'evaluationFields';         
+
+v_clwstatus:= intakejson ->> 'clwStatus';       
+v_signedoffdate:= intakejson ->> 'signedOffDate';          
+v_intakeservicerequestevaluationid:= intakejson ->> 'intakeservicerequestevaluationid';         
+j_saoresponse := intakejson ->> 'saoResponseDetail';       
+j_saoresponsestatustypekey :=j_saoresponse->>'saoresponsestatustypekey';
+v_agencyname := intakejson -> 'General' ->> 'Agency';      
+
+v_userprofileaddressid := intakejson -> 'reasonintakeinterview' ->> 'userprofileaddressid';     
+v_reasonforassignmenttypekey := intakejson -> 'reasonintakeinterview' ->> 'reasonforassignmenttypekey';  
+v_concernfortrafficking :=intakejson->'sdm'->>'confirmtrafficking';
+v_selecttrafficking :=intakejson->'sdm'->>'selecttrafficking';
+v_traffickingupdated :=intakejson->'sdm'->>'traffickingupdated';
+v_childfatality :=intakejson->'sdm'->>'childfatality';
+v_ismaltreatment :=intakejson->'sdm'->> 'maltreatment';
+v_maltreatmentupdated :=intakejson->'sdm'->> 'maltreatmentupdated';
+v_isfclivingarrangement :=intakejson->'sdm'->> 'isfclivingarrangement';
+v_isschool :=intakejson->'sdm'->> 'isschool';
+v_islicenseddaycare:=intakejson->'sdm'->> 'islicenseddaycare';
+v_isprivateplacement :=intakejson->'sdm'->> 'isprivateplacement';
+v_isfcplacementsetting:=intakejson->'sdm'->> 'isfcplacementsetting';
+v_providerinfo:=intakejson->'sdm'->> 'provider';
+v_providerdetails:=intakejson->'sdm'->> 'selectedproviderdetails';
+v_childfatalityupdated:=intakejson->'sdm'->>'childfatalityupdated';
+v_fatalitypersons:=intakejson->'fatalityPersons';
+ 
+
+FOR i IN SELECT * FROM json_array_elements((intakejson -> 'General' ->> 'intakeservice')::json)
+LOOP
+	v_requestofservice:=  i->>'intakeservtypekey';
+END LOOP;
+
+For i IN SELECT * FROM json_array_elements((intakejson->>'disposition')::json)
+LOOP
+	v_sstastatustypekey:=  i->>'DAStatus';
+END LOOP;
+
+For i IN SELECT * FROM json_array_elements((intakejson->>'disposition')::json)
+LOOP
+	v_reqforserdispostion:=  i->>'dispositioncode';
+	v_supDisposition:= i->> 'supDisposition';
+END LOOP;  
+ 
+IF(v_agencyname = 'AS~true' or v_agencyname = 'AS') THEN
+	v_agencyname :='AS';
+END IF;
+
+v_teamtypekey := intakejson -> 'General' ->> 'teamtypekey';
+v_isclw:= false;
+
+IF v_clwstatus is not null THEN
+	v_isclw:= true;
+END IF;
+
+IF v_securityuserid is null then
+	v_securityuserid:='00000000-0000-0000-0000-000000000000';
+END IF;
+
+RAISE NOTICE 'IntakeNumber:%', l_IntakeNumber;
+RAISE NOTICE 'DateRecieved:%', l_DateRecieved;
+RAISE NOTICE 'Narrative:%', l_Narrative;
+RAISE NOTICE 'arrPerson:%', l_arrPerson;
+RAISE NOTICE 'securityuser:%', v_securityuserid;
+RAISE NOTICE 'userrole:%', v_user_role;
+RAISE NOTICE 'appeventcode:%', appeventcode;
+RAISE NOTICE 'v_dadispositiontext:%', v_dadispositiontext;
+RAISE NOTICE 'v_dastatustext:%', v_dastatustext;
+RAISE NOTICE 'IntakeNumber:%', intakejson;
+RAISE NOTICE 'DAStatus:%', v_sstastatustypekey;
+RAISE NOTICE 'status:%', status;
+
+SELECT description into v_dadispositiontext FROM dispositioncode where dispositioncode = v_dadispositioncode ;
+SELECT COUNT(*) into l_routingCount FROM routing r  where r.objectid = l_IntakeNumber and r.routingstatustypeid = 2;
+SELECT COUNT(*) into l_approved_count FROM routing r  where r.objectid = l_IntakeNumber  and eventcode='INTR' and   r.routingstatustypeid IN(2,8,21) and r.activeflag =1;
+
+IF (l_approved_count > 0 and v_isoverride != true) THEN 
+  --RAISE EXCEPTION 'Approved record present --> %', l_approved_count
+  --USING HINT = 'Supervisor has alread appoved ';
+  return 'Supervisor has alread appoved ';
+END IF;
+
+IF ( v_supervisor_flag = 'N' OR v_supervisor_flag is null OR v_supervisor_flag = '' ) THEN
+	-- Remove duplicates created on multiple submits for approval
+	update routing set activeflag = 0, eventcode = 'XXXX', updatedon = now() where objectid = l_IntakeNumber and routingstatustypeid in(1,7) and activeflag=1;
+
+	--  Remove duplicate in dashboard while reassigning from one supervisor to another
+	IF (l_routingCount = 0) THEN 
+		update routing set activeflag=0, updatedon=now() where objectid = l_IntakeNumber;
+	END IF;
+END IF;
+
+IF (status ='supreview' and appeventcode = 'SITR') THEN
+	v_status = 11 ;
+ELSIF (status ='supreview') THEN
+	v_status = 1 ; 
+ELSIF (lower(status) ='reopen') THEN
+	v_status = 7 ;
+ELSIF (lower(status) ='closed') THEN
+	v_status =8 ;
+END IF;
+
+RAISE NOTICE 'v_status:%', v_status;
+
+IF l_IntakeNumber IS NOT NULL AND LENGTH(l_IntakeNumber) > 0 THEN
+
+FOR i IN SELECT * FROM json_array_elements(l_arrPerson)
+	LOOP
+		IF i->>'Role' in ('RA', 'RC','Youth') THEN
+			l_Firstname :=i ->> 'Firstname';
+			l_Lastname :=i ->> 'Lastname';
+			l_focuspersonid := (case length(i->>'Pid') when 0 then null else
+			(case left((i->>'Pid'),6) when 'tempid' then null else (i->>'Pid') end ) end )::uuid ;
+			l_RAName := l_Firstname || ' ' || l_Lastname;
+		END IF;         
+	END LOOP;
+
+SELECT COUNT(*) into l_draftCount FROM intakedastaging as i where i.intakenumber = l_IntakeNumber and activeflag = 1 ;
+
+IF l_draftCount > 0 THEN
+	SELECT MAX(versionnumber), max(intakeuser) into l_versionNumber, v_intakeuser FROM intakedastaging as i where i.intakenumber = l_IntakeNumber;
+	UPDATE intakedastaging set activeflag = 0, updatedon = now() where intakenumber = l_IntakeNumber and activeflag= 1;
+	
+	INSERT INTO intakedastaging(
+	intakenumber, dateRecieved, narrative, raname, entityname, intakeuser,
+	cruworkername, data, insertedon, insertedby, timerecieved, updatedon,
+	updatedby, status, jsondata, versionnumber, dispositiondescription,
+	statusdescription, ispreintake, isclw, focuspersonid, activeflag, teamtypekey)         
+	
+	SELECT intakenumber, l_DateRecieved, narrative, l_RAName, entityname, intakeuser, cruworkername, data,
+	v_date, v_securityuserid, timerecieved, v_date,v_securityuserid, status,intakejson,coalesce(l_versionNumber,0)+1,
+	dispositiondescription,statusdescription,ispreintake,isclw,l_focuspersonid, 1, 'CW'
+	from intakedastaging 
+	WHERE intakenumber = l_IntakeNumber ORDER BY insertedon desc limit 1;
+ELSE
+	INSERT INTO intakedastaging(
+	intakenumber, dateRecieved, narrative, raname, entityname, intakeuser, 
+	cruworkername, data, insertedon, insertedby, timerecieved, updatedon,
+	updatedby, status, jsondata, versionnumber, dispositiondescription,
+	statusdescription, ispreintake, isclw, focuspersonid, activeflag, teamtypekey) 
+	VALUES (l_IntakeNumber, l_DateRecieved, l_Narrative, l_RAName, null, coalesce(v_intakeuser,v_securityuserid),
+	v_securityuserid, null, v_date, v_securityuserid, l_DateRecieved, v_date,
+	v_securityuserid, 'pending', intakejson, coalesce(l_versionNumber,0)+1,
+	v_dadispositiontext, v_dastatustext, bpreintake, v_isclw, l_focuspersonid, 1, 'CW');
+END IF;
+
+SELECT COUNT(*) into l_stagCount FROM intakedastatus   where  intakenumber = l_IntakeNumber;    
+ 
+ if (l_stagCount=0) THEN
+	 insert into IntakeDAStatus(intakenumber,status,JSONDATA,insertedby,updatedby,submitteddate,ispreintake,receiveddelayreason,submissiondelayreason,teamtypekey,intakeuser,isclw,signedoffdate,userprofileaddressid,reasonforassignmenttypekey, insertedon, updatedon)
+	 values(l_IntakeNumber,v_status,intakejson,v_securityuserid,v_securityuserid,v_date,bpreintake,l_receiveddelay,l_submissiondelay,l_teamtypekey,coalesce(v_intakeuser,v_securityuserid),v_isclw,v_signedoffdate,v_userprofileaddressid,v_reasonforassignmenttypekey, v_date, v_date);
+ ELSE
+	UPDATE intakedastatus SET status = v_status,submitteddate = v_date,isclw=v_isclw,signedoffdate = v_signedoffdate,userprofileaddressid = v_userprofileaddressid,reasonforassignmenttypekey = v_reasonforassignmenttypekey, updatedon = v_date, updatedby = v_securityuserid WHERE intakenumber = l_IntakeNumber;
+ END IF;
+  
+-- Updating Evaluation field record to the corresponding status        
+update intakeservicerequestevaluation set complaintstatustypekey = v_clwstatus, updatedon = v_date, updatedby = v_securityuserid where intakeservicerequestevaluationid = v_intakeservicerequestevaluationid;
+  
+RAISE NOTICE 'SITR:%', appeventcode;    
+/*DA Routing to Supervisor */      
+IF ( appeventcode  in('INTR' ,'SITR','KINR'))  THEN        
+	RAISE NOTICE 'SITR:%', appeventcode;    
+update routing set activeflag=0 ,updatedon = now(), updatedby = v_securityuserid where routingstatustypeid=861 and activeflag=1 and objectid=l_IntakeNumber;
+	-- routing table update
+	--IF((v_agencyname = 'AS' and  v_sstastatustypekey != 'Pending') or v_agencyname != 'AS' ) THEN
+	IF ( v_supervisor_flag = 'N' OR v_supervisor_flag is null OR v_supervisor_flag = '' OR v_status = 7 ) THEN
+		SELECT routingintake into l_status FROM 
+		routingintake(l_IntakeNumber, v_securityuserid, appeventcode, v_status, commenttext, v_assignsecurityuserid, bmanualrouting, false, false, '','','','',0, v_user_role); 
+--need to check l_IntakeNumber and add if 
+	update routing set intakerecommendation= v_reqforserdispostion ,supervisordecision =v_supDisposition where objectid=l_IntakeNumber 
+	 and routingid=(select routingid from routing where  activeflag =1 and objectid=l_IntakeNumber and eventcode=appeventcode order by updatedon desc limit 1);
+	-- if(l_status) then
+
+	-- end if
+
+	END IF;
+	--END IF;
+	
+	SELECT json_agg(e) FROM (
+		select l_DateRecieved  datereceived,status  status, v_intakeworker intakeworker, v_dadispositioncode disposition, l_IntakeNumber intakenumber,l_RAName raname
+	)e INTO v_metadata;
+	
+	SELECT coalesce(lastname,'')||', '|| coalesce(firstname,'') into v_username FROM userprofile WHERE securityusersid = v_securityuserid; 
+	
+	IF (status ='supreview' and appeventcode = 'SITR') THEN
+		v_msg:=   'Pre Intake ('|| l_IntakeNumber ||') Routed  by ';        
+	ELSIF (status ='supreview') THEN
+		v_msg:=   'Intake ('|| l_IntakeNumber ||') Submitted for Review by ';
+	ELSIF (lower(status) ='reopen') THEN
+		v_msg:=  'Intake ('|| l_IntakeNumber||') Reopened by ';
+	ELSIF (lower(status) ='closed') THEN
+		v_msg:=  'Intake ('|| l_IntakeNumber||') Closed by ';
+	END IF;
+	
+	SELECT auditlog into v_auditlog 
+	FROM auditlog('IR', v_msg||v_username, null, l_IntakeNumber, null, v_securityuserid,  v_metadata,  null, true,false,false);
+	
+	IF appeventcode in ( 'INTR','KINR') THEN
+		select send_appointment_notification into v_notifystatus from send_appointment_notification('RV', l_IntakeNumber, v_securityuserid, '');   
+	END IF;
+	
+END IF;
+
+--v_clwstatusmsg:= '';     
+IF v_clwstatus is not null THEN
+	Select description into v_clwstatusmsg 
+	from complaintstatustype where complaintstatustypekey = v_clwstatus;
+	v_notification_msg:= v_clwstatusmsg || ' for Intake # ' || l_IntakeNumber; 
+	SELECT send_notification into v_notifystatus 
+	from send_notification(v_securityuserid,v_securityuserid,v_securityuserid, 'System', 'Low',  v_notification_msg, v_notification_msg, l_IntakeNumber);
+END IF;         
+ 
+ -- Added by Gavaskar 17-08-2018    
+ 
+	IF (j_evaluation is not null) THEN																																																							 
+		IF appeventcode != 'DRAFT' and appeventcode != 'CLWDRAFT' THEN
+		select saveevaluation into v_evaluationstatus from saveevaluation(l_IntakeNumber, j_evaluation, v_securityuserid);
+		END IF;
+	END IF;         
+ 
+-- Added by Gavaskar 01-10-2018    
+	IF (j_saoresponse is not null) THEN
+		IF v_clwstatus = 'SAOPF' OR v_clwstatus = 'SAORC' THEN
+			select savesaoresponse into v_saoresponsestatus from savesaoresponse(l_IntakeNumber, j_saoresponse, v_securityuserid);
+			update intakeservicerequestevaluation set complaintstatustypekey = v_clwstatus,updatedon = v_date, updatedby = v_securityuserid where intakenumber = l_IntakeNumber and activeflag=1;
+		END IF;
+	END IF;
+
+	IF v_clwstatus = 'DG' OR v_clwstatus = 'PS' OR v_clwstatus = 'HS' OR v_clwstatus = 'CHU' THEN
+		update intakeservicerequestevaluation set complaintstatustypekey = v_clwstatus,updatedon = v_date, updatedby = v_securityuserid where intakenumber = l_IntakeNumber and activeflag=1;
+	END IF;
+
+	IF v_clwstatus = 'SAORC' then
+		IF (cast(j_saoresponse ->> 'saoresponsestatustypekey' as character varying)) = 'DTP' THEN
+			v_focuspersoneventcode = 'SAODCLN';
+		END IF;
+		update folderassignment set status='Closed',closedate=now(),activeflag=0,updatedon = v_date, updatedby = v_securityuserid where objectid=l_IntakeNumber and foldertypekey='LegalAction' and status='Active';
+	END IF; 
+         
+	 -- Person Update   
+	--SELECT personaddupdate into v_personaddstatus FROM personaddupdate(l_arrPerson, null, v_securityuserid); 
+
+	l_Status := 'SUCCESS'; 
+	
+ELSE
+	l_Status := 'FAILED-NOINTAKENUMBER'; 
+END IF;    
+ 
+IF appeventcode = 'CLWDRAFT' then 																																																									 
+	RAISE NOTICE 'Inside clwdraft:%', l_IntakeNumber;
+	RAISE NOTICE 'l_IntakeNumber:%', l_IntakeNumber;        
+	RAISE NOTICE 'l_RAName:%', l_RAName;       
+	IF j_saoresponsestatustypekey = 'DTP' then    
+		v_alertnotes ='Peace Order – Request Authorized is set for ' ||l_RAName|| ' in Intake ' ||l_IntakeNumber;
+		update personalert set status='Inactive',activeflag=0,enddatetime=now(),updatedon = v_date, updatedby = v_securityuserid  where notes=v_alertnotes and personid=l_focuspersonid;          
+		update intakeservicerequestevaluation set complaintstatustypekey='SAORC',updatedon = v_date, updatedby = v_securityuserid  where intakenumber=l_IntakeNumber;
+	END IF; 
+END IF;
+
+--insert for folder assignment     
+INSERT INTO folderassignment (folderassignmentid, objectid, foldertypekey, status, opendate,  activeflag, effectivedate, insertedon, updatedon, insertedby, updatedby) 
+select gen_random_uuid(), l_IntakeNumber, 'Intake', 'Active', now(), 1, now(), now(), now(), v_securityuserid, v_securityuserid where not exists
+(select 1 from folderassignment where objectid=l_IntakeNumber and foldertypekey='Intake' );     
+
+IF (v_traffickingupdated = 'true' ) then
+  INSERT INTO cjams.sdmtraffickingaudittrail
+								(intakeservicerequestsdmid,
+								updatedby,
+								updatedon,
+								insertedby,
+								insertedon,
+								objectid,
+								objecttype,
+								selecttrafficking,
+								concernfortrafficking,
+								objectkey)
+								
+							 values(
+							 null,
+							 v_securityuserid, 
+				             now(),
+							 v_securityuserid, 
+				             now(),
+							 l_IntakeNumber,
+							 'Intake',
+							 v_selecttrafficking,
+							 v_concernfortrafficking,
+						     'trafficking'
+							 ); 
+END IF;	
+raise notice '%d  v_maltreatmentupdated', v_maltreatmentupdated;
+IF ( v_maltreatmentupdated = 'true') then
+  INSERT INTO cjams.sdmtraffickingaudittrail
+								(intakeservicerequestsdmid,
+								updatedby,
+								updatedon,
+								insertedby,
+								insertedon,
+								objectid,
+								objecttype,
+								ismaltreatment,
+								isfclivingarrangement,
+								isschool,
+								islicenseddaycare,
+								isprivateplacement,
+								isfcplacementsetting,
+								provider,
+								providerdetails,
+								objectkey)
+								
+							 values(
+							 null,
+							 v_securityuserid, 
+				             now(),
+							 v_securityuserid, 
+				             now(),
+							 l_IntakeNumber,
+							 'Intake',
+							 v_ismaltreatment,
+							 v_isfclivingarrangement ,
+							v_isschool ,
+							v_islicenseddaycare ,
+							v_isprivateplacement ,
+							v_isfcplacementsetting ,
+							v_providerinfo ,
+							v_providerdetails,
+							 'maltreatment'
+							 ); 
+END IF;	
+
+IF ( v_childfatalityupdated = 'yes') then
+  INSERT INTO cjams.sdmtraffickingaudittrail
+								(intakeservicerequestsdmid,
+								updatedby,
+								updatedon,
+								insertedby,
+								insertedon,
+								objectid,
+								objecttype,
+								ischildfatality,
+								fatalitypersons,
+								objectkey)
+								
+							 values(
+							 null,
+							 v_securityuserid, 
+				             now(),
+							 v_securityuserid, 
+				             now(),
+							 l_IntakeNumber,
+							 'Intake',
+							 v_childfatality,
+							 v_fatalitypersons,
+							 'childfatality'
+							 ); 
+END IF;	
+
+RETURN l_Status;        
+ 
+END;       
+
+$function$
+;

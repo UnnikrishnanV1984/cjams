@@ -1,0 +1,187 @@
+CREATE OR REPLACE FUNCTION sp_fiscalunitticklers_dashboard(pagenumber bigint, pagesize bigint, v_statusval character varying, v_typeval character varying, v_dueval character varying, v_county_cd character varying, v_providertype character varying DEFAULT NULL::character varying, v_roletypekey character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, tickler_id bigint, tickler_tx character varying, create_ts character varying, due_dt date, action_sw character, action_dt date, data_valid_sw character, update_ts character varying, approve_staff_id integer, system_tickler_tx character varying, delete_sw character, ticklertype character varying, entity_key_id bigint, entity_nm character varying, clientname character varying, overduecount bigint, currentduecount bigint, upcomingcount bigint)
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------------------------------\r
+-- Revisions:\r
+-- Vineet Tirodkar - 05/04/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)\r
+------------------------------------------------------------------------------------------------\r
+DECLARE\r
+\r
+ v_pageoffset int;\r
+    v_pagenumber int;\r
+    v_data_valid_sw character default null;\r
+     v_rstatus int[];\r
+\r
+BEGIN\r
+\r
+ v_pagenumber := pagenumber-1;\r
+    v_pageoffset = v_pagenumber * pagesize; \r
+\r
+    if(v_statusval = 'Unread') then \r
+  v_data_valid_sw := 'Y';\r
+ end if;  \r
+ \r
+ if (v_typeval = 'AR') then v_rstatus = '{42}'; end if;\r
+ if (v_typeval = 'CB') then v_rstatus = '{54}'; end if;\r
+ if (v_typeval = 'All') then \r
+  if (v_roletypekey = 'FNSFW') then \r
+   v_rstatus = '{54,439,42}';\r
+  end if;\r
+  if (v_roletypekey = 'FNSFS') then \r
+   v_rstatus = '{54,439,42}';\r
+  end if;\r
+  if (v_roletypekey = 'FNSCOSP') then \r
+   v_rstatus = '{42,439}';\r
+  end if;\r
+  if (v_roletypekey = 'FNSCOFW') then \r
+   v_rstatus = '{42,439}';\r
+  end if;\r
+ end if;\r
+\r
+raise notice 'v_rstatus%',v_rstatus;\r
+\r
+    return query \r
+\r
+ select count(1) over() as totalcount, \r
+  tt.tickler_id, \r
+  tt.tickler_tx, \r
+  tt.create_ts, \r
+  (tt.create_ts:: date + INTERVAL '30 day'):: date as due_dt, \r
+  tt.action_sw, \r
+  tt.action_dt, \r
+  tt.data_valid_sw, \r
+  tt.update_ts, \r
+  tt.action_by_staff_id, \r
+  tst.system_tickler_tx, \r
+  tt.delete_sw, \r
+  (select value_tx \r
+   from tb_picklist_values plv \r
+  where TRIM(plv.PICKLIST_VALUE_CD)=tt.entity_type_cd \r
+   AND plv.PICKLIST_TYPE_ID='275' \r
+   and plv.delete_sw='N' limit 1\r
+  ) as ticklertype, \r
+  tt.entity_key_id, \r
+  tt.entity_nm,\r
+  concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),\r
+   coalesce(p.suffix,null) ):: character varying as clientname,\r
+   \r
+  (select count(1) \r
+   from tb_ticklers t1 \r
+  where t1.create_ts:: date + INTERVAL '30 day' < now()::date \r
+   and t1.delete_sw = 'N' \r
+   and t1.action_sw is null \r
+   and (case when v_providertype='central' and trim(tt.entity_type_cd)='2953' then \r
+     tt.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+           where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('3049','3274','3302','1782','3794')\r
+         )\r
+     when v_providertype='others' and trim(t1.entity_type_cd)='2953' then \r
+     t1.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+           where PRPL.picklist_type_id=155 and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('1783')\r
+          ) \r
+    end)\r
+   and t1.system_tickler_id =any(v_rstatus)  \r
+   and trim(t1.county_cd) = v_county_cd\r
+  ) overduecount,\r
+  \r
+        (select count(1) \r
+   from tb_ticklers t2 \r
+  where t2.create_ts:: date + INTERVAL '30 day' = now()::date \r
+   and t2.delete_sw = 'N' \r
+   and t2.action_sw is null \r
+   and (case when v_providertype='central' and trim(tt.entity_type_cd)='2953' then \r
+     tt.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+          where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('3049','3274','3302','1782','3794')\r
+          )\r
+     when v_providertype='others' and trim(t2.entity_type_cd)='2953' then \r
+     t2.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+           where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('1783')\r
+          ) \r
+    end) \r
+   and t2.system_tickler_id =any(v_rstatus)  \r
+   and trim(t2.county_cd) = v_county_cd \r
+  ) currentduecount,\r
+  \r
+        (select count(1) \r
+   from tb_ticklers t3 \r
+   where t3.create_ts:: date + INTERVAL '30 day' > now()::date \r
+   and t3.create_ts:: date + INTERVAL '30 day' < (now() + INTERVAL '30 day')::date \r
+   and t3.delete_sw = 'N'\r
+   and t3.action_sw is null \r
+   and (case when v_providertype='central' and trim(t3.entity_type_cd)='2953' then \r
+     t3.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL\r
+          where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('3049','3274','3302','1782','3794')\r
+          )\r
+    when v_providertype='others' and trim(t3.entity_type_cd)='2953' then \r
+     t3.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+          where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('1783')\r
+          ) \r
+    end) \r
+   and tt.system_tickler_id =any(v_rstatus)  \r
+   and trim(t3.county_cd) = v_county_cd \r
+  ) upcomingcount \r
+ from tb_ticklers tt \r
+  left join tb_system_ticklers tst on tt.system_tickler_id = tst.system_tickler_id\r
+  left join person p on p.cjamspid = tt.client_id\r
+ where tt.delete_sw = 'N'  \r
+  and trim(tt.county_cd) = v_county_cd \r
+  and case when v_dueval = 'overdue' then \r
+    tt.create_ts:: date + INTERVAL '30 day' < now()::date and tt.delete_sw = 'N' and tt.action_sw is null \r
+    when v_dueval = 'currentdue' then \r
+    tt.create_ts:: date + INTERVAL '30 day' = now()::date and tt.delete_sw = 'N' and tt.action_sw is null\r
+    when v_dueval = 'upcomingdue' then\r
+    tt.create_ts:: date + INTERVAL '30 day' > now()::date and tt.create_ts:: date + INTERVAL '30 day' < (now() + INTERVAL '30 day')::date and tt.delete_sw = 'N' and tt.action_sw is null\r
+   else \r
+    true\r
+   end\r
+  AND CASE WHEN v_data_valid_sw is NOT NULL THEN \r
+    (tt.data_valid_sw not in (v_data_valid_sw) or tt.data_valid_sw is null) \r
+   ELSE \r
+    TRUE \r
+   end\r
+  and (v_typeval is null or tt.system_tickler_id =any(v_rstatus))\r
+  and case when  tt.system_tickler_id = '42' then\r
+    (case when v_providertype='central' and trim(tt.entity_type_cd)='2953' then \r
+     tt.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+           where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('3049','3274','3302','1782','3794')\r
+          )\r
+    when v_providertype='others' and trim(tt.entity_type_cd)='2953' then \r
+     tt.entity_key_id in (select PRPL.provider_id \r
+           from tb_provider_picklist PRPL \r
+          where PRPL.picklist_type_id=155 \r
+           and PRPL.delete_sw='N' \r
+           and trim(PRPL.picklist_value_cd) in ('1783')\r
+          )  \r
+    end) \r
+   else \r
+    true \r
+   end\r
+  -- 12/04/2020 to filter out Expired Ticklers  \r
+  and coalesce(expiry_dt, current_date + 1) >= current_date \r
+ order by tt.create_ts desc\r
+ LIMIT pagesize OFFSET v_pageoffset;\r
+\r
+END;\r
+\r
+$function$
+

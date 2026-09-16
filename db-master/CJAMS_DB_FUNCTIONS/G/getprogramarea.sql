@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION cjams.getprogramarea(v_servicerequestsubtypekey character varying)  
+RETURNS TABLE(subprogram json, programarea json)  
+LANGUAGE plpgsql 
+AS $function$
+  
+BEGIN  
+  
+IF COALESCE( v_servicerequestsubtypekey,'')='' THEN  
+
+RETURN QUERY 
+SELECT
+	(SELECT json_agg(e) FROM ( 
+		SELECT  description AS subprogramname,pac.subprogramkey,  case when subprogramkey = 'KN' then 'true' else 'false' end as disabled  
+		FROM programareaconfig pac INNER JOIN referencevalues rv ON rv.ref_key=pac.subprogramkey AND rv.activeflag=1 AND rv.referencetypeid=12
+		WHERE pac.activeflag=1 ) e 
+	):: json AS subprogram, 	
+	(SELECT json_agg(e) FROM( 
+		SELECT programname,programkey FROM agencyprogramarea WHERE activeflag=1  ) e 
+	):: json AS programarea;
+
+ELSIF v_servicerequestsubtypekey='Default' THEN  
+
+RETURN QUERY 
+SELECT
+	(SELECT json_agg(e) FROM ( 
+		SELECT distinct description AS subprogramname,pac.subprogramkey,  case when subprogramkey = 'KN' then 'true' else 'false' end as disabled
+		FROM programareaconfig pac INNER JOIN referencevalues rv ON rv.ref_key=pac.subprogramkey AND rv.activeflag=1 AND rv.referencetypeid=12
+		WHERE pac.activeflag=1 and subprogramkey NOT IN ('IR', 'AR', 'NA') ) e 
+	):: json AS subprogram, 	
+	(SELECT json_agg(e) FROM( 
+		SELECT distinct programname, programkey FROM agencyprogramarea WHERE activeflag=1 and programkey NOT IN ('IS','CPS', 'ADP', 'GAP', 'OOH')  ) e 
+	):: json AS program;
+	
+ELSE
+  
+RETURN QUERY   
+SELECT 
+	(SELECT json_agg(e) FROM (
+		SELECT distinct description AS subprogramname,pac.subprogramkey,  case when subprogramkey = 'KN' then 'true' else 'false' end as disabled FROM programareaconfig pac INNER JOIN referencevalues rv ON rv.ref_key=pac.subprogramkey AND rv.activeflag=1 AND rv.referencetypeid=12 WHERE pac.servicerequestsubtypekey=v_servicerequestsubtypekey AND pac.activeflag=1) e 
+	):: json AS subprogram,
+	(SELECT json_agg(e) FROM (
+		SELECT DISTINCT programname,pac.programkey FROM programareaconfig pac INNER JOIN agencyprogramarea rv ON rv.programkey=pac.programkey AND rv.activeflag=1
+		WHERE pac.activeflag=1 AND pac.servicerequestsubtypekey=v_servicerequestsubtypekey) e
+	):: json AS programarea;
+
+END IF;
+
+END;
+  
+$function$  
+

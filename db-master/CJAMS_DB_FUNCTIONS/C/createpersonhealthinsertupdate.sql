@@ -1,0 +1,87 @@
+ CREATE OR REPLACE FUNCTION public.createpersonhealthinsertupdate(personjson json, v_personid uuid, securityuserid character varying)                                                
+  RETURNS text                                                                                                                                                                       
+  LANGUAGE plpgsql                                                                                                                                                                   
+ AS $function$                                                                                                                                                                     
+                                                                                                                                                                                   
+ DECLARE                                                                                                                                                                           
+                                                                                                                                                                                   
+ persondata json;                                                                                                                                                                  
+ p_Personid uuid;                                                                                                                                                                  
+ v_securityuserid character varying;                                                                                                                                               
+ s_examinationObj json;                                                                                                                                                            
+                                                                                                                                                                                   
+ l_Status character varying;                                                                                                                                                       
+ i json;                                                                                                                                                                           
+ --personeducation character varying;                                                                                                                                              
+                                                                                                                                                                                   
+ v_date timestamp without time zone;                                                                                                                                               
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+ BEGIN                                                                                                                                                                             
+                                                                                                                                                                                   
+ persondata := personjson;                                                                                                                                                         
+ p_Personid := v_personid;                                                                                                                                                         
+ v_date:= now() at time zone 'utc';                                                                                                                                                
+ v_securityuserid := securityuserid;                                                                                                                                               
+                                                                                                                                                                                   
+  CREATE TEMP TABLE temp_sp_Create_Temp_personhealthexamination  (                                                                                                                 
+                                   personhealthexaminationid character varying,                                                                                                    
+                                   personid character varying,                                                                                                                     
+                                   healthexamname character varying,                                                                                                               
+                                   practitionername character varying,                                                                                                             
+                                   outcomeresults  character varying,                                                                                                              
+                                   healthdomaintypekey character varying,                                                                                                          
+                                   healthassessmenttypekey character varying,                                                                                                      
+                                   healthprofessiontypekey character varying,                                                                                                      
+                                   assessmentdate date,                                                                                                                            
+                                   notes character varying,                                                                                                                        
+                                   isNew int default 0);                                                                                                                           
+                                                                                                                                                                                   
+ FOR i IN SELECT * FROM json_array_elements(personjson)                                                                                                                            
+ LOOP                                                                                                                                                                              
+                                                                                                                                                                                   
+            s_examinationObj:= i->>'personhealthexam';                                                                                                                             
+                                                                                                                                                                                   
+            insert into temp_sp_Create_Temp_personhealthexamination                                                                                                                
+                         select   * from json_to_recordset(s_examinationObj ) as x("personhealthexaminationid" character varying,                                                  
+                                   "personid" character varying,                                                                                                                   
+                                   "healthexamname" character varying,                                                                                                             
+                                   "practitionername" character varying,                                                                                                           
+                                   "outcomeresults"  character varying,                                                                                                            
+                                   "healthdomaintypekey" character varying,                                                                                                        
+                                   "healthassessmenttypekey" character varying,                                                                                                    
+                                   "healthprofessiontypekey" character varying,                                                                                                    
+                                   "assessmentdate" date,                                                                                                                          
+                                   "notes" character varying);                                                                                                                     
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+           update temp_sp_Create_Temp_personhealthexamination set  isNew =1 where coalesce(personhealthexaminationid,'') ='';                                                      
+                                                                                                                                                                                   
+           UPDATE personhealthexamination SET activeflag=0, updatedby = v_securityuserid, updatedon = v_date                                                                       
+                  WHERE personhealthexaminationid  in (select personhealthexaminationid::uuid from temp_sp_Create_Temp_personhealthexamination where isnew=0);                     
+                                                                                                                                                                                   
+           INSERT INTO personhealthexamination( personid, healthexamname, practitionername,                                                                                        
+                                        outcomeresults, healthdomaintypekey, healthassessmenttypekey, healthprofessiontypekey, assessmentdate,                                     
+                                        notes, activeflag,insertedby, updatedby, insertedon, updatedon)                                                                            
+                                                                                                                                                                                   
+           SELECT p_Personid::uuid,healthexamname, practitionername, outcomeresults, healthdomaintypekey,healthassessmenttypekey, healthprofessiontypekey,assessmentdate,          
+                                 notes,1,v_securityuserid,v_securityuserid, v_date, v_date FROM   temp_sp_Create_Temp_personhealthexamination WHERE isNew=1;                       
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+ END LOOP;                                                                                                                                                                         
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+ l_Status := 'SUCCESS';                                                                                                                                                            
+                                                                                                                                                                                   
+ DROP TABLE temp_sp_Create_Temp_personhealthexamination;                                                                                                                           
+                                                                                                                                                                                   
+ return l_Status;                                                                                                                                                                  
+                                                                                                                                                                                   
+                                                                                                                                                                                   
+ END                                                                                                                                                                               
+                                                                                                                                                                                   
+ $function$                                                                                                                                                                          
+

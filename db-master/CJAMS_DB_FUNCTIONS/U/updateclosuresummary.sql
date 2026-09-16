@@ -1,0 +1,19 @@
+ CREATE OR REPLACE FUNCTION public.updateclosuresummary(v_caseclosuresummaryid uuid)
+  RETURNS text                                                                      
+  LANGUAGE plpgsql                                                                  
+ AS $function$                                                                    
+                                                                                  
+                                                                                  
+ Begin                                                                            
+                                                                                  
+                 UPDATE  Caseclosureparticipant  set  activeflag  =  0  where     
+                 caseclosuresummaryid  =  v_caseclosuresummaryid;                 
+              UPDATE  Caseclosureservice  set  activeflag  =  0  where            
+                 caseclosuresummaryid  =  v_caseclosuresummaryid;                 
+                                                                                  
+                 Return  'Success';                                               
+ End                                                                              
+                                                                                  
+                                                                                  
+ $function$                                                                         
+

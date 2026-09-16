@@ -1,0 +1,163 @@
+CREATE OR REPLACE FUNCTION as_gettitle4bsupuser(pagenumber bigint, pagesize bigint, v_region character varying, v_county character varying, v_status character varying, v_securityusersid character varying, v_roletypekey character varying, v_fromdate timestamp without time zone DEFAULT NULL::timestamp without time zone, v_todate timestamp without time zone DEFAULT NULL::timestamp without time zone, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, personid uuid, youthpersonname text, youthcjamspid bigint, cwdisplayname character varying, address character varying, state character varying, city character varying, county character varying, zipcode character varying, region character varying, statustype text, intialstartdate date, lastdate timestamp without time zone, nextdate timestamp without time zone, cmsupervisor character varying, dob timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+
+declare 
+
+v_pageoffset int;
+v_pagenumber int;
+status int;
+
+
+begin
+ 
+ DROP  TABLE IF EXISTS title4buser;
+ CREATE TEMP table title4buser(
+totalcount bigint,
+personid uuid,
+displayname text,
+cjamspid bigint,
+cwname character varying,
+address character varying,
+state character varying,
+city character varying,
+county character varying,
+zipcode character varying,
+region character varying,
+status text,
+startdate date,
+lastdate timestamp without time zone,
+nextdate timestamp without time zone,
+supervisorname character varying ,
+dob timestamp without time zone
+);
+ 
+v_pagenumber := pagenumber-1;
+
+v_pageoffset = v_pagenumber * pagesize;
+
+IF v_status = 'Assign' THEN
+ status = 84;
+ ELSE
+  status = 85;
+END if;
+
+
+
+    IF COALESCE(pagesize, 0) < 1 THEN                     
+  pagesize := 10;
+ END IF;
+
+ IF COALESCE(pagenumber, 0) < 1 THEN
+  pagenumber := 1; 
+ END IF;
+
+
+INSERT INTO  title4buser(totalcount,personid ,displayname,cjamspid,
+        cwname,address,state,city,county,
+       zipcode,region,status,startdate ,lastdate,nextdate,supervisorname,dob) 
+select 
+        count(1) over(),
+  p.personid,
+  P.firstname || ' '|| p.lastname,
+  P.cjamspid,
+     up.displayname,
+         (select  upaa.address from userprofileaddress upaa 
+      where upaa.securityusersid = up.securityusersid 
+      and upaa.activeflag =1
+      and upaa.userprofileaddresstypekey = 'O'     
+      order by upaa.insertedon desc limit 1) ,
+     (select  upaa.state from userprofileaddress upaa 
+     where upaa.securityusersid = up.securityusersid 
+     and upaa.activeflag =1 
+     and upaa.userprofileaddresstypekey = 'O'     order by upaa.insertedon desc  limit 1) ,
+     (select  upaa.city from userprofileaddress upaa 
+     where upaa.securityusersid = up.securityusersid  
+     and upaa.activeflag =1   
+     and upaa.userprofileaddresstypekey = 'O'     
+     order by upaa.insertedon desc  limit 1), 
+     (select case when upaa.county is null then co.countyname
+            else upaa.county end 
+     from userprofileaddress upaa 
+     inner join county co on upaa.countyid = co.countyid  and co.activeflag =1
+     where upaa.securityusersid = up.securityusersid and upaa.activeflag =1
+     and upaa.userprofileaddresstypekey = 'O'    
+     order by upaa.insertedon desc  limit 1),
+    (select  upaa.zipcode from userprofileaddress upaa 
+    where upaa.securityusersid = up.securityusersid 
+    and upaa.activeflag =1  and upaa.userprofileaddresstypekey = 'O'     
+    order by upaa.insertedon desc   limit 1),
+    (select ra.regionname
+            from userprofileaddress upaa 
+            inner join county co on upaa.countyid = co.countyid  and co.activeflag =1
+            inner join region ra on co.regionid =ra.regionid and ra.activeflag =1 
+            where upaa.securityusersid = up.securityusersid and upaa.userprofileaddresstypekey = 'O'     
+      order by upaa.insertedon desc  limit 1),
+   rs.typedescription,
+  
+  (SELECT  pl.addate 
+   from placement pl 
+   where  pl.intakeservicerequestactorid = pn.intakeservicerequestactorid and pl.activeflag =1 
+   order by pl.insertedon asc limit 1 ),
+    (select r.updatedon
+     from routing r
+     where r.objectid = (p.personid):: character varying and r.activeflag =1
+     order by r.updatedon desc
+     limit 1
+     ) as lastdate,
+     (select (r.updatedon) :: timestamp + interval '6 months'
+     from routing r
+     where r.objectid = (p.personid):: character varying  and r.activeflag =1
+      order by r.updatedon desc
+     limit 1
+     ) as nextdate,
+     
+     ( SELECT   mu.username
+   FROM    as_teammemberassignment tma 
+   INNER JOIN  teammember tm 
+    
+    ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+    join teammember tmr on  tm.teamid  =tmr.teamid and tmr.activeflag =1
+    and tmr.roletypekey = 'JSCSP'
+    join as_teammemberassignment tmaa on tmr.teammemberid = tmaa.teammemberid and tmaa.activeflag =1
+    inner join muser mu on mu.securityusersid = tmaa.securityusersid 
+   WHERE  tma.SecurityUsersId = pn.insertedby
+   AND   tma.activeflag =1 ) cmsupervisor,
+   p.dob
+from placement pn 
+inner join intakeservicerequestactor  isra on isra.intakeservicerequestactorid = pn.intakeservicerequestactorid 
+and isra.activeflag=1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth' 
+inner join actor ac on ac.actorid =isra.actorid and ac.activeflag =1
+inner join person p on ac.personid = p.personid and p.activeflag =1 and pn.personid =ac.personid
+inner join routing r on r.objectid = (p.personid  :: character varying) and r.activeflag =1
+inner join routingstatustype rs on r.routingstatustypeid = rs.sequencenumber and r.activeflag =1
+left join userprofile up on up.securityusersid = pn.insertedby and up.activeflag =1
+WHERE r.routingstatustypeid=status
+and pn.placementadmissionclassificationkey ='RES'  and pn.enddatetime is null
+and  (CASE
+  WHEN v_roletypekey = 'IVBW' THEN (r.tosecurityusersid = v_securityusersid) 
+ WHEN v_roletypekey = 'IVBSP' THEN (r.fromsecurityusersid = v_securityusersid)
+  
+ END );
+
+return query
+     
+  select * from title4buser tbu
+  where (v_region is null or tbu.region ilike v_region||'%')
+  and (v_county is null or  tbu.address ilike v_county||'%')
+  and (v_fromdate IS NULL) OR( to_date(tbu.nextdate::text, 'YYYY-MM-DD') BETWEEN to_date(v_fromdate::text, 'YYYY-MM-DD') 
+  and to_date(v_todate::text , 'YYYY-MM-DD')) 
+  order by tbu.nextdate asc
+     LIMIT   CASE WHEN v_nolimit = false  THEN pagesize END offset 
+            CASE WHEN v_nolimit = false  THEN v_pageoffset END;   
+   
+  drop table title4buser;
+ 
+ 
+END;
+
+
+$function$
+

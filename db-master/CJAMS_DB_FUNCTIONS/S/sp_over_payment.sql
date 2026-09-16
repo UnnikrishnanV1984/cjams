@@ -1,0 +1,285 @@
+-- FUNCTION: cjams.sp_over_payment(bigint, bigint, bigint, date, date, numeric, character varying)
+
+ --DROP FUNCTION if exists cjams.sp_over_payment(bigint, bigint, bigint, date, date, numeric, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.sp_over_payment(
+	al_payment_detail_id bigint,
+	al_client_id bigint,
+	al_provider_id bigint,
+	ad_receivable_start_dt date,
+	ad_receivable_end_dt date,
+	adc_receivable_amount numeric,
+	vs_change_type character varying,
+	OUT al_sqlcode integer,
+	OUT as_error character varying)
+    RETURNS record
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+
+	
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author      :  Amit Rastogi
+-- Date        :  12/20/2004
+-- Description :  For all over payment create an receivable record
+--             :  if provider has the placement then create offset else
+--             :  create a payment plan
+-- CHANGED CREATE AND UPDATE USER ID TO FINANCE
+-- added county code
+-- 11/13/2006 added new logic for payment plan
+-- 05/01/2007 COMMENTED PAYMENT PLAN LOGIC, CREATED A NEW PROCEDURE FOR PAYMENT PLAN WHICH IS CALLED FROM
+-- UNDER_OVER_PAYMENT PROCEDURE
+-- 05/10/2007 Vineet Tirodkar - Added OUT parameters SQLCODE, ERROR TEXT and ERROR_SECTION # 14088
+-- 06/12/2007 Amit Rastogi - Changed in checking placement count
+-- 08/30/2007 Vineet Tirodkar - To Handle Null values of RECEIVABLE_ORIGINAL_AMOUNT_No and BALANCE_NO
+-- 05/19/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+--            Modifications for Fiscal Audit Trail(BDSD Req # 36)
+-- 09/29/2015 Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+--			  Modifications for Adoption Subsidy & GAP Over Payments (BDSD Req # 77)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+------------------------------------------------------------------------
+
+DECLARE vs_receivable_header_id VARCHAR(50) DEFAULT 'sq_receivable_header';--
+DECLARE vs_receivable_detail_id VARCHAR(50) DEFAULT 'sq_receivable_detail';--
+DECLARE vs_collection_status_id VARCHAR(50) DEFAULT 'sq_receivable_collection_status';--
+DECLARE vs_entity_type_cd VARCHAR(5);--
+
+DECLARE vl_collection_status_id BIGINT;--
+DECLARE vl_receivable_header_id BIGINT;--
+DECLARE vl_receivable_detail_id BIGINT;--
+DECLARE vl_event_id	BIGINT; --
+DECLARE vl_final_service_id	BIGINT; --
+
+DECLARE vl_payment_plan_count INT;--
+DECLARE vs_collection_status VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_county_cd VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_receivable_status VARCHAR(5) DEFAULT '19'; -- OUTSTANDING
+DECLARE vs_receivable_type VARCHAR(5) DEFAULT '925'; -- FOSTER CARE
+DECLARE vdc_receivable_total decimal(10,2) DEFAULT 0.00;--
+DECLARE vdc_receivable_balance_total decimal(10,2) DEFAULT 0.00;--
+
+DECLARE vl_placement_count INTEGER DEFAULT 0;--
+
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE v_sqlcode int DEFAULT 0;--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_OVER_PAYMENT';--
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+    --GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;--
+	begin
+	EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+   	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+    v_sqlcode := -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || 'Payment Detail ID' || ' :: ' || COALESCE((al_payment_detail_id)::character varying,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');
+ -- as_error :='';
+  END;
+-- Get the county_cd for the payment & Indentify the Payment Type
+SELECT COUNTY_CD,
+       FINAL_SERVICE_ID
+	INTO vs_county_cd,
+		 vl_final_service_id
+FROM tb_PAYMENT_DETAIL
+WHERE PAYMENT_DETAIL_ID = al_payment_detail_id
+	AND DELETE_SW = 'N';--
+
+-- CHECK ANY ADJUSTMENT MADE FOR THIS PAYMENT
+-- check for payment header record for this provider with payment type = adjustment
+SELECT RECEIVABLE_ID,
+	  RECEIVABLE_ORIGINAL_AMOUNT_NO, 
+	  BALANCE_NO
+   INTO vl_receivable_header_id,
+		vdc_receivable_total, 
+		vdc_receivable_balance_total
+FROM tb_RECEIVABLE_HEADER
+WHERE PROVIDER_ID = al_provider_id 
+	AND DELETE_SW = 'N';--
+
+IF vdc_receivable_total is NULL THEN
+   vdc_receivable_total := 0;--
+END IF;--
+
+IF vdc_receivable_balance_total is NULL THEN
+   vdc_receivable_balance_total := 0;--
+END IF;--
+
+IF  vl_receivable_header_id IS NULL THEN -- CREATE A HEADER AND DETAIL RECORD ELSE INSERT DETAIL RECORD
+	-- before inserting generate id
+	SELECT al_next_value from SP_nextid ( vs_receivable_header_id::character varying) INTO vl_receivable_header_id;--
+	
+	INSERT INTO
+		tb_RECEIVABLE_HEADER
+		(
+		   RECEIVABLE_ID,                      PROVIDER_ID,
+		   BALANCE_NO,                         RECEIVABLE_ORIGINAL_AMOUNT_NO,
+		   WRITTEN_OFF_AMOUNT_NO,              CREATE_TS,
+		   CREATE_USER_ID,                     UPDATE_TS,
+		   UPDATE_USER_ID,                     DELETE_SW
+		)
+		 VALUES
+		(
+		   vl_receivable_header_id,            al_provider_id,
+		   adc_receivable_amount,              adc_receivable_amount,
+		   NULL,                               CURRENT_TIMESTAMP,
+		   'finance',                          CURRENT_TIMESTAMP,
+		   'finance',                            'N'
+		);--
+
+	 al_sqlcode := SQLCODE;--
+	IF al_sqlcode <> 0  THEN
+		 as_error := 'Error in inserting Receivable Header record';--
+	END IF ;--
+
+     vdc_receivable_balance_total := adc_receivable_amount;   -- SET THE INITIAL RECEIVABLE BALANCE AS OFFSET AMOUNT
+ELSE
+	 vdc_receivable_total := vdc_receivable_total + adc_receivable_amount;--
+	 vdc_receivable_balance_total := vdc_receivable_balance_total + adc_receivable_amount;--
+
+	UPDATE tb_RECEIVABLE_HEADER
+	SET  RECEIVABLE_ORIGINAL_AMOUNT_NO = vdc_receivable_total,
+		 BALANCE_NO = vdc_receivable_balance_total
+	WHERE  RECEIVABLE_ID = vl_receivable_header_id AND PROVIDER_ID = al_provider_id
+	AND DELETE_SW = 'N';--
+
+	 al_sqlcode := SQLCODE;--
+	IF al_sqlcode <> 0  THEN
+		 as_error := 'Error in Updating Receivable Header record';--
+	END IF ;--
+		
+END IF;--
+
+-- check if any placement exist for the  provider
+IF vl_final_service_id = 501 THEN -- Adoptive Home
+	 vs_collection_status := '780'; -- RECOVERY
+	 vs_receivable_type := '927'; -- ADOPTION SUBSIDY
+	
+ELSEIF vl_final_service_id = 503 THEN -- Guardianship Assistance Program
+	 vs_collection_status := '780'; -- RECOVERY
+	 vs_receivable_type := '926';	-- GAP
+	
+ELSE
+	SELECT COUNT(*)
+		INTO vl_placement_count
+	FROM tb_PLACEMENT
+	WHERE ( PROVIDER_ID = ( SELECT PROVIDER_ID 
+								FROM tb_PLACEMENT 
+							WHERE PLACEMENT_ID = ( SELECT DISTINCT PLACEMENT_ID 
+														FROM tb_PAYMENT_DETAIL 
+												   WHERE PAYMENT_DETAIL_ID = al_payment_detail_id
+												   AND placement_id IS NOT NULL
+												 )
+						   ) 
+			AND ENTRY_DT IS NOT NULL 
+			AND EXIT_DT IS NULL  
+			AND APPROVAL_STATUS_CD  ='3047'  
+			AND ((VOID_SW IS NULL) OR (VOID_SW = 'N')) 
+			AND DELETE_SW = 'N'
+		  );--
+
+	IF vl_placement_count > 0 THEN -- create an offset
+		 vs_collection_status := '779'; -- offset
+	ELSE
+		 vs_collection_status := '780'; -- recovery
+	END IF;--
+	 vs_receivable_type := '925'; -- FOSTER CARE
+END IF;--
+
+-- before inserting generate id
+ SELECT al_next_value from SP_nextid ( vs_receivable_detail_id::character varying) INTO vl_receivable_detail_id;--
+
+INSERT INTO
+	tb_RECEIVABLE_DETAIL
+	(
+	   RECEIVABLE_DETAIL_ID,                   PAYMENT_DETAIL_ID,
+	   RECEIVABLE_ID,                          AMOUNT_NO,
+	   RECEIVABLE_BALANCE_NO,                  RECEIVABLE_STATUS_CD,
+	   RECEIVABLE_STATUS_DT,
+	   START_DT,                               END_DT,
+	   MANUAL_SW,
+	   NOTES_TX,                               CREATE_TS,
+	   CREATE_USER_ID,                         UPDATE_TS,
+	   UPDATE_USER_ID,                         DELETE_SW,
+	   RECEIVABLE_TYPE,                        APPROVAL_STATUS_CD,
+	   ACTION_DT,                              COUNTY_CD,
+	   RECEIVABLE_TS
+	)
+	 VALUES
+	(
+	   vl_receivable_detail_id,                 al_payment_detail_id,
+	   vl_receivable_header_id,                 adc_receivable_amount,
+	   adc_receivable_amount,                   vs_receivable_status,
+	   CURRENT_DATE,
+	   ad_receivable_start_dt,                    ad_receivable_end_dt,
+	   'N',
+	   'Created thru Under Over Batch',           CURRENT_TIMESTAMP,
+	   'finance',                                 CURRENT_TIMESTAMP,
+	   'finance',                                 'N',
+	   vs_receivable_type,                        '3047',
+	   CURRENT_DATE,                              vs_county_cd,
+	   CURRENT_TIMESTAMP);--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0  THEN
+	 as_error := 'Error in inserting Receivable Detail record';--
+END IF ;--
+
+-- GENERATING THE COLLECTION STATUS
+SELECT al_next_value from SP_nextid ( vs_collection_status_id::character varying) INTO vl_collection_status_id;--
+
+INSERT INTO
+ tb_RECEIVABLE_COLLECTION_STATUS
+(
+	COLLECTION_STATUS_ID,                      COLLECTION_STATUS_CD,
+	COLLECTION_STATUS_DT,                      ACTIVE_SW,
+	CREATE_TS,                                 CREATE_USER_ID,
+	UPDATE_TS,                                 RECEIVABLE_DETAIL_ID,
+	UPDATE_USER_ID,                            DELETE_SW
+)
+VALUES
+(
+	vl_collection_status_id,                 vs_collection_status,
+	CURRENT_DATE,                            'Y',
+	CURRENT_TIMESTAMP,                       'finance',
+	CURRENT_TIMESTAMP,                       vl_receivable_detail_id,
+	'finance',                              'N'
+);--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode <> 0  THEN
+	 as_error := 'Error in inserting Receivable Collection Status record';--
+END IF;--
+
+-- PRJ-04753 - Fiscal Audit Trail - Picklist Type ID 10041 
+ vl_event_id := al_payment_detail_id;--
+-- 1007	Receivable	
+ vs_entity_type_cd := '1007' ;--
+
+SELECT a.as_error,a.al_sqlcode from SP_FISCAL_AUDIT_TRAIL ( 'SP_OVER_PAYMENT'
+									, vs_change_type
+									, vl_event_id
+									, vs_entity_type_cd
+									, vl_receivable_detail_id) a into
+									as_error
+									, v_sqlcode;--
+									
+IF v_sqlcode <> 0 THEN
+	 as_error := as_error;--
+	IF as_error is NULL OR as_error = '' THEN
+	    as_error := 'SP_FISCAL_AUDIT_TRAIL failed';--
+	END IF;--
+END IF;--
+
+ al_sqlcode := v_sqlcode;--
+END;
+
+$BODY$;
+
+

@@ -1,0 +1,1 @@
+update personprogramarea set activeflag = 0, updatedon = now(), updatedby = 'CDM-8657' where entityid = 'CW2713438' and activeflag = 1;

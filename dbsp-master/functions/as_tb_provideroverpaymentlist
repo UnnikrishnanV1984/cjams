@@ -1,0 +1,165 @@
+CREATE OR REPLACE FUNCTION as_tb_provideroverpaymentlist(v_providerid bigint, v_client_id integer, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, totalamount numeric, totalreceivable_balance_no numeric, under_payment numeric, receivable_detail_id integer, payment_detail_id integer, receivable_id integer, county_cd character varying, amount_no numeric, receivable_balance_no numeric, provider_id integer, written_off_amount_no numeric, written_off_request_amount_no numeric, receivable_ts character varying, receivable_status_cd character varying, receivable_status_dt date, comments_tx text, start_dt date, end_dt date, date_diff integer, notes_tx text, approval_status_cd character varying, write_off_approval_status character varying, write_off_action_date date, clientname text, approval_status character varying, approved_by character varying, payment_id integer, client_id bigint, entered_by character varying, department character varying, arstatus character varying, receivable_type character varying, collection_status_cd character varying, collection_status character varying, category_code character varying, category_code_val character, receivable_status character varying, write_off_request_by character varying, write_off_request_date date, providername character varying, routingstatustypeid integer, manual_sw character, isancillary boolean, status_cd integer, writeoffassigneduser character varying, manualassigneduser character varying, payment_amount numeric, payment_date date, payment_method_cd character varying, fiscal_change_type character varying)
+ LANGUAGE plpgsql
+AS $function$                                                                                       
+ DECLARE                                                                                
+         v_pagenumber int;                                                                                                                            
+         v_pageoffset int;                                                                                      
+ BEGIN 
+ v_pagenumber := pagenumber - 1;                                                               
+ v_pageoffset := (v_pagenumber) * coalesce(pagesize,0);  
+    drop table if exists temp_payment_detail_op;
+ drop table if exists temp_payment_detail_op;
+ drop table if exists temp_payment_header_op;
+ drop table if exists temp_receivable_collection_status_op;
+    
+ CREATE TEMP TABLE temp_payment_header_op AS
+ SELECT ph.gross_amount_no,ph.payment_id,ph.authorization_id,ph.store_receipt_id,ph.payment_dt
+ ,ph.payment_method_cd, PH.PAYMENT_TYPE_CD, PH.MANUAL_SW, PH.DELETE_SW,ph.provider_id
+ FROM tb_payment_header ph 
+ where ph.provider_id =  v_providerid
+ and ph.delete_sw = 'N';
+
+ create temp table temp_payment_detail_op as 
+ select pd.payment_id,PD.PAYMENT_DETAIL_ID ,pd.placement_id,pd.client_id,pd.case_id ,pd.final_fiscal_category_cd
+ ,pd.final_amount_no,pd.final_service_end_dt,pd.final_service_start_dt,pd.draft_fiscal_category_cd,
+ pd.draft_amount_no,pd.draft_service_end_dt,pd.draft_service_start_dt,pd.payment_amount_no
+ FROM tb_payment_detail pd 
+ join as_tb_receivable_detail rd on pd.payment_detail_id=rd.payment_detail_id and rd.delete_sw = 'N'
+    join temp_payment_header_op tph on tph.payment_id = pd.payment_id
+    where pd.delete_sw = 'N';
+
+   create temp table temp_receivable_collection_status_op as
+   select  rcs.collection_status_cd, rcs.collection_status_dt, 
+    rcs.receivable_detail_id, rcs.update_user_id, rcs.delete_sw, rcs.active_sw
+   from as_tb_receivable_collection_status rcs
+   join  as_tb_receivable_detail rd on rcs.receivable_detail_id = rd.receivable_detail_id and rd.delete_sw = 'N'
+   join temp_payment_detail_op pd on pd.payment_detail_id=rd.payment_detail_id 
+   join temp_payment_header_op tph on tph.payment_id = pd.payment_id and tph.delete_sw = 'N'                                                                                                                                                                            
+   where rcs.delete_sw = 'N' and coalesce(rcs.active_sw,'') != 'N';
+   
+    
+
+ return query                                                                                        
+ select count(1) over() as totalcount,                                                        
+ (                                                                                            
+ select sum(trdd.amount_no) from as_tb_receivable_detail trdd                                   
+ join as_tb_receivable_header ttrh on ttrh.receivable_id=trdd.receivable_id                       
+ join prov.tb_provider tp on tp.provider_id =ttrh.provider_id where 
+ trdd.receivable_detail_id :: character varying 
+not in 
+(select objectid from routing r1
+join as_tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r1.objectid
+join as_tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+where r1.eventcode = 'MANREC' and trhr.provider_id = v_providerid
+and r1.routingstatustypeid  in (73,75) and r1.activeflag = 1 )
+and tp.provider_id=  v_providerid
+and ttrh.delete_sw='N'  
+and tp.delete_sw = 'N'
+and trdd.delete_sw = 'N'
+ ) totalamount,                                                                                
+ (                                                                                             
+ select sum(trdd.receivable_balance_no) from as_tb_receivable_detail trdd                         
+ join as_tb_receivable_header ttrh on ttrh.receivable_id=trdd.receivable_id join prov.tb_provider tp on tp.provider_id =ttrh.provider_id where 
+ trdd.receivable_detail_id :: character varying 
+not in 
+(select objectid from routing r1
+join as_tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r1.objectid
+join as_tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+where r1.eventcode = 'MANREC' and trhr.provider_id = v_providerid
+and r1.routingstatustypeid  in (73,75) and r1.activeflag = 1 )
+and trdd.receivable_detail_id :: character varying  
+ not in 
+ (select trcs.receivable_detail_id from as_tb_receivable_collection_status trcs where trcs.collection_status_cd = '775' and trcs.delete_sw = 'N' and trcs.active_sw = 'Y')
+ and tp.provider_id=  v_providerid 
+ and ttrh.delete_sw='N'
+ and tp.delete_sw = 'N'
+ and trdd.delete_sw = 'N'
+ ) ,
+(select sum(trde.receivable_balance_no) from routing r1
+join as_tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r1.objectid
+join as_tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+where r1.eventcode = 'MANREC' --and r.objectid = '10000079'--and trhr.provider_id = 201900420
+and r1.routingstatustypeid in (73) and r1.activeflag = 1 
+and trhr.provider_id = v_providerid  and trhr.delete_sw='N'
+and trde.delete_sw = 'N'
+) as under_payment
+
+ ,* from                                                                                       
+ (select rd.receivable_detail_id, rd.payment_detail_id, rd.receivable_id, rd.county_cd,                    
+ rd.amount_no, --CASE WHEN rcs.collection_status_cd = '775' THEN 0.00 ELSE rd.receivable_balance_no END ,
+ rd.receivable_balance_no, tbp.provider_id,                                     
+ rd.written_off_amount_no,rd.written_off_request_amount_no, rd.receivable_ts, rd.receivable_status_cd, rd.receivable_status_dt,                                                                                                                                   
+ rd.comments_tx,                                                                               
+ case when rd.end_dt is null then                                                            
+ pd.final_service_start_dt                                                                    
+ else rd.start_dt  end as start_date_val,                                                                                                                            
+ case when rd.end_dt is null then                                                           
+ pd.final_service_end_dt                                                                                   
+ else rd.end_dt  end as end_date_val,                                                                                         
+ case when rd.end_dt is null then                                                           
+ date_part('day',age( pd.final_service_end_dt,pd.final_service_start_dt)) :: integer                      
+ else date_part('day',age( rd.end_dt,rd.start_dt)) :: integer  end as date_diff    
+ --age(start_date_val,end_date_val) :: integer as date_diff;                                                                                                                                                                                                                                                  
+ ,rd.notes_tx, rd.approval_status_cd, rd.write_off_approval_status,                            
+ rd.write_off_action_date as approved_date,concat_ws(' ',c.firstname,c.middlename,c.lastname,c.suffix) as clientname ,pv.description_tx,                                                                                                                                   
+ up.fullname as approved_by,                                                                   
+ pd.payment_id,c.cjamspid ,                                                                   
+ case when rd.manual_sw = 'Y' then (select upp.fullname from userprofile upp where upp.securityusersid = rd.create_user_id)                                                                                                                                       
+ else                                                                                          
+ rd.create_user_id end as enteredby                                                            
+ ,(select value_tx from tb_picklist_values where PICKLIST_type_id=104 AND delete_sw='N'        
+ AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(rd.county_cd)) AS  prov_tax_type_cd      
+ ,(select value_tx from tb_picklist_values where PICKLIST_type_id=7 AND delete_sw='N'          
+ AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(rd.receivable_status_cd)) AS  statustype,
+ (select value_tx from tb_picklist_values where PICKLIST_type_id=64 AND delete_sw='N'        
+ AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(rd.receivable_type)) AS  receivable_type,
+ rcs.collection_status_cd as collection_status_cd,                                                
+ (select value_tx from tb_picklist_values where PICKLIST_type_id=52 AND delete_sw='N'          
+ AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(                                 
+ rcs.collection_status_cd)) as collection_status, 
+ (select fiscal_category_desc from tb_fiscal_category_master where delete_sw='N' AND trim(fiscal_category_cd)=trim(pd.final_fiscal_category_cd)) as category_code, pd.final_fiscal_category_cd as category_code_val, (select value_tx from tb_picklist_values where PICKLIST_type_id=279 AND delete_sw='N' AND active_sw='Y' AND  TRIM(PICKLIST_VALUE_CD)=TRIM(rd.write_off_approval_status)) AS  receivable_status,up1.fullname as Write_off_request_by,rd.write_off_request_date ,(CASE WHEN (tbp.provider_nm is null OR tbp.provider_nm='') THEN CONCAT(tbp.provider_first_nm,' ',tbp.provider_last_nm) ELSE tbp.provider_nm END) as providernames,r.routingstatustypeid,rd.manual_sw,case when tph.payment_type_cd = '4' then true else false end as isancillary    ,
+ (select rr.routingstatustypeid from routing rr where rr.objectid = rd.receivable_detail_id :: character varying and rr.activeflag=1 and rr.eventcode = 'FNSWO' order by rr.insertedon desc limit 1) status_cd,
+  (select rr.tosecurityusersid from routing rr where rr.objectid = rd.receivable_detail_id :: character varying and rr.activeflag=1 and rr.eventcode = 'FNSWO' order by rr.insertedon desc limit 1) writeoffassigneduser,
+  (select rr.tosecurityusersid from routing rr where rr.objectid = rd.receivable_detail_id :: character varying and rr.activeflag=1 and rr.eventcode = 'MANREC' order by rr.insertedon desc limit 1) manualassigneduser,
+ pd.payment_amount_no, tph.payment_dt, tph.payment_method_cd,
+ (SELECT  FA.event_type_cd AS CHANGE_TYPE_CD
+FROM TB_FISCAL_AUDIT_TRAIL FA,
+  TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK FL
+WHERE FA.FISCAL_AUDIT_TRAIL_ID = FL.FISCAL_AUDIT_TRAIL_ID
+ AND FL.ENTITY_ID = rd.receivable_detail_id
+ AND FL.ENTITY_TYPE_CD = '1007'
+ AND FA.DELETE_SW = 'N'
+ AND FL.DELETE_SW = 'N' limit 1)
+ FROM as_tb_receivable_detail rd join temp_payment_detail_op pd on pd.payment_detail_id=rd.payment_detail_id join temp_payment_header_op tph on tph.payment_id = pd.payment_id and tph.delete_sw = 'N'--left join servicecase sc on sc.servicecasenumber =pd.case_id :: character varying                                                                                                                                                                              
+ --left join intakeservicerequest ins on ins.servicecaseid=sc.servicecaseid                                                                                                                                  
+ join as_tb_receivable_header rh on rh.receivable_id=rd.receivable_id 
+ join prov.tb_provider tbp on tbp.provider_id=rh.provider_id
+ left join person c on c.cjamspid = pd.client_id
+ left join tb_picklist_values pv on pv.picklist_type_id=rd.write_off_approval_status
+ left join userprofile up on up.securityusersid= rd.approved_by
+ left join userprofile up1 on up1.securityusersid= rd.write_off_request_user_id
+ left join placement tpl on tpl.alternateid=pd.placement_id and tpl.activeflag = 1
+ left join temp_receivable_collection_status_op rcs on rcs.receivable_detail_id=rd.receivable_detail_id and rcs.delete_sw = 'N' and coalesce(rcs.active_sw,'') != 'N'
+ left join routing r on r.objectid = rd.receivable_detail_id :: character varying and r.activeflag=1 and r.eventcode = 'MANREC'where tph.provider_id = v_providerid and rd.delete_sw = 'N' and rh.delete_sw = 'N' and tbp.delete_sw = 'N'
+ and(v_client_id is null or pd.client_id = v_client_id)
+ group by rd.receivable_detail_id, rd.payment_detail_id, rd.receivable_id,rd.amount_no, 
+ rd.receivable_balance_no,tbp.provider_id,rd.written_off_amount_no,rd.written_off_request_amount_no, 
+ rd.receivable_ts, rd.receivable_status_cd, rd.receivable_status_dt,rd.comments_tx,
+ start_date_val,end_date_val,tpl.enddatetime,   
+ rd.notes_tx, rd.approval_status_cd, rd.write_off_approval_status,rd.write_off_action_date ,
+ clientname ,pv.description_tx,date_diff,up.fullname ,rd.create_user_id,
+ rd.write_off_request_date,pd.final_fiscal_category_cd ,
+ providernames,pd.payment_id,c.cjamspid,rd.county_cd,prov_tax_type_cd,statustype,
+ rd.receivable_type,rcs.collection_status_cd,collection_status,pd.draft_fiscal_category_cd,up1.fullname,
+ r.routingstatustypeid,rd.manual_sw,tph.payment_type_cd, pd.payment_amount_no, tph.payment_dt, tph.payment_method_cd) as x group by x.receivable_detail_id, x.payment_detail_id, x.receivable_id, x.county_cd, x.amount_no, x.receivable_balance_no,x.provider_id,x.written_off_amount_no, x.receivable_ts, x.receivable_status_cd, x.receivable_status_dt,x.comments_tx,x.start_date_val,x.end_date_val,   x.notes_tx, x.approval_status_cd, x.write_off_approval_status,x.approved_date ,x.clientname ,x.description_tx,x.written_off_request_amount_no,x.change_type_cd,x.approved_by ,x.enteredby,x.providernames,x.date_diff,x.collection_status,x.isancillary, x.status_cd,x.manualassigneduser, x.writeoffassigneduser,x.payment_id,x.cjamspid,x.prov_tax_type_cd,x.statustype,x.receivable_type,x.collection_status_cd,x.category_code,x.receivable_status,x.Write_off_request_by,x.write_off_request_date,x.category_code_val ,x.routingstatustypeid,x.manual_sw, x.payment_amount_no, x.payment_dt, x.payment_method_cd
+ order by x.receivable_detail_id desc
+LIMIT pagesize  offset v_pageoffset ;   
+
+ drop table if exists temp_payment_detail_op;
+ drop table if exists temp_payment_header_op;
+ drop table if exists temp_receivable_collection_status_op;
+                                                                                                                                                                                                                                                          
+ END;                                                                                                                                                                                                                                                     
+ $function$
+

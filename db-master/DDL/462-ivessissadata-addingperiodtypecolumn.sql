@@ -1,0 +1,1 @@
+ALTER TABLE cjams.ivessissadata ADD column if not exists detperiodtype varchar NULL;

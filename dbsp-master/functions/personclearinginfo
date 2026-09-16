@@ -1,0 +1,105 @@
+CREATE OR REPLACE FUNCTION personclearinginfo(searchobj json)
+ RETURNS TABLE(intakeserviceid character, servicerequestnumber character varying, servicerequesttype character varying, servicerequestsubtype character varying, datechecked timestamp without time zone, checkedby character varying, clearingtype character varying, result character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+   v_liPageNumber  INT;          
+   v_liPageSize   INT;     
+   --v_liCount   INT;          
+   v_lvPersonId  uuid;
+BEGIN
+
+drop table if exists "sp_personclearing_temp_searchparms";
+CREATE TEMP TABLE "sp_personclearing_temp_searchparms"(parmKeyword VARCHAR(50),parmValue VARCHAR(1000)) on commit drop;
+drop table if exists "sp_personclearing_temp_fullresults";
+CREATE TEMP TABLE "sp_personclearing_temp_fullresults"(             
+  IntakeServiceId      CHAR(36),    
+  ServiceRequestNumber  VARCHAR(50) ,      
+  ServiceRequestType  VARCHAR(50) ,    
+  ServiceRequestSubType  VARCHAR(50) ,        
+  DateChecked   TIMESTAMP(3),          
+  CheckedBy   VARCHAR(100),       
+  ClearingType     VARCHAR(50),     
+  Result  VARCHAR(50)) on commit drop;
+     
+   
+   
+INSERT INTO sp_PersonClearing_temp_searchParms(parmKeyword, parmValue) 
+values 
+('pagenumber',searchObj ->> 'pagenumber'),
+('pagesize',searchObj ->> 'pagesize'),
+('personid',searchObj ->> 'personid'),
+('activeflag',searchObj ->> 'activeflag');
+   
+   
+v_liPageNumber := searchObj ->> 'pagenumber'; 
+v_liPageSize:= searchObj ->> 'pagesize'; 
+v_lvPersonId:= searchObj ->> 'personid'; 
+    
+           
+ IF COALESCE(v_liPageNumber, 0) < 1 THEN          
+  v_liPageNumber := 1;
+ END IF;          
+          
+ IF COALESCE(v_liPageSize, 0) < 1 THEN          
+  v_liPageSize := 10;
+ END IF;          
+         
+              
+           
+ INSERT INTO sp_PersonClearing_temp_fullresults (          
+  IntakeServiceId ,     
+  ServiceRequestNumber,      
+  ServiceRequestType,     
+  ServiceRequestSubType,      
+  DateChecked,          
+  CheckedBy,          
+  ClearingType,          
+  Result         
+ )   
+  SELECT  DISTINCT          
+   ISR.IntakeServiceId   ,          
+   ISR.ServiceRequestNumber,    
+   SRT.Description,    
+   SRST.Description,        
+   ISRCA.insertedon  ,          
+   UP.DisplayName ,          
+   ISRCA.ClearingType ,          
+   ISRCA.Result
+from Person pr  
+     join Actor ac on pr.PersonId = ac.PersonId and ac.ActiveFlag = 1  
+     join IntakeServiceRequestActor ISRA ON ISRA.ActorId = AC.ActorId  
+     join IntakeServiceRequest ISR ON ISR.IntakeServiceId = ISRA.IntakeServiceId  AND ISR.ActiveFlag = 1  
+     join IntakeServiceRequestClearingData ISRCA ON ISRCA.IntakeServiceId = ISRA.IntakeServiceId AND ISRCA.ActiveFlag = 1  
+     JOIN IntakeServiceRequestType AS SRT ON SRT.IntakeServReqTypeId = ISR.IntakeServReqTypeId     
+  JOIN ServiceRequestSubType SRST ON SRST.ServiceRequestSubTypeId  = ISR.IntakeServiceRequestClassId      
+  JOIN SecurityUsers SU ON SU.SecurityUsersId = ISRCA.insertedby     
+  JOIN UserProfile UP ON UP.SecurityUsersId = SU.SecurityUsersId  
+  WHERE (v_lvPersonId   IS NULL    OR pr.PersonId = v_lvPersonId);
+
+  
+ /*SELECT COUNT(1) INTO v_liCount          
+ FROM sp_PersonClearing_temp_fullresults;          
+           
+ IF v_liCount IS NULL THEN          
+  v_liCount := 0;
+ END IF;    */      
+RETURN QUERY
+ SELECT  Fr.IntakeServiceId as IntakeServiceId,          
+   Fr.ServiceRequestNumber as  ServiceRequestNumber,     
+   Fr.ServiceRequestType  as ServiceRequestType,    
+   Fr.ServiceRequestSubType as ServiceRequestSubType ,        
+   Fr.DateChecked  as DateChecked,          
+   Fr.CheckedBy  as CheckedBy,          
+   Fr.ClearingType as ClearingType ,    
+   Fr.Result  Result    
+ FROM sp_PersonClearing_temp_fullresults AS Fr;       
+ --WHERE ordinal BETWEEN ((@liPageNumber - 1) * @liPageSize + 1) AND (@liPageNumber * @liPageSize)          
+ --ORDER BY ordinal;          
+DROP TABLE "sp_personclearing_temp_searchparms";
+DROP TABLE "sp_personclearing_temp_fullresults";
+
+ END;
+$function$
+

@@ -1,0 +1,1 @@
+alter table cjams.serviceagreement alter column attentiontx TYPE text;

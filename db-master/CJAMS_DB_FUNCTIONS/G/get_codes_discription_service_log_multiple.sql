@@ -1,0 +1,54 @@
+drop function IF EXISTS  get_codes_discription_service_log_multiple(text,text);
+
+CREATE OR REPLACE FUNCTION cjams.get_codes_discription_service_log_multiple(casenumber text, v_client_ids text)
+ RETURNS TABLE(agency_program_nm character varying, agency_program_area_id character varying, service_nm character varying, service_id integer, frequency character varying, frequency_cd character varying, duration character varying, duration_cd character varying, actual_begin_date date, actual_end_date date, service_log_id bigint, actual_start_time character varying, actual_end_time character varying, estimated_start_date date, estimated_end_date date, notes character varying, displayname text, intakeservicerequestactorid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+ p_client_ids text[]; 
+--
+BEGIN
+
+	p_client_ids :=v_client_ids;  
+ RETURN QUERY 
+ SELECT
+    
+
+   CASE WHEN TSL.agency_program_area_id IS NOT NULL THEN APA.programname END AS "agency_program_nm"
+  ,APA.programkey AS "agency_program_area_id"
+  ,CASE WHEN TSL.agency_service_ldss_id IS NOT NULL THEN TSR.service_nm END AS "service_nm"
+  ,TSR.service_id AS "service_id"
+  ,CASE WHEN TPA.PICKLIST_VALUE_CD IS NOT NULL THEN TPA.value_tx END AS "frequency"
+  ,TPA.PICKLIST_VALUE_CD AS "frequency_cd"
+  ,CASE WHEN TPV.PICKLIST_VALUE_CD IS NOT NULL THEN TPV.value_tx END AS "duration"
+  ,TPV.PICKLIST_VALUE_CD AS "duration_cd" 
+  ,TSL.start_dt      	AS "actual_begin_date"
+  ,TSL.end_dt        	AS "actual_end_date"
+  ,TSL.service_log_id AS "service_log_id"
+  ,TSL.start_tm AS "actual_start_time"
+  ,TSL.end_tm AS "actual_end_time"
+  ,TSL.estimated_start_dt AS "estimated_start_date"
+  ,TSL.estimated_end_dt AS "estimated_end_date"
+  ,TSL.description_tx 	AS "notes"
+  ,p.firstname||' '|| p.lastname as displayname
+  ,TSL.intakeservicerequestactorid
+
+ 
+ --FROM tb_agency_program_area 	AS APA 
+ FROM agencyprogramarea 	AS APA 
+ --INNER JOIN tb_service_log   	AS TSL ON TSL.agency_program_area_id = APA.agency_program_area_id
+-- INNER JOIN tb_service_log   	AS TSL ON TSL.agency_program_area_id = APA.old_id
+INNER JOIN tb_service_log   	AS TSL ON TSL.agency_program_area_id = APA.programkey
+ INNER JOIN tb_services      	AS TSR ON TSR.service_id = TSL.agency_service_ldss_id
+ INNER JOIN tb_picklist_values  AS TPA ON TPA.PICKLIST_VALUE_CD = TSL.frequency_cd --OR TPA.PICKLIST_VALUE_CD = TSL.duration_cd
+ INNER JOIN tb_picklist_values  AS TPV ON TPV.PICKLIST_VALUE_CD = TSL.duration_cd  and TPV.picklist_type_id ='1397'
+ left join intakeservicerequestactor isr on isr.intakeservicerequestactorid=TSL.intakeservicerequestactorid and isr.activeflag=1
+ left join actor ac on ac.actorid=isr.actorid and ac.activeflag=1
+ left join person p on p.personid=ac.personid and p.activeflag=1
+ WHERE TSL.provider_service_id IS NULL AND TSL.case_id = caseNumber ::bigint and TSL.delete_sw ='N' and TSL.client_id = ANY( p_client_ids::integer[])
+ ORDER BY TSL.update_ts DESC;
+
+END 
+
+$function$;

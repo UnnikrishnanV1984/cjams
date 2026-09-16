@@ -1,0 +1,328 @@
+CREATE OR REPLACE FUNCTION prov_reviewpublicapplication(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_referralId text;
+v_applicantId text;
+v_providerId text;
+returnStatus text;
+v_securityuserid text;
+v_statuscode text;
+v_categorycd text;
+householdRelation text;
+householdEmail text;
+householdDob text; 
+householdPhone text; 
+v_placementstructures jsonb;
+householdBackgroundStatus text; 
+householdSsn text;
+householdClearance text; 
+householdFirstNm text;  
+householdMiddleNm text; 
+householdLastNm text;
+response json;
+v_counter json;
+v_routingstatustypeid character varying;
+v_toworker character varying;
+v_isSupervisor boolean;
+serviceCategory text; 
+serviceCost text;     
+serviceDescription text;      
+serviceId text;       
+servicePaidBy text;       
+serviceUnit text;     
+serviceClassification text;      
+serviceStartDate text;      
+serviceEndDate text;      
+serviceStatus text;
+v_childplacement text;
+res json;
+v_service json;
+v_characteristic json;
+responseChar json;
+pickListTypeId text;
+picklistValueCd text;     
+ValueDesc text;
+householdPrefix text;
+householdSuffix text;
+servicenm text;
+-- provider table values
+v_payToAffiliateCd TEXT;
+v_application_type character varying;
+
+----- provider approval
+v_approvalStatusCd text;
+v_approvalTypeCd text;
+provid character varying;
+v_approvalReasonCd text;
+v_recommendCd text;
+v_providerApprovalId uuid; -- uuid ?
+v_haApprovalStatusCd text;
+v_nextrecondate timestamp without time zone;
+v_servicecount number;
+----- prov approval person
+v_approvalPersonId uuid;
+v_personTypeKey text;
+v_addrcnt int;
+----- provider background check
+v_providerBackgroundCheckId uuid;
+
+----- Placement specifications
+placementSpecification json; -- Try using this!!
+approvedPlacementCapacity numeric;
+v_householdmember character varying;
+v_communication character varying;
+v_oldproviderid character varying;
+v_oldprgram character varying;
+v_oldprgramtype character varying;
+v_prgram character varying;
+v_prgram_type character varying;
+v_updateplacementstructures character varying;
+v_sendplacementnotification character varying;
+v_provisionally timestamp;
+v_rejectstatus character varying;
+v_provproviderid character varying;
+v_applicationstatus character varying;
+v_oldapplicationstatus  character varying;
+v_jurisdiction character varying;
+v_county_cd character varying;
+v_financialedits int4;
+v_recon boolean;
+v_vacancyno int4;
+v_phaserecordexists int4;
+v_mig boolean;
+v_rolekey character varying; 
+BEGIN
+v_recon:=false;
+v_mig=false;
+v_referralId := insertedtlsobj->>'referral_id';
+v_applicantId := insertedtlsobj->>'applicant_id';
+v_securityUserId := insertedtlsobj->>'securityuserid';
+v_providerId := insertedtlsobj->>'provider_id';
+v_applicationstatus := insertedtlsobj->>'application_status';
+v_statuscode :='1791';
+v_categorycd := '1783';
+v_payToAffiliateCd := '3366';
+
+------ provider approval
+v_approvalTypeCd := '3577'; -- Regular Home Approval  -*- these are the type of approval type selected eg kinship, etc -*- picklist_type_id = 367
+v_approvalStatusCd := '3579';  -- Approved -*- change as the application progresses eg Home Assessment Completed, Application Signed, etc -*- picklist_type_id = 368
+v_recommendCd := '3661';  -- This home should be Approved -*- recommendations etc -*- picklist_type_id = 380
+v_approvalReasonCd := '4995'; -- New Provider -*- reason for approving this one eg Significant Change in Household, Re-Opening Provider, etc -*- picklist_type_id = 976
+v_haApprovalStatusCd := '3047'; -- Approved -*- what is HA ? -*- picklist_type_id = 279
+
+----- UUIDs used for inserting data records
+v_providerApprovalId := gen_random_uuid();
+v_approvalPersonId := gen_random_uuid();
+v_providerBackgroundCheckId := gen_random_uuid();
+
+select providerid into v_providerId from providerapprovetypeconfig where  applicantid=v_applicantId;
+
+
+if (v_providerId is null) then
+    select provider_id into v_providerId from providerapprovalphaserecord where  applicant_id=v_applicantId and delete_sw='N';
+end if;
+
+if ((v_providerId is null) or (LENGTH(v_providerId)=0)) then
+ select getnextsequencenumber into v_providerId from getnextsequencenumber('tb_provider_providerid_seq');
+else
+ v_mig:=true;
+ v_recon=true;
+end if;
+
+
+
+select count(applicant_id) into v_phaserecordexists from providerapprovalphaserecord p where applicant_id=v_applicantId ;
+if(v_phaserecordexists=0) then
+        INSERT INTO providerapprovalphaserecord
+        (provider_approval_record_id, referral_id, applicant_id, provider_id, is_referral_accepted, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+        VALUES(gen_random_uuid(), v_referralId, v_applicantId, v_providerId, true, now(), v_securityUserId, now(), v_securityUserId, 'N'::bpchar, 1);
+
+else
+        if(v_phaserecordexists>1) then
+            update providerapprovalphaserecord set delete_sw='Y',active_flag=0 where referral_id is null and applicant_id=v_applicantId;
+        end if;
+        update providerapprovalphaserecord set
+            provider_id=v_providerId, is_application_accepted=true where applicant_id=v_applicantId and delete_sw='N';
+end if;
+
+  
+
+
+update tb_provider set delete_sw='N', update_ts = now(), update_user_id = v_securityUserId  where provider_id=v_providerId;
+
+SELECT TRIM(prgram),provider_program_type, lower(application_typecode) into v_prgram,v_prgram_type, v_application_type FROM tb_public_provider_applicant pr WHERE pr.applicant_id = v_applicantId;
+
+if (v_prgram='ICPC') then
+ v_categorycd := '1785';
+end if;
+
+if (v_prgram='Adult Services') then
+ v_categorycd := '1786';
+end if;
+
+SELECT capacity into approvedPlacementCapacity FROM publicproviderhomeplacementspecification WHERE object_id=v_applicantId and delete_sw='N' and active_flag=1 order by update_ts desc limit 1;
+
+if (v_recon=true) then
+ select count(*) into v_childplacement from tb_placement  where provider_id = v_providerId and delete_sw = 'N' and entry_dt is not null and exit_dt is null and coalesce(void_sw, 'N') <> 'Y' ;
+    v_vacancyno=approvedPlacementCapacity::int4-v_childplacement::int4 ;
+else
+ v_vacancyno:=approvedPlacementCapacity;
+end if;
+
+
+if (v_applicationstatus = 'Provisionally Approved')then 
+    v_routingstatustypeid = 608;
+else 
+    v_routingstatustypeid = 601;
+end if;  
+
+
+
+select jurisdiction into v_jurisdiction from tb_public_provider_applicant pr where pr.applicant_id = v_applicantId;
+
+select statecountycode  into v_county_cd from county where countyid=v_jurisdiction::uuid;
+
+if (v_recon=true) then
+   update tb_provider tbprd set provider_category_cd = v_categorycd,provider_status_cd=v_statuscode,
+   pay_to_affiliate_cd=v_payToAffiliateCd,  vacancy_no=v_vacancyno,    
+ provider_first_nm=  tppa.individual_applicant_first_nm,
+ provider_last_nm=tppa.individual_applicant_last_nm ,
+ tax_id_no=tppa.individual_applicant_ssn,
+    dob_dt=tppa.individual_applicant_dob , 
+    co_dob_dt=tppa.co_applicant_dob  , 
+    co_first_nm =tppa.co_applicant_first_nm ,
+ co_last_nm =tppa.co_applicant_last_nm, 
+ co_ssn_no= tppa.co_applicant_ssn , update_ts = now(), update_user_id = v_securityUserId 
+ FROM tb_public_provider_applicant tppa
+ WHERE
+  tbprd.provider_id=v_providerId  and tppa.applicant_id=v_applicantId;
+  
+else
+ INSERT INTO tb_provider
+  (provider_id, provider_category_cd, provider_status_cd, pay_to_affiliate_cd, create_ts, create_user_id, update_ts,
+  update_user_id, provider_first_nm , provider_last_nm , provider_middle_nm, 
+  PROV_TAX_TYPE_CD, tax_id_no , MAIL_CODE_TX, INDICATOR_1099_SW,
+  dob_dt, co_dob_dt , co_first_nm ,
+  co_last_nm , co_ssn_no , provider_nm, vacancy_no,county_cd_tx,adr_work_phone_tx,county_cd)
+ SELECT 
+  (v_providerId)::int, v_categorycd, v_statuscode, v_payToAffiliateCd, now(), v_securityuserid, now(),
+  v_securityuserid, pr.individual_applicant_first_nm , pr.individual_applicant_last_nm , substring(pr.individual_applicant_middle_nm,0,10),
+  '2518',pr.individual_applicant_ssn , '000', 'Y', 
+  pr.individual_applicant_dob , pr.co_applicant_dob , pr.co_applicant_first_nm , 
+  pr.co_applicant_last_nm , pr.co_applicant_ssn , '', v_vacancyno,jurisdiction,individual_applicant_cell_nm,v_county_cd
+ FROM 
+  tb_public_provider_applicant pr 
+ WHERE
+  pr.applicant_id = v_applicantId LIMIT 1;
+end if;
+
+
+if(v_providerId is not null  ) then
+
+ update providerinfoconfig set activeflag=0 where providerid =v_providerId; 
+   insert into providerinfoconfig (providerid,"program",programtype,insertedby,old_id)
+   SELECT  (v_providerId)::int, prgram,provider_program_type,v_securityuserid,v_applicantId
+   FROM tb_public_provider_applicant pr  WHERE  pr.applicant_id = v_applicantId; 
+   SELECT prgram,provider_program_type into v_prgram,v_prgram_type
+   FROM tb_public_provider_applicant pr WHERE pr.applicant_id = v_applicantId; 
+end if;
+
+if(v_application_type='initial') then
+    select count(1) into v_addrcnt from (
+        SELECT adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd,
+        adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, adr_default_sw, adr_start_dt, adr_end_dt, delete_sw, adr_street_tx,
+        adr_county_cd_tx from tb_provider_addresses  where parent_key_id=v_providerId  and delete_sw='N'  and adr_type_cd=3357);
+
+    if (v_addrcnt > 0) then
+    
+        update tb_provider_addresses tpa 
+        set 
+            tpa.adr_type_cd = tpaa.adr_type_cd,
+            tpa.adr_format_cd = tpaa.adr_format_cd,
+            tpa.adr_street_no = tpaa.adr_street_no,
+            tpa.adr_box_no = tpaa.adr_box_no,
+            tpa.adr_pre_dir_cd = tpaa.adr_pre_dir_cd,
+            tpa.adr_street_nm = tpaa.adr_street_nm,
+            tpa.adr_street_suffix_cd = tpaa.adr_street_suffix_cd,
+            tpa.adr_post_dir_cd = tpaa.adr_post_dir_cd,
+            tpa.adr_unit_type_cd = tpaa.adr_unit_type_cd,
+            tpa.adr_unit_no_tx = tpaa.adr_unit_no_tx,
+            tpa.adr_city_nm = tpaa.adr_city_nm,
+            tpa.adr_county_cd = tpaa.adr_county_cd,
+            tpa.adr_state_cd = tpaa.adr_state_cd,
+            tpa.adr_zip5_no = tpaa.adr_zip5_no,
+            tpa.adr_zip4_no = tpaa.adr_zip4_no,
+            tpa.adr_direction_tx = tpaa.adr_direction_tx,
+            tpa.adr_foreign_tx = tpaa.adr_foreign_tx,
+            tpa.adr_foreign_state_tx = tpaa.adr_foreign_state_tx,
+            tpa.adr_country_tx = tpaa.adr_country_tx,
+            tpa.adr_postal_code_tx = tpaa.adr_postal_code_tx,
+            tpa.adr_default_sw = tpaa.adr_default_sw,
+            tpa.adr_start_dt = tpaa.adr_start_dt,
+            tpa.adr_end_dt = tpaa.adr_end_dt,
+            tpa.create_ts = now(),
+            tpa.create_user_id =  v_securityUserId,
+            tpa.update_ts = now(),
+            tpa.update_user_id = v_securityUserId,
+            tpa.delete_sw = tpaa.delete_sw,
+            tpa.adr_street_tx = tpaa.adr_street_tx,
+            tpa.adr_county_cd_tx = tpaa.adr_county_cd_tx
+        from tb_provider_applicant_addresses tpaa 
+        where tpaa.parent_key_id=v_applicantId and tpaa.delete_sw='N' 
+        and tpa.parent_key_id = v_providerId  and tpa.delete_sw='N'  and tpa.adr_type_cd=3357;
+
+    else 
+    
+        raise notice 'Inside else--v_addrcnt--------%',v_addrcnt;
+        INSERT INTO tb_provider_addresses
+        (parent_key_id, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, adr_default_sw, adr_start_dt, adr_end_dt, create_ts, create_user_id, update_ts, update_user_id, delete_sw, adr_street_tx, adr_county_cd_tx)
+        SELECT v_providerId, adr_type_cd, adr_format_cd, adr_street_no, adr_box_no, adr_pre_dir_cd, adr_street_nm, adr_street_suffix_cd, adr_post_dir_cd, adr_unit_type_cd, adr_unit_no_tx, adr_city_nm, adr_county_cd, adr_state_cd, adr_zip5_no, adr_zip4_no, adr_direction_tx, adr_foreign_tx, adr_foreign_state_tx, adr_country_tx, adr_postal_code_tx, adr_default_sw, adr_start_dt, adr_end_dt, now(), v_securityuserid, now(), v_securityuserid, delete_sw, adr_street_tx, adr_county_cd_tx
+        FROM tb_provider_applicant_addresses pra
+        WHERE pra.parent_key_id = v_applicantId  and delete_sw='N';
+    end if;
+
+end if;
+
+--@Simar: according to vineet only need this during inital approval
+IF (v_recon=false) then
+  INSERT INTO tb_provider_picklist
+  ( provider_id, program_id, picklist_type_id, picklist_value_cd, create_user_id, update_user_id, delete_sw, value_desc, create_ts, update_ts)
+  VALUES( (v_providerId)::int, NULL, 155, v_categorycd, v_securityuserid, v_securityuserid, 'N', NULL, now(), now());
+else
+ if (lower(v_application_type)='convprov') then
+  update tb_provider_picklist set delete_sw='Y' where picklist_type_id=155 and provider_id=v_providerId;
+  INSERT INTO tb_provider_picklist
+  ( provider_id, program_id, picklist_type_id, picklist_value_cd, create_user_id, update_user_id, delete_sw, value_desc, create_ts, update_ts)
+  VALUES( (v_providerId)::int, NULL, 155, v_categorycd, v_securityuserid, v_securityuserid, 'N', NULL, now(), now());
+ end if;
+END IF;
+
+
+
+
+
+v_financialedits:=0;
+
+if (v_prgram='Adult Services') then
+    select TO_NUMBER(prov_sp_financial_edits) into v_financialedits from prov_sp_financial_edits(v_providerId::int,'provider','N');
+else
+    select TO_NUMBER(sp_financial_edits) into v_financialedits from sp_financial_edits(v_providerId::int,'provider','N');
+end if;
+
+
+if (v_financialedits = -1) then
+    raise notice '%s',  'Have some invalid approvals';
+    update tb_provider set delete_sw='Y', update_ts = now(), update_user_id = v_securityUserId  where provider_id=v_providerId;
+    update tb_public_provider_applicant set application_status='For Acceptance' where applicant_id=v_applicantId ;
+end if;  
+returnStatus:= v_providerId || ':' ||v_financialedits||':'||v_applicantId; 
+
+
+RETURN returnStatus;
+                                                      
+END;
+$function$
+

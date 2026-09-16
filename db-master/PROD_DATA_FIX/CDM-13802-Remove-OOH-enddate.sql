@@ -1,0 +1,1 @@
+update personprogramarea set enddate = null, updatedby = 'CDM-13802', updatedon = now() where personprogramid = '40856216-241f-4bba-bbd7-867afea3bbf2';

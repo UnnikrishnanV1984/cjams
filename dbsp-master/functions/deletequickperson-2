@@ -1,0 +1,76 @@
+CREATE OR REPLACE FUNCTION deletequickperson(deletetype character varying, v_quickpersonid uuid, v_objectid character varying, v_objecttype character varying, v_securityuserid character varying, v_fromroleid character varying, v_intakeserviceid character varying, v_casenumber character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+-------------------------------------------------------------
+--CIDM-4111 - Veera Nadimpalli Delete quick card person changes
+-- CIDM - 4111 03-04 Person Delete Issue fix
+------------------------------------------------------------------
+
+DECLARE
+v_date timestamp without time zone;
+v_supervisorid  character varying;
+v_personfullname  character varying;
+v_msg character varying;
+v_notifystatus character varying;
+v_teamid uuid;
+BEGIN
+v_date:= now() ;
+v_notifystatus := 'Quick add person card delete';
+ SELECT concat(firstname, ' ', lastname) INTO v_personfullname FROM quickperson WHERE quickpersonid = v_quickpersonid and intakenumber = v_objectid;
+ 
+
+ if deletetype = 'Request' then 
+  SELECT vup.supervisorid, vup.teamid INTO v_supervisorid, v_teamid FROM v_userprofile vup WHERE vup.securityusersid = v_securityuserid limit 1;
+  
+  if v_casenumber is null then
+      update quickperson set activeflag = 0, deletestatus = 'A', updatedon = now(), touserid = v_securityuserid, updatedby = v_securityuserid where quickpersonid = v_quickpersonid and intakenumber = v_objectid;
+  else 
+
+  update quickperson set deletestatus = 'R', caseid = v_intakeserviceid ::uuid, casenumber = v_casenumber, updatedon = now(), fromuserid = v_securityuserid, updatedby = v_securityuserid 
+  where quickpersonid = v_quickpersonid and intakenumber = v_objectid;
+  
+
+  INSERT INTO routing( eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+      insertedby,  updatedby, insertedon, updatedon, isreviewrequest ,
+      routeddescription, remarks, servicerequestnumber, objecttypekey )
+  VALUES ('QPDR', v_securityuserid, v_supervisorid, v_teamid,
+    v_fromroleid, 'CWSP',v_quickpersonid, 15, 1,
+    v_securityuserid,v_securityuserid, v_date,v_date,true,
+    'Quick Add Person Card Delete Request', 'Quick Personid ( ' || v_quickpersonid || ' )', v_objectid, v_objecttype); 
+   
+  v_msg = 'Quick Add Person Card Delete Request for ( ' || v_personfullname || ' ) ';
+  
+  SELECT send_notification INTO v_notifystatus    
+   FROM send_notification(v_securityuserid, v_securityuserid, v_supervisorid,'System', 'Normal', v_msg, v_msg, v_objectid,false);
+  end if; 
+  
+ else
+  update quickperson set activeflag = 0, deletestatus = 'A', updatedon = now(), touserid = v_securityuserid, updatedby = v_securityuserid where quickpersonid = v_quickpersonid and intakenumber = v_objectid;
+ 
+  update routing r set r.activeflag = 0, updatedon = now(), updatedby = v_securityuserid where r.objectid::uuid =v_quickpersonid::uuid and r.eventcode='QPDR' and r.activeflag = 1;
+ 
+  SELECT fromuserid INTO v_supervisorid FROM quickperson WHERE quickpersonid = v_quickpersonid and intakenumber = v_objectid limit 1;
+  
+  INSERT INTO routing( eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+      insertedby,  updatedby, insertedon, updatedon, isreviewrequest ,
+      routeddescription, remarks, servicerequestnumber, objecttypekey )
+  VALUES ('QPDR', v_securityuserid, v_supervisorid, v_teamid,
+    v_fromroleid, null, v_quickpersonid, 16, 1,
+    v_securityuserid,v_securityuserid, v_date,v_date,true,
+    'Quick Add Person Card Delete Request', 'Quick Personid ( ' || v_quickpersonid || ' )', v_objectid, v_objecttype);
+  
+  v_msg = 'Quick Add Person Card Delete Request Approved for ( ' || v_personfullname || ' ) ';
+  
+  SELECT send_notification INTO v_notifystatus    
+   FROM send_notification(v_securityuserid, v_securityuserid, v_supervisorid,'System', 'Normal', v_msg, v_msg, v_objectid, false);
+ 
+ end if;
+
+RETURN v_notifystatus;
+  
+END
+$function$
+

@@ -1,0 +1,1 @@
+update referencevalues set value_text='Other',description='Other' where referencetypeid=176 and ref_key='OTH' and activeflag=1;

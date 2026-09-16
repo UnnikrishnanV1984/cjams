@@ -1,0 +1,99 @@
+CREATE OR REPLACE FUNCTION as_getcopdocument(v_intakeserviceid uuid, v_intakenumber character varying, v_securityuserid character varying)
+ RETURNS TABLE(placementnumber integer, workername character varying, placementstartdate date, youthid character varying, youthname character varying, dateofbirth character varying, youthcounty character varying, facilityname character varying, projadmissiondate character varying, projdischargedate character varying, casemanager character varying, provideraddress character varying, providerfax character varying, providerphone character varying, providercode character varying, costperday character varying, costpermonth character varying, area character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_workername character varying;
+v_jsondata jsonb;
+v_casemanager character varying;
+
+begin
+
+ select 
+  jsondata into v_jsondata 
+ from intakedastaging where intakenumber = v_intakenumber and activeflag = 1;
+
+ select 
+  up.lastname||','||up.firstname 
+  into v_workername
+ from userprofile up
+ where up.securityusersid = v_securityuserid and up.activeflag = 1;
+
+ select 
+  up.lastname||','||up.firstname INTO v_casemanager 
+ from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+ join teammember tm2 on tm2.teamid = tm.teamid and tm2.activeflag = 1
+ join as_teammemberassignment tma2 on tm2.teammemberid = tma2.teammemberid and tma2.activeflag = 1
+ join userprofile up on up.securityusersid = tma2.securityusersid and up.activeflag = 1
+ where tma.activeflag = 1 and tma.securityusersid = v_securityuserid and tm2.roletypekey = 'JSCSP';
+ 
+ return query
+
+ select 
+  distinct 
+  pl.alternateid  as placementnumber,
+  v_workername,
+  pl.startdatetime::date as placementstartdate,
+  cast(p.cjamspid as character varying) as youthid,
+  cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+  cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as dateofbirth,
+  cast(trim(regexp_replace(pa.county, '\\''+', '''', 'g')) as character varying) as youthcounty,
+  cast(pr.providername as character varying) as facilityname,
+  cast(to_char(pl.addate,'MM/DD/YYYY')as character varying) as projadmissiondate,
+  cast(to_char(pl.releasedate,'MM/DD/YYYY')as character varying) as projdischargedate, 
+  cast(v_casemanager as character varying) as casemanager,
+  (select cast(paddr.buildingno||','||paddr.addressline1||','||COALESCE(paddr.addressline2, '')||','||paddr.city||','||coun.countyname||','||paddr.state||','||coun.zipcode as character varying)
+  from provideraddress paddr 
+  left join county coun on paddr.countyid = coun.countyid and coun.activeflag = 1 where pr.providerid = paddr.providerid and paddr.activeflag = 1 limit 1) as provideraddress,
+  (select cast(pcinfo.phoneextension||(case when nullif(pcinfo.phoneextension,'') is not null then '-' else '' end)||pcinfo.phonenumber as character varying) from providercontactinfo pcinfo where providercontactinfotypekey = 'F' and pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1 limit 1) as providerfax,
+  (select cast(pcinfo.phoneextension||(case when nullif(pcinfo.phoneextension,'') is not null then '-' else '' end)||pcinfo.phonenumber as character varying) from providercontactinfo pcinfo where providercontactinfotypekey = 'P' and pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1 limit 1) as providerphone,
+  cast(pr.providercode as character varying) as providercode,
+  cast(pr.costperday as character varying) as costperday,
+  cast(pr.costpermonth as character varying) as costpermonth,
+  cast(r.regionname as character varying) as area 
+ from intakeservicerequest isr 
+ join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.activeflag = 1
+ join actor a on a.actorid = isra.actorid and a.activeflag = 1
+ join person p on p.personid = a.personid and p.activeflag = 1
+ left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1
+ left join placement pl on (pl.intakenumber = isr.intakenumber or pl.intakeserviceid = isr.intakeserviceid) and pl.activeflag =1
+ left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+ left join county c on trim(c.countyname) = trim(pa.county) and c.activeflag = 1 
+ left join region r on r.regionid = c.regionid and r.activeflag = 1
+ where isra.intakeservicerequestpersontypekey = 'Youth' 
+ and isr.intakeserviceid = v_intakeserviceid 
+ union
+ select distinct
+  pl.alternateid  as placementnumber,
+  v_workername,
+  pl.startdatetime::date as placementstartdate,
+  cast(coalesce(ida.obj->>'cjamspid','') as character varying) as youthid,
+  cast(INITCAP(TRIM(coalesce(ida.obj->>'Lastname',''))|| CASE WHEN (ida.obj->>'suffix' is not null and ida.obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(ida.obj->>'suffix','')) || ', ' ||TRIM(coalesce(ida.obj->>'Firstname',''))) as  character varying)   as youthname,
+  cast(ida.obj->>'Dob' as character varying) as dateofbirth,
+  cast( trim(regexp_replace(ida.obj->>'county', '\\''+', '''', 'g')) as character varying) as youthcounty,
+  cast(pr.providername as character varying) as facilityname,
+  cast(to_char(pl.addate,'MM/DD/YYYY')as character varying) as projadmissiondate,
+  cast(to_char(pl.releasedate,'MM/DD/YYYY')as character varying) as projdischargedate, 
+  cast(v_casemanager as character varying)  as casemanager,
+  (select cast(paddr.buildingno||','||paddr.addressline1||','||COALESCE(paddr.addressline2, '')||','||paddr.city||','||coun.countyname||','||paddr.state||','||coun.zipcode as character varying)
+  from provideraddress paddr 
+  left join county coun on paddr.countyid = coun.countyid and coun.activeflag = 1 where pr.providerid = paddr.providerid and paddr.activeflag = 1 limit 1) as provideraddress, 
+  (select cast(pcinfo.phoneextension||(case when nullif(pcinfo.phoneextension,'') is not null then '-' else '' end)||pcinfo.phonenumber as character varying) from providercontactinfo pcinfo where providercontactinfotypekey = 'F' and pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1 limit 1) as providerfax,
+  (select cast(pcinfo.phoneextension||(case when nullif(pcinfo.phoneextension,'') is not null then '-' else '' end)||pcinfo.phonenumber as character varying) from providercontactinfo pcinfo where providercontactinfotypekey = 'P' and pr.providerid = pcinfo.providerid AND pcinfo.activeflag = 1 limit 1) as providerphone,
+  cast(pr.providercode as character varying) as providercode,
+  cast(pr.costperday as character varying) as costperday,
+  cast(pr.costpermonth as character varying) as costpermonth,
+  (select cast(r.regionname as character varying) from county c join region r on r.regionid = c.regionid and r.activeflag = 1 where trim(c.countyname) = trim(trim(regexp_replace(ida.obj->>'county', '\\''+', '''', 'g'))) and c.activeflag = 1)as area
+ from (select v_intakenumber as intakenumber,
+   jsonb_array_elements(ids.jsondata->'persons') obj 
+    from (select v_jsondata  as jsondata) ids
+ where v_intakeserviceid is null )ida  
+ left join placement pl on ida.intakenumber =pl.intakenumber and pl.activeflag=1
+ left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+ where ida.obj->>'Role' ='Youth' and v_intakeserviceid is null limit 1;
+
+end;
+$function$
+

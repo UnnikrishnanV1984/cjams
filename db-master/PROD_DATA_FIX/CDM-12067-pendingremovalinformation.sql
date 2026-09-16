@@ -1,0 +1,1 @@
+update routing set activeflag = 0 , updatedby = 'CDM-12067' , updatedon = now() where objectid = '1eff6d6f-e23b-432d-be56-083c0c82432b' and routingid = 'd70193d1-04cf-420a-9963-e91c74a3fe01' and activeflag = 1 and eventcode = 'CPLAN2';

@@ -1,0 +1,32 @@
+DROP function if exists get_commingled_account_list(json,bigint,bigint);
+CREATE OR REPLACE FUNCTION cjams.get_commingled_account_list(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, comm_account_id integer, account_no character varying,bank_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+	v_comm_ac_id bigint;
+	v_county_cd character varying;
+	v_pagenumber int;
+	v_pageoffset int;
+BEGIN
+v_comm_ac_id := searchobj ->> 'comm_ac_id';
+v_county_cd := searchobj ->> 'county_cd';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+RETURN QUERY
+
+SELECT COUNT(1) OVER() totalcount, 
+   CA.comm_account_id AS comm_account_id,  
+   CA.account_no AS account_no,
+   CA.bank_nm  
+FROM tb_commingled_account AS CA 
+WHERE CA.account_no IS NOT NULL AND CA.delete_sw='N' and
+CA.close_dt is null AND TRIM(CA.county_cd)= v_county_cd;
+
+--LIMIT v_liPageSize OFFSET v_pageoffset; 
+END 
+
+$function$
+;

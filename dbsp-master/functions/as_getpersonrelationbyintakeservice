@@ -1,0 +1,121 @@
+CREATE OR REPLACE FUNCTION as_getpersonrelationbyintakeservice(v_intakeserviceid character varying)
+ RETURNS TABLE(key bigint, personid uuid, intakeserviceid uuid, cjamspid character varying, fn character varying, ln character varying, s character varying, k character varying, ux integer, vir integer, f integer, m integer, source character varying, dob character varying, iscaseclient integer, ishouseholdmember integer, persondetails json, relation json, reciprocalrelation json)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+ DROP  TABLE  IF EXISTS tmp_table;
+ CREATE TEMP TABLE tmp_table ( rownum bigint, personid uuid,
+        intakeserviceid uuid,positionid character varying(100), 
+        firstname character varying(100),
+        lastname character varying(100),
+        gender  character varying(10),
+        age  character varying(10),
+        ux int,
+        vir int,
+        f int,
+        m int,
+        source character varying(1000),
+        dob character varying(15) ,
+        iscaseclient int,
+        ishouseholdmember int,
+        persondetails json);
+                        
+ INSERT INTO tmp_table (rownum, personid,intakeserviceid,positionid, firstname, lastname,dob,
+                        age,gender, source,
+                        iscaseclient,
+                        ishouseholdmember,
+                        persondetails)
+    SELECT  row_number()OVER(), *
+ FROM (SELECT a.personid,a.intakeserviceid, p.cjamspid,p.firstname,p.lastname,
+    to_char(p.dob, 'MM/DD/YYYY'),
+            EXTRACT(YEAR FROM age(now(),p.dob))::int as age,p.gendertypekey,p.userphoto,
+            --CASE COALESCE(a.servicecaseid::character varying,'')  WHEN  '' THEN  0 ELSE 1 END  ,
+           a.ishouseholdmember,
+            a.ishouseholdmember,
+            (SELECT row_to_json(x) FROM ( 
+                  SELECT  p.cjamspid,p.firstname,p.lastname, p.gendertypekey,  p.userphoto,p.dob,
+          gt.typedescription,  
+                    CASE WHEN EXTRACT(YEAR FROM age(now(), p.dob)) <= 0 THEN 
+                            CASE WHEN EXTRACT(MONTH FROM age(now(), p.dob)) <= 0 THEN CONCAT (EXTRACT(DAY FROM age(now(), p.dob)) :: CHARACTER varying, ' ', 'Day(s)') 
+                            ELSE CONCAT (EXTRACT(MONTH FROM age(now(), p.dob)) :: CHARACTER varying, ' ', 'Month(s)') END 
+         ELSE CONCAT (EXTRACT(YEAR FROM age(now(), p.dob)) :: CHARACTER varying,' ', 'Yrs')END 
+                    age,
+                            (SELECT row_to_json(x) address FROM (
+                                SELECT pa.address,pa.address2,pa.zipcode,pa.city,pa.state,pa.country,pa.county
+                                FROM personaddress pa  
+                                WHERE pa.personid = p.personid and pa.activeflag =1 AND pa.personaddresstypekey = 'C'
+                                LIMIT 1
+                                ) x),
+                       (SELECT row_to_json(x) phone FROM (
+                                SELECT pp.phonenumber,pp.phoneextension ,pp.personphonetypekey
+        FROM personphonenumber pp
+                                WHERE pp.personid = p.personid and pp.activeflag =1 AND pp.personphonetypekey = 'P'
+                                LIMIT 1
+                                ) x)
+              ) x)            
+     FROM actor a
+         INNER JOIN person p ON p.personid = a.personid AND p.activeflag =1
+         INNER JOIN gendertype gt ON gt.gendertypekey = p.gendertypekey AND gt.activeflag =1
+     WHERE a.activeflag =1 AND a.intakeserviceid =v_intakeserviceid::uuid ORDER BY age desc) v;
+ 
+ 
+  UPDATE tmp_table SET 
+   source = CASE gender WHEN 'M' THEN 'assets/images/A1.png' ELSE 'assets/images/A2.png' END ,
+   -- vir = CASE gender WHEN 'F' THEN 1   END ,
+   ux = CASE gender WHEN 'M' THEN 1   END 
+ WHERE COALESCE(tmp_table.source ,'') ='' AND  age::int >=50;
+ 
+    UPDATE tmp_table   SET --rownum =  CASE gender WHEN 'M' THEN 4 ELSE 2 END,
+     source = CASE gender WHEN 'M' THEN 'assets/images/B1.png' ELSE 'assets/images/B2.png' END ,
+        f= CASE gender WHEN 'F' THEN 0   END ,
+        m = CASE gender WHEN 'F' THEN 1 ELSE 0  END ,
+        vir =CASE gender WHEN 'M' THEN 2   END
+    WHERE COALESCE(tmp_table.source ,'') ='' AND  age::int >20 and age::int <50 AND coalesce(tmp_table.ishouseholdmember,0) =1;
+ 
+    UPDATE tmp_table  SET --rownum = 3,
+  f=1,m=0,
+     source = CASE gender WHEN 'M' THEN 'assets/images/B1.png' ELSE 'assets/images/B2.png' END 
+        --f= CASE gender WHEN 'M' THEN 1   END ,
+        --m = CASE gender WHEN 'F' THEN 1   END 
+    WHERE COALESCE(tmp_table.source ,'') ='' AND  age::int >20 and age::int <50 AND coalesce(tmp_table.ishouseholdmember,0) =0;
+
+    UPDATE tmp_table SET --rownum = 5,
+  f=2,m=4,
+     source = CASE gender WHEN 'M' THEN 'assets/images/C1.png' ELSE 'assets/images/C2.png' END   
+ WHERE COALESCE(tmp_table.source ,'') ='' AND  age::int <=20;
+ 
+ UPDATE  tmp_table SET f=null , m=null, ux=null, vir=null;             
+           
+ UPDATE tmp_table SET f= t.f, m = t.m, ux = t.ux, vir = t.vir  
+ FROM (SELECT res.personid, max(res.f) f, max(res.m) m, max(res.ux) ux, max(res.vir) vir FROM 
+  (SELECT CASE WHEN POSITION('father' IN LOWER(t2.description))>0 THEN t2.rownum ELSE null END f,
+    CASE WHEN POSITION('mother' IN LOWER(t2.description))>0 THEN t2.rownum ELSE null END m, 
+    CASE WHEN POSITION('wife' IN LOWER(t2.description))>0 THEN t2.rownum ELSE null END ux,
+    CASE WHEN POSITION('husband' IN LOWER(t2.description))>0 THEN t2.rownum ELSE null END vir,
+    t1.personid
+  FROM   tmp_table t1, (SELECT * FROM tmp_table t
+         INNER JOIN actorrelationship ar ON ar.person2id = t.personid 
+         INNER JOIN relationshiptype rt on rt.relationshiptypekey= ar.relationshiptypekey  AND rt.activeflag=1
+         WHERE ar.intakeserviceid  = v_intakeserviceid::uuid AND ar.activeflag = 1) t2 
+  WHERE t2.personid <> t1.personid AND t2.person1id = t1.personid  
+  ) res GROUP BY res.personid ) t 
+ WHERE tmp_table.personid = t.personid;
+ 
+ RETURN QUERY
+     SELECT t.* ,
+         (SELECT json_agg(x) as relation FROM (
+           SELECT  ar.actorrelationshipid, ar.intakeservicerequestactorid,ar.relationshiptypekey, COALESCE(rt.description,'Unknown') description, 
+     ar.intakeserviceid,p.firstname,p.lastname, t.personid person1id , a.personid person2id
+   FROM  actor a 
+     INNER JOIN person p ON p.personid = a.personid
+     LEFT JOIN actorrelationship ar ON ar.person1id = t.personid AND ar.person2id = p.personid
+     LEFT JOIN relationshiptype rt on rt.relationshiptypekey= ar.relationshiptypekey  AND rt.activeflag=1
+   WHERE a.intakeserviceid  = v_intakeserviceid::UUID 
+      AND p.personid <> t.personid AND a.activeflag = 1) x ), null::json reciprocal
+      
+    FROM tmp_table t ORDER BY t.rownum ;
+ 
+ END;
+ $function$
+

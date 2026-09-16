@@ -1,0 +1,1 @@
+ALTER TABLE cjams.serviceplan ADD COLUMN IF NOT EXISTS involvedpersons json NULL;

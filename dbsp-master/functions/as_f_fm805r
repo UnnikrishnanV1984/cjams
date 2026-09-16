@@ -1,0 +1,75 @@
+CREATE OR REPLACE FUNCTION as_f_fm805r(start_date date, end_date date)
+ RETURNS TABLE(ldss character varying, county_cd character varying, payment_id integer, provider_id integer, provider_nm text, child_id bigint, last_nm character varying, middle_nm character varying, first_nm character varying, suffix_cd character varying, start_dt date, end_dt date, service text, draft_fiscal_category_cd character, subtotal numeric, program_nm text, worker_nm character varying, supervisor character varying, payment_start_dt date, payment_end_dt date)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+(   
+      
+ SELECT  as_f_plvalue(d.county_cd, 104) 
+AS ldss,
+    d.county_cd,
+    h.payment_id,
+    h.provider_id,
+    rtrim(h.payee_nm::text) AS provider_nm,
+    d.client_id AS child_id,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.lastname
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             fetch first 1 rows only)
+            ELSE ''::character varying
+        END AS last_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.middlename
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             fetch first 1 rows only)
+            ELSE ''::character varying
+        END AS middle_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT l.firstname
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             fetch first 1 rows only)
+            ELSE ''::character varying
+        END AS first_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT as_f_plvalue(l.suffix, 214) AS f_plvalue
+               FROM person l
+                 JOIN personidentifier pi ON l.personid = pi.personid
+              WHERE pi.personidentifiervalue::text = ('CL'::text || d.client_id::text)
+             fetch first 1 rows only)
+            ELSE ''::character varying
+        END AS suffix_cd,
+    d.draft_service_start_dt AS start_dt,
+    d.draft_service_end_dt AS end_dt,
+    (((( SELECT s.service_nm
+           FROM tb_services s
+          WHERE s.service_id = d.draft_service_id
+         fetch first 1 rows only))::text) || ' - '::text) || as_f_plvalue(d.draft_rate_type_cd, 82)::text AS service,
+    d.draft_fiscal_category_cd,
+    COALESCE(d.draft_amount_no, 0::numeric) AS subtotal,
+        CASE
+            WHEN p.contract_program_id > 0 THEN ( SELECT distinct rtrim(c.program_nm::text) AS rtrim
+               FROM tb_contract_program  c
+              WHERE p.contract_program_id::text = contract_id::text AND c.delete_sw = 'N')
+            ELSE ''::text
+        END AS program_nm,
+    as_f_sname(as_f_prim_assignment(h.provider_id, '2953'::character varying)) AS worker_nm,
+    as_f_sname(as_f_supervisor(as_f_prim_assignment(h.provider_id, '2953'::character varying)::character varying)) AS supervisor_nm,
+    h.payment_start_dt,
+    h.payment_end_dt
+   FROM tb_payment_header h
+     JOIN tb_payment_detail d ON h.payment_id = d.payment_id
+     LEFT JOIN tb_placement p ON d.placement_id = p.placement_id
+  WHERE h.payment_type_cd::text = '6'::text AND d.delete_sw = 'N'::bpchar AND h.delete_sw = 'N'::bpchar 
+  --AND p.delete_sw = 'N'::bpchar
+  and h.PAYMENT_START_DT>=CAST(START_DATE AS DATE)
+AND h.PAYMENT_END_DT<=CAST(END_DATE   AS DATE) );
+END;
+$function$
+

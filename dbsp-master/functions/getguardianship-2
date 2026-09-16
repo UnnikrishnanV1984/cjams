@@ -1,0 +1,97 @@
+CREATE OR REPLACE FUNCTION getguardianship(v_intakeserviceid uuid, v_placementid uuid)
+ RETURNS TABLE(guardianoneactorid uuid, guardiantwoactorid uuid, guardianonename character varying, guardianoneid character varying, guardiantwoname character varying, guardiantwoid character varying, guardianonecjamspid bigint, guardiantwocjamspid bigint, enteredby text, gapid character varying, gapdisclosure json, gapsuspension json, gapannualreview json, gapagreement json, childname character varying, dob timestamp without time zone, role character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+RETURN  query
+
+SELECT  
+ gap.guardianoneactorid,
+        gap.guardiantwoactorid,
+ (COALESCE(  p1.firstname,'')  ||  '  '  ||COALESCE(  p1.lastname,''))  ::    character  varying  AS  guardianonename,
+ gap.guardianoneid, 
+ (COALESCE(  p2.firstname,'')  ||  '  '  ||COALESCE(  p2.lastname,''))    ::    character  varying  AS  guardiantwoname,
+ gap.guardiantwoid,  
+        p1.cjamspid  guardianonecjamspid,
+ p2.cjamspid  guardiantwocjamspid,
+ (SELECT    up.firstname  ||  '  '  ||  up.lastname  from  userprofile    up  
+   where    up.securityusersid  =  gc.insertedby  and  up.activeflag  =1  limit  1)  enteredby,  gap.gapid::  character  varying,
+        --(CASE  v_gapkey  WHEN  'DC'  THEN  
+          (SELECT  json_agg((SELECT  y  FROM  (SELECT  gapdisclosureid,disclosuredate,ischildplacedsixmonths,isproviderapprovedgap,
+  iscourthearingcustody,isreunificationremoved,isadoptionremoved,iscgprovidesafe,isothergapfinsupport,iscgattendedorientation,
+  orientationmeetingdate,isrequirementdiscussed,iscgparticipategap,iscgenteredagreement,iscgcompleteauthorization,iscgaftercareservice,
+  isneedadditionalservices,iscgcompleteannualreview,issuspendedfromguardian,insertedby,
+                  r.remarks  AS  comments,  
+                 r.typedescription  AS  routingstatus)  AS  y))  AS  items
+  FROM  gapdisclosure  gd  
+             INNER  JOIN  (SELECT  objectid,    (typedescription)  typedescription,    (remarks)  remarks      FROM  routing  r  INNER  JOIN    routingstatustype  rt  ON  rt.sequencenumber  =r.routingstatustypeid  AND  rt.activeflag  =1
+                    WHERE      r.activeflag=1      )  r  ON    r.objectid=gapdisclosureid  ::  character  varying
+  WHERE  gd.activeflag=1  and  gd.gapid=gap.gapid
+ )  AS  gapdisclosure,
+             --WHEN  'SU'  THEN  
+                  (SELECT  json_agg((SELECT  z  FROM  (SELECT  gapsuspensionid,suspensionreasontypekey,startdate,enddate,notes,isdraft,suspensiondesc,
+                    r.remarks  AS  comments,  
+                 r.typedescription  AS  routingstatus
+    )  
+    AS  z))  AS  items
+                        FROM  gapsuspension  gs
+   INNER  JOIN  (SELECT  objectid,    (typedescription)  typedescription,    (remarks)  remarks      FROM  routing  r  INNER  JOIN    routingstatustype  rt  ON  rt.sequencenumber  =r.routingstatustypeid  AND  rt.activeflag  =1
+                    WHERE      r.activeflag=1      )  r  ON    r.objectid=gs.gapsuspensionid  ::  character  varying
+                        WHERE  gs.activeflag=1  and  gs.gapid=gap.gapid
+   )  AS  gapsuspension,
+                --WHEN  'AN'  THEN  
+                  (SELECT  json_agg((SELECT  x  FROM  (SELECT  gapannualreviewid,reviewdate,isguardianresponsible,isguardiansupportfinance,ischildwithguardian,ischildattendingschool,isdocumentprovided,
+                                  ischildreacheighteen,ischilddisability,istrainingenrolled,isunemployment,isformcomplete,cgprimarydate,cgsecondarydate,directorsigndate,
+                                  r.remarks  AS  comments,  
+                 r.typedescription  AS  routingstatus
+      )  AS  x))  AS  items
+                        FROM  gapannualreview  gar
+   INNER  JOIN  (SELECT  objectid,    (typedescription)  typedescription,    (remarks)  remarks      FROM  routing  r  INNER  JOIN    routingstatustype  rt  ON  rt.sequencenumber  =r.routingstatustypeid  AND  rt.activeflag  =1
+                    WHERE      r.activeflag=1      )  r  ON    r.objectid=gar.gapannualreviewid  ::  character  varying
+                        WHERE  gar.activeflag=1  AND  gar.gapid=gap.gapid  
+                    GROUP  BY
+                    gapannualreviewid,reviewdate,isguardianresponsible,isguardiansupportfinance,ischildwithguardian,ischildattendingschool,isdocumentprovided,
+                                  ischildreacheighteen,ischilddisability,istrainingenrolled,isunemployment,isformcomplete,cgprimarydate,cgsecondarydate,directorsigndate
+                    ORDER  BY  gar.insertedon  DESC  LIMIT  1
+      )  AS  gapannualreview,      
+         --WHEN  'AG'  THEN  
+                  (SELECT  json_agg((SELECT  w  FROM  (SELECT  gapagreementid,iscomprehensivehomestudy,iscgawardedcustody,
+   isplacementenddate,ischildreceivetca,tcaamount,startdate,enddate,signaturedate,guardianonedate,
+   guardiantwodate,ldssdate,
+   (SELECT  json_agg((SELECT  v  FROM  (SELECT  gar.enddate,gar.startdate,gar.paymenttypekey,gar.notes,gar.gapagreementrateid,
+   gar.isoverride,gar.paymentamout,gar.providerid,pr.providercode)  
+     AS  v))  AS  items
+                        FROM  gapagreementrate  gar
+                        INNER  JOIN  provider  pr  ON  pr.providerid=gar.providerid  AND  pr.activeflag=1
+                        WHERE  gar.activeflag=1  AND  gar.gapagreementid=ga.gapagreementid
+   )  AS  gaprate,
+                        r.remarks  AS  comments,  
+                 r.typedescription  AS  routingstatus)  AS  w))  AS  items
+                        FROM  gapagreement  ga
+   INNER  JOIN  (SELECT  objectid,    (typedescription)  typedescription,    (remarks)  remarks      FROM  routing  r  INNER  JOIN    routingstatustype  rt  ON  rt.sequencenumber  =r.routingstatustypeid  AND  rt.activeflag  =1
+                    WHERE      r.activeflag=1      )  r  ON    r.objectid=ga.gapagreementid  ::  character  varying
+                        WHERE  ga.activeflag=1  and  ga.gapid=gap.gapid
+   )  AS  gapagreement,
+                --end)  AS  guardianship,
+        (  ps.firstname  ||  '  '||ps.lastname)::  character  varying  childname, 
+        ps.dob,
+ isra.intakeservicerequestpersontypekey  AS  role
+ 
+FROM  guardianship  gap  
+INNER  JOIN  gapdisclosure  gc  ON  gc.gapid=gap.gapid  AND  gc.activeflag=1
+INNER  JOIN  placement  pl  ON  pl.placementid=gap.placementid  AND  pl.activeflag=1
+INNER  JOIN  intakeservicerequestactor  isra  
+ ON  isra.intakeservicerequestactorid  =  pl.intakeservicerequestactorid  AND  isra.activeflag=1
+INNER  JOIN  person  ps  
+ ON  ps.personid  =  isra.personid  AND  ps.activeflag=1
+LEFT  JOIN    intakeservicerequestactor  guardian1actor  ON  guardian1actor.intakeservicerequestactorid  =gap.guardianoneactorid  AND  guardian1actor.activeflag=1
+LEFT  JOIN  person  p1  ON  p1.personid=guardian1actor.personid  AND  p1.activeflag=1
+LEFT  JOIN  intakeservicerequestactor  guardian2actor  ON  guardian2actor.intakeservicerequestactorid  =gap.guardiantwoactorid  AND  guardian2actor.activeflag=1
+LEFT  JOIN  person  p2  ON  p2.personid=guardian2actor.personid  AND  p2.activeflag=1 
+WHERE  gap.intakeserviceid=v_intakeserviceid  AND  gap.placementid=v_placementid  AND  gap.activeflag=1;
+END;
+
+$function$
+

@@ -1,0 +1,1 @@
+update tb_ticklers set delete_sw = 'Y', update_ts=now()  where tickler_id in (29474980, 29474647);

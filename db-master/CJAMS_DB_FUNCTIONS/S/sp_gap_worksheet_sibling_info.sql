@@ -1,0 +1,62 @@
+Drop function if exists sp_gap_worksheet_sibling_info(json);
+
+CREATE OR REPLACE FUNCTION cjams.sp_gap_worksheet_sibling_info(reqobj json)
+ RETURNS TABLE(toclientid BIGINT, siblingclientid BIGINT, siblinggapeligibility character varying, ivesiblinginfoid uuid, siblingguardianid BIGINT, siblingclientname character varying, siblingguardianname character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+	v_clientid  BIGINT;
+    returnStatus text;
+	v_siblingclientid BIGINT; 
+	v_siblinggapeligibility VARCHAR;
+	v_ivesiblinginfoid UUID;
+    v_siblingguardianid BIGINT;
+    v_siblingclientname VARCHAR;
+    v_siblingguardianname VARCHAR;
+	v_counter json;
+    
+    
+   
+BEGIN
+
+	select distinct k ->> 'toclientid' into v_clientid from json_array_elements(reqobj) k;
+	DELETE FROM ivesiblinginfo isi WHERE isi.toclientid = v_clientid;
+
+		FOR v_counter IN SELECT * FROM json_array_elements(reqobj)
+		loop
+			RAISE NOTICE 'JSON DATA %', reqobj;
+			RAISE NOTICE 'V_COUNTER VALUE1 %', v_counter;
+			v_ivesiblinginfoid := v_counter ->> 'ivesiblinginfoid';
+			v_clientid := v_counter ->> 'toclientid';	
+			v_siblingclientid := v_counter ->> 'siblingclientid';
+			v_siblinggapeligibility := v_counter ->> 'siblinggapeligibility';
+			v_siblingguardianid := v_counter ->> 'siblingguardianid';
+			v_siblingclientname := v_counter ->> 'siblingclientname';
+            v_siblingguardianname := v_counter ->> 'siblingguardianname';
+			RAISE NOTICE 'client id  %', v_clientid;
+			returnStatus := 'Success';
+
+			INSERT INTO ivesiblinginfo(ivesiblinginfoid, toclientid, activeflag, siblingclientid, siblinggapeligibility, siblingguardianid, siblingclientname, siblingguardianname, insertedon, updatedon) 
+				VALUES(gen_random_uuid() , v_clientid, 1, v_siblingclientid, v_siblinggapeligibility, v_siblingguardianid,v_siblingclientname, v_siblingguardianname, now(), now());
+		END loop;
+
+RETURN QUERY
+SELECT 
+
+ipd.toclientid  				as v_clientid,
+ipd.siblingclientid		        as v_siblingclientid,
+ipd.siblinggapeligibility		as v_siblinggapeligibility,
+ipd.ivesiblinginfoid	        as v_ivesiblinginfoid,
+ipd.siblingguardianid           as v_siblingguardianid,
+ipd.siblingclientname           as v_siblingclientname,
+ipd.siblingguardianname         as v_siblingguardianname
+FROM  ivesiblinginfo ipd
+WHERE  ipd.toclientid = v_clientid;
+
+--RETURN format('%s', returnStatus);
+
+END;
+	
+$function$
+;

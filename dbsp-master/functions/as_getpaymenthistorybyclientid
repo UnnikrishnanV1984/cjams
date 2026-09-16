@@ -1,0 +1,148 @@
+CREATE OR REPLACE FUNCTION as_getpaymenthistorybyclientid(searchobj json, v_lipagesize bigint, v_lipagenumber bigint)
+ RETURNS TABLE(totalcount bigint, provider_id integer, payee character varying, payment_id integer, payment_dt date, payment_type_nm character varying, payment_type_cd character varying, payment_status_nm character varying, payment_status_cd character varying, gross_amount_no numeric, offset_amount_no numeric, netamount numeric, paymentdetail jsonb, caseworker jsonb, fiscal_category_cd character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+    v_clientid bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_DateFrom   TIMESTAMP(3);                
+ v_DateTo TIMESTAMP(3);
+ sortorder character varying;
+ sortcolumn character varying;
+ paymenttype character varying;
+ 
+BEGIN 
+ v_clientid := searchobj ->> 'client_id';
+ v_DateFrom   := searchobj ->> 'daterangefrom';                       
+ v_DateTo   := searchobj ->> 'daterangeto';
+ sortorder := searchobj ->> 'sortorder';
+ sortcolumn := searchobj ->> 'sortcolumn';
+ paymenttype := searchobj ->> 'paymenttype';
+
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select  count(1) over() as totalcount, x.provider_id, x.providername, x.payment_id, x.payment_dt, x.payment_type_nm,
+x.payment_type_cd, x.payment_status_nm, x.payment_status_cd, x.gross_amount_no, x.offset_amount_no, 
+x.netamount, x.paymentdetail,x.caseworker,x.fiscal_category_cd
+from 
+
+(select payhead.provider_id,
+(case
+  when (prov.provider_nm is null
+  or prov.provider_nm = '') then concat(prov.provider_first_nm, ' ', prov.provider_last_nm)
+  else prov.provider_nm
+ end) :: character varying as providername,
+ payhead.payment_id,payhead.payment_dt,
+ (
+  select value_text 
+  from referencevalues 
+   where referencetypeid  = 20003 
+  and trim(ref_key) = payhead.payment_type_cd
+ /*
+ select value_tx 
+ from tb_picklist_values where 
+ TRIM(PICKLIST_VALUE_CD)=payhead.payment_type_cd
+ AND PICKLIST_TYPE_ID='2'
+ */
+ ) AS payment_type_nm,
+payhead.payment_type_cd,(select value_tx from tb_picklist_values where TRIM
+(PICKLIST_VALUE_CD)=tps.payment_status_cd
+AND PICKLIST_TYPE_ID='133') as payment_status_nm,tps.payment_status_cd,payhead.gross_amount_no,coalesce(payhead.offset_amount_no,0.00) as offset_amount_no, 
+(payhead.gross_amount_no +coalesce(payhead.offset_amount_no,0.00) ) as netamount,
+ 
+(select jsonb_agg(x) from ( 
+select sum(paydet.final_amount_no), * from 
+(select  sum(paydet.final_amount_no) from tb_payment_detail paydet join tb_payment_header tphh on tphh.payment_id = paydet.payment_id
+where paydet.payment_id = payhead.payment_id and
+paydet.client_id = v_clientid
+) as y)
+ as x) as paymentdetail,
+ (select jsonb_agg(a) from (select  count(1) over(), * from (
+ select 
+ max(d.case_id) as case_id 
+ ,ISRT.description as case_nm
+ ,up.cjamspid as case_worker_id
+ ,up.displayname as case_worker_name
+ ,uppn.phonenumber as case_worker_phone_no
+ ,upa.county as local_dept
+ from 
+  servicecase sc 
+left JOIN tb_payment_detail d on d.case_id ::character varying = sc.servicecasenumber 
+left join intakeservicerequest as ISR ON ISR.servicecaseid = sc.servicecaseid and ISR.activeflag =1
+left join IntakeServiceRequestType ISRT ON ISRT.intakeservreqtypeid=ISR.intakeservreqtypeid and ISRT.activeflag =1
+left JOIN caseassignment ca ON ca.objectid = sc.servicecaseid AND sc.activeflag = 1 AND LOWER(ca.responsibilitytypekey) = 'family' AND ca.enddate IS null and ca.activeflag=1
+left JOIN userprofile up on up.securityusersid=ca.toworkeridno and up.activeflag =1
+LEFT join userprofilephonenumber uppn on up.securityusersid=uppn.securityusersid and uppn.userprofiletypekey='office'   and uppn.activeflag =1
+LEFT join userprofileaddress upa on up.securityusersid=upa.securityusersid  and upa.activeflag =1 
+where   sc.activeflag=1  and d.client_id = v_clientid 
+group by ISRT.description,up.cjamspid,up.displayname,uppn.phonenumber,upa.county,sc.insertedon order by sc.insertedon desc
+limit  1) as b) as a) as caseworker,
+--(select final_fiscal_category_cd from tb_payment_detail pdsub where pdsub.payment_id = payhead.payment_id order by pdsub.payment_detail_id limit 1)::varchar(5) as fiscal_category_cd
+paydet.final_fiscal_category_cd::varchar(5) as fiscal_category_cd
+from tb_payment_header payhead
+left JOIN tb_payment_detail as paydet ON payhead.payment_id = paydet.payment_id
+left join tb_provider prov on prov.provider_id = payhead.provider_id
+left join tb_payment_status tps on tps.payment_id = payhead.payment_id
+where paydet.client_id = v_clientid and (paymenttype is null or payhead.payment_type_cd=paymenttype)
+and tps.payment_status_cd in ('1634','1636')
+and trim(payhead.payment_type_cd) in ('21','22')
+ and (v_DateFrom IS null or  to_char(payhead.payment_dt, 'YYYY-MM-DD') ::date >= to_char(DATE(v_DateFrom ::varchar), 'YYYY-MM-DD')  :: date) 
+and 
+ (v_DateTo IS null or  to_char(payhead.payment_dt, 'YYYY-MM-DD') ::date <= to_char(DATE(v_DateTo ::varchar), 'YYYY-MM-DD')  :: date)
+group by payhead.provider_id, payhead.payment_id,payment_type_nm, payhead.payment_dt, payhead.payment_type_cd, payment_status_nm, tps.payment_status_cd, payhead.gross_amount_no, payhead.offset_amount_no, 
+netamount,prov.provider_nm ,prov.provider_first_nm,prov.provider_last_nm, paydet.final_amount_no,paydet.case_id,caseworker ,fiscal_category_cd
+
+) as x group by
+x.provider_id, x.providername, x.payment_id, x.payment_dt, x.payment_type_nm,
+x.payment_type_cd, x.payment_status_nm, x.payment_status_cd, x.gross_amount_no, x.offset_amount_no, x.fiscal_category_cd,
+x.netamount, x.paymentdetail,x.caseworker
+order by (
+    CASE sortorder
+     WHEN 'asc'
+     THEN
+                         CASE sortcolumn
+                            WHEN 'paymentDate' THEN  cast(x.payment_dt  as character varying)
+                          WHEN 'paymenttype' THEN cast(x.payment_type_nm  as character varying)
+                          WHEN 'paymentstatus' THEN cast(x.payment_status_nm  as character varying)
+                          WHEN 'payee' THEN cast(x.providername  as character varying)
+                          when 'fiscal_category_cd' THEN cast(x.fiscal_category_cd as character varying)
+                          when 'paymentid' THEN cast(x.payment_id as character varying)
+               ELSE
+                     cast(x.payment_dt  as character varying)
+               END
+              END) ASC NULLS LAST,
+                (CASE sortorder
+                   WHEN 'desc'
+     THEN
+      CASE sortcolumn
+                            WHEN 'paymentDate' THEN  cast(x.payment_dt as character varying)
+                          WHEN 'paymenttype' THEN cast(x.payment_type_nm as character varying)
+                          WHEN 'paymentstatus' THEN cast(x.payment_status_nm as character varying)
+                          WHEN 'payee' THEN cast(x.providername as character varying)
+                          when 'fiscal_category_cd' THEN cast(x.fiscal_category_cd as character varying)
+                          when 'paymentid' THEN cast(x.payment_id as character varying)
+               ELSE
+                     cast(x.payment_dt as character varying)
+               END
+                   END) DESC NULLS LAST
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+END;
+
+
+$function$
+

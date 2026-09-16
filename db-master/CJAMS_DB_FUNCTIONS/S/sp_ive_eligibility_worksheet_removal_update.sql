@@ -1,0 +1,46 @@
+ CREATE OR REPLACE FUNCTION public.sp_ive_eligibility_worksheet_removal_update(reqobj json)                                                                                                           
+  RETURNS text                                                                                                                                                                                        
+  LANGUAGE plpgsql                                                                                                                                                                                    
+ AS $function$                                                                                                                                                                                        
+                                                                                                                                                                                                      
+ DECLARE                                                                                                                                                                                              
+         v_clientid  BIGINT;                                                                                                                                                                          
+         returnStatus text;                                                                                                                                                                           
+         v_num INT;                                                                                                                                                                                   
+     v_removalreasontypekey varchar(20);                                                                                                                                                              
+     v_returndate date;                                                                                                                                                                               
+         v_intakeservreqchildremovalid UUID;                                                                                                                                                          
+                                                                                                                                                                                                      
+ BEGIN                                                                                                                                                                                                
+                                                                                                                                                                                                      
+         v_clientid := reqObj ->> 'clientId';                                                                                                                                                         
+                                                                                                                                                                                                      
+         v_removalreasontypekey := reqObj ->> 'removalReasonTypeKey';                                                                                                                                 
+         v_returndate := reqObj ->> 'returnDate';                                                                                                                                                     
+         returnStatus := 'Success';                                                                                                                                                                   
+                                                                                                                                                                                                      
+         SELECT count(*), isrcr.intakeservreqchildremovalid                                                                                                                                           
+         into v_num, v_intakeservreqchildremovalid                                                                                                                                                    
+         FROM intakeservreqchildremoval isrcr, placement pl, intakeservicerequestactor isra, person per                                                                                               
+ WHERE pl.intakeservreqchildremovalid = isrcr.intakeservreqchildremovalid AND pl.activeflag = 1 AND pl.placementtypekey = 'PRPL'                                                                      
+         AND isra.servicecaseid = pl.servicecaseid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey in ('CHILD', 'OTHERCHILD') AND isra.intakeservicerequestactorid = pl.intakeservicerequestactorid 
+         AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1                                                                                              
+         group by isrcr.intakeservreqchildremovalid;                                                                                                                                                  
+                                                                                                                                                                                                      
+         IF (v_num) >= 1                                                                                                                                                                              
+         THEN                                                                                                                                                                                         
+                 UPDATE intakeservreqchildremoval                                                                                                                                                     
+         SET                                                                                                                                                                                          
+         removalreasontypekey = v_removalreasontypekey,                                                                                                                                               
+                 returndate = v_returndate                                                                                                                                                            
+         WHERE intakeservreqchildremovalid = v_intakeservreqchildremovalid;                                                                                                                           
+                                                                                                                                                                                                      
+         end if;                                                                                                                                                                                      
+                                                                                                                                                                                                      
+                                                                                                                                                                                                      
+ RETURN format('%s', returnStatus);                                                                                                                                                                   
+                                                                                                                                                                                                      
+ end;                                                                                                                                                                                                 
+                                                                                                                                                                                                      
+ $function$                                                                                                                                                                                           
+

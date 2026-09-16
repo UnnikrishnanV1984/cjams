@@ -1,0 +1,1247 @@
+CREATE OR REPLACE FUNCTION as_sp_batch_threshold_monitor_temp1(as_status text, as_subject_text text)
+ RETURNS SETOF record
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ --Standard Exception/Warning/error variables.
+ DECLARE SQLCODE     INT  DEFAULT 0;
+ DECLARE SQLSTATE     CHAR(5) DEFAULT '00000';
+ --DECLARE p_sp_error CONDITION  FOR  SQLSTATE '99999' ;
+ declare p_sp_error CHAR(5);
+ DECLARE vs_message_text   VARCHAR(3000) DEFAULT '';
+ DECLARE vl_ret_status    INTEGER DEFAULT 0;
+ DECLARE vs_Procedure_nm   VARCHAR(100) DEFAULT 'SP_BATCH_THRESHOLD_MONITOR'; 
+ DECLARE al_sqlcode    INT DEFAULT 0;
+ DECLARE as_error     VARCHAR(3000) DEFAULT '';
+   declare curr_critical   RECORD;
+   DECLARE curr_warning   RECORD;
+   declare curr_didnotrun   record;
+ -- SP specific variables.
+ DECLARE vl_batch_id    Integer DEFAULT 0;
+ DECLARE vs_batch_nm    VARCHAR(50);
+ DECLARE vs_didnotrun_matter  VARCHAR(5000) DEFAULT '';
+ DECLARE vs_critical_matter  VARCHAR(5000) DEFAULT '';
+ DECLARE vs_warning_matter  VARCHAR(5000) DEFAULT '';
+ DECLARE vs_subject_text   VARCHAR(500) DEFAULT '';
+ DECLARE vs_ampm     VARCHAR(2);
+ DECLARE vs_current_ampm   VARCHAR(2);
+ DECLARE vs_err_tx    VARCHAR(500);
+ DECLARE vl_err_count   Integer DEFAULT 0;
+ DECLARE vd_batch_dt    DATE;
+ DECLARE vd_current_dt   DATE;
+ DECLARE vd_prev_dt    DATE;
+ DECLARE vdt_start_ts   TIMESTAMP;
+ DECLARE vdt_end_ts    TIMESTAMP;
+ DECLARE vs_img_instructions  VARCHAR(2000) DEFAULT '';
+ DECLARE vl_day     Integer DEFAULT 0;
+ DECLARE vs_day_name    VARCHAR(10);
+
+BEGIN
+ 
+   BEGIN
+   EXCEPTION WHEN OTHERS THEN                  
+                     
+                      al_sqlcode := SQLSTATE;          
+                      vs_message_text :=SQLERRM;
+                      as_error := 'Error in getting BATCH_LOG_ID for BATCH_NM: ' || RTRIM(as_batch_nm);
+                      as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+                      as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(COALESCE(vl_batch_master_id,0) as VARCHAR) ;
+                      as_error := COALESCE(as_error ,'') || vs_message_text;         
+                      SELECT SP_BATCH_ERROR_LOG (vs_Procedure_nm,vl_batch_log_id::bigint,NULL::bigint,NULL::character varying,NULL::integer,NULL::character varying,al_sqlcode::character varying,as_error::character varying,'Script'::character varying) into vl_ret_status;
+                      
+   END;--
+
+    --DELETE FROM tmp_threshold_data1;
+   
+   DROP TABLE IF EXISTS tmp_threshold_data1;
+  --CREATE TEMPORARY TABLE if not exists tmp_threshold_data1 as ( select
+   CREATE  table tmp_threshold_data1 as (select
+   batch_master_id batch_id, 
+   batch_master_id batch_log_id ,   
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency frequency,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   cast(current_date as timestamp) start_ts,
+   cast(current_date as timestamp) end_ts,
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master where 1=2 );
+  
+   ALTER TABLE tmp_threshold_data1 ALTER COLUMN batch_id set default 0;
+      --ALTER TABLE tmp_threshold_data1 ALTER COLUMN batch_log_id set default 0;
+      ALTER TABLE tmp_threshold_data1 ALTER COLUMN batch_nm set default '';
+   ALTER TABLE tmp_threshold_data1 ALTER COLUMN treshold_tm set default 0;
+   ALTER TABLE tmp_threshold_data1 ALTER COLUMN  treshold_cutoff_tm set default 0;
+      ALTER TABLE tmp_threshold_data1 ALTER COLUMN  img_instructions set default '';
+     
+     drop sequence if exists batch_log_id_seq;
+     CREATE SEQUENCE batch_log_id_seq;
+    
+ ALTER TABLE tmp_threshold_data1 ALTER COLUMN batch_log_id SET DEFAULT nextval('batch_log_id_seq');
+ SELECT SUBSTRING(TO_CHAR(current_timestamp, 'yyyy-mm-dd hh12:mi:ss AM'),21,2),
+       current_date ,
+       current_date - INTERVAL '1' DAYS, 
+       TO_CHAR(current_date :: DATE, 'dd') 
+       INTO 
+       vs_current_ampm,
+       vd_current_dt,
+       vd_prev_dt, vl_day;
+
+     
+    as_status:=vs_current_ampm || ' ' || vd_current_dt ||' ' || vd_prev_dt || ' ' ||vl_day;
+       
+       --raise notice '----------------%'
+       raise notice '2.as_status%',as_status;
+      
+      
+     al_sqlcode := SQLCODE;
+  IF al_sqlcode <> 0 THEN
+  as_error := 'Error in selecting CURRENT_DATE, Previous Date.';
+  --SIGNAL p_sp_error  ;
+  END IF ;
+
+  If vs_current_ampm = 'PM' Then
+   vd_batch_dt := vd_current_dt;--
+  ELSIF  vs_current_ampm = 'AM' Then
+   vd_batch_dt := vd_prev_dt;--
+  End If;--
+    
+       IF vs_current_ampm = 'AM' then
+       
+       INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Monday','Tuesday','Wednesday','Thursday','Friday'))
+  and frequency = 'WD' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;  
+  
+  --2 start--
+   INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Saturday','Sunday'))
+  and frequency = 'WE' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --2 end--
+        --3start--
+         INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'))
+  and frequency = 'W6' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --3 end--
+  
+  --4 start--
+         INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where frequency = 'D' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --4 end---
+  
+  --5 start--
+         INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (frequency = trim(to_char(current_date,'Day'))) and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --5 end---
+  --6 start--
+  --need to check below query
+  
+  
+  /*INSERT INTO SESSION.tmp_threshold_data1 (batch_id, batch_nm,batch_desc, sch_time, sch_ampm , treshold_tm, treshold_cutoff_tm,frequency ,curr_time, sev_level, img_instructions ) 
+  Select batch_master_id, batch_nm, batch_desc_tx, scheduled_tm, SUBSTR((char(time(scheduled_tm),USA)),7,2) , threshold_tm, threshold_cutoff_tm, frequency,  Current Time, alert_cd, RTRIM(COALESCE(HELP_FAILURE_TX,''))
+  From tb_batch_master
+  where (frequency = char(day(current date)) and SUBSTR((char(time(scheduled_tm),USA)),7,2) = 'AM')
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL
+  WITH UR;*/
+  
+  --7 start---
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Sunday'))
+  and frequency = 'D1' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  ---7 end---
+  --8 START--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Monday'))
+  and frequency = 'D2' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --8 END--
+  --9 start--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Tuesday'))
+  and frequency = 'D3' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --9 end--
+  --10 start--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Wednesday'))
+  and frequency = 'D4' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  ---10 end---
+  
+  ---11 start--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Thursday'))
+  and frequency = 'D5' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  ---11 end
+  --12 start--
+  
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Friday'))
+  and frequency = 'D6' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  --12 end --
+  --13 start--
+  
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Saturday'))
+  and frequency = 'D7' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'AM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  ---13 end--
+ end if;
+ 
+    
+ -- For AM jobs even consider PM jobs.
+ --14 Start----
+ INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Monday','Tuesday','Wednesday','Thursday','Friday'))
+  and frequency = 'WD' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;  
+  ----14 end----
+  
+  --15 start--
+INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Saturday','Sunday'))
+  and frequency = 'WD' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;  
+  
+-----15 end-----
+-----16 Start----
+
+INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'))
+  and frequency = 'W6' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;  
+
+  
+ -------16 end------- 
+ 
+ ------17 Start---------
+ 
+ 
+INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where frequency = 'D' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+
+ -------17 end-------
+ 
+ -------18 start------------
+ 
+ INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (frequency = trim(to_char(current_date,'Day'))) and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  -------18 end-------
+  -------19 start-----------
+  
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Sunday'))
+  and frequency = 'D1' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  ---19 end---
+  --20 START--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Monday'))
+  and frequency = 'D2' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --20 END--
+  --21 start--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Tuesday'))
+  and frequency = 'D3' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+  --21 end--
+  --22 start--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Wednesday'))
+  and frequency = 'D4' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  ---22 end---
+  
+  ---23 start--
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Thursday'))
+  and frequency = 'D5' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  ---23 end
+  --24 start--
+  
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Friday'))
+  and frequency = 'D6' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  --24 end --
+  --25 start--
+  
+  INSERT INTO tmp_threshold_data1 (
+         batch_id, 
+   batch_nm,
+   batch_desc, 
+   sch_time, 
+   sch_ampm , 
+   treshold_tm, 
+   treshold_cutoff_tm ,
+   frequency, 
+   curr_time, 
+   sev_level, 
+   img_instructions)     
+  select
+   batch_master_id batch_id, 
+   batch_nm, 
+   batch_desc_tx batch_desc, 
+   scheduled_tm  sch_time,
+   case 
+   when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+   else 'AM' 
+   end sch_ampm,
+   threshold_tm treshold_tm, 
+   threshold_cutoff_tm treshold_cutoff_tm, 
+   frequency ,  
+   now() curr_time, 
+   alert_cd sev_level, 
+   RTRIM(COALESCE(HELP_FAILURE_TX,''))img_instructions
+  From tb_batch_master 
+  where (trim(to_char(current_date,'Day')) in ('Saturday'))
+  and frequency = 'D7' and (case 
+  when cast(substring(scheduled_tm,1,2) as Integer) >= 12 then 'PM' 
+  else 'AM' 
+  end ) = 'PM' 
+  and active_sw = 'Y' and dependent_master_id is null
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;
+  
+ 
+  ---25 end--
+  
+  -----------
+
+  IF (vl_day = 1 AND vs_current_ampm = 'PM') OR (vl_day = 2 AND vs_current_ampm = 'AM') Then
+  Delete from tmp_threshold_data1 where batch_id = 1; 
+  vl_day := 7;
+  INSERT INTO 
+  tmp_threshold_data1 (batch_id, batch_nm,batch_desc, sch_time, sch_ampm , treshold_tm, treshold_cutoff_tm,frequency ,curr_time, sev_level, img_instructions ) 
+  Select batch_master_id, batch_nm, batch_desc_tx, scheduled_tm,SUBSTRING(to_char(scheduled_tm :: timestamp at time zone 'EDT','DD-MM-YYYY HH12:MI:SS AM'),21,2), threshold_tm, threshold_cutoff_tm, frequency,  CURRENT_TIME, alert_cd, RTRIM(COALESCE(HELP_FAILURE_TX,''))
+  From tb_batch_master
+  where  batch_master_id = vl_day
+  and active_sw = 'Y'
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;  
+  -----------     
+    ELSIF (vl_day = 13 AND vs_current_ampm = 'PM') OR (vl_day = 14 AND vs_current_ampm = 'AM') Then
+  Delete from tmp_threshold_data1 where batch_id = 1;
+  vl_day := 9;
+  INSERT INTO 
+  tmp_threshold_data1 (batch_id, batch_nm,batch_desc, sch_time, sch_ampm , treshold_tm, treshold_cutoff_tm,frequency ,curr_time, sev_level, img_instructions ) 
+  Select batch_master_id, batch_nm, batch_desc_tx, scheduled_tm,SUBSTRING(to_char(scheduled_tm :: timestamp at time zone 'EDT','DD-MM-YYYY HH12:MI:SS AM'),21,2), threshold_tm, threshold_cutoff_tm, frequency,  CURRENT_TIME, alert_cd, RTRIM(COALESCE(HELP_FAILURE_TX,''))
+  From tb_batch_master
+  where  batch_master_id = vl_day
+  and active_sw = 'Y'
+  and THRESHOLD_CUTOFF_TM IS NOT NULL and THRESHOLD_TM IS NOT NULL;  
+  -----------       
+  END IF;
+   
+     Delete from tmp_threshold_data1 where  batch_id in (34,56,57,36,40,41);
+ -- need to work
+      UPDATE tmp_threshold_data1 a 
+    SET start_ts = (select max(start_ts) from tb_batch_log b where b.batch_master_id = a.batch_id 
+         and to_Char(start_ts :: timestamp, 'YYYY-MM-DD HH24:MI:SS') >= (to_char(vd_batch_dt,'YYYY-MM-DD')||' 18:00:00')):: timestamp,
+     end_ts  =  (select max(b.end_ts) from tb_batch_log b where b.batch_master_id = a.batch_id 
+         and to_char(start_ts :: timestamp, 'YYYY-MM-DD HH24:MI:SS') >= (to_char(vd_batch_dt,'YYYY-MM-DD')||' 18:00:00')):: timestamp,
+     batch_log_id  =  (select max(b.batch_log_id) from tb_batch_log b where b.batch_master_id = a.batch_id 
+         and to_char(start_ts :: timestamp, 'YYYY-MM-DD HH24:MI:SS') >= (to_char(vd_batch_dt,'YYYY-MM-DD')||' 18:00:00'))::integer
+    Where  a.batch_id in (select b.batch_master_id from tb_batch_log b where b.run_dt >= vd_batch_dt and 
+    to_char(b.start_ts :: timestamp, 'YYYY-MM-DD HH24:MI:SS') >= (to_char(vd_batch_dt,'YYYY-MM-DD')||' 18:00:00'));
+ 
+    
+    --select (sch_time + (20 ||' minutes')::interval) from tmp_threshold_data1
+    --select sch_time from tmp_threshold_data1
+    
+    If vs_current_ampm = 'AM' THEN
+  Delete from tmp_threshold_data1 where TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS') + (5 ||' minutes')::interval > curr_time AND sch_ampm = 'AM' and batch_log_id = 0;
+ Else
+  Delete from tmp_threshold_data1 where TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS') + (5 ||' minutes')::interval > curr_time AND sch_ampm = 'PM' and batch_log_id = 0;
+ End If;
+ 
+    Select  'Critical'
+ into vs_subject_text 
+ From tmp_threshold_data1
+ where  (batch_log_id = 0) Or
+   (
+   start_ts IS NOT NULL  
+   AND end_ts is null 
+   AND treshold_cutoff_tm IS NOT NULL 
+   --AND (time(start_ts + Integer(treshold_cutoff_tm) MINUTES)) <  curr_time 
+   and (TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval ) <  curr_time
+      AND to_char((TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval),'YYYY-MM-DD HH24:MI:SS') = to_char((curr_time::TIMESTAMP),'YYYY-MM-DDHH24:MI:SS')
+   --AND SUBSTR(to_char((TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval),'YYYY-MM-DD HH24:MI:SS'),9,2) = SUBSTR(to_char((curr_time::TIMESTAMP),'YYYY-MM-DDHH24:MI:SS'),9,2)
+   
+   ) limit 1;
+  
+  If  vs_subject_text = '' Then
+   Select  'Warning'
+   into vs_subject_text
+   From tmp_threshold_data
+   where  start_ts IS NOT NULL  
+   AND  end_ts is null 
+   AND treshold_tm IS NOT NULL 
+   AND (TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval ) <  curr_time 
+   AND to_char((TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval),'YYYY-MM-DD HH24:MI:SS') = to_char((curr_time::TIMESTAMP),'YYYY-MM-DDHH24:MI:SS')
+      limit 1;
+ End If;--
+ 
+BEGIN
+
+ FOR curr_critical IN
+  SELECT  'Log ID:' ||  (batch_log_id) || ', ' || 'Job Name:' || LTRIM(RTRIM(batch_desc)) || 
+      ', Severity Level:'|| LTRIM(RTRIM(sev_level)) || '.' || chr(13) || 'IMG Instructions: [' || img_instructions || '].' as email_text
+  FROM  tmp_threshold_data1
+
+  WHERE  (start_ts IS NOT NULL  AND end_ts is null AND treshold_cutoff_tm IS NOT NULL AND (TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval ) <  curr_time )
+  AND  batch_log_id is not null
+  AND  (TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval ) <  curr_time
+      AND to_char((TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval),'YYYY-MM-DD HH24:MI:SS') = to_char((curr_time::TIMESTAMP),'YYYY-MM-DDHH24:MI:SS')  
+  
+ LOOP
+  IF vs_critical_matter = '' THEN
+   vs_critical_matter := curr_critical.email_text;
+  
+  ELSE
+   vs_critical_matter := vs_critical_matter || chr(13) || curr_critical.email_text;
+  END IF; 
+  
+        --raise notice '%',vs_critical_matter;
+ END LOOP;
+ 
+end;
+
+BEGIN
+FOR curr_warning IN
+  SELECT  'Log ID:' ||  (batch_log_id) || ', ' || 'Job Name:' || LTRIM(RTRIM(batch_desc)) || 
+      ', Severity Level:'|| LTRIM(RTRIM(sev_level)) || '.' || chr(13) || 'IMG Instructions: [ No Action Required ].' as email_text
+  FROM  tmp_threshold_data1
+  WHERE  (start_ts IS NOT NULL  AND end_ts is null AND treshold_tm IS NOT NULL AND (TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval ) <  curr_time )
+  AND to_char((TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval),'YYYY-MM-DD HH24:MI:SS') = to_char((curr_time::TIMESTAMP),'YYYY-MM-DDHH24:MI:SS') 
+  AND  batch_id not in (
+        select batch_id from tmp_threshold_data1
+        WHERE start_ts IS NOT NULL  
+        AND treshold_cutoff_tm IS NOT NULL 
+        AND (TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval ) <  curr_time 
+        AND to_char((TO_TIMESTAMP(date(curr_time)||sch_time,'YYYY-MM-DDHH24.MI.SS')+(concat(treshold_cutoff_tm::int,' minutes')::interval ||' minutes')::interval),'YYYY-MM-DD HH24:MI:SS') = to_char((curr_time::TIMESTAMP),'YYYY-MM-DDHH24:MI:SS')
+        )
+
+ LOOP
+  IF vs_warning_matter = '' THEN
+   vs_warning_matter := curr_warning.email_text;
+  ELSE
+   vs_warning_matter := vs_warning_matter || chr(13) || curr_warning.email_text;
+  END IF; 
+
+   --raise notice 'RUBAN RUBAN %',vs_warning_matter;
+ END LOOP;  
+end;
+
+ BEGIN
+ 
+ FOR curr_didnotrun IN
+  SELECT  'Log ID:' ||  (batch_log_id) || ', ' || 'Job Name:' || LTRIM(RTRIM(batch_desc)) || 
+      ', Severity Level:'|| LTRIM(RTRIM(sev_level)) || '.' || chr(13) || 'IMG Instructions: [' || img_instructions || '].' as email_text
+  FROM  tmp_threshold_data1 a
+  WHERE  a.batch_log_id = 0
+ LOOP
+  IF vs_didnotrun_matter = '' THEN
+   vs_didnotrun_matter := curr_didnotrun.email_text;
+  ELSE
+   vs_didnotrun_matter := vs_didnotrun_matter || chr(13) || curr_didnotrun.email_text;
+  END IF; 
+  
+ END LOOP; 
+
+end;
+
+
+If trim(vs_didnotrun_matter) = '' Then 
+  vs_didnotrun_matter := 'None'; 
+  End If;
+ 
+ If trim(vs_warning_matter) = '' Then 
+  vs_warning_matter := 'None'; 
+  End If;
+
+ If trim(vs_critical_matter) = '' Then 
+  vs_critical_matter := 'None'; 
+  End If;
+
+
+as_status := 'Scheduled Jobs running beyond threshold cutoff time:';
+ as_status := as_status || chr(13);
+ as_status := as_status || 
+'----------------------------------------------------';
+ as_status := as_status || chr(13); 
+ as_status := as_status || vs_critical_matter;
+ as_status := as_status || chr(13);
+ as_status := as_status || chr(13); 
+ as_status := as_status || 'Scheduled Jobs that did not start:';
+ as_status := as_status || chr(13);  
+ as_status := as_status || '----------------------------------';
+ as_status := as_status || chr(13);
+ as_status := as_status || vs_didnotrun_matter;
+ as_status := as_status || chr(13);
+ as_status := as_status || chr(13);
+ as_status := as_status || 'Scheduled Jobs running beyond threshold time:';
+ as_status := as_status || chr(13);  
+ as_status := as_status || '---------------------------------------------'; 
+ as_status := as_status || chr(13);
+ as_status := as_status || vs_warning_matter;
+ as_subject_text := vs_subject_text;-- 
+ 
+ If trim(vs_subject_text) == " " Then 
+    return next 2;   
+ --Return 2;  
+ Else 
+        --Return 0; 
+        return next 2;  
+    End if;
+ 
+ 
+  raise notice 'RN %',vs_warning_matter;
+END;
+   
+
+$function$
+

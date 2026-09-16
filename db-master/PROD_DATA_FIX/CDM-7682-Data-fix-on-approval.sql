@@ -1,0 +1,1 @@
+update routing set routingstatustypeid = 16 where objectid = '9ae35b85-ea73-4d62-9a94-6f0eb0a24581' and activeflag = 1 and eventcode = 'SPLAN' and routingid = '36e88ffa-7a0e-4fa8-b48e-3f3f353bea74';

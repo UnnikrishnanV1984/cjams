@@ -1,0 +1,83 @@
+CREATE OR REPLACE FUNCTION prov_providernotifications()
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_provage json;
+v_record_element json;
+vs_message character varying;
+vs_errmsg character varying;
+vs_sn_message character varying;
+v_record record;
+v_subject character varying;
+v_body text;
+v_json json;
+v_errmsgs json;
+v_providernm character varying;
+v_provcpamedexp json;
+v_provcpamedsuspend json;
+v_provcpamedsuspendsent json;
+v_i int;
+v_provage1 json;
+begin
+ v_i :=0;
+vs_message := '';
+vs_errmsg :='';
+vs_sn_message:='';
+--notification for a child turning 18 in 6 months
+ select json_agg(childturning18)  into v_json from (
+  select null as tosecurityusersid,null as fromsecurityusersid,tbcpaperson.provider_id as objectid,
+   coalesce((last_nm||', ' ||first_nm),'') ||' is turning 18 in 6 months '  as v_subject,
+   'Person with age ' || AGE(dob_dt)|| ' will be turning 18 in 6 months' as v_body
+  from tb_prov_cpa_adop_person tbcpaperson
+  where extract(year from AGE(dob_dt))  = 17 and extract(month from age(dob_dt))<=6
+  )childturning18 ;
+
+select * from prov_sendnotificationjson(v_json,'childreaching18') into v_provage ;
+--medical  expiry notification before 60 days
+select json_agg(daycpamedicalexipiry)  into v_json from (
+SELECT null as tosecurityusersid,null as fromsecurityusersid,cpaperson.provider_id as objectid,
+coalesce((cpaperson.last_nm||', ' ||cpaperson.first_nm),'') ||' Medical Expiring in 60 days'  as v_subject,
+   'Medical for ' || coalesce((cpaperson.last_nm||', ' ||cpaperson.first_nm),'') || ' will be expiring in 60days' as v_body
+from tb_prov_cpa_medical cpamed
+join tb_prov_cpa_adop_person cpaperson on cpaperson.provider_cpa_adop_person_id=cpamed.provider_cpa_adop_person_id
+where DATE_PART('day', (cpa_test_date::timestamp+interval '2 years')-now())=60 and active_flag='1'
+  
+  )daycpamedicalexipiry ;
+
+select * from prov_sendnotificationjson(v_json,'daycpamedicalexipiry') into v_provcpamedexp ;
+
+select json_agg(daycpamedicalsuspend)  into v_json from (
+SELECT null as tosecurityusersid,null as fromsecurityusersid,cpaperson.provider_id as objectid,
+coalesce((cpaperson.last_nm||', ' ||cpaperson.first_nm),'') ||' Medical will Suspend in 10 days'  as v_subject,
+   'Medical for ' || coalesce((cpaperson.last_nm||', ' ||cpaperson.first_nm),'') || ' will be suspend in 10 days' as v_body
+from tb_prov_cpa_medical cpamed
+join tb_prov_cpa_adop_person cpaperson on cpaperson.provider_cpa_adop_person_id=cpamed.provider_cpa_adop_person_id
+where DATE_PART('day', (cpa_test_date::timestamp+interval '2 years')-now())=30 and active_flag='1'
+  
+  )daycpamedicalsuspend ;
+
+select * from prov_sendnotificationjson(v_json,'daycpamedicalsuspend') into v_provcpamedsuspend ;
+
+select json_agg(daycpamedicalsuspendsent)  into v_json from (
+SELECT null as tosecurityusersid,null as fromsecurityusersid,cpaperson.provider_id as objectid,
+coalesce((cpaperson.last_nm||', ' ||cpaperson.first_nm),'') ||' Medical Suspension letter sent'  as v_subject,
+   'Medical suspension letter ' || coalesce((cpaperson.last_nm||', ' ||cpaperson.first_nm),'') || ' will be sent in 10days' as v_body
+from tb_prov_cpa_medical cpamed
+join tb_prov_cpa_adop_person cpaperson on cpaperson.provider_cpa_adop_person_id=cpamed.provider_cpa_adop_person_id
+where DATE_PART('day', now() - cpa_test_date::timestamp)=10 and active_flag='1'
+  
+  )daycpamedicalsuspendsent ;
+
+select * from prov_sendnotificationjson(v_json,'daycpamedicalsuspendsent') into v_provcpamedsuspendsent ;
+return (json_build_object('Child age below 18',v_provage,
+'Medical expiry in 60 days',v_provcpamedexp,
+'Medical suspend in 30 days',v_provcpamedsuspend,
+'Medical suspension sent in 10 days',v_provcpamedsuspendsent));
+
+
+END;
+
+$function$
+

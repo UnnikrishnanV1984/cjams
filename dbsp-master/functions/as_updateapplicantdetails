@@ -1,0 +1,165 @@
+CREATE OR REPLACE FUNCTION as_updateapplicantdetails(objectid character varying, v_securityuserid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+
+v_actorrecord record;
+v_personrecord record;
+v_contactrecord record;
+v_narrativerecord record;
+v_documentrecord record;
+v_actorid uuid;
+v_applicantentry int;
+v_applicant int;
+v_coapplicant int;
+v_personid uuid;
+v_ssno int;
+v_randomuuid uuid;
+v_applicantid character varying;
+v_objectid character varying;
+
+
+
+begin
+ 
+ v_objectid := objectid;
+ select replace(objectid,'R','A') into v_applicantid;
+   v_applicantentry := 0;
+  select count(*) into v_applicantentry from intakeservicerequestactor where intakenumber in (objectid) and intakeservicerequestpersontypekey in ('APLCNT','COAPLCNT');
+
+    
+ if v_applicantentry != 0 then 
+ 
+  v_applicant := 0;
+  v_coapplicant  := 0;
+ 
+  select count(1) over(),personid into v_applicant,v_personid from intakeservicerequestactor where intakenumber in (objectid) and intakeservicerequestpersontypekey in ( 'APLCNT');
+   
+  if v_applicant != 0 then 
+  for v_actorrecord in 
+    select ppn.phonenumber as homephonenumber,ppc.phonenumber as cellphonenumber,p.firstname,p.middlename,p.lastname,p.prefx,p.suffix,p.ssnno,p.dob,(case p.citizenalenageflag when 1 then true else false end )as uscitizen,pe.email,
+    pa.address,pa.address2,pa.city,pa.state,pa.zipcode,pep.employername,pep.workphone from person p  --where eventcode like '%PRWS%'
+  left join personphonenumber ppn on ppn.personid= p.personid and ppn.activeflag=1 and ppn.personphonetypekey in ('HM')
+  left join personphonenumber ppc on ppc.personid= p.personid and ppn.activeflag=1 and ppc.personphonetypekey in ('CL')
+  left join personemail pe on pe.personid=p.personid and pe.activeflag=1
+   left join personaddress pa on pa.personid = p.personid and pa.activeflag=1 and pa.currentlocationflag=1
+   left join personemployment pep on pep.personid=p.personid and pep.activeflag=1
+  where p.activeflag=1  and p.personid =v_personid 
+  loop 
+
+ if (v_actorrecord.ssnno = '' )  then 
+ v_ssno = null;
+elsif (v_actorrecord.ssnno ~ '^[0-9\\.]+$') then
+ v_ssno := v_actorrecord.ssnno;
+ end if;
+  update tb_public_provider_referral  set individual_applicant_hm_phone=COALESCE(v_actorrecord.homephonenumber,individual_applicant_hm_phone),
+              individual_applicant_cell_nm=COALESCE(v_actorrecord.cellphonenumber,individual_applicant_cell_nm),
+              individual_applicant_email=COALESCE(v_actorrecord.email,individual_applicant_email),
+              individual_applicant_first_nm=COALESCE(v_actorrecord.firstname,individual_applicant_first_nm),
+              individual_applicant_last_nm=COALESCE(v_actorrecord.lastname,individual_applicant_last_nm),
+              individual_applicant_middle_nm=COALESCE(v_actorrecord.middlename,individual_applicant_middle_nm),
+              individual_applicant_prefix=COALESCE(v_actorrecord.prefx,individual_applicant_prefix),
+              individual_applicant_suffix=COALESCE(v_actorrecord.suffix,individual_applicant_suffix),
+              individual_applicant_dob=COALESCE(v_actorrecord.dob,individual_applicant_dob),
+              individual_applicant_ssn=COALESCE(v_ssno,individual_applicant_ssn),
+              individual_applicant_employer_nm=COALESCE(v_actorrecord.employername,individual_applicant_employer_nm),
+              individual_applicant_us_citizen=COALESCE(v_actorrecord.uscitizen,individual_applicant_us_citizen) where referral_id in (objectid);
+  update tb_provider_address_mapping set delete_sw='Y' where object_id in (objectid) and address_type in ('Individual Applicant Address');
+ select gen_random_uuid() into v_randomuuid; 
+ 
+ insert into tb_provider_applicant_addresses(address_id,adr_street_nm,adr_city_nm,adr_state_cd,adr_zip5_no,create_ts,create_user_id,update_ts,update_user_id,delete_sw) values 
+ (v_randomuuid,v_actorrecord.address,v_actorrecord.city,v_actorrecord.state,(v_actorrecord.zipcode)::numeric,now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+INSERT INTO tb_provider_address_mapping
+(address_mapping_id, object_id, address_id, address_type, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(gen_random_uuid(),objectid, v_randomuuid, 'Individual Applicant Address', now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+
+
+  end loop;
+  end if;
+  
+  
+   select count(1) over(),personid into v_coapplicant,v_personid from intakeservicerequestactor where intakenumber in (objectid) and intakeservicerequestpersontypekey in ( 'COAPLCNT');
+   
+  if v_coapplicant != 0 then 
+  for v_actorrecord in 
+    select ppn.phonenumber as homephonenumber,ppc.phonenumber as cellphonenumber,p.firstname,p.middlename,p.lastname,p.prefx,p.suffix,p.ssnno,p.dob,(case p.citizenalenageflag when 1 then true else false end )as uscitizen,pe.email,
+    pa.address,pa.address2,pa.city,pa.state,pa.zipcode,pep.employername,pep.workphone from person p  --where eventcode like '%PRWS%'
+  left join personphonenumber ppn on ppn.personid= p.personid and ppn.activeflag=1 and ppn.personphonetypekey in ('HM')
+  left join personphonenumber ppc on ppc.personid= p.personid and ppn.activeflag=1 and ppc.personphonetypekey in ('CL')
+  left join personemail pe on pe.personid=p.personid and pe.activeflag=1
+  left join personaddress pa on pa.personid = p.personid and pa.activeflag=1 and pa.currentlocationflag=1
+  left join personemployment pep on pep.personid=p.personid and pep.activeflag=1
+  where p.activeflag=1  and p.personid =v_personid 
+  loop 
+   raise notice 'v_actorrecord.ssnno%',v_actorrecord.ssnno;
+
+ if v_actorrecord.ssnno = '' then 
+ v_ssno = null;
+else 
+ v_ssno := v_actorrecord.ssnno;
+ end if;
+  update tb_public_provider_referral  set   co_applicant_hm_phone=COALESCE(v_actorrecord.homephonenumber,co_applicant_hm_phone),
+              co_applicant_cell_nm=COALESCE(v_actorrecord.cellphonenumber,co_applicant_cell_nm),
+              co_applicant_email=COALESCE(v_actorrecord.email,co_applicant_email),
+              co_applicant_first_nm=COALESCE(v_actorrecord.firstname,co_applicant_first_nm),
+              co_applicant_last_nm=COALESCE(v_actorrecord.lastname,co_applicant_last_nm),
+              co_applicant_middle_nm=COALESCE(v_actorrecord.middlename,co_applicant_middle_nm),
+              co_applicant_prefix=COALESCE(v_actorrecord.prefx,co_applicant_prefix),
+              co_applicant_suffix=COALESCE(v_actorrecord.suffix,co_applicant_suffix),
+              co_applicant_dob=COALESCE(v_actorrecord.dob,co_applicant_dob),
+              co_applicant_ssn=COALESCE(v_ssno,co_applicant_ssn),
+              co_applicant_employer_nm=COALESCE(v_actorrecord.employername,co_applicant_employer_nm),
+              co_applicant_us_citizen=COALESCE(v_actorrecord.uscitizen,co_applicant_us_citizen) where referral_id in (objectid);
+   update tb_provider_address_mapping set delete_sw='Y' where object_id in (objectid) and address_type in ('Co-Applicant Address');
+ select gen_random_uuid() into v_randomuuid; 
+ 
+ insert into tb_provider_applicant_addresses(address_id,adr_street_nm,adr_city_nm,adr_state_cd,adr_zip5_no,create_ts,create_user_id,update_ts,update_user_id,delete_sw) values 
+ (v_randomuuid,v_actorrecord.address,v_actorrecord.city,v_actorrecord.state,(v_actorrecord.zipcode)::numeric,now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+INSERT INTO tb_provider_address_mapping
+(address_mapping_id, object_id, address_id, address_type, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(gen_random_uuid(),objectid, v_randomuuid, 'Co-Applicant Address', now(), v_securityuserid, now(), v_securityuserid, 'N'::bpchar);
+
+ 
+end loop;
+  end if;
+
+ end if;
+   
+for v_contactrecord in 
+select provider_applicant_id, type_of_contact, purpose_of_contact, person_contacted_name, title_of_person_contacted, communication_date, narrative, communication_location, phone_of_contact, email_of_contact, create_ts, create_user_id, update_ts, update_user_id, delete_sw from tb_provider_applicant_communication
+where provider_applicant_id in (v_objectid)
+loop 
+INSERT INTO tb_provider_applicant_communication
+( provider_applicant_id, type_of_contact, purpose_of_contact, person_contacted_name, title_of_person_contacted, communication_date, narrative, communication_location, phone_of_contact, email_of_contact, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES( v_applicantid, v_contactrecord.type_of_contact, v_contactrecord.purpose_of_contact, v_contactrecord.person_contacted_name, v_contactrecord.title_of_person_contacted, v_contactrecord.communication_date, v_contactrecord.narrative, v_contactrecord.communication_location, v_contactrecord.phone_of_contact,v_contactrecord.email_of_contact, now(), v_securityuserid, now(), v_securityuserid, 'N');
+end loop;
+
+for v_narrativerecord in 
+select  applicant_id, narrative, narravtivefrom, activeflag, insertedby, insertedon, updatedby, updatedon from tb_provider_applicant_narrative
+where applicant_id in (v_objectid)
+loop 
+INSERT INTO tb_provider_applicant_narrative
+( applicant_id, narrative, narravtivefrom, activeflag, insertedby, insertedon, updatedby, updatedon)
+VALUES(  v_applicantid, v_narrativerecord.narrative, v_narrativerecord.narravtivefrom, 1, v_securityuserid, now(), v_securityuserid, now());
+end loop;
+
+for v_documentrecord in 
+select  dp.objecttypekey,  dp.documenttypekey, dp.documentdate, dp.clientid, dp.servicerequestid, dp.thirdpartysourceid, dp.filename, dp.tag, dp.title, dp.description, dp.mime,dp.meta, dp."encoding", dp.numberofbytes, dp.updatedby, dp.updatedon, dp.insertedby, dp.insertedon, dp.activeflag, dp.expirationdate, dp.old_id, dp."timestamp", dp.voidedby, dp.voidedon, dp.voidreasonid, dp.rootobjectid, dp.rootobjecttypekey, dp.s3bucketpathname, dp.intakenumber, dp.originalfilename, dp.ecmsdocumentid, dp.servicecaseid from documentproperties dp
+where dp.intakenumber in (v_objectid)
+loop 
+INSERT INTO documentproperties
+( objecttypekey, documenttypekey, documentdate, clientid, servicerequestid, thirdpartysourceid, filename, tag, title, description, mime, meta, "encoding", numberofbytes, updatedby, updatedon, insertedby, insertedon, activeflag, expirationdate, old_id,  voidedby, voidedon, voidreasonid, rootobjectid, rootobjecttypekey, s3bucketpathname, intakenumber, originalfilename, ecmsdocumentid, servicecaseid)
+VALUES( v_documentrecord.objecttypekey,  v_documentrecord.documenttypekey, v_documentrecord.documentdate, v_documentrecord.clientid, v_documentrecord.servicerequestid, v_documentrecord.thirdpartysourceid, v_documentrecord.filename, v_documentrecord.tag, v_documentrecord.title, v_documentrecord.description, v_documentrecord.mime, v_documentrecord.meta, v_documentrecord."encoding", v_documentrecord.numberofbytes, v_securityuserid, now(), v_securityuserid, now(), 1, now(), v_documentrecord.old_id, v_documentrecord.voidedby, v_documentrecord.voidedon, v_documentrecord.voidreasonid, v_documentrecord.rootobjectid, v_documentrecord.rootobjecttypekey, v_documentrecord.s3bucketpathname, v_applicantid, v_documentrecord.originalfilename, v_documentrecord.ecmsdocumentid, v_documentrecord.servicecaseid);
+
+end loop;
+
+
+
+RETURN 'Success';
+                                                      
+END;
+
+$function$
+

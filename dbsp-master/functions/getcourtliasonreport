@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION getcourtliasonreport(from_date character varying, too_date character varying, p_statusfilter character varying, p_pagesize integer, p_pageoffset integer, nolimit boolean)
+ RETURNS TABLE(reccount bigint, youthfirstname character varying, youthlastname character varying, providername character varying, youthlivingunit character varying, scheduledhearingdate character varying, scheduledhearingtime character varying, courtjurisdiction character varying, hearinglocation character varying, hearingtype character varying, courthearingstatustypekey character varying, petitionid character varying, casenumber character varying, isdjs boolean, transportationscheduled character varying, los character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+     RETURN QUERY 
+  select count(*) over() as reccount,
+     p.firstname as youthfirstname,
+     p.lastname as youthlastname,
+     pr.providername,
+     rv.description as youthlivingunit,
+     cast(to_char(ich.hearingdatetime,'DD-MON-YYYY') as character varying) as scheduledhearingdate,
+     cast(to_char(ich.hearingdatetime,'HH:MI:SS') as character varying) as scheduledhearingtime,
+     hc.countyname as courtjurisdiction,
+     hc.countyname as hearinglocation,
+     ht.description as hearingtype,
+     ich.courthearingstatustypekey as courthearingstatustypekey,
+     isrp.petitionid,
+     isr.servicerequestnumber as casenumber,
+     pl.isoperatedbydjs as isdjs,
+     cast ((case when pt.present =1 then 'Yes' else 'No' end) as character varying) as transportationscheduled,
+     cast(age(pl.releasedate,pl.addate) as character varying)as los
+    from intakeservicerequestcourthearing ich 
+    join intakeservicerequest isr on isr.intakenumber = ich.intakenumber and isr.activeflag = 1 and isr.teamtypekey = 'DJS'
+    left join hearingtype ht on ich.hearingtypekey = ht.hearingtypekey
+    join (select distinct actorid ,intakeserviceid from intakeservicerequestactor where activeflag = 1)isra on isra.intakeserviceid = isr.intakeserviceid 
+    join actor a on a.actorid = isra.actorid and a.activeflag = 1 and a.actortype = 'Youth' 
+    join person p on p.personid = a.personid and p.activeflag = 1
+    left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+    left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+    left join placement pl on pl.intakeserviceid = isr.intakeserviceid and pl.activeflag = 1
+    left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+    left join (select 1 as present,personid,activeflag from persontransportation) pt on pt.personid = p.personid and pt.activeflag = 1
+    left join ( select r.description,r.ref_key 
+       from referencetype rt 
+       join referencevalues r on rt.referencetypeid = r.referencetypeid and r.activeflag = 1
+       where rt.tablename = 'providerunittype' and rt.activeflag = 1 ) rv on rv.ref_key = pr.providerunit    
+    left join muser m on m.securityusersid = ich.updatedby and m.activeflag = 1
+    left join teammemberassignment tma on tma.securityusersid  = m.securityusersid and tma.activeflag = 1
+    left join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag = 1
+    left join team t on t.teamid = tm.teamid and t.teamtypekey = 'DJS' and t.activeflag = 1
+    left join county hc on hc.countyid = cast(t.countyid as uuid)
+    where ich.activeflag = 1 
+    and TO_dATE( to_char(ich.hearingdatetime,'YYYY-MM-DD'),'YYYY-MM-DD') between to_Date(from_date,'YYYY-MM-DD') and to_Date(Too_date,'YYYY-MM-DD')
+    and case when p_statusfilter = 'Pending' then ich.courthearingstatustypekey <> 'Completed' 
+       when p_statusfilter = 'Completed' then ich.courthearingstatustypekey = 'Completed' 
+       else true end 
+    limit (case when nolimit is false then p_pagesize else null end ) offset (case when nolimit is false then p_pageoffset else null end);
+
+  
+END;
+$function$
+

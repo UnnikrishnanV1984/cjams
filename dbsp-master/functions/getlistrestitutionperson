@@ -1,0 +1,83 @@
+CREATE OR REPLACE FUNCTION getlistrestitutionperson(searchobj json)
+ RETURNS TABLE(totalcount bigint, personid uuid, firstname character varying, lastname character varying, cjamspid bigint, dob timestamp without time zone, gendertypekey character varying, restitutionacc jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  
+    v_Cjamspid INT;
+    v_Firstname varchar(50); 
+    v_Lastname varchar(50);
+    v_liPageNumber INT;                              
+    v_liPageSize INT;
+    v_pagenumber int;
+ v_pageoffset int;
+ v_nolimit boolean;
+ v_limitstring character varying(1000);
+
+ 
+BEGIN 
+
+v_Cjamspid := searchobj ->> 'cjamspid'; 
+v_Firstname := searchobj ->> 'firstname'; 
+v_Lastname := searchobj ->> 'lastname'; 
+v_liPageNumber := searchobj ->> 'pagenumber';
+v_liPageSize := searchobj ->> 'pagesize'; 
+v_nolimit := searchobj ->> 'nolimit';
+
+raise notice 'searchobj%',searchobj;
+raise notice 'v_Cjamspid%',v_Cjamspid;
+raise notice 'v_Firstname%',v_Firstname;
+raise notice 'v_Lastname%',v_Lastname;
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+if (v_nolimit = false) then 
+ v_limitstring = ' LIMIT '||v_liPageSize||' OFFSET '||v_pageoffset;
+end if ;
+
+return QUERY
+select  count(1) over() as totalcount, x.* from (select distinct p.personid,p.firstname,p.lastname,p.cjamspid,p.dob,p.gendertypekey,   (SELECT Json_agg(actor) FROM (
+   select restitutionno,intakeserreqrestitutionid,intakeserviceid,installmentamount,intakenumber,
+   restitutiontype,ct.countyname,ismultipleinvolvedpersons,payment,
+   duedate,frequency,installmentamount,courtdeferredduedate,status,inactivereasontype,paymentstartdate,(payment - coalesce(paidamount,0)) as balance,
+   coalesce(paidamount,0) as paidamount,
+   transfernotes,json_build_object('youthpersonid',youthpersonid,'youthfirstname',pp.firstname,
+  'youthlastname', pp.lastname ,'youthcjamspid', pp.cjamspid, 'youthdob',pp.dob, 'youthgendertypekey',pp.gendertypekey ) as youthpersondetails,
+  json_build_object('victimpersonid',victimpersonid,'victimfirstname',pv.firstname,
+  'victimlastname', pv.lastname ,'victimcjamspid', pv.cjamspid, 'victimdob',pv.dob, 'victimgendertypekey',pv.gendertypekey ) as victimpersondetails,
+    json_build_object('liablepersonid',liablepersonid,'liablefirstname',pl.firstname,
+  'liablelastname', pl.lastname ,'liablecjamspid', pl.cjamspid, 'liabledob',pl.dob, 'liablegendertypekey',pl.gendertypekey,'liablepersonrelationtypekey',liablepersonrelationtypekey) as liablepersondetails  from intakeserreqrestitution isr
+     join county ct on ct.countyid = isr.countyid 
+   join person pp on pp.personid= isr.youthpersonid
+   join person pv on pv.personid = isr.victimpersonid 
+   join person pl on pl.personid = isr.liablepersonid where youthpersonid=ir.youthpersonid and isr.activeflag = 1 and isr.approvestatus='RSTAPR'
+)actor) :: jsonb as restitutionacc from intakeserreqrestitution ir
+join person p on p.personid = ir.youthpersonid
+where 
+ (COALESCE(lower(p.firstname) ,'') LIKE COALESCE(lower(v_Firstname) ,'')||'%')
+AND (COALESCE(lower(p.lastname) ,'') LIKE COALESCE(lower(v_Lastname) ,'')||'%')
+and  (v_Cjamspid is null or p.cjamspid=v_Cjamspid) 
+group by p.personid,p.firstname,p.lastname,p.cjamspid,p.dob,p.gendertypekey,ir.youthpersonid,ir.payment,ir.paidamount
+) as x
+LIMIT case when (v_nolimit = false)
+then v_liPageSize end offset case when (v_nolimit = false)
+then v_pageoffset end
+;
+ 
+
+END;
+
+$function$
+

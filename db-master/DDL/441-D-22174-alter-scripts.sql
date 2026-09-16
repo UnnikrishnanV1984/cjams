@@ -1,0 +1,1 @@
+ALTER TABLE Intakeservicerequestcourthearing ADD COLUMN benefitsdate TIMESTAMP;

@@ -1,0 +1,310 @@
+CREATE OR REPLACE FUNCTION cjams.f_afcars_decrypt_chessie(VS_ENCRYPTED_ID character varying)
+RETURNS character varying
+ LANGUAGE plpgsql
+ AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+
+-- To Decrypt the Case/Client/User IDs for Federal Reporting
+-- This Procedure is for Entity IDs with length <= 9  
+
+-- Revision(s):
+------------------------------------------------------------------------
+Declare VL_ENTITY_ID VARCHAR(12);
+Declare LS_STEP1NO  VARCHAR (12) default null;
+Declare LS_STEP2NO  VARCHAR (12) default null;
+Declare LS_FINALDECRYPT VARCHAR (12) DEFAULT null;
+
+Declare VENNO1  Integer default 0;
+Declare VENNO2  Integer default 0;
+Declare VENNO3  Integer default 0;
+Declare VENNO4  Integer default 0;
+Declare VENNO5  Integer default 0;
+Declare VENNO6  Integer default 0;
+Declare VENNO7  Integer default 0;
+Declare VENNO8  Integer default 0;
+Declare VENNO9  Integer default 0;
+
+Declare VENN12  Integer default 0;
+Declare VENN22  Integer default 0;
+Declare VENN32  Integer default 0;
+Declare VENN42  Integer default 0;
+Declare VENN52  Integer default 0;
+Declare VENN62  Integer default 0;
+Declare VENN72  Integer default 0;
+Declare VENN82  Integer default 0;
+Declare VENN92  Integer default 0;
+
+Declare Uven1   VARCHAR (2) default '0';
+Declare Uven2   VARCHAR (2) default '0';
+Declare Uven3   VARCHAR (2) default '0';
+Declare Uven4   VARCHAR (2) default '0';
+Declare Uven5   VARCHAR (2) default '0';
+Declare Uven6   VARCHAR (2) default '0';
+Declare Uven7   VARCHAR (2) default '0';
+Declare Uven8   VARCHAR (2) default '0';
+Declare Uven9   VARCHAR (2) default '0';
+
+Declare WENNO1  Integer default 0;
+Declare WENNO2  Integer default 0;
+Declare WENNO3  Integer default 0;
+Declare WENNO4  Integer default 0;
+Declare WENNO5  Integer default 0;
+Declare WENNO6  Integer default 0;
+Declare WENNO7  Integer default 0;
+Declare WENNO8  Integer default 0;
+Declare WENNO9  Integer default 0;
+
+Declare WENN12  Integer default 0;
+Declare WENN22  Integer default 0;
+Declare WENN32  Integer default 0;
+Declare WENN42  Integer default 0;
+Declare WENN52  Integer default 0;
+Declare WENN62  Integer default 0;
+Declare WENN72  Integer default 0;
+Declare WENN82  Integer default 0;
+Declare WENN92  Integer default 0;
+
+Declare UWen1   VARCHAR (2) default '0';
+Declare UWen2   VARCHAR (2) default '0';
+Declare UWen3   VARCHAR (2) default '0';
+Declare UWen4   VARCHAR (2) default '0';
+Declare UWen5   VARCHAR (2) default '0';
+Declare UWen6   VARCHAR (2) default '0';
+Declare UWen7   VARCHAR (2) default '0';
+Declare UWen8   VARCHAR (2) default '0';
+Declare UWen9   VARCHAR (2) default '0';
+
+
+BEGIN
+
+	LS_STEP2NO = VS_ENCRYPTED_ID ;
+	RAISE NOTICE 'LS_STEP2NO INPUT %', LS_STEP2NO;
+	
+	--- ****  DECRYPTION OF 2ND ENCRYPTION  **** -----
+
+	-- STEP #1 : SEPERATE EACH NUMBER
+	WENNO1 := CAST((SUBSTR(LS_STEP2NO,4,1)) as INTEGER);
+	WENNO2 := CAST((SUBSTR(LS_STEP2NO,5,1)) as INTEGER);
+	WENNO3 := CAST((SUBSTR(LS_STEP2NO,6,1)) as INTEGER);
+	WENNO4 := CAST((SUBSTR(LS_STEP2NO,7,1)) as INTEGER);
+	WENNO5 := CAST((SUBSTR(LS_STEP2NO,8,1)) as INTEGER);
+	WENNO6 := CAST((SUBSTR(LS_STEP2NO,9,1)) as INTEGER);
+	WENNO7 := CAST((SUBSTR(LS_STEP2NO,10,1)) as INTEGER);
+	WENNO8 := CAST((SUBSTR(LS_STEP2NO,11,1)) as INTEGER);
+	WENNO9 := CAST((SUBSTR(LS_STEP2NO,12,1)) as INTEGER);
+
+	-- STEP #2 : MATHEMATICAL OPERATIONS ON THE ABOVE SEPERATED NOS.
+	WENN12 := Wenno1 + 5;           -- 1st #
+	WENN22 := Wenno2 - 7;           -- 2nd #
+	WENN32 := Wenno3 + 7;           -- 3rd #
+	WENN42 := Wenno4 + 3;           -- 4th #
+	WENN52 := Wenno5 - 6;           -- 5th #
+	WENN62 := Wenno6 - 3;           -- 6th #
+	WENN72 := Wenno7 - 3;           -- 7th #
+	WENN82 := Wenno8 + 3;           -- 8th #
+	WENN92 := Wenno9 + 0;           -- 9th #
+
+	-- STEP #3 : IF THE RESULT NUMBER IN STEP #2 IS >10 OR <0 THEN SUBTRACT 10 AND ADD 10 RESPECTIVELY.
+	-- 1st #
+	IF Wenn12 < 0 Then
+		UWen1 = CAST((Wenn12 + 10) AS VARCHAR);
+	Elsif Wenn12 > 9 Then
+		UWen1 = CAST((Wenn12 - 10) AS VARCHAR);
+	Elsif Wenn12 >= 0 AND Wenn12 <= 9 Then
+		UWen1 = CAST((Wenn12) AS VARCHAR);
+	End if;
+
+	-- 2nd #
+	IF Wenn22 < 0 Then
+		UWen2 = CAST((Wenn22 + 10) AS VARCHAR);
+	Elsif Wenn22 > 9 Then
+		UWen2 = CAST((Wenn22 - 10) AS VARCHAR);
+	Elsif Wenn22 >= 0 AND Wenn22 <= 9 Then
+		UWen2 = CAST((Wenn22) AS VARCHAR);
+	End if;
+   
+	-- 3rd #
+	IF Wenn32 < 0 Then
+		UWen3 = CAST((Wenn32 + 10) AS VARCHAR);
+	Elsif Wenn32 > 9 Then
+		UWen3 = CAST((Wenn32 - 10) AS VARCHAR);
+	Elsif Wenn32 >= 0 AND Wenn32 <= 9 Then
+		UWen3 = CAST((Wenn32) AS VARCHAR);
+	End if;
+       
+	-- 4th #
+	IF Wenn42 < 0 Then
+		UWen4 = CAST((Wenn42 + 10) AS VARCHAR);
+	Elsif Wenn42 > 9 Then
+		UWen4 = CAST((Wenn42 - 10) AS VARCHAR);
+	Elsif Wenn42 >= 0 AND Wenn42 <= 9 Then
+		UWen4 = CAST((Wenn42) AS VARCHAR);
+	End if;
+
+	-- 5th #
+	IF Wenn52 < 0 Then
+		UWen5 = CAST((Wenn52 + 10) AS VARCHAR);
+	Elsif Wenn52 > 9 Then
+		UWen5 = CAST((Wenn52 - 10) AS VARCHAR);
+	Elsif Wenn52 >= 0 AND Wenn52 <= 9 Then
+		UWen5 = CAST((Wenn52) AS VARCHAR);
+	End if;
+
+	-- 6th #
+	IF Wenn62 < 0 Then
+		UWen6 = CAST((Wenn62 + 10) AS VARCHAR);
+	Elsif Wenn62 > 9 Then
+		UWen6 = CAST((Wenn62 - 10) AS VARCHAR);
+	Elsif Wenn62 >= 0 AND Wenn62 <= 9 Then
+		UWen6 = CAST((Wenn62) AS VARCHAR);
+	End if;
+
+	-- 7th #
+	IF Wenn72 < 0 Then
+		UWen7 = CAST((Wenn72 + 10) AS VARCHAR);
+	Elsif Wenn72 > 9 Then
+		UWen7 = CAST((Wenn72 - 10) AS VARCHAR);
+	Elsif Wenn72 >= 0 AND Wenn72 <= 9 Then
+		UWen7 = CAST((Wenn72) AS VARCHAR);
+	End if;
+		
+	-- 8th #
+	IF Wenn82 < 0 Then
+		UWen8 = CAST((Wenn82 + 10) AS VARCHAR);
+	Elsif Wenn82 > 9 Then
+		UWen8 = CAST((Wenn82 - 10) AS VARCHAR);
+	Elsif Wenn82 >= 0 AND Wenn82 <= 9 Then
+		UWen8 = CAST((Wenn82) AS VARCHAR);
+	End if;
+
+	-- 9th #
+	IF Wenn92 < 0 Then
+		UWen9 = CAST((Wenn92 + 10) AS VARCHAR);
+	Elsif Wenn92 > 9 Then
+		UWen9 = CAST((Wenn92 - 10) AS VARCHAR);
+	Elsif Wenn92 >= 0 AND Wenn92 <= 9 Then
+		UWen9 = CAST((Wenn92) AS VARCHAR);
+	End if;
+		
+	LS_STEP1NO =  '100' || Ltrim(rtrim(UWEN1)) || Ltrim(rtrim(UWEN2)) || Ltrim(rtrim(UWEN3)) || Ltrim(rtrim(UWEN4)) ||
+	Ltrim(rtrim(UWEN5)) || Ltrim(rtrim(UWEN6)) || Ltrim(rtrim(UWEN7)) || Ltrim(rtrim(UWEN8)) || Ltrim(rtrim(UWEN9)) ;
+	
+	RAISE NOTICE 'LS_STEP1NO INPUT %', LS_STEP1NO;
+	--====================================================================================
+
+	--- ****  DECRYPTION OF 1ST ENCRYPTION  **** -----
+
+	-- STEP #1 : SEPERATE EACH NUMBER
+	VENNO1 := CAST((SUBSTR(LS_STEP1NO,4,1)) AS INTEGER);
+	VENNO2 := CAST((SUBSTR(LS_STEP1NO,5,1)) AS INTEGER);
+	VENNO3 := CAST((SUBSTR(LS_STEP1NO,6,1)) AS INTEGER);
+	VENNO4 := CAST((SUBSTR(LS_STEP1NO,7,1)) AS INTEGER);
+	VENNO5 := CAST((SUBSTR(LS_STEP1NO,8,1)) AS INTEGER);
+	VENNO6 := CAST((SUBSTR(LS_STEP1NO,9,1)) AS INTEGER);
+	VENNO7 := CAST((SUBSTR(LS_STEP1NO,10,1)) AS INTEGER);
+	VENNO8 := CAST((SUBSTR(LS_STEP1NO,11,1)) AS INTEGER);
+	VENNO9 := CAST((SUBSTR(LS_STEP1NO,12,1)) AS INTEGER);
+
+	-- STEP #2 : MATHEMATICAL OPERATIONS ON THE ABOVE SEPERATED NOS.
+	venn12 := venno1 - 9;           -- 1st #
+	venn22 := venno2 + 2;           -- 2nd #
+	venn32 := venno3 + 6;           -- 3rd #
+	venn42 := venno4 + 5;           -- 4th #
+	venn52 := venno5 + 3;           -- 5th #
+	venn62 := venno6 + 4;           -- 6th #
+	venn72 := venno7 + 5;           -- 7th #
+	venn82 := venno8 - 8;           -- 8th #
+	venn92 := venno9 + 2;           -- 9th #
+
+	-- STEP #3 : IF THE RESULT NUMBER IN STEP #2 IS >10 OR <0 THEN SUBTRACT 10 AND ADD 10 RESPECTIVELY.
+	-- 1st #
+	IF Venn12 < 0 Then
+		Uven1 := CAST((Venn12 + 10) AS INTEGER);
+	Elsif Venn12 > 9 Then
+		Uven1 := CAST((Venn12 - 10) AS INTEGER);
+	Elseif Venn12 >= 0 AND Venn12 <= 9 Then
+		Uven1 := CAST(Venn12 AS INTEGER);
+	End if;
+
+	-- 2nd #
+	IF Venn22 < 0 Then
+		Uven2 := CAST((Venn22 + 10) AS INTEGER);
+	Elsif Venn22 > 9 Then
+		Uven2 := CAST((Venn22 - 10) AS INTEGER);
+	Elseif Venn22 >= 0 AND Venn22 <= 9 Then
+		Uven2 := CAST(Venn22 AS INTEGER);
+	End if;
+		
+	-- 3rd #
+	IF Venn32 < 0 Then
+		Uven3 := CAST((Venn32 + 10) AS INTEGER);
+	Elsif Venn32 > 9 Then
+		Uven3 := CAST((Venn32 - 10) AS INTEGER);
+	Elseif Venn32 >= 0 AND Venn32 <= 9 Then
+		Uven3 := CAST(Venn32 AS INTEGER);
+	End if;
+
+	-- 4th #
+	IF Venn42 < 0 Then
+		Uven4 := CAST((Venn42 + 10) AS INTEGER);
+	Elsif Venn42 > 9 Then
+		Uven4 := CAST((Venn42 - 10) AS INTEGER);
+	Elseif Venn42 >= 0 AND Venn42 <= 9 Then
+		Uven4 := CAST(Venn42 AS INTEGER);
+	End if;
+		
+	-- 5th #
+	IF Venn52 < 0 Then
+		Uven5 := CAST((Venn52 + 10) AS INTEGER);
+	Elsif Venn52 > 9 Then
+		Uven5 := CAST((Venn52 - 10) AS INTEGER);
+	Elseif Venn52 >= 0 AND Venn52 <= 9 Then
+		Uven5 := CAST(Venn52 AS INTEGER);
+	End if;
+		
+	-- 6th #
+	IF Venn62 < 0 Then
+		Uven6 := CAST((Venn62 + 10) AS INTEGER);
+	Elsif Venn62 > 9 Then
+		Uven6 := CAST((Venn62 - 10) AS INTEGER);
+	Elseif Venn62 >= 0 AND Venn62 <= 9 Then
+		Uven6 := CAST(Venn62 AS INTEGER);
+	End if;
+
+	-- 7th #
+	IF Venn72 < 0 Then
+		Uven7 := CAST((Venn72 + 10) AS INTEGER);
+	Elsif Venn72 > 9 Then
+		Uven7 := CAST((Venn72 - 10) AS INTEGER);
+	Elseif Venn72 >= 0 AND Venn72 <= 9 Then
+		Uven7 := CAST(Venn72 AS INTEGER);
+	End if;
+
+	-- 8th #
+	IF Venn82 < 0 Then
+		Uven8 := CAST((Venn82 + 10) AS INTEGER);
+	Elsif Venn82 > 9 Then
+		Uven8 := CAST((Venn82 - 10) AS INTEGER);
+	Elseif Venn82 >= 0 AND Venn82 <= 9 Then
+		Uven8 := CAST(Venn82 AS INTEGER);
+	End if;
+
+	-- 9th #
+	IF Venn92 < 0 Then
+		Uven9 := CAST((Venn92 + 10) AS INTEGER);
+	Elsif Venn92 > 9 Then
+		Uven9 := CAST((Venn92 - 10) AS INTEGER);
+	Elseif Venn92 >= 0 AND Venn92 <= 9 Then
+		Uven9 := CAST(Venn92 AS INTEGER);
+	End if;
+
+	LS_FINALDECRYPT = Ltrim(rtrim(UVEN1)) || Ltrim(rtrim(UVEN2)) || Ltrim(rtrim(UVEN3)) || Ltrim(rtrim(UVEN4)) ||
+	Ltrim(rtrim(UVEN5)) || Ltrim(rtrim(UVEN6)) || Ltrim(rtrim(UVEN7)) || Ltrim(rtrim(UVEN8)) || Ltrim(rtrim(UVEN9));
+
+	VL_ENTITY_ID := LS_FINALDECRYPT;
+	
+	RETURN VL_ENTITY_ID;
+END $function$
+;
+

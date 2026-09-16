@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION getpaidsatifiedmemo(p_intakenumber character varying, p_restitutionno integer)
+ RETURNS TABLE(rtcdcoordinator character varying, youthname character varying, courtactiontypekey character varying, payment numeric, dispositioncode character varying, description character varying, balanceamount numeric, intakenumber character varying, intakeserviceid uuid)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+   RETURN QUERY
+      SELECT irp.insertedby
+                "rtcdcoordinator",
+             cast (yp.firstname || ' ' || yp.lastname AS CHARACTER VARYING)
+                "youthname",
+             isrct.courtactiontypekey,
+             isr.payment,
+             srd.dispositioncode,
+             cast (d.description AS CHARACTER VARYING),
+             (  (  coalesce (isr.payment, 0)
+                 - coalesce (isr.waivedamount, 0)
+                 + coalesce (isr.additionalamount, 0))
+              - coalesce (isr.paidamount, 0))
+                "balanceamount",
+             isrq.intakenumber,
+             isrq.intakeserviceid
+        FROM intakeservicerequest isrq
+             LEFT JOIN intakeserreqrestitution isr
+                ON isr.intakenumber = isrq.intakenumber
+             LEFT JOIN
+             (SELECT p.personid,
+                     p.dob,
+                     p.firstname,
+                     p.lastname,
+                     p.cjamspid,
+                     extract (YEAR FROM age (current_date, p.dob))"youthage",
+                     activeflag
+                FROM person p) yp
+                ON yp.personid = isr.youthpersonid AND yp.activeflag = 1
+             LEFT JOIN
+             (  SELECT max (paymentnumber) "paymentnumber",
+                       intakeserreqrestitutionid
+                  FROM intakeserreqrestitutionpayment
+              GROUP BY intakeserreqrestitutionid) isrpl
+                ON isrpl.intakeserreqrestitutionid =
+                   isr.intakeserreqrestitutionid
+             LEFT JOIN intakeserreqrestitutionpayment irp
+                ON irp.paymentnumber = isrpl.paymentnumber
+             LEFT JOIN restitutionpaymentflatfilecontent rpff
+                ON     irp.restitutionpaymentflatfilecontentid =
+                       rpff.restitutionpaymentflatfilecontentid
+                   AND rpff.activeflag = 1
+             LEFT JOIN intakeservicerequestcourtaction isrc
+                ON isrc.intakeservicerequestid = isrq.intakeserviceid
+             LEFT JOIN intakeservicerequestcourtactiontype isrct
+                ON isrct.intakeservicerequestcourtactionid =
+                   isrc.intakeservicerequestcourtactionid
+             LEFT JOIN intakeservicerequestdispositioncode isrd
+                ON isrd.intakeserviceid = isr.intakeserviceid
+             LEFT JOIN servicerequesttypeconfigdispositioncode srd
+                ON srd.servicerequesttypeconfigiddispostionid =
+                   isrd.servicerequesttypeconfigiddispostionid
+             LEFT JOIN dispositioncode d
+                ON d.dispositioncode = srd.dispositioncode
+       WHERE     isrq.intakenumber = p_intakenumber
+             AND isr.restitutionno = p_restitutionno
+             AND srd.dispositioncode != 'Closed';
+END;
+$function$
+

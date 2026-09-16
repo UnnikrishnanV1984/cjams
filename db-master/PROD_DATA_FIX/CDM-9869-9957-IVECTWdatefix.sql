@@ -1,0 +1,2 @@
+update intakeservicerequestactor i set activeflag = 1, updatedby = 'Data fix as per CDM-9869', updatedon = now() where intakeservicerequestactorid = 'edda73a0-b1e9-42a0-a6df-acf16a131d21' and activeflag = 0;
+update intakeservicerequestcourthearing i set activeflag = 1, updatedby = 'Data fix as CDM-9957', updatedon = now() where intakeservicerequestcourthearingid = '0e8900f8-3b36-465a-9199-4cd00c2e3a0c' and activeflag = 0;

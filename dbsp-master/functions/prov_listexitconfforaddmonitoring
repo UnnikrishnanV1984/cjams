@@ -1,0 +1,32 @@
+CREATE OR REPLACE FUNCTION prov_listexitconfforaddmonitoring(v_provider_id character varying)
+ RETURNS TABLE(monitoring_id character varying, create_ts character varying, exit_conf_id integer, summary character varying, exit_dt timestamp without time zone, program_changes character varying, exit_conf_number character varying, ec_status character varying, staffdetails jsonb, workerdetails jsonb)
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+begin 
+return query 
+
+select distinct mcf.monitoring_id, mcf.create_ts, mcf.exit_conf_id,mcf.summary,mcf.exit_dt,mcf.program_changes,mcf.exit_conf_number,mcf.ec_status,
+
+(select jsonb_agg(a) from (
+select distinct ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, ps.employee_type, ps.staff_phone_no 
+from providerstaff ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.provider_staff_id::character varying  = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N')a) as staffdetails,
+
+(select jsonb_agg(a) from (select distinct mu.username,
+mu.email 
+,r.name as userrole ,r2.teamtypekey as agencykey
+from muser mu
+join rolemapping r2 on r2.principalid = mu.id and r2.activeflag = '1'
+join role r on r.id = r2.roleid
+join prov_monitoring_exit_conf_staff mcfs on  mu.securityusersid = mcfs.objectid  and mcfs.delete_sw = 'N'
+where mcf.exit_conf_id = mcfs.exit_conf_id )a) as workerdetail
+--,(select jsonb_agg(prv) from (select * from prov_getproviderviolationdetails(null, v_provider_id, 'Monitoring', null, null,null,1,10,null,null,null)prv) as violationdetails)
+
+from prov.prov_monitoring_exit_conf mcf 
+where mcf.provider_id =v_provider_id and mcf.delete_sw = 'N' and (mcf.ec_status is null or mcf.ec_status <> 'Resolved');         
+END;
+$function$
+

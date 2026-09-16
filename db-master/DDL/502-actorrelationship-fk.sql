@@ -1,0 +1,1 @@
+ALTER TABLE actorrelationship DROP CONSTRAINT IF EXISTS fk_actorrelationship_relationshiptype;

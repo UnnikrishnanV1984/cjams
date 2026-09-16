@@ -1,0 +1,116 @@
+CREATE OR REPLACE FUNCTION cjams.getintaketransferlistbyuser(v_securityusersid character varying, v_type character varying, pagenumber bigint, pagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$   
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 04/06/2022 
+
+-- Stored Procedure to get the Intake Transfer data (B-128967/CIDM-4372)
+
+-- Revision(s)
+------------------------------------------------------------------------     
+DECLARE   
+v_pageoffset  int;  
+v_pagenumber  int;  
+v_totalcount  int;
+l_intaketransferlist json;
+
+BEGIN     
+	v_pagenumber := pagenumber - 1;
+	v_pageoffset := v_pagenumber * pagesize;
+     
+	select coalesce ((select json_agg(e) 
+		into l_intaketransferlist 
+	from (	select intf.intaketransferid,
+				intf.intakenumber,
+				intf.transferdate,
+				intf.sendingcountyid,
+				intf.insertedon as datereceivedeststr,	
+                (select (id.jsondata ->>'General')::json ->> 'RecivedDate' as RecivedDate
+			from intakedastaging id
+		where id.teamtypekey = 'CW'
+			and id.intakenumber = intf.intakenumber
+			and id.activeflag  = 1) as reporteddatetime,				
+				(select (prh.firstname || ' ' || coalesce(prh.middlename, '') || ' '  || prh.lastname) 
+					from intakeservicerequestactor insr,
+						person prh
+					where insr.personid = prh.personid 
+						and insr.intakenumber =  intf.intakenumber
+						and insr.isheadofhousehold = true
+					order by insr.updatedon desc
+					limit 1 ) as hoh_name,
+				(	select c.countyname 
+						from county c 
+					where c.countyid = intf.sendingcountyid
+				) as sendingcountyname,
+				intf.receivingcountyid,
+				(	select c.countyname 
+						from county c 
+					where c.countyid = intf.receivingcountyid
+				) as receivingcountyname,
+				intf.requestedby as requestoridrequestorid,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.requestedby::character varying 
+						and up.activeflag=1 
+				) as requestorname,
+				intf.approvedby as approverid,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.approvedby::character varying 
+						and up.activeflag=1 
+				) as approvername,
+				intf.receivingcountysupervisor as receivingcountysupid,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.receivingcountysupervisor::character varying 
+						and up.activeflag=1 
+				) as receivingcountysupname,
+				intf.receivingcountyworker,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.receivingcountyworker::character varying 
+						and up.activeflag=1 
+				) as receivingcountyworkername,
+				--intf.transferreason,
+				intf.rejectionreason,
+				intf.approvalstatus,
+				intf.approvedon
+				,(select ( select ist.description 
+							from intakeservicerequesttype ist
+						 where ist.intakeservreqtypeid::character varying  = 
+					     	  substring(tab.intake_type,1, (length(tab.intake_type)::integer - 3))::character varying
+						 ) as intake_type
+				from (	select (id.jsondata ->>'General')::json ->> 'Purpose' as intake_type
+							from intakedastaging id
+						where id.teamtypekey = 'CW'
+							and id.intakenumber = intf.intakenumber
+							and id.activeflag  = 1
+					  ) tab
+				) as transferreason
+			from cjams.intaketransfers intf
+			where  intf.activeflag = 1
+			and case when lower(v_type) = 'pending' then (
+				lower(intf.approvalstatus) = 'review'
+				and intf.intaketransferid::character  varying in (select objectid from routing where tosecurityusersid = v_securityusersid and routingstatustypeid = 15 and activeflag = 1)
+			) else true end
+--		   	and case when v_type = 'assign' then intf.approvalstatus ='Approved' else true end
+            and (case when lower(v_type) = 'assign' then				
+				intf.receivingcountysupervisor::character varying = v_securityusersid 
+				and lower(intf.approvalstatus) = 'approved' 
+				and intf.receivingcountyworker is null
+            else 	
+				true
+            end)
+			order by intf.insertedon desc
+			limit pagesize offset v_pageoffset 
+		)e),'[]') ;
+	 
+		RETURN l_intaketransferlist;
+END;
+
+$function$
+;

@@ -1,0 +1,110 @@
+CREATE OR REPLACE FUNCTION updateresponsetimer(v_intakeserviceid uuid, v_contactdate timestamp without time zone)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+-------------------------------------------------------------------------------------------------------------
+-- Revision(s)
+-- 11/15/2021 Vineet Tirodkar - Modifications to update the Audit columns of intakeservicerequest (CIDM-4067)
+-------------------------------------------------------------------------------------------------------------
+DECLARE 
+    l_status text;
+    l_id uuid;
+    l_timerflag bool;
+
+BEGIN
+    l_status := 'Failed';
+    l_timerflag := false;
+
+    IF ((SELECT responsetimer FROM intakeservicerequest WHERE intakeserviceid = v_intakeserviceid) IS NULL)
+     THEN
+        
+        CREATE temp TABLE temp_notes (
+                attemptindicator    bool,
+                progressnotetypekey varchar(50),
+                persons             json
+            );
+                
+        CREATE temp TABLE temp_peoplerequired_for_responsetimer (
+                type        VARCHAR(50),
+                personid    UUID,
+                CONSTRAINT person_unique UNIQUE (personid)
+            );
+        
+        INSERT INTO temp_notes
+            SELECT 
+                pn.attemptindicator,
+                pnt.progressnotetypekey, (
+                SELECT array_to_json(array_agg(isra.personid)) FROM contactparticipant cp
+                    JOIN intakeservicerequestactor isra 
+                        ON isra.intakeservicerequestactorid = cp.intakeservicerequestactorid AND isra.activeflag =1
+                    WHERE cp.progressnoteid = pn.progressnoteid AND cp.activeflag =1) 
+                FROM progressnote pn 
+                JOIN progressnotetype pnt 
+                    ON pn.progressnotetypeid = pnt.progressnotetypeid AND pnt.activeflag =1 
+                    AND pnt.progressnotetypekey IN ('Face To Face','Initialfacetoface','Phone')
+                WHERE pn.entitytype = 'intakeservicerequest' 
+                    AND pn.entitytypeid =v_intakeserviceid::character varying AND pn.activeflag =1;
+        
+        INSERT INTO temp_peoplerequired_for_responsetimer 
+            SELECT 'AllegedVictim', personid 
+                FROM intakeservicerequestactor
+                WHERE intakeserviceid = v_intakeserviceid AND intakeservicerequestpersontypekey='AV' AND activeflag =1;
+        
+        INSERT INTO temp_peoplerequired_for_responsetimer 
+            SELECT 'CareGiver', ar.person1id
+                FROM intakeservicerequestactor isra
+                JOIN actorrelationship ar ON ar.person2id = isra.personid AND ar.caregiverflag  = 1 AND ar.activeflag = 1
+                JOIN intakeservicerequestactor isra1 ON isra.intakeserviceid  = isra1.intakeserviceid 
+                 AND isra1.intakeservicerequestactorid = ar.intakeservicerequestactorid                
+                WHERE isra.intakeserviceid = v_intakeserviceid AND isra.intakeservicerequestpersontypekey='AV' 
+                    AND isra.activeflag =1
+                ON CONFLICT (personid)
+                DO NOTHING;
+        
+        INSERT INTO temp_peoplerequired_for_responsetimer 
+            SELECT 'OtherChild', personid 
+                FROM intakeservicerequestactor
+                WHERE intakeserviceid =v_intakeserviceid
+                     AND (intakeservicerequestpersontypekey='CHILD' or intakeservicerequestpersontypekey='OTHERCHILD') AND activeflag =1
+                ON CONFLICT (personid)
+                DO NOTHING;
+        
+        FOR l_id IN SELECT personid FROM temp_peoplerequired_for_responsetimer WHERE type ilike 'AllegedVictim'
+            LOOP 
+                IF(l_timerflag IS false) 
+                    THEN 
+                    l_timerflag := (SELECT count(*)=0 FROM temp_notes WHERE progressnotetypekey NOT ilike 'Phone'
+                        AND NOT attemptindicator AND l_id::character varying IN (SELECT * FROM json_array_elements_text(persons)));            
+                END IF;
+   END LOOP;
+
+        FOR l_id IN SELECT personid FROM temp_peoplerequired_for_responsetimer WHERE type NOT ilike 'AllegedVictim'
+            LOOP 
+                IF(l_timerflag IS false)
+                    THEN 
+                    l_timerflag := (SELECT count(*)=0 FROM temp_notes WHERE attemptindicator IS NOT null 
+                        AND l_id::character varying IN (SELECT * FROM json_array_elements_text(persons)));
+                END IF;
+            END LOOP;
+
+        IF(l_timerflag IS false)
+            THEN
+            UPDATE intakeservicerequest
+                SET responsetimer = v_contactdate,
+     updatedby = 'cwadmin',
+     updatedon = now()
+            WHERE intakeserviceid = v_intakeserviceid;
+        END IF;
+        
+        DROP TABLE temp_peoplerequired_for_responsetimer;
+        DROP TABLE temp_notes;
+        
+        l_status := 'Success';
+ ELSE
+        l_status := 'Success';
+ END IF;
+RETURN l_status;
+END;
+
+$function$
+

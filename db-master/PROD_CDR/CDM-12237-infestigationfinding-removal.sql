@@ -1,0 +1,1 @@
+update investigationmaltreatment set activeflag = 0, updatedby = 'CDM-12237', updatedon = now() where maltreatmentid = '67401494-a114-41fb-8bf9-45560f1451ec';

@@ -1,0 +1,155 @@
+CREATE OR REPLACE FUNCTION as_routingda_temp(intake_service_req_id uuid, fromuserid character varying, v_assignedsecurityid character varying)
+ RETURNS routeda_temp_type
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+result routeda_temp_type;
+ 
+ 
+v_teamid uuid;
+v_investigationid uuid;
+v_intakesecurityid character varying;
+v_usernotificationid uuid;
+v_createduser character varying;
+v_servicetype character varying;
+v_assignedsecurityid character varying;
+v_fromroletypekey  character varying;
+v_toroletypekey  character varying;
+v_issupervisor bool;
+v_status  int;
+v_routingid uuid;
+v_isavailable int ;
+v_intakenumber character varying;
+BEGIN
+
+v_status:= 4; /*Default routed status assigned*/
+RAISE NOTICE 'status:%', v_status;
+SELECT  a.insertedby,b.intakeservreqtypekey INTO v_intakesecurityid,v_servicetype
+FROM intakeservicerequest AS a JOIN intakeservicerequesttype AS b ON a.intakeservreqtypeid = b.intakeservreqtypeid 
+where intakeserviceid =intake_service_req_id;
+
+SELECT investigationid INTO v_investigationid FROM investigation WHERE intakeserviceid=intake_service_req_id;
+
+IF v_servicetype = 'RF' THEN
+/*Routing the case to Catherine if the service type is RF*/
+v_assignedsecurityid := 'S-1-5-21-152097760-152508613-1969071786-1011';
+ 
+SELECT displayname INTO result.caseworker_name FROM userprofile WHERE SecurityUsersId=v_assignedsecurityid;
+END IF;
+  
+
+SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey , 
+   t.teamname
+        into  v_teamid ,result.loadnumber,v_fromroletypekey,
+   result.teamname
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = v_assignedsecurityid
+        AND   tma.activeflag =1;
+ 
+ 
+SELECT  tm.roletypekey ,coalesce(isupervisor,false) 
+        into   v_toroletypekey ,v_issupervisor
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        inner join teammemberroletype tmrt on tmrt.roletypekey =tm.roletypekey 
+        and tmrt.activeflag =1 
+        WHERE  tma.SecurityUsersId = fromuserid
+        AND   tma.activeflag =1;
+        
+SELECT displayname INTO v_createduser FROM userprofile WHERE SecurityUsersId=fromuserid;
+ RAISE NOTICE 'v_issupervisor:%', v_issupervisor; 
+ 
+ IF (coalesce(v_issupervisor,false) =true) THEN
+  RAISE NOTICE 'inside true:%', v_issupervisor; 
+     SELECT routingid ,1 into v_routingid,v_isavailable
+        FROM routing r WHERE tosecurityusersid = fromuserid 
+        AND activeflag =1
+        AND r.objectid  = intake_service_req_id :: character varying
+        ORDER BY insertedon desc limit 1;
+        
+        if (coalesce(v_isavailable,0) =0 ) THEN /*if routing is not availble for sevice id */
+          select intakenumber into v_intakenumber from intakeservicerequest   
+              where  intakeserviceid=intake_service_req_id;
+            
+                SELECT routingid ,1 into v_routingid,v_isavailable
+                FROM routing r WHERE tosecurityusersid = fromuserid 
+                AND activeflag =1
+                AND r.objectid  = v_intakenumber
+                ORDER BY insertedon desc limit 1;
+        
+        END IF;
+  /*Mark previous data as inactive and mark as accepted*/
+        UPDATE routing SET routingstatustypeid =2,activeflag =0  ,
+              updatedon= now()
+        WHERE routingid = v_routingid;
+        
+        v_status:= 2; /*Accepted status  */
+ END IF;
+ 
+
+/*Routing to  user*/
+ INSERT INTO routing(
+                    eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                    fromroleid, toroleid,objectid , routingstatustypeid,
+                    insertedby,  updatedby,isreviewrequest )
+
+values(appeventcode,fromuserid,v_assignedsecurityid,result.teamid,
+       v_fromroletypekey,v_toroletypekey,intake_service_req_id,v_status,
+       fromuserid,fromuserid);
+ 
+ /*Case will be routed other than suprvisor*/
+ IF (coalesce(v_issupervisor,false) =false) THEN
+   RAISE NOTICE 'inside false:%', v_issupervisor; 
+    INSERT INTO intakeservicerequestuseraccess(
+                activeflag, securityusersid, 
+                intakeserviceid, insertedby)
+        VALUES (1, v_assignedsecurityid, intake_service_req_id,fromuserid);
+
+    UPDATE activitytask set assignedto = result.loadnumber where activityid in (
+        SELECT activityid  from activity where objectid = v_investigationid);
+
+    UPDATE intakeservicerequest set isrouting=true,routedon = now(),
+        routedusersid= v_assignedsecurityid  where  intakeserviceid=intake_service_req_id;
+END IF;
+
+/*NOTIFICATION */
+INSERT INTO usernotification (securityusersid,usernotificationtypekey,
+objectid,activeflag,subject,priorityleveltypekey,body,updatedby,
+updatedon,insertedby,insertedon,effectivedate)
+VALUES ( fromuserid,'System',intake_service_req_id,1,'DA Routed to '|| result.caseworker_name ,
+        'Normal','DA Routed to ' || result.caseworker_name, fromuserid,
+        now(), fromuserid,now(),now())  RETURNING "usernotificationid" INTO  v_usernotificationid;
+
+INSERT INTO usernotificationmap(usernotificationid,tosecurityusersid,isread,
+effectivedate,activeflag,updatedby,
+updatedon,insertedby,insertedon)
+VALUES (v_usernotificationid,v_assignedsecurityid,false,
+        now(),1,fromuserid,
+        now(), fromuserid,now());
+
+INSERT INTO usernotification (securityusersid,usernotificationtypekey,
+objectid,activeflag,subject,priorityleveltypekey,body,updatedby,
+updatedon,insertedby,insertedon,effectivedate)
+VALUES (v_assignedsecurityid,'System',intake_service_req_id,1,
+        'New case is assigned by '|| v_createduser, 'Normal',
+        'New case is assigned by ' || v_createduser , v_intakesecurityid,
+        now(), v_intakesecurityid,now(),now())  RETURNING "usernotificationid" INTO  v_usernotificationid;
+
+INSERT INTO usernotificationmap(usernotificationid,tosecurityusersid,isread,
+effectivedate,activeflag,updatedby,
+updatedon,insertedby,insertedon)
+VALUES (v_usernotificationid,v_intakesecurityid,false,
+        now(),1,v_intakesecurityid,
+        now(), v_intakesecurityid,now());
+        
+RETURN result;
+END;
+
+$function$
+

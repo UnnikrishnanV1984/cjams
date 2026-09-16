@@ -1,0 +1,1 @@
+ALTER TABLE serviceplanaction ALTER COLUMN personresponsible TYPE character varying;

@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION get_audittrail_field_difference(v_new json, v_old json, audittype character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$  
+DECLARE
+ modifieddata_v jsonb;
+ lukupdata_v json; 
+ _rec record;
+ 
+BEGIN
+ 
+ modifieddata_v := '[]'; 
+
+ SELECT fieldjson INTO lukupdata_v 
+ FROM audittraillukup 
+ WHERE typekey = $3 
+   AND activeflag = 1;
+ 
+ IF $2 is not null then
+ 
+  FOR _rec in
+  
+   SELECT
+     o.key
+     , o.value AS old_value
+     , n.value AS new_value
+     , lukup.displayname AS display_name
+   FROM json_each($1) n
+   INNER JOIN json_each($2) o ON o.key = n.key
+   INNER JOIN (SELECT * FROM json_to_recordset(lukupdata_v) AS x("key" text, "displayname" text)) lukup on lukup.key::text = n.key
+  LOOP
+   IF (_rec.old_value::text IS DISTINCT FROM _rec.new_value::text) THEN
+     modifieddata_v = modifieddata_v || row_to_json(_rec)::jsonb;
+   END IF;
+    END LOOP;
+
+ ELSE 
+ 
+   FOR _rec IN
+    SELECT
+     n.key
+     , n.value AS new_value
+     , null as old_value
+     , lukup.displayname AS display_name
+    FROM json_each(to_json($1)) n
+    INNER JOIN (SELECT * FROM json_to_recordset(lukupdata_v) AS x("key" text, "displayname" text)) lukup on lukup.key::text = n.key
+   LOOP
+    modifieddata_v = modifieddata_v || row_to_json(_rec)::jsonb;
+   END LOOP;
+       
+ END IF;
+    
+  RETURN modifieddata_v;
+
+END;
+
+$function$
+

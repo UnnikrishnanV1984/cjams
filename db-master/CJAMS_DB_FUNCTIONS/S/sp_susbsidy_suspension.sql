@@ -1,0 +1,695 @@
+CREATE OR REPLACE FUNCTION cjams.sp_susbsidy_suspension(	au_personid uuid,
+															au_removalid uuid, 
+															ad_removal_dt date,
+															au_securityusersid uuid 
+														)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 09/08/2021 
+-- To create system generated subsidy suspension (Child entered out of home placement)
+
+-- Argument   : 1) IN au_personid - Client ID
+--				2) IN au_removalid - Removal ID
+--				3) IN ad_removal_dt - Removal Date 	
+--				4) IN au_securityusersid - Approver of the Removal (Supervisor)
+
+-- Revision(s)
+-- 09/17/2021 - Vineet Tirodkar - Modification to Supend State Adoption Subsidy only (B-113025)
+-- 08/25/2022 - Vineet Tirodkar - (B-136768 - CIDM-5301/ B-136769 - CIDM-5329)
+--				Modification to create system generated suspensions in Approved status (No manual approvals required)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+------------------------------------------------------------------------
+Declare vu_subsidy_id uuid;
+Declare vu_gap_caseid uuid;
+Declare vu_adop_caseid uuid;
+Declare vu_gapsuspensionid uuid;
+Declare vu_teamid uuid;
+Declare vu_gap_supervisorid character varying;
+Declare vu_adop_supervisorid character varying;
+Declare vu_adoptionagreementid uuid;
+Declare vu_adoptionsuspensionid uuid;
+Declare vu_rem_servicecaseid uuid;
+Declare vu_fin_supervisorid uuid;
+Declare vu_ive_supervisorid uuid;
+Declare vu_securityusersid uuid;
+Declare vu_caseid uuid;
+Declare v_usernotificationid uuid;
+
+Declare vl_client_id bigint;
+Declare vl_subsidy_id bigint;
+Declare vl_gap_casenumber bigint;
+Declare vl_adop_casenumber bigint;
+Declare vl_suspension_cnt integer;
+Declare vl_casenumber bigint;
+Declare vl_rem_servicecasenumber bigint;
+Declare vl_ive_cnt integer;
+
+Declare vs_gap_caseworkerid character varying;
+Declare vs_adop_caseworkerid character varying;
+Declare vs_rem_caseworkerid character varying;
+Declare vs_rem_supervisorid character varying;
+Declare vs_client_nm varchar(150);
+Declare vs_gap_statecountycode varchar(100);
+Declare vs_adop_statecountycode varchar(100);
+Declare vs_process_gap_suspension char(1);
+Declare vs_process_adop_suspension char(1);
+Declare vs_notification_type char(1);
+Declare vs_notification_txt varchar(500);
+Declare vs_usertype char(2);
+
+Declare vd_suspension_dt date;
+Declare vd_effectivedate date default current_date;
+Declare	vd_expirationdate date default null;
+
+cur_finance_sup record;
+cur_finance_sup_refcur REFCURSOR;
+
+cur_ive_sup record;
+cur_ive_sup_refcur REFCURSOR;
+		
+cur_ooh_suspension record;
+cur_ooh_suspension_refcur REFCURSOR;
+		
+BEGIN
+	-- Get Removal Service Case Worker (foster care worker)
+	select rm.servicecaseid,
+		pr.cjamspid,
+		pr.firstname || ' ' || pr.lastname as client_nm,
+		sc.servicecasenumber
+	into vu_rem_servicecaseid,
+		vl_client_id,
+		vs_client_nm,
+		vl_rem_servicecasenumber
+	from intakeservreqchildremoval rm,
+		person pr,
+		servicecase sc
+	where rm.personid = pr.personid 
+		and rm.servicecaseid = sc.servicecaseid
+		and rm.intakeservreqchildremovalid = au_removalid
+		and rm.activeflag = 1 
+		and pr.activeflag = 1
+		and sc.activeflag = 1;
+	
+	select ca.toworkeridno
+		into vs_rem_caseworkerid
+	from caseassignment ca  
+		join county c on c.countyid::character varying = ca.toldssid::character varying
+		join userprofile up on up.securityusersid = ca.toworkeridno
+			and up.activeflag  = 1
+	where ca.objectid = vu_rem_servicecaseid
+		and lower(ca.responsibilitytypekey) = 'family'
+		and ca.activeflag = 1
+		and ca.enddate is null 
+	order by ca.startdate desc, 
+		coalesce(ca.enddate, current_date) desc
+	limit 1 ;
+	
+	-- Initial Value
+	vs_process_gap_suspension := 'N';
+	vs_process_adop_suspension := 'N';
+	
+	-- GAP - Start 
+	RAISE NOTICE 'GAP - Start >>';
+	
+	select g.gapid, 
+		g.alternateid,
+		g.servicecaseid,
+		sc.servicecasenumber
+	into vu_subsidy_id,
+		vl_subsidy_id,
+		vu_gap_caseid,
+		vl_gap_casenumber
+	from guardianship g
+		 join gapagreement ga on ga.gapid = g.gapid 
+			and ga.activeflag = 1
+		 join permanencyplan pp on pp.permanencyplanid = g.permanencyplanid 
+			and pp.activeflag = 1
+		 join intakeservicerequestactor isra on isra.intakeservicerequestactorid = pp.intakeservicerequestactorid 
+			and isra.activeflag = 1
+		 join person p on p.personid = isra.personid 
+			and p.activeflag = 1
+		 join servicecase sc on sc.servicecaseid = g.servicecaseid 
+			and sc.activeflag = 1
+	where p.personid = au_personid
+		and ga.enddate::date > current_date 
+		and g.activeflag = 1
+		and ( select count(*)
+				from routing ro
+			  where ro.routingstatustypeid = 16 
+				and ro.eventcode = 'GAAR'
+				and ro.activeflag = 1 
+				and ro.objectid::text = ga.gapagreementid::character varying::text
+			) > 0 ;
+		
+	IF vl_subsidy_id is null THEN 
+		vl_subsidy_id := 0 ;
+	END IF;
+		
+	IF vl_subsidy_id > 0 THEN
+	
+		RAISE NOTICE 'GAP vl_subsidy_id >> %',vl_subsidy_id;
+	
+		-- Verify for the active "Child entered out of home placement(system generated)" suspension
+		select count(*) 
+			into vl_suspension_cnt
+		from gapsuspension  
+		where gapid = vu_subsidy_id
+			and activeflag = 1
+			and startdate is not null
+			and enddate is null
+			and suspensionreasontypekey = 'COHP' -- Child Entered out of Home Placement
+			;
+
+		IF vl_suspension_cnt = 0 THEN
+			-- Add GAP suspension
+			
+			-- Suspension begin date should be the 31st day from the child removal date.
+			select ad_removal_dt::date + 31 days
+				into vd_suspension_dt ;
+			
+			-- Reason for suspension should "Child entered out of home placement(system generated)"	
+			insert into cjams.gapsuspension
+				(	gapsuspensionid, gapid, suspensionreasontypekey, startdate, enddate, 
+					notes, isdraft, suspensiondesc, activeflag, effectivedate, 
+					insertedby, insertedon, updatedby, updatedon, old_id, 
+					otherreason, approvalstatustypekey
+				)
+			values
+				(	gen_random_uuid(), vu_subsidy_id, 'COHP', vd_suspension_dt, NULL, 
+					'System generated suspension', 0, 'Suspended due to active removal (system generated)', 1, vd_suspension_dt, 
+					au_securityusersid, now(), au_securityusersid, now(), NULL, 
+					NULL, '3047'
+				) RETURNING "gapsuspensionid" INTO  vu_gapsuspensionid
+				;
+			
+			RAISE NOTICE 'vu_gapsuspensionid >> %',vu_gapsuspensionid;
+			
+			insert into cjams.gapsuspensionrevision
+				(	gapsuspensionrevisionid, suspensionid, guardiansubsidyid, transactiondate, reasontypekey, 
+					startdate, enddate, suspensiondesc, approvalstatustypekey, approvaldate, 
+					isoriginal, insertedon, insertedby, updatedon, updatedby, activeflag
+				)
+			values
+				(	gen_random_uuid(), vu_gapsuspensionid, vu_subsidy_id, now(), 'COHP', 
+					vd_suspension_dt, NULL, 'Suspended due to active removal (system generated)', '3047', NULL, 
+					NULL, now(), au_securityusersid, now(), au_securityusersid, 0
+				);
+			
+			-- Suspension should be sent to Default Supervisor of the Guardianship Case Worker.
+			-- Updated with B-136769 - CIDM-5329 to generate Approved suspension
+			select ca.toworkeridno,
+				up.supervisorid,
+				c.statecountycode
+			into vs_gap_caseworkerid, 
+				vu_gap_supervisorid,
+				vs_gap_statecountycode
+			from caseassignment ca  
+				join county c on c.countyid::character varying = ca.toldssid::character varying
+				join userprofile up on up.securityusersid = ca.toworkeridno
+					and up.activeflag  = 1
+			where ca.objectid = vu_gap_caseid
+				and lower(ca.responsibilitytypekey) = 'family'
+				and ca.activeflag = 1
+				and ca.enddate is null 
+			order by ca.startdate desc, 
+				coalesce(ca.enddate, current_date) desc
+			limit 1 ;
+
+			
+			select teamid 
+				into vu_teamid
+			from cjams.v_userprofile 
+			where securityusersid = vu_gap_supervisorid;
+			
+			insert into cjams.routing
+				(	routingid, eventcode, fromsecurityusersid, 
+					tosecurityusersid, teamid, 
+					fromroleid, toroleid, objectid, routingstatustypeid, activeflag, 
+					insertedby, insertedon, updatedby, updatedon, isreviewrequest, 
+					remarks, old_id, routeddescription, servicerequestnumber, objecttypekey
+				)
+			values
+				(	gen_random_uuid(), 'GASR', vs_gap_caseworkerid::uuid, 
+					vu_gap_supervisorid, vu_teamid, 
+					'CWCW', 'CWSP', vu_gapsuspensionid, 15, 0, 
+					au_securityusersid, now(), au_securityusersid, now(), true, 
+					'System Generated Guardianship Suspension Submitted for review.', NULL, NULL, vl_gap_casenumber, 'Servicecase' 
+				);
+			
+			insert into cjams.routing
+				(	routingid, eventcode, fromsecurityusersid, 
+					tosecurityusersid, teamid, 
+					fromroleid, toroleid, objectid, routingstatustypeid, activeflag, 
+					insertedby, insertedon, updatedby, updatedon, isreviewrequest, 
+					remarks, old_id, routeddescription, servicerequestnumber, objecttypekey
+				)
+			values
+				(	gen_random_uuid(), 'GASR', vu_gap_supervisorid, 
+					vs_gap_caseworkerid::uuid, vu_teamid, 
+					'CWCW', 'CWSP', vu_gapsuspensionid, 16, 1, 
+					au_securityusersid, now(), au_securityusersid, now(), true, 
+					'System Generated GAP Suspension Approved.', NULL, NULL, vl_gap_casenumber, 'Servicecase' 
+				);
+			
+			-- Create User Notifications 
+			vs_process_gap_suspension := 'Y'; 
+		END IF;
+	END IF;
+	RAISE NOTICE 'GAP - End  >>';
+	-- GAP - End
+
+	-- Adoption - Start 
+	RAISE NOTICE 'Adoption - Start >>';
+	
+	SELECT a.adoptioncaseid, 
+		a.alternateid,
+		a.adoptioncasenumber::bigint
+	into vu_adop_caseid,
+		vl_subsidy_id,
+		vl_adop_casenumber
+	from adoptioncase a
+		 join adoptioncaseactor aca on aca.adoptioncaseid = a.adoptioncaseid 
+			and aca.actortypekey::text = 'CHILD'::text 
+			and aca.activeflag = 1
+		 join person p on p.personid = aca.personid 
+			and p.activeflag = 1
+	where aca.personid = au_personid
+		and a.enddate::date > current_date  
+		and a.activeflag = 1
+		and (	select count(*) 
+				from adoptioncaseagreement ag,
+					adoptioncaseagreementrate agr 
+				where agr.adoptionagreementid = ag.adoptionagreementid 
+					and ag.adoptioncaseid = a.adoptioncaseid
+					and ag.activeflag = 1
+					and agr.activeflag = 1
+					and lower(agr.status::text) = 'approved'::text 	
+			) > 0 ;
+
+	IF vl_subsidy_id is null THEN 
+		vl_subsidy_id := 0 ;
+	END IF;
+		
+	IF vl_subsidy_id > 0 THEN
+	
+		RAISE NOTICE 'Adoption vl_subsidy_id >> %',vl_subsidy_id;
+		
+		-- Verify Adoption Eligibility Status to determine State Adoption Subsidy only
+		vl_ive_cnt := 0;
+		
+		select count(*) 
+			into vl_ive_cnt 
+		from tb_client_eligibility 
+		where client_id = vl_client_id
+			and delete_sw = 'N' 
+			and btrim(eligibility_type_cd) = '2934'
+			and btrim(coalesce(eligibility_status_cd,'')) = '2913' -- Eligible Reimbursable 
+		;	
+
+		IF vl_ive_cnt > 0 THEN
+			-- Do Nothing, Client is Eligible Reimbursable  
+		ELSE
+			-- Verify for the active "Child entered out of home placement(system generated)" suspension
+			select count(*) 
+				into vl_suspension_cnt
+			from adoptioncasesuspension  
+			where adoptioncaseid = vu_adop_caseid
+				and activeflag = 1
+				and suspensionreasontypekey = 'COHP' -- Child Entered out of Home Placement
+				and suspensionbegindate is not null
+				and suspensionenddate is null ;
+
+
+			IF vl_suspension_cnt = 0 THEN
+				-- Add Adoption suspension
+				
+				select adoptionagreementid 
+					into vu_adoptionagreementid
+				from adoptioncaseagreement 
+				where adoptioncaseid = vu_adop_caseid
+					and activeflag  = 1 ;
+
+				-- Suspension begin date should be the 31st day from the child removal date.
+				select ad_removal_dt::date + 31 days
+					into vd_suspension_dt ;
+				
+				insert into cjams.adoptioncasesuspension
+					(	adoptionsuspensionid, adoptioncaseid, transactiondate, suspensionreasontypekey, suspensionbegindate, 
+						suspensionenddate, suspensionremarks, approvalstatustypekey, approvaldate, isoriginal, 
+						insertedon, insertedby, updatedon, updatedby, activeflag, 
+						effectivedate, old_id, suspensionreasonremarks, alternateid, adoptionagreementid
+					)
+				VALUES
+					(	gen_random_uuid(), vu_adop_caseid, now(), 'COHP', vd_suspension_dt, 
+						NULL, 'Suspended due to active removal (system generated)', '3047', NULL, NULL, 
+						now(), au_securityusersid, now(), au_securityusersid, 1, 
+						vd_suspension_dt, NULL, NULL, NULL, vu_adoptionagreementid
+					)  RETURNING "adoptionsuspensionid" INTO vu_adoptionsuspensionid
+					;
+			
+				insert into cjams.adoptioncasesuspensionrevision
+					(	adoptionsuspensionrevisionid, adoptionsuspensionid, transactiondate, 
+						suspensionreasontypekey, suspensionbegindate, suspensionenddate, suspensionremarks, 
+						approvalstatustypekey, approvaldate, isoriginal, insertedon, 
+						insertedby, updatedon, updatedby, activeflag, effectivedate, 
+						old_id, suspensionreasonremarks, alternateid, adoptionagreementid, adoptioncaseid 
+					)
+				values
+					(	gen_random_uuid(), vu_adoptionsuspensionid, now(), 
+						'COHP', vd_suspension_dt, NULL, 'Suspended due to active removal (system generated)', 
+						'3047', NULL, NULL, now(), 
+						au_securityusersid, now(), au_securityusersid, 1, vd_suspension_dt, 
+						NULL, NULL, NULL, vu_adoptionagreementid, vu_adop_caseid
+					);
+
+				-- Suspension should be sent to Default Supervisor of the Guardianship Case Worker.
+				-- Updated with  B-136768 - CIDM-5301 to generate Approved suspension
+				select ca.toworkeridno,
+					up.supervisorid,
+					c.statecountycode	
+				into vs_adop_caseworkerid, 
+					vu_adop_supervisorid,
+					vs_adop_statecountycode
+				from caseassignment ca  
+					join county c on c.countyid::character varying = ca.toldssid::character varying
+					join userprofile up on up.securityusersid = ca.toworkeridno
+						and up.activeflag  = 1
+				where ca.objectid = vu_adop_caseid
+					and lower(ca.responsibilitytypekey) = 'family'
+					and ca.activeflag = 1
+					and ca.enddate is null 
+				order by ca.startdate desc, 
+					coalesce(ca.enddate, current_date) desc
+				limit 1;
+
+				select teamid 
+					into vu_teamid
+				from cjams.v_userprofile 
+				where securityusersid = vu_adop_supervisorid;
+				
+				insert into cjams.routing
+					(	routingid, eventcode, fromsecurityusersid, 
+						tosecurityusersid, teamid, 
+						fromroleid, toroleid, objectid, routingstatustypeid, activeflag, 
+						insertedby, insertedon, updatedby, updatedon, isreviewrequest, 
+						remarks, old_id, routeddescription, 
+						servicerequestnumber, objecttypekey
+					)
+				values
+					(	gen_random_uuid(), 'ADSR', vs_adop_caseworkerid::uuid, 
+						vu_adop_supervisorid, vu_teamid, 
+						'CWCW', 'CWSP', vu_adoptionsuspensionid, 15, 0, 
+						au_securityusersid, now(), au_securityusersid, now(), true, 
+						'System Generated Adoption Case Suspension Submitted for review.', NULL, NULL, 
+						vl_adop_casenumber, 'Adoptioncase'
+					);
+				
+				insert into cjams.routing
+					(	routingid, eventcode, fromsecurityusersid, 
+						tosecurityusersid, teamid, 
+						fromroleid, toroleid, objectid, routingstatustypeid, activeflag, 
+						insertedby, insertedon, updatedby, updatedon, isreviewrequest, 
+						remarks, old_id, routeddescription, 
+						servicerequestnumber, objecttypekey
+					)
+				values
+					(	gen_random_uuid(), 'ADSR', vu_adop_supervisorid, vu_teamid, 
+						vs_adop_caseworkerid::uuid, 'CWCW', 'CWSP', vu_adoptionsuspensionid, 16, 1, 
+						au_securityusersid, now(), au_securityusersid, now(), true, 
+						'System Generated Adoption Suspension Approved.', NULL, NULL, 
+						vl_adop_casenumber, 'Adoptioncase'
+					);
+				
+				-- Create User Notifications 
+				vs_process_adop_suspension := 'Y'; 
+			END IF;	
+		END IF;	
+	END IF;
+	RAISE NOTICE 'Adoption - End >>';
+	-- Adoption - End
+	
+	-- Generate User Notifications - Start
+	RAISE NOTICE 'Generate User Notifications - Start >>';
+	DROP TABLE IF EXISTS ttb_ooh_suspension CASCADE;
+	CREATE TEMPORARY TABLE ttb_ooh_suspension
+		(	notification_type varchar(1),
+			securityusersid uuid,
+			case_number bigint,
+			servicecaseid uuid,
+			usertype varchar(2)
+		) ;
+
+	IF vs_process_gap_suspension = 'Y' THEN
+		-- GAP Case Worker	
+		IF vs_gap_caseworkerid is not null THEN
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'G', vs_gap_caseworkerid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+		END IF;	
+		
+		-- GAP supervsisor
+		IF vu_gap_supervisorid is not null THEN
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'G', vu_gap_supervisorid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+		END IF;	
+		
+		-- Case Worker (foster care worker)
+		IF vs_rem_caseworkerid is not null THEN
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'G', vs_rem_caseworkerid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+				
+			select supervisorid
+				into vs_rem_supervisorid
+			from userprofile  
+			where securityusersid = vs_rem_caseworkerid
+				and activeflag = 1	;
+				
+			IF vs_rem_supervisorid is not null THEN
+				Insert into ttb_ooh_suspension
+					( notification_type, securityusersid, case_number, servicecaseid, usertype )
+				values
+					( 'G', vs_rem_supervisorid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+			END IF; 	
+		END IF;	
+
+		-- Finance Supervisors
+		OPEN cur_finance_sup_refcur FOR
+			select securityusersid
+				from cjams.v_userprofile 
+			where userteamtype = 'FNS'
+				and roletypekey = 'FNSFS'
+				and statecountycode = vs_gap_statecountycode
+				and teamkey = 'CW' ;
+		loop
+			fetch cur_finance_sup_refcur into cur_finance_sup;
+			exit when not found;
+
+			vu_fin_supervisorid := cur_finance_sup.securityusersid;
+			
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'G', vu_fin_supervisorid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'FN' );
+
+		end loop;
+		close cur_finance_sup_refcur;
+
+		-- IV-E Supervisors	
+		OPEN cur_ive_sup_refcur FOR
+			select distinct userid
+			from cjams.getroutingusers
+				(	null::character varying, 
+					'IVEADOP'::character varying, 
+					NULL::uuid
+				);
+		loop
+			fetch cur_ive_sup_refcur into cur_ive_sup;
+			exit when not found;
+
+			vu_ive_supervisorid := cur_ive_sup.userid;
+			
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'G', vu_ive_supervisorid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'IV' );
+		end loop;
+		close cur_ive_sup_refcur;		
+		
+	END IF;
+
+	IF vs_process_adop_suspension = 'Y' THEN
+		-- Adoption Case Worker	
+		IF vs_adop_caseworkerid is not null THEN
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'A', vs_adop_caseworkerid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+		END IF;
+		
+		-- Adoption Case Supervisor	
+		IF vu_adop_supervisorid is not null THEN
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'A', vu_adop_supervisorid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+		END IF;
+		
+		IF vs_rem_caseworkerid is not null THEN
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'A', vs_rem_caseworkerid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+				
+			select supervisorid
+				into vs_rem_supervisorid
+			from userprofile  
+			where securityusersid = vs_rem_caseworkerid
+				and activeflag = 1	;
+				
+			IF vs_rem_supervisorid is not null THEN
+				Insert into ttb_ooh_suspension
+					( notification_type, securityusersid, case_number, servicecaseid, usertype )
+				values
+					( 'A', vs_rem_supervisorid::uuid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'CW' );
+			END IF; 
+			
+		END IF;		
+		
+		-- Finance Supervisors
+		OPEN cur_finance_sup_refcur FOR
+			select securityusersid
+				from cjams.v_userprofile 
+			where userteamtype = 'FNS'
+				and roletypekey = 'FNSFS'
+				and statecountycode = vs_adop_statecountycode
+				and teamkey = 'CW' ;
+		loop
+			fetch cur_finance_sup_refcur into cur_finance_sup;
+			exit when not found;
+
+			vu_fin_supervisorid := cur_finance_sup.securityusersid;
+			
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'A', vu_fin_supervisorid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'FN' );
+
+		end loop;
+		close cur_finance_sup_refcur;
+		
+		-- IV-E Supervisors	
+		OPEN cur_ive_sup_refcur FOR
+			select distinct userid
+			from cjams.getroutingusers
+				(	null::character varying, 
+					'IVEADOP'::character varying, 
+					NULL::uuid
+				);
+		loop
+			fetch cur_ive_sup_refcur into cur_ive_sup;
+			exit when not found;
+
+			vu_ive_supervisorid := cur_ive_sup.userid;
+			
+			Insert into ttb_ooh_suspension
+				( notification_type, securityusersid, case_number, servicecaseid, usertype )
+			values
+				( 'A', vu_ive_supervisorid, vl_rem_servicecasenumber, vu_rem_servicecaseid, 'IV' );
+		end loop;
+		close cur_ive_sup_refcur;
+		
+	END IF;
+	
+	-- Create Notifications
+	OPEN cur_ooh_suspension_refcur FOR
+		select distinct notification_type,
+			securityusersid,
+			case_number,
+			servicecaseid,
+			usertype
+		from ttb_ooh_suspension 
+		order by notification_type;
+	loop
+		fetch cur_ooh_suspension_refcur into cur_ooh_suspension;
+		exit when not found;
+
+		vs_notification_type := cur_ooh_suspension.notification_type;
+		vu_securityusersid := cur_ooh_suspension.securityusersid;
+		vl_casenumber := cur_ooh_suspension.case_number;
+		vu_caseid := cur_ooh_suspension.servicecaseid;
+		vs_usertype := cur_ooh_suspension.usertype;
+		
+		-- GAP
+		IF vs_notification_type = 'G' THEN
+			IF vs_usertype = 'CW' THEN -- Caseworker & Sup	
+				vs_notification_txt :=
+				'Child ' || vs_client_nm || ' / CJAMS PID ' || (vl_client_id)::character varying || 
+				' has re-entered foster care. Please send a Notification of intent to suspend the Guardianship Subsidy to the guardian(s) Service Case (' || (vl_gap_casenumber)::character varying || ').';
+			ELSE -- Finance & Iv-E
+				vs_notification_txt :=
+				'Child ' || vs_client_nm || ' / CJAMS PID ' || (vl_client_id)::character varying || 
+				' has re-entered care and the Guardianship Subsidy has been suspended on ' || To_char(vd_suspension_dt::date, 'MM/DD/YYYY') || '.';
+			END IF;	
+		-- Adoption	
+		ELSE 
+			IF vs_usertype = 'CW' THEN -- Caseworker & Sup	
+				vs_notification_txt :=
+				'Child ' || vs_client_nm || ' / CJAMS PID ' ||(vl_client_id)::character varying || ' has re-entered foster care. Please send a Notification of intent to suspend the Adoption Subsidy to the adoptive parent(s) Adoption Case (' || (vl_adop_casenumber)::character varying || ').';
+			ELSE -- Finance & Iv-E
+				vs_notification_txt :=
+				'Child ' || vs_client_nm || ' / CJAMS PID ' || (vl_client_id)::character varying || 
+				' has re-entered care and the Adoption Subsidy has been suspended on ' || To_char(vd_suspension_dt::date, 'MM/DD/YYYY') || '.';
+			END IF;
+		END IF;	
+		
+		insert into cjams.usernotification
+			(	usernotificationid, securityusersid, usernotificationtypekey, objectid, activeflag, 
+				url, subject, priorityleveltypekey, "body", hasattachments, 
+				updatedby, updatedon, insertedby, insertedon, effectivedate, 
+				expirationdate, "timestamp", teammemberid, isread, attachmentlocation, 
+				isexternalentity, ismailsent, mailsentdate, old_id, objecttype, 
+				objectcasenumber, entityid, isdeleted, teamtypekey
+			)
+		values
+			(	gen_random_uuid(), vu_securityusersid, 'System', vu_caseid, 1, 
+				NULL, vs_notification_txt, 'High', vs_notification_txt, NULL, 
+				au_securityusersid, now(), au_securityusersid, now(),  vd_effectivedate, 
+				vd_expirationdate, NULL, NULL, NULL, NULL, 
+				false, false, NULL, 'RMSUP00', 'servicecase', 
+				vl_casenumber, au_removalid, NULL, 'CW'
+			)
+		RETURNING "usernotificationid" INTO  v_usernotificationid; 
+
+		insert into cjams.usernotificationmap
+			(	usernotificationmapid, usernotificationid, tosecurityusersid, parentusernotificationmapid, isreplied, 
+				isforwarded, iscarboncopy, isread, expirationdate, effectivedate, 
+				activeflag, teammemberid, insertedby, updatedby, insertedon, 
+				updatedon, fromsecurityusersid, old_id, isdeleted
+			)
+		values
+			( 	gen_random_uuid(), v_usernotificationid, vu_securityusersid, NULL, NULL, 
+				NULL, NULL, false, vd_expirationdate, vd_effectivedate, 
+				1, NULL, au_securityusersid, au_securityusersid, now(), 
+				now(), NULL, NULL, NULL
+			);
+					
+	end loop;
+	close cur_ooh_suspension_refcur;
+	
+	DROP TABLE IF EXISTS ttb_ooh_suspension CASCADE;
+	RAISE NOTICE 'Generate User Notifications - End >>';
+	
+	Return 1;
+END;
+
+$function$
+;

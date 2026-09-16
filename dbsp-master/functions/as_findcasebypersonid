@@ -1,0 +1,30 @@
+CREATE OR REPLACE FUNCTION as_findcasebypersonid(v_personid uuid)
+ RETURNS TABLE(personid uuid, intakeserviceid uuid, servicerequestnumber character varying, workers json, status text, servicetype character varying, subservicetype character varying, programtypes json, connectedto character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN 
+RETURN QUERY 
+ SELECT ac.personid, isr.intakeserviceid, isr.servicerequestnumber, (
+  SELECT json_agg(up.fullname || ' (' || ca.responsibilitytypekey ||')') 
+  FROM caseassignment ca INNER JOIN userprofile up ON ca.toworkeridno = up.securityusersid AND up.activeflag = 1
+  WHERE objectid = isr.intakeserviceid AND ca.activeflag = 1 AND enddate IS NULL) AS workers, (
+  SELECT srtcdc.description FROM intakeservicerequestdispositioncode isrdc 
+  INNER JOIN servicerequesttypeconfigdispositioncode srtcdc ON srtcdc.servicerequesttypeconfigiddispostionid = isrdc.servicerequesttypeconfigiddispostionid 
+  WHERE isrdc.intakeserviceid = isr.intakeserviceid AND isrdc.activeflag = 1 ORDER BY isrdc.insertedon DESC LIMIT 1) AS status, 'Request for Services'::character varying AS servicetype, 
+  srst.description AS subservicetype, (
+  SELECT json_agg(isst.typedescription) FROM asservicesoncase asoc
+  INNER JOIN intakeservsubtype isst ON asoc.caseservicesubtypekey = isst.intakeservsubtypekey AND asoc.approvalstatus IN ('approved') AND enddate IS NULL 
+  WHERE asoc.ascaseid = isr.intakeserviceid AND asoc.personid = v_personid AND asoc.activeflag = 1) AS programtypes, (
+  SELECT isr1.servicerequestnumber FROM intakeservicerequestcrossreference isrcr 
+  INNER JOIN intakeservicerequest isr1 ON isr1.intakeserviceid = isrcr.withintakeservicerequestid 
+  WHERE isr1.isclosecpshistory !=1 and isrcr.fromintakeservicerequestid = isr.intakeserviceid AND isrcr.activeflag = 1 ORDER BY isrcr.insertedon DESC LIMIT 1) AS connectedto
+ FROM intakeservicerequest isr 
+ INNER JOIN servicerequestsubtype srst ON srst.servicerequestsubtypeid = isr.intakeservicerequestclassid 
+ INNER JOIN actor ac ON ac.intakeserviceid = isr.intakeserviceid AND ac.activeflag = 1 AND ac.actortype IN ('RA','AV','RC')
+ WHERE ac.personid = v_personid AND isr.activeflag = 1 AND isr.intakeservreqtypeid = 'd207bdd4-f281-4ec8-949c-8fd9657227f9'
+  AND isr.teamtypekey = 'AS';                 
+END;
+
+$function$
+

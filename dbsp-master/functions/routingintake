@@ -1,0 +1,159 @@
+CREATE OR REPLACE FUNCTION routingintake(objectid character varying, securityuserid character varying, appeventcode character varying, status integer, commenttext text, assignsecurityuserid character varying DEFAULT ''::character varying, bmanualrouting boolean DEFAULT false, bclosecase boolean DEFAULT false, bfromintake boolean DEFAULT false, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying, v_intakeserviceid character varying DEFAULT ''::character varying, v_intakeserreqstatustypeid character varying DEFAULT ''::character varying, isservicecase integer DEFAULT 0, userrole character varying DEFAULT ''::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+ 
+DECLARE v_status text;
+ v_routing_rec RECORD;
+ v_roletypekey character varying;
+ v_securityuserid character varying;
+ v_routingstatus  character varying;
+ v_teamid uuid;
+ v_userrole character varying;
+ v_tosupervisorid character varying;
+ l_supervisorcount bigint;
+
+BEGIN
+v_securityuserid:= securityuserid;
+
+RAISE NOTICE 'objectid;:%', objectid ;
+RAISE NOTICE 'securityuserid;:%', securityuserid ;
+RAISE NOTICE 'appeventcode;:%', appeventcode ;
+RAISE NOTICE 'v_intakeserreqstatustypeid;:%', v_intakeserreqstatustypeid ;
+
+ SELECT  routingstatustypekey INTO v_routingstatus FROM  routingstatustype 
+    WHERE sequencenumber  =status  LIMIT 1;
+    IF (appeventcode in ('INTR', 'ASST')) THEN
+      SELECT userrouting  INTO v_status FROM userrouting(
+                objectid,
+                securityuserid,
+                appeventcode,
+                status,
+                commenttext,
+                assignsecurityuserid,
+                COALESCE(bmanualrouting,false),
+                COALESCE(bclosecase,false),
+                COALESCE(bfromintake,false),
+                v_notifymsg ::character varying,
+                v_routeddescription::character varying,
+                v_intakeserviceid ::character varying,
+                v_intakeserreqstatustypeid ::character varying,
+                 COALESCE(isservicecase,0),
+                userrole :: character varying
+         );
+     ELSE
+
+        IF assignsecurityuserid <> '' THEN
+   v_tosupervisorid = assignsecurityuserid;
+            raise notice 'v_tosupervisorid%',v_tosupervisorid;
+  ELSE
+   SELECT count(distinct supervisorid) into l_supervisorcount FROM userprofile WHERE securityusersid = v_securityuserid;
+   RAISE NOTICE 'l_supervisorcount from routing intake: %', l_supervisorcount;
+   IF l_supervisorcount > 1 THEN
+    SELECT vup.supervisorid INTO v_tosupervisorid
+    FROM userprofile vup
+    WHERE vup.securityusersid = v_securityuserid and countyid in (
+     select distinct fromldssid from caseassignment ca where toworkeridno = v_securityuserid
+     and ca.objectid::character varying in ( v_intakeserviceid ) 
+     order by enddate NULLS FIRST ) limit 1;
+    RAISE NOTICE 'v_tosupervisorid inside more than one supervisor: %', v_tosupervisorid;
+   ELSE 
+    SELECT vup.supervisorid INTO v_tosupervisorid
+    FROM userprofile vup WHERE vup.securityusersid = v_securityuserid limit 1;
+   END IF;
+
+            IF v_tosupervisorid is null THEN
+                SELECT vup.supervisorid INTO v_tosupervisorid
+    FROM userprofile vup WHERE vup.securityusersid = v_securityuserid limit 1;
+            END IF;
+  END IF;
+
+   SELECT tm.teamid INTO v_teamid
+   FROM    teammemberassignment tma 
+   INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+   WHERE  tma.SecurityUsersId = v_securityuserid AND   tma.activeflag =1;
+
+        select role.roletypekey INTO v_roletypekey  from rolemapping rm
+  join role on role.id = rm.roleid and role.activeflag = 1 
+  join muser on muser.id = rm.principalid and muser.activeflag = 1 and rm.activeflag = 1 and rm.teamtypekey = 'CW'
+  where muser.securityusersid = v_securityuserid;
+
+        IF l_supervisorcount > 1 THEN
+            SELECT u.teamid, u.roletypekey
+            INTO v_teamid, v_roletypekey
+            FROM v_userprofile u WHERE u.securityusersid = v_securityuserid and u.supervisorid = v_tosupervisorid;
+        ELSE
+            SELECT u.teamid, u.roletypekey
+            INTO v_teamid, v_roletypekey
+            FROM v_userprofile u WHERE u.securityusersid = v_securityuserid LIMIT 1;
+        END iF;
+
+        select role.roletypekey INTO v_roletypekey  from rolemapping rm
+  join role on role.id = rm.roleid and role.activeflag = 1 
+  join muser on muser.id = rm.principalid and muser.activeflag = 1 and rm.activeflag = 1 and rm.teamtypekey = 'CW'
+  where muser.securityusersid = v_securityuserid;   
+
+        RAISE NOTICE 'v_teamid: % ', v_teamid ;
+        RAISE NOTICE 'v_roletypekey: % ', v_roletypekey ;
+        RAISE NOTICE 'v_tosupervisorid: % ', v_tosupervisorid ;
+
+        if(userrole != '') then
+            v_roletypekey = userrole;
+        end if;
+
+        RAISE NOTICE 'v_roletypekey;:%', v_roletypekey ;
+  FOR v_routing_rec IN SELECT routingstatustypekey,sourcerolekey,targetrolekey,
+        ftmrt.teamtypekey frmteamtypekey, ttmrt.teamtypekey  toteamtypekey,
+                             CASE ftmrt.teamtypekey WHEN ttmrt.teamtypekey THEN 0 ELSE 1 END isotheragency
+                             FROM routingconfig  rc
+                       INNER JOIN teammemberroletype ftmrt   on  ftmrt.roletypekey  = rc.sourcerolekey AND ftmrt.activeflag =1
+                       INNER JOIN teammemberroletype ttmrt   on  ttmrt.roletypekey  = rc.targetrolekey AND ttmrt.activeflag =1
+         WHERE  eventcode = appeventcode AND  sourcerolekey =v_roletypekey   
+                             AND rc.activeflag =1
+
+  LOOP
+     IF (COALESCE(v_routing_rec.routingstatustypekey,'')='' AND COALESCE(v_routing_rec.isotheragency,0)  =0)  THEN
+         SELECT userrouting  INTO v_status FROM userrouting(
+                objectid,
+                securityuserid,
+                appeventcode,
+                status,
+                commenttext,
+                assignsecurityuserid,
+                COALESCE(bmanualrouting,false),
+                COALESCE(bclosecase,false),
+                COALESCE(bfromintake,false),
+                v_notifymsg ::character varying,
+                v_routeddescription::character varying,
+                v_intakeserviceid ::character varying,
+                v_intakeserreqstatustypeid ::character varying,
+                COALESCE(isservicecase,0),
+                userrole :: character varying
+          );
+  ELSE
+         IF ( LOWER(v_routingstatus)=LOWER(v_routing_rec.routingstatustypekey) AND COALESCE(v_routing_rec.isotheragency,0)  =1 ) THEN
+             SELECT otheragencyrouting  INTO v_status FROM otheragencyrouting(
+                    objectid,
+                    securityuserid,
+                    appeventcode,
+                    status,
+                    v_teamid,
+                    v_routing_rec.sourcerolekey,
+                    v_routing_rec.targetrolekey,
+                    commenttext, 
+                    v_notifymsg ::character varying,
+                    v_routeddescription::character varying,
+                    v_intakeserviceid ::character varying,
+                    v_intakeserreqstatustypeid ::character varying,
+                    COALESCE(isservicecase,0));
+        END IF;
+ 
+ END IF;
+  END LOOP;
+    END IF;
+RETURN v_status;
+
+END;
+
+$function$
+

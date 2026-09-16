@@ -1,0 +1,98 @@
+CREATE OR REPLACE FUNCTION as_getservices(v_intakeserviceid uuid, sortcolumn character varying, sortorder character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+ v_result json;
+ v_intakenumber character varying;
+ 
+BEGIN 
+   v_intakenumber = '';
+ 
+    SELECT intakenumber into v_intakenumber from intakeservicerequest where intakeserviceid =  v_intakeserviceid and teamtypekey = 'AS' and activeflag=1; 
+ 
+ SELECT json_agg(s1) into v_result FROM    
+  (SELECT * FROM (SELECT 
+   sc.asservicesoncaseid,
+   sc.activeflag,
+   sc.approvalstatus,
+   sc.ascaseid,
+   sc.caseserviceid,
+   sc.caseservicetypeid,
+   sc.caseservicesubtypekey,
+   itsst.typedescription,
+   sc.startdate,
+   sc.enddate,
+   sc.insertedon,
+   (CASE WHEN sc.ascaseid = v_intakeserviceid THEN TRUE 
+   WHEN ir.intakenumber = v_intakenumber THEN TRUE ELSE FALSE END) AS isCaseRelated,
+   sc.personid,
+   pr.firstname || ' ' || pr.lastname AS personname, 
+   sc.personprogramid,
+   sc.reason,
+   sc.routingid,  
+   (CASE WHEN (its.intakeservtypekey IN ('24H','5D') and caseservicesubtypekey != '07M1' ) THEN null ELSE COALESCE ( sc.recon_due_dt , (date(sc.startdate) + scr.duedateoffset -1) ) END) AS recon_due_dt, 
+   sc.recon_done_dt,
+   ir.servicerequestnumber,
+   ir.intakenumber,
+   scr.duedateoffset,  
+   CASE WHEN sc.updatedby IS NULL THEN (select displayname FROM userprofile WHERE securityusersid=ir.updatedby) ELSE u.displayname END AS approvedBy,
+   (SELECT json_agg(a1) FROM
+   (SELECT a.logid, a.logtypekey, a.intakeserviceid, a.servicerequestnumber, a.referenceid, a.description, 
+     a.isnew, a.isedit, a.isdelete, a.insertedby, a.updatedby, a.insertedon, a.updatedon, a.metadata, 
+     a.ipaddress, a.modifieddata, a.objectid, a.objecttype
+    FROM auditlog a WHERE a.logtypekey = 'ASSRVC' and a.referenceid = sc.asservicesoncaseid order by a.insertedon desc) a1) AS history,
+   (CASE WHEN its.intakeservtypekey IN ('24H','5D') THEN 'APS' ELSE 'Request for services' END) AS servicename,
+   (SELECT description FROM intakeserv ins WHERE ins.intakeservid = sc.caseservicetypeid ORDER BY ins.insertedon DESC LIMIT 1) AS subservice
+  FROM asservicesoncase sc 
+  INNER JOIN intakeservicerequest ir ON sc.ascaseid = ir.intakeserviceid AND ir.activeflag=1 AND ir.teamtypekey = 'AS'
+  INNER JOIN person pr ON sc.personid = pr.personid AND pr.activeflag=1 AND pr.personid IN (
+   select DISTINCT a.personid FROM actor a WHERE a.activeflag=1 AND a.objecttype LIKE 'as%' AND (a.intakenumber = v_intakenumber OR 
+   --a.intakeserviceid = v_intakeserviceid OR 
+   a.intakeserviceid = v_intakeserviceid)
+   UNION select DISTINCT isra.personid FROM intakeservicerequestactor isra WHERE isra.activeflag=1 
+   AND isra.objecttype LIKE 'as%' AND isra.intakeserviceid = v_intakeserviceid)
+  LEFT JOIN intakeserv its ON sc.caseservicetypeid = its.intakeservid 
+  LEFT JOIN intakeservsubtype itsst ON sc.caseservicesubtypekey = itsst.intakeservsubtypekey
+  LEFT JOIN servicerequesttypeconfig scr ON scr.intakeservreqtypeid = ir.intakeservreqtypeid AND ir.intakeservicerequestclassid = scr.servicerequestsubtypeid AND scr.activeflag =1 AND scr.workload =1 
+  LEFT JOIN routing r ON r.routingid = sc.routingid 
+  LEFT JOIN userprofile u ON u.securityusersid = r.fromsecurityusersid AND u.displayname NOT ilike 'Migration User' AND sc.approvalstatus NOT ILIKE 'review'
+  WHERE sc.activeflag=1 )tempt1
+  ORDER BY (CASE sortorder 
+         WHEN 'asc' 
+         THEN  
+           case sortcolumn 
+            when 'casenumber' then cast(tempt1.servicerequestnumber as character varying )
+            when 'personname' then cast(tempt1.personname as character varying )
+            when 'service' then cast (tempt1.servicename as character varying )
+            when 'subservice' then cast (tempt1.subservice as character varying )
+            when 'program' then cast (tempt1.typedescription as character varying )
+            when 'startdate' then cast (tempt1.startdate as character varying )
+            when 'enddate' then cast (tempt1.enddate as character varying )
+            when 'reconduedt' then cast (tempt1.recon_due_dt as character varying )
+            when 'recondonedt' then cast (tempt1.recon_done_dt as character varying )
+            when 'status' then cast (tempt1.approvalstatus as character varying )   
+        END
+              END) ASC,
+       (case sortorder 
+         when 'desc' 
+         then  
+           case sortcolumn 
+            when 'casenumber' then cast(tempt1.servicerequestnumber as character varying )
+            when 'personname' then cast(tempt1.personname as character varying )
+            when 'service' then cast (tempt1.servicename as character varying )
+            when 'subservice' then cast (tempt1.subservice as character varying )
+            when 'program' then cast (tempt1.typedescription as character varying )
+            when 'startdate' then cast (tempt1.startdate as character varying )
+            when 'enddate' then cast (tempt1.enddate as character varying )
+            when 'reconduedt' then cast (tempt1.recon_due_dt as character varying )
+            when 'recondonedt' then cast (tempt1.recon_done_dt as character varying )
+            when 'status' then cast (tempt1.approvalstatus as character varying )
+         END
+              END) DESC
+  ) s1;
+   
+ RETURN v_result;
+END;
+$function$
+

@@ -1,0 +1,1 @@
+ALTER TABLE cjams.tb_receivable_collection_status ALTER COLUMN create_ts SET DEFAULT now();

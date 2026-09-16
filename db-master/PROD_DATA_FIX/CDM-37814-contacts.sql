@@ -1,0 +1,12 @@
+/*
+   Issue Description: CDM-37814
+   Category/ Module  :Contact Note
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+*/
+
+UPDATE cjams.progressnote
+SET description='<p>On 3/7 this worker did an initial FTF visit with the Naheed family. Present at the time of the visit were Mr. and Mrs. Naheed and their younger daughter Anaya.  This writer spoke to Mr and Mrs. Naheed about how they were referred to the Family Preservation Unit.  Mrs. Naheed said they are in need of services for their autistic daughter Mava.  Mrs. Naheed expressed that the family is unable to go out and do any activities together such as (dinner, travel,) due to Mava not wanting to leave the house. Mrs. Naheed said she is only able to work one day a week due to Mava need to constantly be around her.   Both Mr. and Mrs. Naheed  expressed the concern that when Mava doesnt get her way she screams and has tantrums. Both parents expressed the concern that when Marva comes home from school she only wants to be on her cellphone and she has to much online usage.  Mrs. Naheed expressed just needing some support and relief in the caretaking of Marva. She expressed wanting Marva to possibly get signed up in a after school program, get enrolled in an adaptive summer camp so that she can have a little bit of free time to study as she is going to school for nursing. Mava did come home from school during the visit and this writer was able to briefly speak to her about her likes and interest. </p><p>Mr and Mrs. Naheed both communicated to this writer  that they just want to help Mava be successful in the future.  They said she had expressed in an interest in being a teachers aide when she graduates from high school. </p><p>This was writer was able to assess Mava sleeping environment and fount it to be safe and free from any hazards.  Mava nor her sister Anaya showed no signs of physical or mental harm or danger. Mrs. Naheed was given the Anne Arundel County Parks and Rec camp guide to see if she saw any any adaptive camps that would be a good fit for Mava.  She is supposed to let this writer know at the next visit which is scheduled for 3/14 at 3:00. </p><p>As this writer was leaving, I was able to briefly meet Mava older sister who turned 18 on 3/11/ 25. </p><p></p>', 
+updatedby='CDM-37814', updatedon=now()
+WHERE progressnoteid='19a7bba1-7bd1-434c-bd72-e02efd4358b3' and witsid=12767240;

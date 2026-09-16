@@ -1,0 +1,1 @@
+update intakeservreqchildremoval i set removaltypekey = 'JD',updatedby = 'CDM-11724', updatedon = now() where removalid = 251445 and intakeservreqchildremovalid = '0971e03a-46dc-488b-93fc-546897f697de'; 

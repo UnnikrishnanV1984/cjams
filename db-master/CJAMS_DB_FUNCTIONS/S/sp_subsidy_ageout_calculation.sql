@@ -1,0 +1,40 @@
+CREATE OR REPLACE FUNCTION cjams.sp_subsidy_ageout_calculation(as_subsidy_type character, al_subsidy_id bigint, payment_start_date date)
+ RETURNS INTEGER
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+	DECLARE vd_subsidy_end_dt DATE;
+	DECLARE vd_payment_start_dt DATE;
+	DECLARE vl_add_no_of_nights INTEGER;
+BEGIN
+	vd_subsidy_end_dt := NULL;
+	vd_payment_start_dt := NULL;
+	vl_add_no_of_nights := 0;
+	
+--IF type='A' then query for subsidy end date from tb_adoption and compare with payment_start_date, if same month and year then nights+1
+	IF (as_subsidy_type::character varying = 'A') THEN
+		SELECT subsidy_end_dt INTO vd_subsidy_end_dt FROM tb_adoption ta WHERE adoption_id = al_subsidy_id;
+		
+		IF date_part('month',vd_subsidy_end_dt) = date_part('month', payment_start_date) 
+			AND date_part('year',vd_subsidy_end_dt) = date_part('year', payment_start_date)
+		THEN
+			vl_add_no_of_nights:= 1;
+		END IF;
+	ELSE
+--IF type='G' then query for subsidy end date from tb_guardian_subsidy and compare with payment_start_date, if same month and year then nights+1
+		SELECT subsidy_end_dt INTO vd_subsidy_end_dt FROM tb_guardian_subsidy ta WHERE guardian_subsidy_id = al_subsidy_id;
+		
+		IF date_part('month',vd_subsidy_end_dt) = date_part('month', payment_start_date) 
+			AND date_part('year',vd_subsidy_end_dt) = date_part('year', payment_start_date)
+		THEN
+			vl_add_no_of_nights:= 1;
+		END IF;
+	END IF;
+	
+	RETURN vl_add_no_of_nights;
+
+END;
+
+$function$
+;

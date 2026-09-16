@@ -1,0 +1,284 @@
+CREATE OR REPLACE FUNCTION sp_voidplacement_receivable()
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- RECEIVABLE FOR VOIDED PLACEMENTS
+-- 04/11/2007 AMIT RASTOGI
+-- 04/13/2007 private provider receivable change
+-- 05/02/2007 Vineet Tirodkar Changes in main SQL to consider Payments which are not void
+-- But Placement Exit DT and Entry DT are out of range of actual payment made.  
+-- 05/11/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in tb_BATCH_ERROR_LOG # 14088
+-- 07/26/2007 Vineet Tirodkar - Change in Logic to get PROVIDER ID
+-- 07/31/2007 Vineet Tirodkar - To exclude deleted records for Payment Header and Detail 
+-- 08/01/2007 Vineet Tirodkar - Change in Logic to Check OLD Receivables against that Payment
+-- 05/22/2009 Vineet Tirodkar - Change in Logic to create receivables for placements with same Entry and Exit dates.
+-- 09/15/2009 Vineet Tirodkar - Performance Changes use of 'OVER_UNDER_SW' column from tb_PLACEMENT - # 20552
+-- 06/01/2010 Vineet Tirodkar - Changes for Placement Month Pymt Exclusion Issue - PRJ-00609  
+-- 08/04/2010 Vineet Tirodkar - Call New Stored Procedure SP_VOID_PLACEMENT_AR_TICKLER - PRJ-00667
+-- 05/18/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+--            Changes to consider only '1636' Interfaced payments for AR creation (BDSD Req # 1) 
+--            Modifications to SP_OVER_PAYMENT call for Fiscal Audit Trail(BDSD Req # 36)
+------------------------------------------------------------------------
+
+DECLARE vl_provider_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_detail_id BIGINT DEFAULT 0;--
+DECLARE vdc_receivable_amount DECIMAL(10,2) DEFAULT 0.00;--
+DECLARE vl_client_id BIGINT DEFAULT 0;--
+DECLARE vd_service_start_dt DATE;--
+DECLARE vd_service_end_dt DATE;--
+DECLARE vl_current_rec INT DEFAULT 0;--
+
+DECLARE vdc_old_receivable_no DECIMAL(10,2) DEFAULT 0.00;--
+
+DECLARE vl_placement_id BIGINT DEFAULT 0;--
+DECLARE vs_ovunsw CHAR(1);--
+DECLARE vd_run_dt DATE;--
+
+DECLARE vs_change_type VARCHAR(5);--
+
+-- Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_VOIDPLACEMENT_RECEIVABLE';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+CUR_VOIDED_PLACEMENT record;
+ CUR_VOIDED_PLACEMENT_refcur REFCURSOR;
+
+BEGIN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+   begin
+ EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+     as_error = COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error = COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val,'');--
+     as_error = as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_VOIDPLACEMENT_RECEIVABLE' ,
+           NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+
+     as_error := '';--
+ END;
+-- Log error
+
+-- PRJ-04753 - Picklist Type ID 10041 
+-- 1001 - Placement Changes 
+-- 1004 - Placement Void
+--FOR CUR_VOIDED_PLACEMENT as
+
+OPEN CUR_VOIDED_PLACEMENT_refcur FOR
+
+SELECT PH.PROVIDER_ID,
+       PD.PAYMENT_DETAIL_ID,
+       PD.FINAL_AMOUNT_NO,
+       P.CLIENT_ID,PD.FINAL_SERVICE_START_DT,
+       PD.FINAL_SERVICE_END_DT,
+       P.PLACEMENT_ID,
+    '1004' AS CHANGE_TYPE  
+FROM tb_PLACEMENT P,
+     tb_PAYMENT_DETAIL PD,
+     tb_PAYMENT_HEADER PH,
+  tb_PAYMENT_STATUS PS
+WHERE P.PLACEMENT_ID = PD.PLACEMENT_ID
+      AND PH.PAYMENT_ID = PD.PAYMENT_ID
+   AND PH.PAYMENT_ID = PS.PAYMENT_ID 
+      AND P.DELETE_SW = 'N'
+      AND PD.DELETE_SW = 'N'
+      AND PH.DELETE_SW = 'N'
+   AND PS.DELETE_SW = 'N'
+      AND VOID_SW IS NOT NULL
+      AND VOID_SW = 'Y'
+      AND PD.FINAL_SERVICE_ID IS NOT NULL
+      AND P.PROVIDER_ID IS NOT NULL
+      AND PD.FINAL_AMOUNT_NO <> 0
+      AND COALESCE(P.OVER_UNDER_SW, 'N') = 'N'
+   AND PS.PAYMENT_STATUS_CD = '1636'
+UNION
+SELECT PH.PROVIDER_ID,
+       PD.PAYMENT_DETAIL_ID,
+       PD.FINAL_AMOUNT_NO,
+       P.CLIENT_ID,PD.FINAL_SERVICE_START_DT,
+       PD.FINAL_SERVICE_END_DT,
+       P.PLACEMENT_ID,
+    '1001' AS CHANGE_TYPE 
+FROM tb_PLACEMENT P,
+     tb_PAYMENT_DETAIL PD,
+     tb_PAYMENT_HEADER PH,
+  tb_PAYMENT_STATUS PS
+WHERE P.PLACEMENT_ID = PD.PLACEMENT_ID
+      AND PH.PAYMENT_ID = PD.PAYMENT_ID
+   AND PH.PAYMENT_ID = PS.PAYMENT_ID 
+      AND P.DELETE_SW = 'N'
+      AND PD.DELETE_SW = 'N'
+      AND PH.DELETE_SW = 'N'
+   AND PS.DELETE_SW = 'N'   
+      AND ( VOID_SW IS NULL OR VOID_SW = 'N'  )
+      AND PD.FINAL_SERVICE_ID IS NOT NULL
+      AND P.PROVIDER_ID IS NOT NULL
+      AND PD.FINAL_AMOUNT_NO <> 0
+      AND PD.FINAL_SERVICE_START_DT > P.EXIT_DT
+      AND P.EXIT_DT NOT BETWEEN PH.PAYMENT_START_DT AND PH.PAYMENT_END_DT
+      AND P.EXIT_DT IS NOT NULL
+      AND COALESCE(P.OVER_UNDER_SW, 'N') = 'N'
+   AND PS.PAYMENT_STATUS_CD = '1636'  
+UNION
+SELECT PH.PROVIDER_ID,
+       PD.PAYMENT_DETAIL_ID,
+       PD.FINAL_AMOUNT_NO,
+       P.CLIENT_ID,PD.FINAL_SERVICE_START_DT,
+       PD.FINAL_SERVICE_END_DT,
+       P.PLACEMENT_ID,
+    '1001' AS CHANGE_TYPE     
+FROM tb_PLACEMENT P,
+     tb_PAYMENT_DETAIL PD,
+     tb_PAYMENT_HEADER PH,
+  tb_PAYMENT_STATUS PS
+WHERE P.PLACEMENT_ID = PD.PLACEMENT_ID
+      AND PH.PAYMENT_ID = PD.PAYMENT_ID
+   AND PH.PAYMENT_ID = PS.PAYMENT_ID    
+      AND P.DELETE_SW = 'N'
+      AND PD.DELETE_SW = 'N'
+      AND PH.DELETE_SW = 'N'
+   AND PS.DELETE_SW = 'N'   
+      AND ( VOID_SW IS NULL OR VOID_SW = 'N'  )
+      AND PD.FINAL_SERVICE_ID IS NOT NULL
+      AND P.PROVIDER_ID IS NOT NULL
+      AND PD.FINAL_AMOUNT_NO <> 0
+      AND PD.FINAL_SERVICE_START_DT <  P.ENTRY_DT
+      AND P.ENTRY_DT NOT BETWEEN PH.PAYMENT_START_DT AND PH.PAYMENT_END_DT
+      AND COALESCE(P.OVER_UNDER_SW, 'N') = 'N'
+   AND PS.PAYMENT_STATUS_CD = '1636'  
+UNION
+SELECT PH.PROVIDER_ID,
+       PD.PAYMENT_DETAIL_ID,
+       PD.FINAL_AMOUNT_NO,
+       P.CLIENT_ID,PD.FINAL_SERVICE_START_DT,
+       PD.FINAL_SERVICE_END_DT,
+       P.PLACEMENT_ID,
+    '1001' AS CHANGE_TYPE     
+FROM tb_PLACEMENT P,
+     tb_PAYMENT_DETAIL PD,
+     tb_PAYMENT_HEADER PH,
+  tb_PAYMENT_STATUS PS
+WHERE P.PLACEMENT_ID = PD.PLACEMENT_ID
+      AND PH.PAYMENT_ID = PD.PAYMENT_ID
+      AND PH.PAYMENT_ID = PS.PAYMENT_ID    
+      AND P.DELETE_SW = 'N'
+      AND PD.DELETE_SW = 'N'
+      AND PH.DELETE_SW = 'N'
+   AND PS.DELETE_SW = 'N'   
+      AND ( VOID_SW IS NULL OR VOID_SW = 'N'  )
+      AND PD.FINAL_SERVICE_ID IS NOT NULL
+      AND P.PROVIDER_ID IS NOT NULL
+      AND PD.FINAL_AMOUNT_NO <> 0
+      AND P.ENTRY_DT is NOT NULL
+      AND P.EXIT_DT  is NOT NULL
+      AND P.ENTRY_DT = P.EXIT_DT
+      AND COALESCE(P.OVER_UNDER_SW, 'N') = 'N'
+   AND PS.PAYMENT_STATUS_CD = '1636';
+
+--DO
+loop
+ fetch CUR_VOIDED_PLACEMENT_refcur into CUR_VOIDED_PLACEMENT;
+ exit when not found;
+   vl_provider_id := CUR_VOIDED_PLACEMENT.PROVIDER_ID;--
+   vl_payment_detail_id := CUR_VOIDED_PLACEMENT.PAYMENT_DETAIL_ID;--
+   vdc_receivable_amount := CUR_VOIDED_PLACEMENT.FINAL_AMOUNT_NO;--
+   vl_client_id := CUR_VOIDED_PLACEMENT.CLIENT_ID;--
+   vd_service_start_dt := CUR_VOIDED_PLACEMENT.FINAL_SERVICE_START_DT;--
+   vd_service_end_dt := CUR_VOIDED_PLACEMENT.FINAL_SERVICE_END_DT;--
+   vl_placement_id := CUR_VOIDED_PLACEMENT.PLACEMENT_ID;--
+   vs_change_type := CUR_VOIDED_PLACEMENT.CHANGE_TYPE;--
+
+   vdc_old_receivable_no  := 0;--
+  SELECT SUM(AMOUNT_NO)
+      INTO vdc_old_receivable_no
+    FROM tb_RECEIVABLE_DETAIL
+  WHERE PAYMENT_DETAIL_ID = vl_payment_detail_id
+        AND DELETE_SW = 'N';--
+
+  IF vdc_old_receivable_no is NULL THEN
+      vdc_old_receivable_no  := 0;--
+  END IF;--
+
+   vdc_receivable_amount := vdc_receivable_amount - vdc_old_receivable_no;--
+
+  IF vdc_receivable_amount > 0 THEN -- GENERATE THE RECEIVABLE
+  SELECT a.al_sqlcode,a.as_error from SP_OVER_PAYMENT ( vl_payment_detail_id,
+         vl_client_id,
+         vl_provider_id,
+         vd_service_start_dt,
+         vd_service_end_dt,
+         vdc_receivable_amount,
+         vs_change_type) a into
+         al_sqlcode,
+         as_error;--
+
+     IF al_sqlcode <> 0 THEN
+         as_error := as_error;--
+        IF as_error is NULL OR as_error = '' THEN
+            as_error := 'SP_OVER_PAYMENT failed';--
+        END IF;--
+        --SIGNAL p_sp_error;--
+     END IF;--
+  END IF;--
+
+  -- Update OVER_UNDER_SW # 20552
+   vs_ovunsw := NULL; -- INITIAL VALUE
+  
+  SELECT OVER_UNDER_SW
+     INTO vs_ovunsw
+    FROM tb_PLACEMENT
+  WHERE PLACEMENT_ID = vl_placement_id
+        AND DELETE_SW = 'N' ;--
+  
+  IF vs_ovunsw is NULL THEN
+    /* UPDATE tb_PLACEMENT
+       SET OVER_UNDER_SW = 'Y',
+           UPDATE_USER_ID = 'UPDTOVSW'
+     WHERE PLACEMENT_ID = vl_placement_id
+           AND DELETE_SW = 'N' ;--*/
+ UPDATE placement SET overunderflag = 'Y',       
+    updatedby = 'UPDTOVSW'     
+    WHERE alternateid = vl_placement_id
+    and activeflag =1;--
+       
+      al_sqlcode := SQLCODE;--
+     IF al_sqlcode <> 0 THEN
+         as_error := 'Error in Updating tb_PLACEMENT - OVER_UNDER_SW.';--
+       -- SIGNAL p_sp_error;--
+     END IF;--
+  END IF;--
+--END FOR;--
+ END LOOP;
+-- PRJ-00667 
+SELECT CURRENT_DATE  
+    INTO vd_run_dt;
+--FROM SYSIBM.SYSDUMMY1 ;--
+
+PERFORM SP_VOID_PLACEMENT_AR_TICKLER(vd_run_dt, 439 );--
+
+END;
+
+$function$
+

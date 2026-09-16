@@ -1,0 +1,2 @@
+update progressnote set activeflag ='0' where progressnoteid = '7c63eb5e-f76a-4e8c-a5d0-7f3434f99735';
+update progressnote set activeflag ='0' where progressnoteid = '35ef104c-0011-4a00-9b61-2bee9d0456a0';

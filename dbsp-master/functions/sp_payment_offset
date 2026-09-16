@@ -1,0 +1,130 @@
+CREATE OR REPLACE FUNCTION sp_payment_offset(al_provider_id bigint, vdc_total_final_amount numeric, OUT adc_offset_amount numeric)
+ RETURNS numeric
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- Revision(s)\r
+-- 04/06/2021 Vineet Tirodkar \r
+-- Modifications to Offset using the Monthly Payment Plan    \r
+-- Vineet Tirodkar - 05/03/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)\r
+------------------------------------------------------------------------\r
+DECLARE vdc_provider_bal Decimal(10,2) DEFAULT 0.00;\r
+ vl_receivable_id BIGINT DEFAULT NULL;\r
+ vdc_percentage_no Decimal(5,2) DEFAULT 0.00;\r
+ vdc_offset_amount Decimal(10,2) DEFAULT 0.00;\r
+ vl_offset_percent_private Decimal(5,2) DEFAULT 100.00;\r
+ vl_offset_percent_chessie_mask Decimal(5,2) DEFAULT 25.00;\r
+ vs_provider_category VARCHAR(5);\r
+ vl_months_no INTEGER;\r
+ vdc_monthly_plan_amount Decimal(10,2) DEFAULT 0.00;\r
+\r
+BEGIN\r
+\r
+ SELECT SUM(COALESCE(trd.RECEIVABLE_BALANCE_NO,0)),\r
+   trh.RECEIVABLE_ID\r
+  INTO vdc_provider_bal,\r
+    vl_receivable_id\r
+ FROM tb_RECEIVABLE_HEADER trh,\r
+  tb_RECEIVABLE_DETAIL trd,\r
+  tb_RECEIVABLE_COLLECTION_STATUS trcs,\r
+  tb_PAYMENT_DETAIL tpd\r
+ WHERE trh.RECEIVABLE_ID = trd.RECEIVABLE_ID\r
+  AND trd.RECEIVABLE_DETAIL_ID = trcs.RECEIVABLE_DETAIL_ID\r
+  AND trd.PAYMENT_DETAIL_ID = tpd.PAYMENT_DETAIL_ID\r
+  AND trcs.COLLECTION_STATUS_CD <> '775' -- Reffered to CCU\r
+  AND trcs.ACTIVE_SW = 'Y'\r
+  AND trcs.DELETE_SW = 'N'\r
+  AND trd.APPROVAL_STATUS_CD = '3047'\r
+  AND trd.DELETE_SW = 'N'\r
+  AND trh.PROVIDER_ID = al_provider_id\r
+  AND trh.DELETE_SW = 'N'\r
+  AND tpd.DELETE_SW = 'N'\r
+  AND tpd.SUBSIDY_AGREEMENT_ID IS NULL --  PRJ-05327 - Excluding A/R for GAP & Adoption Subsidy \r
+  AND (\r
+   --F_PRIM_COUNTY(tpd.CASE_ID,'NULL') IN \r
+   trd.COUNTY_CD IN ( select statecountycode from county where golivedate <= CURRENT_DATE ) OR\r
+   (F_CHECK_CASE_TRANSFER(tpd.CASE_ID) = 1 AND trd.receivable_ts::date >= (select date_of_transfer::date from transferred_cases))\r
+   )\r
+ GROUP BY trh.RECEIVABLE_ID ;\r
+\r
+ IF vdc_provider_bal IS NULL OR vdc_provider_bal = 0.00 THEN\r
+    adc_offset_amount := 0.00 ; -- NO NEED TO OFFSET\r
+ ELSE -- CHECK THE PAYMENT PLAN\r
+  SELECT PERCENTAGE_NO,\r
+    MONTHS_NO,\r
+    AMOUNT_NO\r
+  INTO vdc_percentage_no,\r
+   vl_months_no,\r
+   vdc_monthly_plan_amount\r
+  FROM tb_PAYMENT_PLAN\r
+  WHERE RECEIVABLE_ID = vl_receivable_id\r
+   AND END_DT IS NULL\r
+   AND DELETE_SW = 'N'\r
+  ORDER BY PAYMENT_PLAN_ID DESC\r
+  FETCH FIRST ROW ONLY ;\r
+\r
+  IF vdc_percentage_no IS NULL THEN\r
+   vdc_percentage_no := 0.00;\r
+  END IF;\r
+  \r
+  IF vdc_percentage_no = 0 THEN\r
+   SELECT F_PRVPCKLST_CAT(tp.PROVIDER_ID,'PLACEMENT')\r
+    INTO vs_provider_category   \r
+   FROM tb_PROVIDER tp\r
+   WHERE tp.PROVIDER_ID  = al_provider_id;\r
+\r
+   IF vs_provider_category is NULL THEN\r
+    vs_provider_category := '';\r
+   END IF;\r
+\r
+   IF vs_provider_category = '3049' OR vs_provider_category = '3274' \r
+    OR vs_provider_category = '3302' OR vs_provider_category = '1782' OR vs_provider_category = '3794' THEN\r
+    vdc_percentage_no := vl_offset_percent_private;\r
+   ELSEIF vs_provider_category = '1783' THEN\r
+    vdc_percentage_no := vl_offset_percent_chessie_mask;\r
+   ELSE\r
+    -- Provider Category Unknown\r
+    vdc_percentage_no := 100.00; -- OFFSET 100 %\r
+   END IF;\r
+  END IF;\r
+   \r
+  IF vdc_percentage_no > 0.00 THEN\r
+   vdc_offset_amount := ( vdc_total_final_amount * vdc_percentage_no ) / 100 ;\r
+\r
+   IF vdc_provider_bal < vdc_offset_amount THEN\r
+    adc_offset_amount := vdc_provider_bal;\r
+   ELSE\r
+    adc_offset_amount := vdc_offset_amount;\r
+   END IF;\r
+  END IF;\r
+\r
+  IF vl_months_no is null THEN\r
+   vl_months_no := 0;\r
+  END IF;\r
+  \r
+  IF vdc_monthly_plan_amount is null THEN\r
+   vdc_monthly_plan_amount := 0;\r
+  END IF;\r
+  \r
+  IF vl_months_no > 0 AND vdc_monthly_plan_amount > 0 THEN\r
+   IF vdc_provider_bal < vdc_monthly_plan_amount THEN\r
+    adc_offset_amount := vdc_provider_bal;\r
+   ELSE\r
+    adc_offset_amount := vdc_monthly_plan_amount;\r
+   END IF;\r
+   \r
+   IF vdc_total_final_amount < adc_offset_amount THEN\r
+    adc_offset_amount := vdc_total_final_amount;\r
+   END IF;\r
+  END IF;\r
+\r
+  IF adc_offset_amount is NULL THEN\r
+   adc_offset_amount := 0.00 ;\r
+  END IF;\r
+ END IF;\r
+\r
+END \r
+;\r
+\r
+$function$
+

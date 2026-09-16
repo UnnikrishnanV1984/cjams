@@ -1,0 +1,101 @@
+DROP FUNCTION sp_ive_eligibility_worksheet_income_type_create(reqobj json);
+
+CREATE OR REPLACE FUNCTION sp_ive_eligibility_worksheet_income_type_create(reqobj json)
+RETURNS TABLE(v_clientid bigint, v_involvedclientid bigint, v_involvedclientname character varying, v_assistanceunit character varying, v_earnedincomeno integer, v_deemedincome character varying, v_disregardearnedincome character varying, v_unearnedincome jsonb, v_ivepersonincomeid uuid, v_relationshipstatus character varying, v_dateofbirthforincome integer)
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+    
+	v_clientid  BIGINT;
+	v_removalid INT;
+	v_involvedclientid BIGINT;
+	returnStatus text;
+	incometype json;
+	v_counter json;
+	v_assistanceunit VARCHAR(10);
+	v_earnedincomeno int;
+	v_deemedincome VARCHAR(10);
+	v_supportexpenseamount int;
+	v_unearnedincome json;
+	v_involvedclientname VARCHAR(100);
+	v_disregardearnedincome VARCHAR(10);
+	v_ivepersonincomeid uuid;
+	v_ivepersonincomeid_count INT;
+    v_relationshipstatus VARCHAR(50);
+    v_dateofbirthforincome int;	 
+	
+BEGIN    
+
+	incometype := reqObj ->> 'incomeType';
+	v_clientid := reqObj ->> 'clientId';
+	v_removalid := reqObj ->> 'removalid';
+
+	-- UPDATE with activeflag 0 for existing records.		
+	UPDATE ivepersonincome	
+	SET activeflag = 0 , updatedon = now()
+	WHERE toclientid=v_clientid and removalid=v_removalid;
+
+	FOR v_counter in select * from json_array_elements(incometype)
+	LOOP	
+		v_involvedclientid := v_counter ->> 'involvedClientId';
+		v_ivepersonincomeid := v_counter ->> 'ivepersonincomeid';
+		v_involvedclientname := v_counter ->> 'involvedClientName';
+		v_assistanceunit := v_counter ->> 'assistanceUnit';
+		v_earnedincomeno := v_counter ->> 'earnedIncomeNo';
+		v_deemedincome := v_counter ->>'deemedIncome';
+		v_disregardearnedincome :=  v_counter ->> 'disregardEarnedIncome';
+		v_unearnedincome := v_counter ->> 'unearnedIncome';
+		v_clientid := v_counter ->> 'clientId';
+		v_removalid := v_counter ->> 'removalid';
+		v_relationshipstatus := v_counter ->> 'relationshipstatus';
+		v_dateofbirthforincome := v_counter ->> 'dateofbirthforincome';
+				
+		INSERT INTO ivepersonincome(ivepersonincomeid,
+								involvedclientid
+							, activeflag
+							, involvedclientname
+							, assistanceunit
+							, earnedincomeno
+							, deemedincome
+							, disregardearnedincome
+							, unearnedincome
+							, toclientid
+							, removalid
+							, relationshipstatus
+							, dateofbirthforincome) 
+					VALUES( 
+							gen_random_uuid(),
+							v_involvedclientid
+							, 1
+							, v_involvedclientname
+							, v_assistanceunit
+							, v_earnedincomeno
+							, v_deemedincome
+							, v_disregardearnedincome
+							, v_unearnedincome
+							, v_clientid
+							, v_removalid
+							, v_relationshipstatus
+							, v_dateofbirthforincome);
+	END LOOP;					
+
+	RETURN QUERY
+	SELECT
+		ipi.toclientid				as		v_clientid,
+		ipi.involvedclientid  		as 		v_involvedclientid,
+		ipi.involvedclientname		as 		v_involvedclientname,
+		ipi.assistanceunit			as 		v_assistanceunit,
+		ipi.earnedincomeno			as 		v_earnedincomeno,
+		ipi.deemedincome			as 		v_deemedincome,
+		ipi.disregardearnedincome   as      v_disregardearnedincome,
+		ipi.unearnedincome 			as 		v_unearnedincome,
+		ipi.ivepersonincomeid		as 		v_ivepersonincomeid,
+        ipi.relationshipstatus      as      v_relationshipstatus,
+        ipi.dateofbirthforincome    as      v_dateofbirthforincome
+	FROM ivepersonincome ipi
+	WHERE ipi.toclientid=v_clientid and ipi.removalid=v_removalid and ipi.activeflag = 1;
+
+END;	
+$function$
+;

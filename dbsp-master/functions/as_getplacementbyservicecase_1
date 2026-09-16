@@ -1,0 +1,187 @@
+CREATE OR REPLACE FUNCTION as_getplacementbyservicecase_1(v_servicecaseid uuid, pagenumber integer, pagesize integer)
+ RETURNS TABLE(personid uuid, cjamspid bigint, firstname character varying, lastname character varying, middlename character varying, userphoto text, suffix character varying, prefx character varying, dob timestamp without time zone, gender character varying, gendertypekey character varying, age text, clientname text, placements json, tprdetails json, tprstatus json, finalizationdate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ totalcount integer;
+ v_pagenumber integer;
+ v_pageoffset integer;
+
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+  
+RETURN query
+
+SELECT
+  P.personid,P.cjamspid,P.firstname,P.lastname,P.middlename,P.userphoto,P.suffix,P.prefx,P.dob,G.typedescription AS gender, 
+ P.gendertypekey,
+ CASE 
+  WHEN EXTRACT(YEAR FROM age(now(), P.dob)) <= 0 THEN 
+   CASE WHEN EXTRACT(MONTH FROM age(now(), P.dob)) <= 0 THEN 
+    CONCAT (EXTRACT(DAY FROM age(now(), P.dob)) :: CHARACTER VARYING, ' ', 'Day(s)') 
+    ELSE CONCAT (EXTRACT(MONTH FROM age(now(), P.dob)) :: CHARACTER VARYING, ' ', 'Month(s)') 
+   END 
+  ELSE CONCAT (EXTRACT(YEAR FROM age(now(), P.dob)) :: CHARACTER VARYING,' ', 'Yrs')  
+ END AS age,
+ INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname)) AS clientname,
+ (
+  SELECT json_agg(e) FROM 
+  (
+  SELECT  PL.ischildplacedoutside,PL.servicecaseid,
+    PL.intakeservreqchildremovalid,
+    PL.intakeservicerequestactorid,
+    PL.providerid,
+    PL.contractprogramid,
+    PL.remarks,
+    PL.service_id,
+    PL.comarrate_id,
+    PL.startdatetime as startdate,
+    PL.starttime,
+    PL.enddatetime as enddate,
+    PL.endtime,
+    PL.placementtypekey,
+    PL.providersentdate,
+    PL.providerdesc,
+    PL.responseacceptedkey,
+    PL.rejectreasonkey,
+    PL.isssaapproval,
+    PL.ifcapprovaldate,
+    PL.placementid,
+    LA.livingarrangementtypekey,
+    rv.value_text livingarrangementtype, 
+    PL.personid,
+    LA.livingfirstname,
+    LA.livingstartdate,
+    LA.livingenddate,
+    LA.homephone AS contactphone,
+    LA.streetname AS address1 ,
+    LA.streettext AS address2 ,
+    LA.cityname,
+    LA.countytypekey,
+    LA.statetypekey,
+    LA.zip5no as zipcode,
+    PL.isvoided,
+    PL.exittypekey,
+    PL.voiddate,
+       PL.alternateid, 
+       (select json_agg(x) from (SELECT placementrevisionid,plr.placementid, plr.transactiondate, plr.entrydate, plr.entrytime,
+plr.exitdate, plr.exittime, plr.exittypetypkey, plr.exitreasontypkey, plr.exitexplanation,
+plr.approvalstatustypkey, plr.approvaldate, plr.insertedon ,
+plr.activeflag, plr.alternateid,plr.voidreasontypekey, plr.voidremarks, plr.enddate, plr.endtime,plr.exittypekey,
+plr.remarks, plr.isvoided ,up.fullname
+,p.alternateid as placement_id,tp.provider_id,
+CASE COALESCE(tp.provider_nm,'') WHEN '' THEN COALESCE(tp.provider_first_nm ,'') ||' '|| COALESCE(tp.provider_last_nm,'')
+         ELSE tp.provider_nm  
+       END providername
+      ,up1.fullname as requestedby , up2.fullname as approvedby , plr.requesteddate ,plr.approveddate
+FROM placementrevision plr 
+join placement p on p.placementid = plr.placementid 
+left join tb_provider tp on  tp.provider_id = PL.altproviderid AND tp.delete_sw = 'N' 
+left join userprofile up1 on plr.requestedby:: character varying = up1.securityusersid
+left join userprofile up2 on plr.approvedby:: character varying  = up2.securityusersid
+left join userprofile up on up.securityusersid = plr.insertedby 
+where plr.placementid = PL.placementid and Plr.approvalstatustypkey = '3045' and plr.activeflag = 0 order by plr.insertedon desc) as x) as placementrevision,
+    (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.exittypekey LIMIT 1) exitreasontypedescription,                 
+    PL.exitreasontypekey,
+               (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.exitreasontypekey LIMIT 1) exittypedescription,                
+    PL.voidreasontypekey, 
+    (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.voidreasontypekey LIMIT 1) voidreasontypedescription,                 
+    PL.voidremarks,                 
+    (SELECT countyname FROM county c WHERE c.activeflag =1 AND c.countyid::character varying = LA.countytypekey)
+    county ,
+    (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.rejectreasonkey LIMIT 1) rejectreason,
+    (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = PL.responseacceptedkey LIMIT 1) responseaccepted,
+    (SELECT service_nm FROM tb_Services WHERE tb_Services.service_id = PL.service_id AND tb_Services.delete_sw ='N' LIMIT 1) placementstructuredesc,
+    (SELECT service_nm FROM tb_Services WHERE tb_Services.service_id = PL.comarrate_id AND tb_Services.delete_sw ='N' LIMIT 1) comarratedesc,
+    (SELECT statename FROM state s WHERE s.activeflag =1 AND s.stateabbr::character varying = LA.statetypekey)
+    statename ,
+    (
+     SELECT row_to_json(x) FROM 
+     (
+      SELECT 
+       p.provider_id ,p.adr_work_phone_tx AS phonenumber,TBPA1.adr_street_no,
+       TBPA1.adr_street_tx,TBPA1.adr_street_nm,TBPA1.adr_city_nm,TBPA1.adr_state_cd,
+       TBPA1.adr_zip5_no,
+       CASE COALESCE(provider_nm,'') WHEN '' THEN COALESCE(provider_first_nm ,'') ||' '|| COALESCE(provider_last_nm,'')
+         ELSE provider_nm  
+       END providername, 
+         (CAST(INITCAP(TRIM(TBPA1.adr_street_tx)||' '||TRIM(TBPA1.adr_street_nm)||' '||TRIM(TBPA1.adr_city_nm) ||' '||TRIM(TBPA1.adr_state_cd) ||' '||
+         TRIM(TBPA1.adr_zip5_no::character varying)) AS character varying)) AS address 
+      FROM tb_provider as p
+       INNER JOIN tb_provider_addresses TBPA1  ON TBPA1.parent_key_id = p.provider_id::character varying  
+       AND TBPA1.delete_sw = 'N' 
+       WHERE p.provider_id = PL.altproviderid AND p.delete_sw = 'N' 
+       AND TBPA1.adr_end_dt IS NULL 
+       AND TBPA1.adr_default_sw='Y' 
+       AND TBPA1.adr_type_cd='3357'
+       LIMIT 1
+     ) as x
+    ) providerdetails,
+ 
+    (SELECT rs.typedescription FROM routing r
+     INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber
+     INNER JOIN teammemberroletype tmr on tmr.roletypekey = r.fromroleid  and tmr.activeflag =1 
+     INNER JOIN teammemberroletype tmrt on tmrt.roletypekey = r.toroleid  and tmrt.activeflag =1 
+      and tmrt.teamtypekey=tmr.teamtypekey
+    WHERE r.eventcode = 'PLTR' AND r.objectid  =  PL.placementid :: character varying 
+    AND r.activeflag =1 and r.routingstatustypeid not in (69, 70) order by r.insertedon desc limit 1) routingstatus,
+    (select row_to_json(revisionupdate) FROM  (select pr.exitdate as enddate,pr.exittime as endtime,pr.exitreasontypkey,rv.value_text as exitreasontypedescription,
+  rvs.value_text as exittypekeydescription,pr.remarks,pr.exittypekey,pr.entrydate,pr.entrytime ,
+  pr.exittypetypkey,pr.exitexplanation, pr.approvalstatustypkey,pr.approvaldate,
+  pr.voidreasontypekey,pr.voidremarks,pr.isvoided,
+  (SELECT value_text FROM referencevalues r WHERE r.activeflag =1 AND r.ref_key::character varying = pr.voidreasontypekey LIMIT 1) voidreasontypedescription
+  from placementrevision pr 
+    left join referencevalues rv on rv.ref_key = pr.exitreasontypkey and rv.referencetypeid=84
+    left join referencevalues rvs on rvs.ref_key = pr.exittypekey and rvs.referencetypeid=83
+where pr.placementid=pl.placementid and pr.activeflag=1 and  Pr.approvalstatustypkey = '3045' limit 1) as revisionupdate) revisionupdate
+, (select rr.remarks from routing rr where rr.objectid = PL.placementid :: character varying and rr.activeflag =1 
+and rr.routingstatustypeid in (17,16) order by rr.insertedon desc limit 1) as reason
+  FROM  placement PL   /* Placement list is retrieved based on person */
+  LEFT JOIN livingarrangement LA ON PL.personid = LA.personid and LA.activeflag=1 and PL.placementid = LA.placementid
+  LEFT JOIN referencevalues rv ON rv.ref_key = LA.livingarrangementtypekey AND rv.referencetypeid=76 AND rv.activeflag=1
+  WHERE  PL.personid = P.personid  AND PL.activeflag = 1
+  )  e
+ ) :: json AS  placements,
+   (
+  select json_agg( tpr.tprdecisiondate)  from tprdetails tpr  
+  inner join adoptionplanning ap on 
+   --CASE WHEN ap.intakeserviceid IS NOT NULL THEN tpr.intakeserviceid = ap.intakeserviceid ELSE TRUE END  
+   --AND 
+  CASE WHEN ap.servicecaseid IS NOT NULL THEN tpr.servicecaseid = ap.servicecaseid
+  and tpr.servicecaseid=v_servicecaseid ELSE TRUE END  
+  --group by tpr.tprdecisiondate,ap.insertedon  
+  --order by ap.insertedon desc  --limit 1
+   --and ap.adoptionplanningid = v_adoptionplanningid   
+ ) as  tprdates ,
+  (select json_agg(a) from (
+    select    rs.typedescription as status  from tprdetails tpr  
+    inner join adoptionplanning ap on 
+     CASE WHEN ap.intakeserviceid IS NOT NULL THEN tpr.intakeserviceid = ap.intakeserviceid ELSE TRUE END  
+     AND 
+    CASE WHEN ap.servicecaseid IS NOT NULL THEN tpr.servicecaseid = ap.servicecaseid
+    and tpr.servicecaseid=v_servicecaseid 
+    ELSE TRUE end 
+    inner join routing r  on r.activeflag=1 and r.eventcode='ADPR' 
+      and r.objectid= ap.adoptionplanningid :: character varying 
+    INNER JOIN routingstatustype rs ON r.routingstatustypeid = rs.sequencenumber AND rs.activeflag =1 
+    
+ ) a )  as tprdetails,
+ (select (ag.finalizationdate at time zone 'utc' at time zone 'est') from adoptionplanning ap
+  inner join adoptionagreement ag on ag.adoptionplanningid=ap.adoptionplanningid and ag.activeflag=1 and ap.activeflag=1
+  where ap.servicecaseid=v_servicecaseid LIMIT 1
+ )
+FROM   placement pl 
+  INNER JOIN  intakeservicerequestactor isra ON isra.intakeservicerequestactorid=pl.intakeservicerequestactorid AND pl.activeflag=1
+  INNER JOIN  person P ON P.personid=isra.personid AND P.activeflag=1 
+  INNER JOIN  gendertype G ON G.gendertypekey=P.gendertypekey AND G.activeflag=1
+  LEFT JOIN  placementrevision pr on pr.placementid=pl.placementid
+WHERE  isra.servicecaseid=v_servicecaseid AND pl.activeflag=1
+GROUP BY P.personid,clientname,P.firstname,P.lastname,P.middlename,P.userphoto,P.suffix,P.dob,G.typedescription,age,
+P.gendertypekey;
+
+END;
+
+$function$
+

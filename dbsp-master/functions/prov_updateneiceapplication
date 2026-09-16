@@ -1,0 +1,44 @@
+CREATE OR REPLACE FUNCTION prov_updateneiceapplication(v_applicantid character varying, v_applicationstatus character varying, v_securityuserid character varying, v_providerid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+v_ref_id text;
+v_neicereferral100aid uuid;
+v_neicecaseid text;
+v_success text;
+v_tosecurityuserid uuid;
+v_subject character varying = null;
+v_touseremail character varying = null;
+v_appfirstname text;
+v_applastname text;
+v_sendingstate text;
+
+BEGIN
+
+--update the niececaseid for the provider and provider id in the neicereferral100a
+select distinct referral_id into v_ref_id from providerapprovalphaserecord p where active_flag = 1 and delete_sw = 'N' and referral_id is not null and applicant_id=v_applicantId;
+select neicereferral100aid into v_neicereferral100aid from neiceproviderreferral where referral_id = v_ref_id and delete_sw ='N'; 
+if(v_neicereferral100aid is not null) then
+ update neicereferral100a set providerid=v_providerId::int,apporvalstatus = v_applicationstatus, updatedby=v_securityuserid,updatedon=now() where neicereferral100aid=v_neicereferral100aid returning neicecaseid ,appfirstname ,applastname,sendingstate into v_neicecaseid, v_appfirstname ,v_applastname,v_sendingstate;
+ if(v_applicationstatus = 'Approved') then 
+  update tb_provider set source_tx=v_neicecaseid, update_ts = now(), update_user_id = v_securityuserid  where provider_id=v_providerId;
+ end if;
+ --Hardcoded this v_tosecurityuserid to brian.lara@com's securityuserid for testing , the logic
+ -- to get the liasion worker will be implemented later
+ v_tosecurityuserid = '99cb2fb5-72a4-4f6b-967b-fc95df4a94dd';
+ v_subject =  'ICPC Inquiry '|| v_neicecaseid ||' for '|| v_appfirstname||' '||v_applastname||' from '||v_sendingstate || ' has been '|| v_applicationstatus;
+ SELECT prov_send_notification into v_success
+      FROM  prov_send_notification(v_tosecurityuserid::text, 'NEICE', v_tosecurityuserid::text, 'System', 'High', v_subject, v_subject, v_applicantId,  false, false,'ppapplicant');
+ 
+ --Hardcoded this v_touseremail for testing , the logic
+ -- to get the liasion worker will be implemented later
+ v_touseremail = 'brian.lara@com';
+end if;
+RETURN v_subject||'---'||v_touseremail;
+                                                      
+END;
+
+$function$
+

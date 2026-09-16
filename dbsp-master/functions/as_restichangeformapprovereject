@@ -1,0 +1,69 @@
+CREATE OR REPLACE FUNCTION as_restichangeformapprovereject(restitution json, securityuserid character varying)
+ RETURNS uuid
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+ v_restitutionno int;
+ v_securityuserid character varying;
+ v_intakeserreqrestitutionid uuid;
+ v_approvestatus character varying;
+ l_status character varying;
+ l_routingstatusid int;
+ 
+ v_paidamount numeric(10,2);
+ v_allocatedamount numeric(10,2);
+ v_payment numeric(10,2);
+ v_waivedamount numeric(10,2);
+ v_additionalamount numeric(10,2);
+ 
+ v_personaddressid uuid;
+ v_addressid uuid;
+ 
+BEGIN
+ 
+ v_intakeserreqrestitutionid := restitution->>'intakeserreqrestitutionid';
+ v_restitutionno := restitution->>'restitutionno';
+ v_approvestatus := restitution->>'approvestatus';
+ v_securityuserid := securityuserid;
+ 
+ SELECT paidamount, allocatedamount INTO v_paidamount, v_allocatedamount FROM intakeserreqrestitution WHERE 
+ restitutionno = v_restitutionno AND activeflag = 1 AND approvestatus = 'RSTAPR';
+ 
+ SELECT  payment, waivedamount, additionalamount INTO v_payment, v_waivedamount, v_additionalamount 
+ FROM intakeserreqrestitution WHERE restitutionno = v_restitutionno 
+ AND activeflag = 1 AND intakeserreqrestitutionid = v_intakeserreqrestitutionid;
+ 
+ 
+ IF v_approvestatus = 'RSTAPR' THEN
+  l_routingstatusid:= 47;
+  UPDATE intakeserreqrestitution SET activeflag = 0 WHERE restitutionno = v_restitutionno AND activeflag = 1 and intakeserreqrestitutionid != v_intakeserreqrestitutionid;
+  
+  v_personaddressid := gen_random_uuid();
+ 
+  INSERT INTO personaddress (personaddressid, personid, personaddresstypekey, address, address2, zipcode, city, state, county, danger, dangerreason, personadrstartdate, effectivedate, personadrenddate, expirationdate, activeflag, insertedby, updatedby, insertedon, updatedon)
+  SELECT v_personaddressid, personid, personaddresstypekey, address, address2, zipcode, city, state, county,danger, 
+     dangerreason, personadrstartdate, effectivedate, personadrenddate, expirationdate, 1, v_securityuserid, 
+     v_securityuserid, now(), now() from restitutionpersonaddress where restitutionno = v_restitutionno AND activeflag = 1 and 
+     intakeserreqrestitutionid = v_intakeserreqrestitutionid;
+  
+  SELECT addressid INTO v_addressid FROM personaddress WHERE personaddressid = v_personaddressid;
+  
+  UPDATE restitutionpersonaddress SET addressid = v_addressid WHERE restitutionno = v_restitutionno AND activeflag = 1 and intakeserreqrestitutionid = v_intakeserreqrestitutionid;
+   
+ ELSE
+  l_routingstatusid:= 48;
+ END IF;
+ 
+ UPDATE intakeserreqrestitution SET approvestatus = v_approvestatus, paidamount = v_paidamount, 
+ allocatedamount = v_allocatedamount, payment = (coalesce(v_payment,0) - coalesce(v_waivedamount,0) + coalesce(v_additionalamount,0)) WHERE intakeserreqrestitutionid = v_intakeserreqrestitutionid;
+ 
+ select routingintake into l_status from routingintake (v_intakeserreqrestitutionid::character varying,v_securityuserid, 'RTCF', l_routingstatusid, null);
+ 
+RETURN
+   v_intakeserreqrestitutionid;
+END;
+
+$function$
+

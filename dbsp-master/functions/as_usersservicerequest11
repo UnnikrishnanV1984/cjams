@@ -1,0 +1,95 @@
+CREATE OR REPLACE FUNCTION as_usersservicerequest11(userid character varying, page integer, pagelimit integer, searchval character varying, searchcol character varying, actiontype character varying, v_foldertypekey character varying, v_status character varying)
+ RETURNS TABLE(totalcount bigint, groupnumber character varying, intakeserviceid uuid, legalguardian json, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, displayname character varying, county character varying, duedate timestamp without time zone, status character varying, accepteddate timestamp without time zone, routedon timestamp without time zone, ismaltreatment integer, approvaldate timestamp without time zone, foldertype character varying, isfatality integer, fatalityinfo json, personcjamspid bigint, servicecasenumber character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  v_pageoffset  int;
+
+v_pagenumber  int;
+
+l_actiontype  character  varying;
+ 
+BEGIN
+
+    v_pagenumber  :=  (page-1)* 10;
+
+    l_actiontype:=actiontype;
+     
+    DROP TABLE IF EXISTS tmp_status;
+   
+    CREATE TEMP TABLE   tmp_status ( statustypeid uuid);
+
+    IF  (searchcol!='servicerequestnumber') THEN searchval:='';  END IF;
+
+    IF (v_status IN ('pending','inprogress')) THEN 
+         INSERT INTO tmp_status(statustypeid)
+         SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND LOWER(intakeserreqstatustypekey) NOT IN  ('closed', 'cancelled','completed');
+    ELSIF(v_status='closed') THEN 
+        INSERT INTO tmp_status(statustypeid)
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND  LOWER(intakeserreqstatustypekey) IN  ('closed');
+ ELSIF(v_status='rejected') THEN 
+        INSERT INTO tmp_status(statustypeid)
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND  LOWER(intakeserreqstatustypekey) IN  ('rejected');
+    ELSE
+         INSERT INTO tmp_status (statustypeid)       
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE   activeflag =1  AND LOWER(intakeserreqstatustypekey) NOT IN  ('cancelled','completed');
+    END IF; 
+ 
+    RETURN QUERY
+
+    SELECT 
+  count(1) over() ,  
+        '':: character varying, 
+        ISR.intakeserviceid, 
+        (select getcasepersonname as legalguardian from getcasepersonname ('servicerequest',ISR.intakeserviceid::character varying)),
+        ISR.servicerequestnumber, 
+        (SELECT  itsrt.description FROM  intakeservicerequesttype  as  itsrt
+        WHERE  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND  itsrt.activeflag  =1 limit  1), 
+        (SELECT  srst.classkey  FROM  servicerequestsubtype  as  srst WHERE  srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+        AND  srst.activeflag  =1    limit  1), 
+        ISR.reporteddate::timestamp without time zone,  
+        (SELECT getreportername FROM as_getreportername('servicerequest',ISR.intakeserviceid::character varying, 'reporter')),
+          '':: character varying, 
+         (SELECT 
+            CASE WHEN ISR.TargetCompleteDate is null then CAST(ISR.ReportedDate as date) + CAST(src.DueDateOffset as integer)
+                ELSE  ISR.TargetCompleteDate    
+            END   
+        FROM ServiceRequestTypeConfig as src  
+        WHERE src.intakeservreqtypeid=isr.IntakeServReqTypeId AND src.servicerequestsubtypeid= isr.IntakeServiceRequestClassId and src.activeflag=1 limit 1
+        ) duedate, 
+        CAST(CASE ISR.isaccepted WHEN false THEN 'Rejected' WHEN true THEN 'Assigned' ELSE 'Pending' END
+             AS character  varying)  AS  status, 
+        ISR.accepteddate, 
+        ISR.routedon,
+        CASE  COALESCE((
+            SELECT  COUNT(1) 
+                FROM  investigationallegation  ia 
+                INNER  JOIN  investigation  i  ON  i.investigationid=  ia.investigationid  AND  i.activeflag=1 AND  I.intakeserviceid  =  ISR.intakeserviceid  
+            WHERE  ia.activeflag=1  AND  COALESCE(ia.isproviderinvolved,0)  =1),0)
+        WHEN  0  THEN  0  ELSE  1  END,    
+        ISR.insertedon AS approvaldate,
+        (SELECT ft.description FROM foldertype ft WHERE ft.foldertypekey = ISR.foldertypekey AND ft.activeflag = 1 LIMIT 1) AS foldertype,
+        (SELECT childfatality FROM getchildfatality (ISR.intakeserviceid::character varying,'servicerequest'))  ,
+        (SELECT T.fatalityinfo FROM getchildfatality (ISR.intakeserviceid::character varying,'servicerequest') T),
+  (SELECT getreportercjamspid FROM as_getreportercjamspid('servicerequest',ISR.intakeserviceid::character varying, 'reporter')),
+  (
+  SELECT 
+   sc.servicecasenumber
+  FROM servicecase sc
+  WHERE sc.activeflag=1 AND ISR.servicecaseid=sc.servicecaseid AND ISR.activeflag=1 LIMIT 1
+  )
+    FROM intakeservicerequest as ISR 
+    INNER JOIN tmp_status ts ON ts.statustypeid =ISR.intakeserreqstatustypeid 
+    LEFT JOIN intakedastatus as IDAS ON IDAS.intakenumber=ISR.intakenumber and IDAS.activeflag=1 
+    WHERE ISR.activeflag=1   
+    AND ISR.Intakeserviceid:: character varying in (SELECT  objectid FROM routing R WHERE R.tosecurityusersid = userid AND R.activeflag=1)
+    AND LOWER(ISR.servicerequestnumber) LIKE '%' || LOWER(searchval) || '%'                  
+    AND LOWER( COALESCE(ISR.actiontype,'') ) = LOWER(l_actiontype)
+    AND (COALESCE(v_foldertypekey,'') = '' OR LOWER(CAST( COALESCE(ISR.foldertypekey,'') as character varying))=LOWER(COALESCE(v_foldertypekey,'')))
+    ORDER BY COALESCE(ISR.routedon,ISR.updatedon) DESC 
+ LIMIT 10 OFFSET v_pagenumber; 
+
+END;
+
+$function$
+

@@ -1,0 +1,40 @@
+CREATE OR REPLACE FUNCTION sp_get_authidbyfiscalcategory(v_securityuserid character varying, v_fiscal_category_cd character varying[])
+ RETURNS TABLE(authorization_id integer, intakeserviceid uuid)
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_countyid character varying;
+begin
+ --Getting county for retrieving the county based data
+SELECT  t.countyid into v_countyid
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+  INNER JOIN team t on t.teamid = tm.teamid AND t.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityuserid
+        AND   tma.activeflag =1;
+        
+ RETURN QUERY
+  select  tspa.authorization_id,ins.servicecaseid
+from tb_service_purchase_authorization tspa 
+ join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id
+ join 
+ (select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1)
+ ins on ins.servicecasenumber = tsl.case_id :: character varying
+join routing r on r.objectid = tspa.authorization_id :: character varying 
+join team t on r.teamid =t.teamid
+where --r.tosecurityusersid=v_securityuserid and 
+ r.toroleid= 'FNSFS' and r.fromroleid  = ANY ('{CWSP,FNSDF,FNSFW}') and
+sprvsr_approval_status_cd='3047'
+and coalesce(funding_approval_status_cd,'') = ''
+and coalesce(ads_approval_status_cd,'') = '3047' and coalesce(payment_approval_status_cd,'') ='' 
+and trim(tspa.fiscal_category_cd) :: character varying = any (v_fiscal_category_cd)
+and t.countyid = v_countyid
+and r.routingstatustypeid in  (40,44) and r.activeflag=1;
+
+
+ END
+ $function$
+

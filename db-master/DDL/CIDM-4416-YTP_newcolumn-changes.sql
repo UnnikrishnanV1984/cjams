@@ -1,0 +1,11 @@
+ALTER TABLE youthtransitionplan add column if not exists new_summary_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_education_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_employ_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_transportation_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_documentation_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_financial_empowerment_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_housing_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_community_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_health_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_connections_json jsonb;
+ALTER TABLE youthtransitionplan add column if not exists new_meeting_json jsonb;

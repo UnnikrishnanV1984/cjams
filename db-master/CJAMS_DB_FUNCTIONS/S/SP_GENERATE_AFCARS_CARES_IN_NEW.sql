@@ -1,0 +1,214 @@
+--DROP FUNCTION IF EXISTS cjams.sp_generate_afcars_cares_in(date , date);
+
+CREATE OR REPLACE FUNCTION cjams.sp_generate_afcars_cares_in(ad_start_dt date , ad_end_dt date)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Auhor: Raghu Tarlapu
+-- Date : 10/15/2011
+-- Description: This procedure generates the CARES Input file for AFCARS.
+------------------------------------------------------------------------
+
+
+DECLARE
+		 VI_CLIENT_ID		INTEGER;
+		 VD_REMOVAL_DT 		DATE;
+		 VD_REMOVAL_DT_OLD 	DATE;
+		 VD_RETURN_DT 		DATE;
+		 VD_RETURN_DT_OLD 	DATE;
+		 VN_CLNT_CNT 		INTEGER;
+		 VN_CLNT_STG_CNT 	INTEGER DEFAULT 0;
+		 VN_REM_STG_CNT 	INTEGER DEFAULT 0;
+		 VN_RET_STG_CNT 	INTEGER DEFAULT 0;
+		 VN_REM_CNT 		INTEGER DEFAULT 0;
+		 VS_CIS_ID 			VARCHAR(10);
+
+DECLARE REM_CUR CURSOR FOR
+		
+		select distinct isrm.removaldate,
+				isrm.returndate
+		from 	intakeservreqchildremoval isrm, 
+				intakeservicerequestactor isra ,
+				person pr 
+		where 	isrm.servicecaseid = isra.servicecaseid
+				and isra.personid = pr.personid
+				and pr.cjamspid = VI_CLIENT_ID
+				and isrm.activeflag  = 1
+		order by isrm.removaldate;--
+
+DECLARE CLNT_CUR CURSOR FOR
+		select distinct af.fk_id,
+				pr.cisclientid
+		from 	afcarsfostercare_new af, 
+				person pr 
+		where 	af.fk_id = pr.cjamspid ::varchar
+				and pr.activeflag = 1
+				and pr.cisclientid is not null
+		order by af.fk_id  ;
+
+BEGIN 
+
+		DELETE FROM afcarscaresin;
+
+RAISE NOTICE 'SP BEGINS ';--
+
+
+	select 	count(*)
+	into 	VN_CLNT_CNT
+	from 	afcarsfostercare_new af, 
+			person pr 
+	where 	af.fk_id = pr.cjamspid ::varchar
+			and pr.activeflag = 1
+			and pr.cisclientid is not null  ;--
+			
+	raise notice 'VN_CLNT_CNT%',VN_CLNT_CNT;--
+
+	OPEN CLNT_CUR;
+
+        WHILE VN_CLNT_CNT > 0 LOOP
+		FETCH CLNT_CUR INTO VI_CLIENT_ID,	VS_CIS_ID;--
+		
+		RAISE NOTICE 'VI_CLIENT_ID%',VI_CLIENT_ID;--
+		RAISE NOTICE 'VS_CIS_ID%',VS_CIS_ID;--		
+		--EXIT WHEN NOT FOUND;--
+
+
+                       	select 	count(*)
+						into 	 VN_REM_CNT
+						from 	intakeservreqchildremoval isrm, 
+								intakeservicerequestactor isra ,
+								person pr 
+						where 	isrm.servicecaseid = isra.servicecaseid
+								and isra.personid = pr.personid
+								and pr.cjamspid = VI_CLIENT_ID
+								and isrm.activeflag  = 1;--
+						
+																
+												
+						RAISE NOTICE 'VN_REM_CNT%',VN_REM_CNT;--
+						
+                        OPEN REM_CUR;--
+                         WHILE VN_REM_CNT > 0 LOOP
+
+                        FETCH REM_CUR INTO VD_REMOVAL_DT,VD_RETURN_DT;--
+						--EXIT WHEN NOT FOUND;--
+						
+						RAISE NOTICE 'VD_REMOVAL_DT%',VD_REMOVAL_DT;--
+						RAISE NOTICE 'VD_RETURN_DT%',VD_RETURN_DT;--
+						
+						VN_REM_CNT := VN_REM_CNT -1;
+						
+							VN_CLNT_STG_CNT := (	SELECT 	COUNT(*) 
+													FROM 	afcarscaresin af
+													WHERE 	af.cjamspid = VI_CLIENT_ID);--
+													
+								RAISE NOTICE 'VN_CLNT_STG_CNT%',VN_CLNT_STG_CNT;--
+								
+                            VN_REM_STG_CNT := (		SELECT 	COUNT(*)
+													FROM 	afcarscaresin af
+													WHERE 	af.cjamspid = VI_CLIENT_ID
+															AND af.returndate = VD_REMOVAL_DT);--
+								
+								RAISE NOTICE 'VN_REM_STG_CNT%',VN_REM_STG_CNT;--
+								
+                            VN_RET_STG_CNT := (		SELECT 	COUNT(*)
+													FROM 	afcarscaresin af
+													WHERE 	af.cjamspid = VI_CLIENT_ID
+															AND af.removaldate = VD_RETURN_DT);--
+															
+								RAISE NOTICE 'VN_RET_STG_CNT%',VN_RET_STG_CNT;--
+
+                                IF VN_CLNT_STG_CNT = 0 THEN
+								
+								    RAISE NOTICE 'INSERT INTO AFCARSCARESIN ';--
+									
+										INSERT INTO CJAMS.afcarscaresin	VALUES(	nextval('sq_afcares_cares_in'),
+																				VI_CLIENT_ID,
+																				trim(VS_CIS_ID),
+																				VD_REMOVAL_DT,
+																				VD_RETURN_DT,
+																				1,
+																				CURRENT_TIMESTAMP,
+																				current_timestamp,
+																				'CADMIN',
+																				'CADMIN',
+																				NULL,
+																				NULL) ;--
+                                END IF;
+
+                                IF 	VN_CLNT_STG_CNT >= 1 AND VN_REM_STG_CNT = 0 AND VN_REM_STG_CNT = 0  THEN
+                                           
+									INSERT INTO afcarscaresin  VALUES	(	nextval('sq_afcares_cares_in'),
+																			VI_CLIENT_ID,
+																			trim(VS_CIS_ID),
+																			VD_REMOVAL_DT,
+																			VD_RETURN_DT,
+																			1,
+																			CURRENT_TIMESTAMP,
+																			CURRENT_TIMESTAMP,
+																			'CADMIN',
+																			'CADMIN',
+																			NULL,
+																			NULL) ;--
+                                END IF;
+
+                                IF VN_REM_STG_CNT >= 1 AND VD_REMOVAL_DT = VD_RETURN_DT_OLD THEN
+                                       
+									RAISE NOTICE 'UPDATE AFCARSCARESIN ';--
+									
+									UPDATE 	afcarscaresin
+                                    SET 	returndate = VD_RETURN_DT,
+									updatedon = CURRENT_TIMESTAMP
+                                    WHERE 	cjamspid = VI_CLIENT_ID
+											AND ID = (	SELECT 	ID 
+														FROM 	afcarscaresin af
+														WHERE 	af.cjamspid = VI_CLIENT_ID
+														ORDER  BY ID DESC
+														FETCH FIRST 1 ROW ONLY);--
+                                END IF;
+                              
+								VD_REMOVAL_DT_OLD := VD_REMOVAL_DT;--
+								VD_RETURN_DT_OLD := VD_RETURN_DT;--
+
+								
+
+                         END LOOP;--
+
+                         CLOSE REM_CUR;--
+          VN_CLNT_CNT := VN_CLNT_CNT- 1;--
+        END LOOP;--
+
+CLOSE CLNT_CUR;--
+
+	RAISE NOTICE 'FINAL UPDATE ';--
+
+        UPDATE	afcarscaresin
+        SET		ACTIVEFLAG = 0,
+		updatedon = CURRENT_TIMESTAMP
+        WHERE 	ID 	NOT IN	(	SELECT 	ID 
+								FROM 	afcarscaresin
+								WHERE 	(AD_START_DT::timestamp between removaldate::timestamp and returndate::timestamp ) or 
+										(AD_END_DT::timestamp between removaldate::timestamp and returndate::timestamp) or 
+										(returndate is null)	or 
+										(removaldate::timestamp between AD_START_DT::timestamp and AD_END_DT::timestamp) or 
+										(removaldate::timestamp between AD_START_DT::timestamp and AD_END_DT::timestamp)) ;--
+						
+				RAISE NOTICE 'FINAL UPDATE 2 ';--					
+										
+        UPDATE afcarscaresin
+        SET EXTRACT = (	trim(cjamspid::varchar)||
+						trim(cisid::VARCHAR)   ||
+						SUBSTRING(to_char( removaldate,'YYYYMMDD'),5,2)	||
+						SUBSTRING(to_char( removaldate,'YYYYMMDD'),7,2) ||
+						SUBSTRING(to_char( removaldate,'YYYYMMDD'),1,4)	||
+						COALESCE(SUBSTRING(to_char( returndate,'YYYYMMDD'),5,2),'  ')        ||
+						COALESCE(SUBSTRING(to_char( returndate,'YYYYMMDD'),7,2),'  ')        ||
+						COALESCE(SUBSTRING(to_char( returndate,'YYYYMMDD'),1,4),'    ')),
+						updatedon = CURRENT_TIMESTAMP;--
+
+ 
+END;--
+$function$
+;

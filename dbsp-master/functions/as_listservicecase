@@ -1,0 +1,47 @@
+CREATE OR REPLACE FUNCTION as_listservicecase(v_intakeserviceid uuid, v_userid character varying, pagenumber bigint, pagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset  int;
+ v_pagenumber  int;  
+ l_servicecase json;
+ v_personid uuid;
+ --v_intakeserviceid uuid;
+ 
+BEGIN
+ v_pagenumber  :=  pagenumber-1;
+ v_pageoffset  =  v_pagenumber  *  pagesize;
+
+ SELECT personid INTO v_personid FROM actor ac 
+ INNER JOIN intakeservicerequest isr ON ac.intakeserviceid = isr.intakeserviceid AND isr.activeflag = 1 
+ WHERE isr.intakeserviceid = v_intakeserviceid AND ac.actortype IN ('RA','AV','RC') ORDER BY actiontype ASC LIMIT 1;
+      
+ SELECT json_agg(e) INTO l_servicecase FROM(  
+  SELECT ac.personid, isr.intakeserviceid, isr.servicerequestnumber, (
+   SELECT json_agg(up.fullname || ' (' || ca.responsibilitytypekey ||')') 
+   FROM caseassignment ca INNER JOIN userprofile up ON ca.toworkeridno = up.securityusersid AND up.activeflag = 1
+   WHERE objectid = isr.intakeserviceid AND ca.activeflag = 1 AND enddate IS NULL) AS workers, (
+   SELECT srtcdc.description FROM intakeservicerequestdispositioncode isrdc 
+   INNER JOIN servicerequesttypeconfigdispositioncode srtcdc ON srtcdc.servicerequesttypeconfigiddispostionid = isrdc.servicerequesttypeconfigiddispostionid 
+   WHERE isrdc.intakeserviceid = isr.intakeserviceid AND isrdc.activeflag = 1 ORDER BY isrdc.insertedon DESC LIMIT 1) AS status, 'Request for Services'::character varying AS servicetype, 
+   srst.description AS subservicetype, (
+   SELECT json_agg(isst.typedescription) FROM asservicesoncase asoc
+   INNER JOIN intakeservsubtype isst ON asoc.caseservicesubtypekey = isst.intakeservsubtypekey AND asoc.approvalstatus IN ('approved') AND enddate IS NULL 
+   WHERE asoc.ascaseid = isr.intakeserviceid AND asoc.personid = v_personid AND asoc.activeflag = 1) AS programtypes, (
+   SELECT isr1.servicerequestnumber FROM intakeservicerequestcrossreference isrcr 
+   INNER JOIN intakeservicerequest isr1 ON isr1.intakeserviceid = isrcr.withintakeservicerequestid 
+   WHERE isrcr.fromintakeservicerequestid = isr.intakeserviceid AND isrcr.activeflag = 1 ORDER BY isrcr.insertedon DESC LIMIT 1) AS connectedto
+  FROM intakeservicerequest isr 
+  INNER JOIN servicerequestsubtype srst ON srst.servicerequestsubtypeid = isr.intakeservicerequestclassid 
+  INNER JOIN actor ac ON ac.intakeserviceid = isr.intakeserviceid AND ac.activeflag = 1 AND ac.actortype IN ('RA','AV','RC')
+  WHERE ac.personid = v_personid AND isr.activeflag = 1 AND isr.intakeservreqtypeid = 'd207bdd4-f281-4ec8-949c-8fd9657227f9'
+   AND isr.intakeserviceid <> v_intakeserviceid AND isr.teamtypekey = 'AS'                  
+ )e;
+
+ RETURN l_servicecase;
+END;
+
+$function$
+

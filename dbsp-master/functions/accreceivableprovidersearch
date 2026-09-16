@@ -1,0 +1,213 @@
+CREATE OR REPLACE FUNCTION accreceivableprovidersearch(searchobj json)
+ RETURNS TABLE(totalcount bigint, provider_id integer, provider_nm character varying, tax_id_no numeric, taxidtype character varying, prov_tax_type_cd character varying, mail_code_tx character varying, adm_cell_phone_tx character varying, adm_home_phone_tx character varying, adm_work_phone_tx character varying, adm_fax_tx character varying, adr_fax_tx character varying, adr_cell_phone_tx character varying, adr_home_phone_tx character varying, adr_work_phone_tx character varying, adm_work_xtn_tx character, adr_work_xtn_tx character varying, adr_street_nm character varying, adr_city_nm character varying, adr_state_cd character varying, adr_zip5_no numeric, adr_county_cd character varying, adr_street_tx character varying, adr_county_nm character varying, totalbalancedue numeric, under_payment numeric, address character varying, localdept jsonb, receivabletype jsonb, categorytype character varying, provider_category_cd character varying, totalplacement bigint, collectionresp character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- Vineet Tirodkar - 05/04/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+------------------------------------------------------------------------------------------------
+DECLARE 
+ v_Providerid INT;
+    v_ProviderName VARCHAR(50);
+    v_taxid INT;
+    v_Firstname varchar(50); 
+    v_Lastname varchar(50);
+    v_Mailcode varchar(50);
+    v_liPageNumber INT;                              
+    v_liPageSize INT;
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+v_Providerid := searchobj ->> 'providerid';
+v_ProviderName := searchobj ->> 'providername';  
+v_taxid := searchobj ->> 'taxid'; 
+v_Firstname := searchobj ->> 'fname'; 
+v_Lastname := searchobj ->> 'lname'; 
+v_Mailcode := searchobj ->> 'mailcode';
+v_liPageNumber := searchobj ->> 'pagenumber';
+v_liPageSize := searchobj ->> 'pagesize'; 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+ 
+select count(1) over() as totalcount,x.* from (select distinct prov.provider_id,CASE WHEN (prov.provider_nm = null OR prov.provider_nm='') 
+THEN CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) ELSE prov.provider_nm END AS provider_nm,prov.tax_id_no,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=prov.prov_tax_type_cd
+AND PICKLIST_TYPE_ID='216') as taxidtype,prov.prov_tax_type_cd,prov.mail_code_tx,prov.adm_cell_phone_tx,prov.adm_home_phone_tx,prov.adm_work_phone_tx,
+prov.adm_fax_tx,prov.adr_fax_tx,prov.adr_cell_phone_tx,prov.adr_home_phone_tx,prov.adr_work_phone_tx,
+prov.adm_work_xtn_tx,prov.adr_work_xtn_tx
+,tpa.adr_street_nm AS adr_street_nm             
+,tpa.adr_city_nm   AS adr_city_nm         
+,tpa.adr_state_cd  AS adr_state_cd       
+,tpa.adr_zip5_no   AS adr_zip5_no
+,tpa.adr_county_cd AS adr_county_cd,tpa.adr_street_tx,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=tpa.adr_county_cd
+AND PICKLIST_TYPE_ID='104') as adr_county_nm,
+(
+ select sum(trdd.receivable_balance_no)
+ from tb_receivable_detail trdd
+ join tb_receivable_header ttrh on ttrh.receivable_id=trdd.receivable_id
+ join tb_provider tp on tp.provider_id =ttrh.provider_id
+ join tb_receivable_collection_status rcs on rcs.receivable_detail_id = trdd.receivable_detail_id
+ and rcs.delete_sw = 'N'
+ and rcs.active_sw = 'Y'
+ and rcs.collection_status_cd <> '775' -- Referred to CCU
+ where trdd.receivable_detail_id :: character varying
+ not in
+ ( select objectid
+ from routing r
+ join tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r.objectid
+ join tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+   where r.eventcode = 'MANREC'
+   and trhr.provider_id = v_Providerid
+ and r.routingstatustypeid  in (73,75)
+ and r.activeflag = 1
+ and trde.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ )
+ and trdd.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ and tp.provider_id = v_Providerid
+ and ttrh.delete_sw = 'N'
+ /*select sum(trdd.receivable_balance_no) from tb_receivable_detail trdd
+ join tb_receivable_header ttrh on ttrh.receivable_id=trdd.receivable_id
+ join tb_provider tp on tp.provider_id =ttrh.provider_id 
+ where trdd.receivable_detail_id :: character varying 
+ not in 
+ (
+ select objectid from routing r
+  join tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r.objectid
+  join tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+  where r.eventcode = 'MANREC' and trhr.provider_id = v_Providerid 
+  and r.routingstatustypeid  in (73,75) and r.activeflag = 1 
+  and trde.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ )
+    and trdd.receivable_detail_id :: character varying  
+    not in 
+    (select receivable_detail_id from tb_receivable_collection_status where collection_status_cd = '775')
+ and trdd.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ and tp.provider_id=  v_Providerid   and  ttrh.delete_sw='N'*/
+) as totalbalancedue,
+
+(select sum(trde.receivable_balance_no) from routing r
+ join tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r.objectid
+  and trde.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ join tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+ where r.eventcode = 'MANREC' --and r.objectid = '10000079'--and trhr.provider_id = 201900420
+ and r.routingstatustypeid in (73) and r.activeflag = 1 
+ and trhr.provider_id = v_Providerid  and  trhr.delete_sw='N'
+) as under_payment,
+
+(select provider_adr as paymentaddress from get_provider_address(prov.provider_id,trim('{3357}') )):: character varying as address,
+
+(select json_agg(x) from
+ ( 
+ select trd.county_cd,(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trd.county_cd and picklist_type_id='104') 
+  as localdept,case when trd.county_cd is not null and sum(trd.receivable_balance_no) <> 0  then sum(trd.receivable_balance_no) else null end as sum from tb_payment_header tph
+  inner join tb_payment_detail tpd on tpd.payment_id= tph.payment_id
+  inner join tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id 
+   and trd.receivable_balance_no <> 0 and trd.receivable_balance_no is not null
+   and trd.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+  where tph.provider_id=v_Providerid 
+  and trd.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE) 
+  and  trd.delete_sw='N'  
+  and trd.receivable_detail_id :: character varying 
+   not in 
+   (select objectid from routing r
+    join tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r.objectid
+    join tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+    where r.eventcode = 'MANREC' and trhr.provider_id = v_Providerid
+    and r.routingstatustypeid  in (73,75) and r.activeflag = 1 
+    and trde.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+   )
+   and trd.receivable_detail_id :: character varying  
+            not in 
+            (select receivable_detail_id from tb_receivable_collection_status where collection_status_cd = '775' and delete_sw = 'N' and active_sw = 'Y')
+  group by trd.county_cd
+ ) as x)::jsonb as localdept,
+
+(select json_agg(x) from
+(
+select trd.receivable_type,(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trd.receivable_type and picklist_type_id='64') as 
+ receivablenm,case when trd.receivable_type is not null then sum(trd.receivable_balance_no) else null end as sum from tb_payment_header tph
+ inner join tb_payment_detail tpd on tpd.payment_id= tph.payment_id
+ inner join tb_receivable_detail trd on trd.payment_detail_id = tpd.payment_detail_id
+  and trd.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ inner join tb_receivable_header trh on trh.receivable_id = trd.receivable_id
+ where tph.provider_id=v_providerid 
+ and trd.delete_sw='N' 
+ and trd.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ and   trd.receivable_detail_id :: character varying 
+ not in 
+ (
+ select objectid from routing r
+  join tb_receivable_detail trde on trde.receivable_detail_id :: character varying = r.objectid
+  join tb_receivable_header trhr on trhr.receivable_id=trde.receivable_id
+  where r.eventcode = 'MANREC' and trhr.provider_id = v_providerid
+  and r.routingstatustypeid  in (73,75) and r.activeflag = 1 
+  and trde.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ )
+ and trd.receivable_detail_id :: character varying  
+    not in 
+    (select receivable_detail_id from tb_receivable_collection_status where collection_status_cd = '775' and delete_sw = 'N' and active_sw = 'Y')
+ group by trd.receivable_type
+) as x)::jsonb as receivabletype,
+(
+select value_tx from tb_picklist_values 
+ where 
+ trim(picklist_value_cd)=prov.provider_category_cd and picklist_type_id='155') as categorytype,
+ (
+ select string_agg(picklist_value_cd,',') from tb_provider_picklist prplv where prplv.provider_id=prov.provider_id 
+  and prplv.delete_sw='N' and prplv.picklist_type_id='155'
+ )::character varying as provider_category_cd,              
+ (
+ select count(1) from tb_placement tp 
+  where tp.provider_id=v_providerid and tp.delete_sw='N' and tp.approval_status_cd = '3047' and exit_dt is null
+ ) as totalplacement,
+ (
+ case
+  when f_prvpcklst_cat(prov.provider_id::bigint,'PLACEMENT')='3049' --Private Organization
+   then  'DHS' 
+  when f_prvpcklst_cat(prov.provider_id::bigint,'PLACEMENT')='3302' --CPA Office, 1782 is CPA Home
+   then  'DHS'
+  when f_prvpcklst_cat(prov.provider_id::bigint,'PLACEMENT')='3274' --RCC Facility
+   then  'DHS'
+  when f_prvpcklst_cat(prov.provider_id::bigint,'PLACEMENT')='3794' --Residential Treatment Center
+   then  'DHS'
+  when f_prvpcklst_cat(prov.provider_id::bigint,'PLACEMENT')='1782' --CPA Home
+   then  'DHS'
+  when trim(prov.provider_category_cd)='3794' --Residential Treatment Center (RTC)
+   then  'DHS' 
+  else 'LDSS' 
+ end
+ )::character varying as collectionresp
+ from tb_provider prov
+ left join tb_provider_addresses tpa on tpa.parent_key_id = prov.provider_id::character varying and tpa.delete_sw='N'
+ left join tb_payment_header payhead on payhead.provider_id = prov.provider_id
+ left join tb_payment_detail paydet on paydet.payment_id = payhead.payment_id
+ left join tb_receivable_detail recdet on recdet.payment_detail_id = paydet.payment_detail_id
+  --and recdet.county_cd in (select statecountycode from county where golivedate <= CURRENT_DATE)
+ where prov.provider_id=v_Providerid 
+ group by prov.provider_id,prov.provider_nm,prov.provider_first_nm,prov.provider_last_nm,prov.tax_id_no,
+  prov.prov_tax_type_cd,prov.mail_code_tx,prov.adm_cell_phone_tx,prov.adm_home_phone_tx,prov.adm_work_phone_tx,
+  prov.adm_fax_tx,prov.adr_fax_tx,prov.adr_cell_phone_tx,prov.adr_home_phone_tx,prov.adr_work_phone_tx,
+  prov.adm_work_xtn_tx,prov.adr_work_xtn_tx,tpa.adr_street_nm,tpa.adr_city_nm,tpa.adr_state_cd,tpa.adr_zip5_no,tpa.adr_county_cd,prov.provider_category_cd,tpa.adr_street_tx,tpa.adr_unit_no_tx
+) as x
+LIMIT 1 OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

@@ -1,0 +1,42 @@
+CREATE OR REPLACE FUNCTION sp_fiscalunitticklers_dashboard(pagenumber bigint, pagesize bigint, v_statusval character varying, v_typeval character varying)
+ RETURNS TABLE(totalcount bigint, tickler_id bigint, tickler_tx character varying, create_ts character varying, due_dt date, action_sw character, action_dt date, data_valid_sw character, update_ts character varying, approve_staff_id integer, system_tickler_tx character varying, delete_sw character, ticklertype character varying, entity_key_id bigint, entity_nm character varying, clientname character varying, overduecount bigint, currentduecount bigint, upcomingcount bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+ v_pageoffset int;
+    v_pagenumber int;
+    v_data_valid_sw character default null;
+
+BEGIN
+
+ v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize; 
+
+    if(v_statusval = 'Unread') then v_data_valid_sw := 'Y';
+ end if;  
+
+    return query 
+
+ select count(1) over() as totalcount, tt.tickler_id, tt.tickler_tx, tt.create_ts, (tt.create_ts:: date + INTERVAL '30 day'):: date as due_dt, tt.action_sw, 
+ tt.action_dt, tt.data_valid_sw, tt.update_ts, tt.action_by_staff_id, tst.system_tickler_tx, tt.delete_sw, 
+ (select value_tx from tb_picklist_values where TRIM(PICKLIST_VALUE_CD)=tt.entity_type_cd AND PICKLIST_TYPE_ID='275') as ticklertype, 
+ tt.entity_key_id, tt.entity_nm,
+ concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as clientname,
+    (select count(*) from tb_ticklers t1 where t1.create_ts:: date + INTERVAL '30 day' < now()::date and t1.delete_sw = 'N' and t1.action_sw is null) overduecount,
+    (select count(*) from tb_ticklers t2 where t2.create_ts:: date + INTERVAL '30 day' = now()::date and t2.delete_sw = 'N' and t2.action_sw is null) currentduecount,
+    (select count(*) from tb_ticklers t3 where t3.create_ts:: date + INTERVAL '30 day' > now()::date and t3.create_ts:: date + INTERVAL '30 day' < (now() + INTERVAL '30 day')::date and t3.delete_sw = 'N' and t3.action_sw is null) upcomingcount 
+ from tb_ticklers tt 
+    left join tb_system_ticklers tst on tt.system_tickler_id = tst.system_tickler_id
+    left join person p on p.cjamspid = tt.client_id
+ where tt.delete_sw = 'N'  
+    AND CASE WHEN v_data_valid_sw is NOT NULL THEN (tt.data_valid_sw not in (v_data_valid_sw) or tt.data_valid_sw is null) ELSE TRUE end
+    and (v_typeval='All' or case when v_typeval='CB' then tt.system_tickler_id=54 when v_typeval='AR' then tt.system_tickler_id=42 when v_typeval='PEV' then tt.system_tickler_id=439 else null end)
+ order by tt.create_ts desc
+ LIMIT pagesize OFFSET v_pageoffset;
+
+END;
+
+$function$
+

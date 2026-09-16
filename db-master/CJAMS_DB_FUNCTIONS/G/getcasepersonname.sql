@@ -1,0 +1,109 @@
+CREATE OR REPLACE FUNCTION cjams.getcasepersonname(objecttypekey character varying, objectid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+-------------------------------------------------------------------------------------------
+--Revision(s)
+--08/30/2023 - Palani/Chandra - Performance tuning (CIDM-7845)
+
+-------------------------------------------------------------------------------------------
+
+    DECLARE   l_personname json;
+    declare v_person_json json;
+    declare i json;
+    declare j json;
+    declare rolerec record;
+    DECLARE l_count bigint;
+DECLARE v_objectid CHARACTER VARYING ;
+BEGIN        
+v_objectid := objectid;
+
+IF (lower(objecttypekey)='intake') THEN
+
+    SELECT COUNT(1) INTO l_count FROM intakedastaging WHERE intakenumber = v_objectid AND activeflag =1;
+    IF (COALESCE(l_count,0) = 0 ) THEN
+        SELECT json_agg(x) INTO l_personname  FROM
+        (
+            SELECT  DISTINCT  concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ) :: character varying as personname
+            FROM    intakeservicerequestactor ISRA  
+                    INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1
+            WHERE   ISRA.activeflag =1  
+                    AND ISRA.isheadofhousehold=true  
+                    AND ISRA.intakenumber = v_objectid
+            ORDER BY 1
+        ) x;
+    ELSE
+       
+        SELECT json_agg(x) INTO l_personname
+        FROM (
+            select concat_ws(' ',coalesce(per.firstname,null),coalesce(per.middlename,null),coalesce(per.lastname,null),coalesce(per.suffix,null)) as personname
+            from intakeservicerequestactor isra
+            join person per on per.personid = isra.personid
+            join actor act on act.actorid = isra.actorid and act.activeflag = 1  
+            where isra.intakenumber = v_objectid and isra.activeflag = 1 and isra.isheadofhousehold = true
+        ) x;
+
+        /*CREATE temp TABLE sp_person
+        (
+        personname text
+        );
+
+        FOR rolerec IN select * from intakeservicerequestactor isra join person per on per.personid = isra.personid join actor act on act.actorid =
+        isra.actorid and act.activeflag = 1  where isra.intakenumber = v_objectid and isra.activeflag = 1 and isra.isheadofhousehold = true
+        loop
+        -- if (rolerec.intakeservicerequestpersontypekey = 'LG')
+        -- then
+           
+                insert into sp_person
+                    SELECT   concat_ws(' ',coalesce(rolerec.firstname,null),coalesce(rolerec.middlename,null),coalesce(rolerec.lastname,null),coalesce(rolerec.suffix,null) );
+        --   (rolerec.firstname)::character varying || ' ' || (rolerec.lastname):: character varying  personname ;
+                       
+           
+        -- end if;
+       
+        END loop;
+       
+             SELECT json_agg(x)   INTO l_personname FROM (
+                SELECT coalesce(personname,'') as personname  from sp_person) x;
+        drop TABLE sp_person; */
+    END IF;
+ELSIF (lower(objecttypekey)='adoptioncase') THEN
+  SELECT json_agg(x) INTO l_personname  FROM (
+SELECT distinct  concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ) :: character varying as personname
+    FROM  adoptioncaseactor aca  
+    INNER JOIN person p on p.personid = aca.personid AND  p.activeflag =1
+    WHERE    aca.activeflag =1  AND aca.actortypekey in( 'PVTADPCHILD','CHILD' )
+    AND aca.adoptioncaseid = v_objectid ::uuid
+ORDER BY 1) x;
+ELSE
+ SELECT json_agg(x) INTO l_personname  FROM (select * from (
+SELECT distinct  concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ) :: character varying as personname
+--COALESCE(p.firstname,'')  || ' ' || COALESCE(p.lastname,'') personname
+    FROM  intakeservicerequestactor ISRA  
+    INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1
+INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1
+    WHERE    ISRA.activeflag =1  
+   -- AND ISRA.intakeservicerequestpersontypekey = 'LG'
+    and ISRA.isheadofhousehold=true  
+    AND (--(ISRA.intakeserviceid = v_objectid ::uuid) or
+    (ISRA.servicecaseid = v_objectid::uuid))
+--ORDER BY 1
+union
+SELECT distinct  concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ) :: character varying as personname
+--COALESCE(p.firstname,'')  || ' ' || COALESCE(p.lastname,'') personname
+    FROM  intakeservicerequestactor ISRA  
+    INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1
+INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1
+    WHERE    ISRA.activeflag =1  
+   -- AND ISRA.intakeservicerequestpersontypekey = 'LG'
+    and ISRA.isheadofhousehold=true  
+    AND ((ISRA.intakeserviceid = v_objectid ::uuid) --OR (ISRA.servicecaseid = v_objectid::uuid)
+    )) A
+ORDER BY 1) x;
+   
+END IF;    
+
+ RETURN l_personname;
+END;
+$function$
+;

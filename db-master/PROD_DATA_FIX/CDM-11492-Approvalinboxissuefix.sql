@@ -1,0 +1,1 @@
+update routing set activeflag = 0, updatedon = now(), updatedby = 'CDM-11492' where objectid = 'd2e2b6cf-50c2-4482-beef-5701aa94daf9' and activeflag = 1 and eventcode = 'PWCR' and routingid = '3c91c54d-71ab-478a-96df-2241f461481b';

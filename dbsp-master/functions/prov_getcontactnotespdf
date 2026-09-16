@@ -1,0 +1,180 @@
+CREATE OR REPLACE FUNCTION prov_getcontactnotespdf(v_entitytype character varying, v_entitytypeid character varying)
+ RETURNS TABLE(casenumber character varying, casetype character varying, contactnotes json)
+ LANGUAGE plpgsql
+AS $function$ 
+begin 
+
+/*Get adoption case */
+IF EXISTS (SELECT * FROM adoptioncase WHERE adoptioncaseid :: character varying =v_entitytypeid) THEN
+RETURN QUERY 
+ SELECT * FROM getadoptioncasecontactnotespdf(v_entitytype, v_entitytypeid);
+ELSE
+
+RETURN query SELECT     v_entitytypeid AS casenumber, 
+             v_entitytype   AS casetype, 
+             json_agg(row_to_json( 
+             ( 
+                    SELECT r 
+                    FROM   ( 
+                                  SELECT pn.contactdate, 
+                                         pn.insertedon, 
+                                         pn.starttime, 
+                                         pn.endtime, 
+                                         pn.initiationindicator, 
+                                         pn.attemptindicator, 
+                                         pn.traveltime, 
+                                         pn.otherpersonname, 
+                                              pn.entitytype,
+                                          case  pn.entitytype
+            when 'intakeservicerequest' then 'CPS'
+            when 'servicecase' then 'Service Case'
+            when 'adoption' then 'Adoption Case'
+            when 'intake' then 'Intake'
+           end as entitytypesource,
+                                          CASE 
+                                                WHEN ( 
+                                                              pnt.progressnoteclassificationtypekey = 'System') THEN 'System'
+                                                ELSE COALESCE(up.displayname, '') 
+                                         END AS enteredby, 
+                                         CASE 
+                                                WHEN ( 
+                                                              pnt.progressnoteclassificationtypekey = 'System') THEN '' 
+                                                ELSE COALESCE(te.teamname, '') 
+                                         END    AS teamname, 
+                                         'user' AS USER, 
+                                         --COALESCE((SELECT pnrt.typedescription FROM progressnotereasontype pnrt WHERE pnrt.progressnotereasontypekey=pn.progressnotereasontypekey AND pnrt.activeflag=1), '') AS contactpurpose,
+                                         ( 
+                                                SELECT Array_agg(pnrt.typedescription) 
+                                                FROM   progressnotereasontype pnrt 
+                                                WHERE  pnrt.progressnotereasontypekey= ANY(String_to_array(pn.progressnotereasontypekey, ','))
+                                                AND    pnrt.activeflag=1)   AS contactpurpose, 
+                                         pnt.description::character VARYING AS contacttype, 
+                                         COALESCE( 
+                                                    ( 
+                                                    SELECT pns.description 
+                                                    FROM   progressnotesubtype AS pns 
+                                                    WHERE  pns.progressnotesubtypeid=pn.progressnotesubtypeid), '') AS contactlocation,
+                                         ( 
+                                                SELECT json_agg(actor) 
+                                                FROM   ( 
+                                                                 SELECT    cp.contactparticipantid, 
+                                                                           cp.participanttypekey, 
+                                                                           cp.intakeservicerequestactorid, 
+                                                                           cp.address1, 
+                                                                           cp.address2, 
+                                                                           cp.city, 
+                                                                           cp.state, 
+                                                                           cp.zipcode, 
+                                                                           cp.email, 
+                                                                           cp.phonenumber, 
+                                                                           isra.personid, 
+                                                                           CASE 
+                                                                                     WHEN p.prefx IS NULL THEN col.prefixtypekey
+                                                                                     ELSE COALESCE(p.prefx, '') 
+                                                                           END AS prefx, 
+                                                                           CASE 
+                                                                                     WHEN p.firstname IS NULL THEN col.firstname
+                                                                                     ELSE COALESCE(p.firstname, '') 
+                                                                           END AS firstname, 
+                                                                           CASE 
+                                                                                     WHEN p.middlename IS NULL THEN col.middlename
+                                                                                     ELSE COALESCE(p.middlename, '') 
+                                                                           END AS middlename, 
+                                                                           CASE 
+                                                                                     WHEN p.lastname IS NULL THEN col.lastname
+                                                                                     ELSE COALESCE(p.lastname, '') 
+                                                                           END AS lastname, 
+                                                                           CASE 
+                                                                                     WHEN p.suffix IS NULL THEN col.suffixtypekey
+                                                                                     ELSE COALESCE(p.suffix, '') 
+                                                                           END AS suffix, 
+                                                                           isra.actorid, 
+                                                                           at.actortype, 
+                                                                           at.typedescription 
+                                                                 FROM      contactparticipant cp 
+                                                                 LEFT JOIN intakeservicerequestactor isra 
+                                                                 ON        isra.intakeservicerequestactorid=cp.intakeservicerequestactorid
+                                                                 AND       isra.activeflag=1 
+                                                                 LEFT JOIN person p 
+                                                                 ON        p.personid = isra.personid 
+                                                                 AND       p.activeflag=1 
+                                                                 LEFT JOIN collateral col 
+                                                                 ON        col.collateralid = cp.participantid
+                                                                 AND       col.activeflag=1 
+                                                                 LEFT JOIN collateralroleconfig crg
+                                                                 ON        col.collateralid = crg.collateralid
+                                                                 AND       crg.activeflag = 1
+                                                                 LEFT JOIN 
+                                                                           ( 
+                                                                                           SELECT DISTINCT actortype, 
+                                                                                                           typedescription 
+                                                                                           FROM            actortype) at 
+                                                                 ON        at.actortype = isra.intakeservicerequestpersontypekey
+                                                                             OR at.actortype = crg.actortypekey 
+                                                                 WHERE     cp.progressnoteid = pn.progressnoteid 
+                                                                 AND       cp.activeflag = 1)actor ) :: jsonb AS personcontact,
+                                         CASE 
+                                                WHEN ( 
+                                                              pnt.progressnoteclassificationtypekey = 'System') THEN 0::boolean
+                                                ELSE COALESCE(pn.savemode,0::boolean) 
+                                         END AS draft, 
+                                         ( 
+                                                SELECT json_agg(detailnote) 
+                                                FROM   ( 
+                                                                SELECT   upf.displayname, 
+                                                                         pnd.insertedon, 
+                                                                         pnd.description, 
+                                                                         pntin.progressnotetypekey 
+                                                                FROM     progressnotedetail pnd 
+                                                                JOIN     userprofile upf 
+                                                                ON       pnd.insertedby=upf.securityusersid 
+                                                                AND      upf.activeflag=1 
+                                                                JOIN     progressnotetype pntin 
+                                                                ON       pntin.progressnotetypeid = pn.progressnotetypeid 
+                                                                AND      pntin.activeflag=1 
+                                                                WHERE    pnd.progressnoteid = pn.progressnoteid 
+                                                                AND      pnd.activeflag=1 
+                                                                ORDER BY pnd.insertedon DESC limit 1) detailnote ) :: jsonb AS contactnotes) r) ))
+  FROM       progressnote pn 
+  INNER JOIN progressnotetype AS pnt 
+  ON         pnt.progressnotetypeid = pn.progressnotetypeid 
+  AND        pnt.activeflag=1 
+  INNER JOIN userprofile up 
+  ON         pn.insertedby=up.securityusersid 
+  AND        up.activeflag=1 
+  LEFT JOIN  teammemberassignment tma 
+  ON         tma.securityusersid=up.securityusersid 
+  AND        tma.activeflag=1 
+  LEFT JOIN  teammember tm 
+  ON         tm.teammemberid=tma.teammemberid 
+  AND        tm.activeflag=1 
+  LEFT JOIN  team te 
+  ON         te.teamid=tm.teamid 
+  AND        te.activeflag=1 
+  WHERE      pn.activeflag=1 
+              AND pn.entitytypeid IN ( v_entitytypeid :: character VARYING, 
+                                 ( 
+                                                 SELECT DISTINCT intakeserviceid:: character VARYING 
+                                                 FROM            intakeservicerequest 
+                                                 WHERE           servicecaseid::text =v_entitytypeid 
+                                                 AND             activeflag =1 limit 1), 
+                                 ( 
+                                                 SELECT DISTINCT intakenumber:: character VARYING 
+                                                 FROM            intakeservicerequestactor 
+                                                 WHERE           ( 
+                                                                                 servicecaseid::text =v_entitytypeid 
+                                                                 OR              intakeserviceid::text =v_entitytypeid ) 
+                                                 AND             activeflag =1 limit 1), 
+                                 ( 
+                                                 SELECT DISTINCT servicecaseid:: character VARYING 
+                                                 FROM            intakeservicerequestactor 
+                                                 WHERE           ( 
+                                                                                 servicecaseid::text =v_entitytypeid 
+                                                                 OR              intakeserviceid::text =v_entitytypeid ) 
+                                                 AND             activeflag =1 limit 1)
+                                 
+                                                );
+END IF;
+             END;
+                                                                                     $function$
+

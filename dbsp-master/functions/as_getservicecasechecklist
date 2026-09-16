@@ -1,0 +1,45 @@
+CREATE OR REPLACE FUNCTION as_getservicecasechecklist(v_servicecaseid uuid, pageno integer, pagesize integer, v_securityusersid character varying DEFAULT ''::character varying)
+ RETURNS TABLE(totalcount bigint, activityid uuid, activitytaskid uuid, actvityname text, duedate timestamp without time zone, task character varying, tasktype character varying, required boolean, assignedon timestamp without time zone, taskstatustype character varying, completeddate timestamp without time zone, dispositionstatus character varying, expceptionrequest character varying, assignedto character varying, activitytasktypekey character varying, insertedon timestamp without time zone, assignloadnumber character varying, location character varying, outofoffice boolean, activitytaskstatustypekey character varying, activitytaskdispositiontypekey character varying, taskdescription text, loadnumber character varying, startdatetime timestamp without time zone, enddatetime timestamp without time zone, activitytypekey character varying, taskdispositiontypekey character varying, iseditable boolean, iscontinual boolean, notes text, checklisttype character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+RETURN QUERY  
+
+SELECT 
+ COUNT(1) OVER() totalCOUNT,
+ a.ActivityId, at.ActivityTaskId, a.description,
+ CASE 
+  WHEN at.duedate IS NULL THEN 
+   at.assignedon + interval '1' day * amt.duedateoffset
+  ELSE at.duedate    
+ END,
+ at.name task, att.TypeDescription AS tasktypeType,at.Required,at.AssignedOn,atst.typedescription AS taskstatus,
+ at.completeddate,atd.typedescription AS dispositionstatus,
+ null :: character varying expceptionrequest,
+ u.displayname Assignedto,
+ at.ActivityTaskTypeKey,at.insertedon,at.assignedto as assignloadnumber,at.location,at.outofoffice,atst.ActivityTaskStatusTypeKey,
+ at.ActivityTaskDispositionTypekey,at.description as taskdescription,'' :: character varying as loadnumber,
+ at.startdatetime, at.ENDdatetime,att.activitytypekey,at.taskdispositiontypekey,at.iseditable,at.iscontinual,at.notes,srst.classkey
+FROM activitytask at
+LEFT JOIN Activity a ON a.activityid=at.activityid AND a.activeflag=1  
+LEFT JOIN ammappingtask amt ON amt.amtaskid=at.amtaskid AND amt.activeflag=1 AND amt.ammappingid=a.ammappingid
+LEFT JOIN ammapping amp ON amp.amactivityid=a.amactivityid AND  amp.activeflag=1 AND amp.ammappingid=amt.ammappingid
+LEFT JOIN investigationmapping im ON im.ammappingid=amp.ammappingid AND im.activeflag=1
+INNER JOIN servicerequesttypeconfig srtc ON srtc.servicerequesttypeconfigid=im.objectid --AND srtc.activeflag=1
+INNER JOIN servicerequestsubtype srst ON srst.servicerequestsubtypeid=srtc.servicerequestsubtypeid AND srst.activeflag=1
+LEFT JOIN activitytasktype att ON att.ActivityTaskTypeKey=at.ActivityTaskTypeKey 
+    AND att.activitytypekey in('services')
+LEFT JOIN ActivityTaskStatusType atst ON  atst.ActivityTaskStatusTypeKey=at.ActivityTaskStatusTypeKey
+    AND atst.activitytypekey in('services')
+LEFT JOIN ActivityTaskDispositionType atd ON atd.ActivityTaskDispositionTypekey=at.ActivityTaskDispositionTypekey
+INNER JOIN userprofile u ON  u.securityusersid = at.assignedto AND u.activeflag=1
+WHERE at.activeflag =1 AND a.objectid =v_servicecaseid;
+--order by at.name asc 
+-- limit pagesize  offset pageno ;
+
+END;
+
+$function$
+

@@ -1,0 +1,2 @@
+update servicecasedisposition set activeflag = 0, updatedby = 'CDM-8661', updatedon = now() where servicecasedispositionid = 'bdad1f14-4b5b-4ffe-8bb6-96017ea20c7b';
+update servicecase set statustypekey = 'pending', dispositioncode = 'open', enddate = null, updatedby = 'CDM-8661', updatedon = now() where servicecaseid = '45477341-a98d-457f-ae41-c95847f37ea7';

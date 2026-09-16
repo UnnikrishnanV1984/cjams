@@ -1,0 +1,1 @@
+ALTER TABLE cjams.adoptionagreementrate DROP CONSTRAINT fk_adoptionagreementrate_tb_provider;

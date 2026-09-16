@@ -1,0 +1,159 @@
+CREATE OR REPLACE FUNCTION as_sp_add_eligibility_events(searchobj json, v_securityid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+ v_client_id bigint;
+ eligibility_count int;
+ v_new_eligibility_id int;
+ v_client_name character varying;
+  v_start_dt   date;                
+  v_end_dt date;
+  v_ssn numeric;
+ v_caseworker_name character varying;
+ ssa_ssi_count integer;
+ v_is_event boolean;
+ v_isupdate boolean;
+ v_delete character;
+ v_event_delete character;
+ v_eligibility_id integer;
+ v_event_id integer;
+ v_event_start_dt date;
+ v_event_end_dt date ;
+BEGIN 
+v_client_id := searchobj ->> 'client_id';
+v_client_name := searchobj ->> 'client_name';
+v_start_dt   := searchobj ->> 'start_dt';                       
+v_end_dt   := searchobj ->> 'end_dt';
+v_event_start_dt   := searchobj ->> 'event_start_dt';                       
+v_event_end_dt   := searchobj ->> 'event_end_dt';
+--v_pagenumber := v_liPageNumber - 1;
+--v_pageoffset := v_pagenumber * v_liPageSize;
+v_ssn := searchobj ->> 'ssn'; 
+v_caseworker_name :=searchobj ->> 'caseworker_name';
+v_is_event := searchobj ->> 'is_event_only';
+v_isupdate := searchobj ->> 'is_update';
+v_eligibility_id :=(searchobj ->> 'eligibility_id');
+v_event_id := (searchobj ->>'event_id');
+
+select count(1) into eligibility_count from tb_client_eligibility tce 
+join tb_ssi_eligibility_events tsse on tsse.eligibility_id=tce.eligibility_id
+where client_id=v_client_id and eligibility_type_cd = (searchobj ->>'eligibility_type_cd') :: character varying and tsse.delete_sw='N' and (tsse.end_dt is null or tsse.end_dt :: date <= now() ::date) ;
+
+select count(1) into ssa_ssi_count from tb_client_eligibility tce where client_id=v_client_id and eligibility_type_cd = (searchobj ->>'eligibility_type_cd') :: character varying; 
+
+
+if(v_is_event = false)  --- add /update benifit and events
+then
+
+if(v_eligibility_id is not null and v_eligibility_id !=0)
+then
+if(v_end_dt :: date = now() :: date)
+then
+v_delete := 'Y';
+else
+v_delete := 'N';
+end if;
+update tb_client_eligibility set delete_sw =v_delete ,end_dt = v_end_dt,eligibility_status_cd = (searchobj ->>'eligibility_status_cd') :: character varying
+ where eligibility_id = v_eligibility_id; --client_id=v_client_id and eligibility_type_cd = (searchobj ->>'eligibility_type_cd') :: character varying;
+
+if(v_event_end_dt :: date = now() :: date)
+then
+v_event_delete := 'Y';
+else
+v_event_delete := 'N';
+end if;
+ 
+UPDATE tb_ssi_eligibility_events
+SET start_dt=v_event_start_dt, end_dt=v_event_end_dt, event_type_cd=(searchobj ->>'event_type_cd'):: character varying,
+status_cd=(searchobj ->>'status_cd'):: character varying, notes_tx=(searchobj ->>'notes_tx') :: character varying ,
+status_change_sw=(searchobj ->>'status_change_sw'):: bpchar, delete_sw=v_event_delete where eligibility_id = v_eligibility_id;
+
+else
+
+update tb_client_eligibility set delete_sw ='Y'
+ where client_id=v_client_id and eligibility_type_cd = (searchobj ->>'eligibility_type_cd') :: character varying;
+
+INSERT INTO tb_client_eligibility
+( start_dt, end_dt, eligibility_type_cd, eligibility_status_cd, client_id, removal_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw, 
+adoption_id, case_id, data_valid_sw, client_merge_id, guardian_subsidy_id,transactionid)
+VALUES( v_start_dt, v_end_dt,  (searchobj ->>'eligibility_type_cd') :: character varying,
+ (searchobj ->>'eligibility_status_cd') :: character varying,
+ (searchobj ->>'client_id') :: integer, 0, now(), v_securityid, now(), v_securityid, 'N'::bpchar, 0, 0, '',
+ 0, 0,'00000000-0000-0000-0000-000000000000' ::uuid) returning eligibility_id into v_new_eligibility_id;
+
+ INSERT INTO tb_ssi_eligibility_events
+( start_dt, end_dt, event_type_cd, status_cd, notes_tx, status_change_sw, eligibility_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(v_event_start_dt,v_event_end_dt, (searchobj ->>'event_type_cd'):: character varying, (searchobj ->>'status_cd'):: character varying, 
+(searchobj ->>'notes_tx') :: character varying , (searchobj ->>'status_change_sw'):: bpchar, v_new_eligibility_id :: integer, now(), v_securityid, now(), v_securityid, 'N');
+
+ 
+
+end if;
+
+else
+
+raise notice 'tes %', v_event_id;
+
+if(v_event_id is not null and  v_event_id != 0 )
+then
+if(v_event_end_dt :: date = now() :: date)
+then
+v_event_delete := 'Y';
+else
+v_event_delete := 'N';
+end if;
+
+ 
+UPDATE tb_ssi_eligibility_events
+SET start_dt=v_event_start_dt, end_dt=v_event_end_dt, event_type_cd=(searchobj ->>'event_type_cd'):: character varying,
+status_cd=(searchobj ->>'status_cd'):: character varying, notes_tx=(searchobj ->>'notes_tx') :: character varying ,
+status_change_sw=(searchobj ->>'status_change_sw'):: bpchar, delete_sw=v_event_delete where event_id = v_event_id;
+
+else
+
+ INSERT INTO tb_ssi_eligibility_events
+( start_dt, end_dt, event_type_cd, status_cd, notes_tx, status_change_sw, eligibility_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+VALUES(v_event_start_dt,v_event_end_dt, (searchobj ->>'event_type_cd'):: character varying, (searchobj ->>'status_cd'):: character varying, 
+(searchobj ->>'notes_tx') :: character varying , (searchobj ->>'status_change_sw'):: bpchar, v_eligibility_id :: integer, now(), v_securityid, now(), v_securityid, 'N');
+
+end if;
+end if;
+
+ 
+
+--
+--if(eligibility_count = 0)
+--then
+----if(ssa_ssi_count=0)
+--
+--update tb_client_eligibility set delete_sw ='Y'
+-- where client_id=v_client_id and eligibility_type_cd = (searchobj ->>'eligibility_type_cd') :: character varying;
+---- 
+--INSERT INTO tb_client_eligibility
+--( start_dt, end_dt, eligibility_type_cd, eligibility_status_cd, client_id, removal_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw, 
+--adoption_id, case_id, data_valid_sw, client_merge_id, guardian_subsidy_id,transactionid)
+--VALUES( v_start_dt, v_end_dt,  (searchobj ->>'eligibility_type_cd') :: character varying,
+-- (searchobj ->>'eligibility_status_cd') :: character varying,
+-- (searchobj ->>'client_id') :: integer, 0, now(), v_securityid, now(), v_securityid, 'N'::bpchar, 0, 0, '', 0, 0,'00000000-0000-0000-0000-000000000000' ::uuid) returning eligibility_id into v_eligibility_id;
+--
+---- else
+---- 
+---- update tb_client_eligibility set start_dt = v_start_dt, end_dt = v_end_dt ,eligibility_status_cd = (searchobj ->>'eligibility_status_cd') :: character varying
+---- where client_id=v_client_id and eligibility_type_cd = (searchobj ->>'eligibility_type_cd') :: character varying;
+---- 
+-- 
+--INSERT INTO tb_ssi_eligibility_events
+--( start_dt, end_dt, event_type_cd, status_cd, notes_tx, status_change_sw, eligibility_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+--VALUES(v_event_start_dt,v_event_end_dt, (searchobj ->>'event_type_cd'):: character varying, (searchobj ->>'status_cd'):: character varying, 
+--(searchobj ->>'notes_tx') :: character varying , (searchobj ->>'status_change_sw'):: bpchar, v_eligibility_id :: integer, now(), v_securityid, now(), v_securityid, 'N');
+--
+--end if;
+
+return 'Success';
+END;
+
+$function$
+

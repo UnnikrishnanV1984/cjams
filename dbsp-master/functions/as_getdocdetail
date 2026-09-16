@@ -1,0 +1,278 @@
+CREATE OR REPLACE FUNCTION as_getdocdetail(i_intakenumber character varying, i_intakeserviceid uuid, i_secid character varying)
+ RETURNS TABLE(youthname character varying, currentdate character varying, youthid character varying, gender character varying, address character varying, address2 character varying, city character varying, state character varying, zipcode character varying, phone_number character varying, mothername character varying, fathername character varying, motheraddress character varying, fatheraddress character varying, parentguaridanname character varying, relationship character varying, parentaddress character varying, dateofbirth character varying, race character varying, school character varying, grade character varying, specialedu character varying, region character varying, youthage character varying, hospitalizations jsonb, diagnosis jsonb, medication character varying, offensename character varying[], cw_name character varying, cw_address character varying, cw_phone character varying, cw_email character varying, sup_name character varying, provider_name character varying, authorisation character varying, court_date character varying, petitionnumber character varying, judge character varying, youthinfo character varying, admission_date character varying)
+ LANGUAGE plpgsql
+AS $function$
+   declare
+parentguaridanname character varying;
+relationship character varying;
+parentaddress character varying;
+father_name character varying;
+fatheraddress1 character varying;
+fatherAddress2 character varying;
+fathercity character varying;
+fatherstate character varying;
+fathercounty character varying;
+fatherzipcode character varying;
+mother_name character varying;
+motheraddress1 character varying;
+motherAddress2 character varying;
+mothercity character varying;
+motherstate character varying;
+mothercounty character varying;
+motherzipcode character varying;
+guaridanaddress1 character varying;
+guaridanAddress2 character varying;
+guaridancity character varying;
+guaridanstate character varying;
+guaridancounty character varying;
+guaridanzipcode character varying;
+youthaddress1 character varying;
+youthAddress2 character varying;
+youthcity character varying;
+youthstate character varying;
+youthcounty character varying;
+youthzipcode character varying;
+youthphone character varying;
+
+BEGIN  
+   select  
+ cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying),
+ cast(ac.relationshiptypekey as character varying),
+ cast(coalesce(pa.address,'')||' '||coalesce(pa.address2,'')||' '||coalesce(pa.zipcode,'')||' '||coalesce(pa.city,'')||' '||coalesce(pa.state,'')||' '||coalesce(pa.country,'') as character varying)
+  into parentguaridanname,relationship,parentaddress
+from intakeservicerequestactor isra  
+left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+join actor a on a.actorid = isra.actorid and a.activeflag =1
+join person p on p.personid = a.personid and p.activeflag = 1
+left join (select ad.* from personaddress ad left join personaddresstype pat on ad.personaddresstypekey = pat.personaddresstypekey and pat.activeflag = 1 and ad.activeflag = 1 order by pat.sequencenumber limit 1)pa on pa.personid = p.personid 
+join (select 1 as seq,'father' as relation union 
+  select 2 as seq,'mother' as relation union
+  select 3 as seq,'fosterparent' as relation union 
+  select 4 as seq,'stepparent' as relation union
+  select 5 as seq,'adoptiveparent' as relation union 
+  select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey 
+ where isra.intakeserviceid=i_intakeserviceid
+order by rel.seq limit 1;
+
+
+select  
+  cast(personaddressjson->>'address1' as character varying),
+  cast(personaddressjson->>'Address2' as character varying),
+  cast(personaddressjson->>'city' as character varying),
+     cast(personaddressjson->>'state' as character varying),
+        cast(personaddressjson->>'county' as character varying),
+        cast(personaddressjson->>'zipcode' as character varying) into youthaddress1,youthAddress2,youthcity,youthstate,youthcounty,youthzipcode
+ from (select jsonb_array_elements(jsonb_array_elements(jsondata->'persons')->'address') personaddressjson,
+ jsonb_array_elements(jsondata->'persons') personjson,
+ intakenumber,activeflag from intakedastaging ) ida         
+ where 
+ ida.activeflag=1  and personjson->>'Role' ='Youth'  and
+ ida.intakenumber = i_intakenumber limit 1;
+
+select  
+        cast(coalesce(ida.personjson->>'fullName','') as character varying) ,
+  cast(personaddressjson->>'address1' as character varying),
+  cast(personaddressjson->>'Address2' as character varying),
+  cast(personaddressjson->>'city' as character varying),
+     cast(personaddressjson->>'state' as character varying),
+        cast(personaddressjson->>'county' as character varying),
+        cast(personaddressjson->>'zipcode' as character varying) into father_name,fatheraddress1,fatherAddress2,fathercity,fatherstate,fathercounty,fatherzipcode
+ 
+ from (select jsonb_array_elements(jsonb_array_elements(jsondata->'persons')->'address') personaddressjson,
+ jsonb_array_elements(jsondata->'persons') personjson,
+ intakenumber,activeflag from intakedastaging ) ida         
+ where 
+ ida.activeflag=1  and personjson->>'Role' ='parent-or-guard' and personjson->>'RelationshiptoRA'='father' and
+ ida.intakenumber = i_intakenumber limit 1;
+select  
+        cast(coalesce(ida.personjson->>'fullName','') as character varying) ,
+  cast(personaddressjson->>'address1' as character varying),
+  cast(personaddressjson->>'Address2' as character varying),
+  cast(personaddressjson->>'city' as character varying),
+     cast(personaddressjson->>'state' as character varying),
+        cast(personaddressjson->>'county' as character varying),
+        cast(personaddressjson->>'zipcode' as character varying) into mother_name,motheraddress1,motherAddress2,mothercity,motherstate,mothercounty,motherzipcode
+ from (select jsonb_array_elements(jsonb_array_elements(jsondata->'persons')->'address') personaddressjson,
+ jsonb_array_elements(jsondata->'persons') personjson,
+ intakenumber,activeflag from intakedastaging ) ida         
+ where 
+ ida.activeflag=1  and personjson->>'Role' ='parent-or-guard' and personjson->>'RelationshiptoRA'='mother'  and
+ ida.intakenumber = i_intakenumber;
+select cast(coalesce(personphonejson->>'contactnumber','') as character varying) into youthphone
+from 
+(select jsonb_array_elements(jsonb_array_elements(jsondata->'persons')->'phoneNumber') personphonejson,
+ jsonb_array_elements(jsondata->'persons') personjson,
+ intakenumber,activeflag from intakedastaging )ida         
+ where 
+ ida.activeflag=1  and personjson->>'Role' ='Youth' and 
+ ida.intakenumber = i_intakenumber limit 1;
+ 
+ 
+select  
+        cast(coalesce(ida.personjson->>'fullName','') as character varying) ,
+        cast(personjson->>'RelationshiptoRA' as character varying),
+        cast(personaddressjson->>'address1' as character varying),
+  cast(personaddressjson->>'Address2' as character varying),
+  cast(personaddressjson->>'city' as character varying),
+     cast(personaddressjson->>'state' as character varying),
+        cast(personaddressjson->>'county' as character varying),
+        cast(personaddressjson->>'zipcode' as character varying) into parentguaridanname ,relationship ,guaridanaddress1 ,guaridanAddress2 ,guaridancity ,guaridanstate ,guaridancounty ,guaridanzipcode
+ from (select jsonb_array_elements(jsonb_array_elements(jsondata->'persons')->'address') personaddressjson,
+ jsonb_array_elements(jsondata->'persons') personjson,
+ intakenumber,activeflag from intakedastaging ) ida         
+ where 
+ ida.activeflag=1  and personjson->>'Role' ='parent-or-guard'  and
+ ida.intakenumber = i_intakenumber limit 1;  
+             
+ RETURN QUERY    
+ (        select distinct
+             cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+    CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+             CAST(p.cjamspid as character varying) as youthid,
+    (select distinct typedescription from gendertype where gendertypekey=p.gendertypekey) as gender,
+    cast(pa.address as character varying) as address,
+    cast(pa.address2 as character varying) as address2,
+    pa.city as city,
+    pa.state as state,
+    pa.zipcode as zipcode,
+    cast(coalesce(pph.phoneextension,'000')||'-'||pph.phonenumber as character varying) as phone_number,
+    CAST((select distinct INITCAP(TRIM(coalesce(person.lastname,''))|| CASE WHEN (person.suffix is not null and person.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(person.suffix,'')) || ', ' ||TRIM(coalesce(person.firstname,'')))
+         from  intakeservicerequest INT
+                         join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='mother'
+                         join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                         join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakeserviceid=INTSR.intakeserviceid limit 1) as character varying ) as mothername,
+             CAST((select distinct INITCAP(TRIM(coalesce(person.lastname,''))|| CASE WHEN (person.suffix is not null and person.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(person.suffix,'')) || ', ' ||TRIM(coalesce(person.firstname,'')))
+         from  intakeservicerequest INT
+                         join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='father'
+                         join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                         join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakeserviceid=INTSR.intakeserviceid limit 1) as character varying ) as fathername,
+     CAST((select cast(pa.address||' '||pa.address2||' '||pa.city||','||pa.state||','||pa.zipcode as character varying) 
+         from  intakeservicerequest INT
+                         join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='mother'
+                         join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                         join person  on ACC.personid=person.personid and person.activeflag=1 
+       join personaddress pa on pa.personid=p.personid and pa.activeflag=1 and INT.intakeserviceid=INTSR.intakeserviceid limit 1) as character varying ) as motheraddress,
+              CAST((select cast(pa.address||' '||pa.address2||' '||pa.city||','||pa.state||','||pa.zipcode as character varying) 
+         from  intakeservicerequest INT
+                         join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='father'
+                         join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                         join person  on ACC.personid=person.personid and person.activeflag=1 
+       join personaddress pa on pa.personid=p.personid and pa.activeflag=1 and INT.intakeserviceid=INTSR.intakeserviceid limit 1) as character varying ) as fatheraddress,
+             parentguaridanname,
+    relationship,
+    parentaddress,
+    cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as dateofbirth,
+    (select distinct typedescription from racetype where racetypekey=p.racetypekey) as race,
+    CAST(s.schoolname as character varying) as school,
+              (select distinct typedescription from gradetype where gradetypekey=pe.currentgradetypekey) as grade,
+     cast(case when pe.isspecialeducation=true then 'yes'
+                       when pe.isspecialeducation=false then 'No' end  as character varying)  as specialedu,
+     cast(pa.county as character varying) as region,
+     cast(age(now()::date,p.dob) as character varying) as youthage,
+     jsonb_agg(json_build_object('Date',ph.startdt,'Hospital',ph.hospitalnm,'Reason',ph.hospitalization_reason)) as Hospitalizations,
+     jsonb_agg(json_build_object('Date',ph.startdt,'Evaluation',ph.diagnosistx)) as Diagnosis,
+     pmpc.medicationname as medication,
+              cast((select array_agg(AG.name)  from  allegation AG
+          join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+          where  ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1 limit 1) as character varying[])  as offensename,
+            cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = i_secid) as character varying) as  cw_name,
+           cast((select distinct upa.address ||','|| upa.city ||','|| upa.state ||','|| upa.country ||','|| upa.zipcode from userprofileaddress  upa where upa.securityusersid = i_secid and upa.activeflag=1 and userprofileaddresstypekey='O') as character varying) as cw_address,
+   cast((select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as character varying) as cw_phone,
+   cast((select distinct up.email from userprofile up where securityusersid = i_secid) as character varying) as cw_email,
+   CAST(sup.supname as character varying) as sup_name,
+   cast(pr.providername as character varying) as provider_name,
+   (select description from placementadmissionauthorizationtype where placementadmissionauthorizationtypekey=pl.placementadmissionauthorizationtypekey) as authorisation,
+   cast(iscra.hearingdatetime as character varying) as court_date,
+   cast(isrp.petitionid as character varying) as petitionnumber ,
+   cast(iscra.legalcounselname as character varying) as judge,
+   cast(cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)||','||cast(age(now()::date,p.dob) as character varying)||','||CAST(p.cjamspid as character varying) as character varying) as youthinfo,
+   cast(to_char(pl.addate ,'MM/DD/YYYY') as character varying) as admission_date
+            from  intakeservicerequest INTSR 
+            left join intakeservicerequestevaluation inve on inve.intakenumber=INTSR.intakenumber and inve.activeflag=1
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1 and INSRA.intakeservicerequestpersontypekey='Youth' 
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+             join person p on ACC.personid=p.personid and p.activeflag=1
+     left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1
+   left join personphonenumber pph on pph.personid = p.personid and pph.personphonetypekey = 'P' and pph.activeflag = 1
+       left join personeducation pe on p.personid = pe.personid and pe.activeflag=1
+             left join school s on pe.schoolid=s.schoolid and s.activeflag=1
+   left join personhospitalization ph on  ph.personid=p.personid and ph.activeflag=1
+   left join personmedicpshychotropic pmpc  on  pmpc.personid=p.personid and pmpc.activeflag=1
+     left join placement pl on INTSR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+            left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing) ich on ich.intakenumber = INTSR.intakenumber and ich.activeflag = 1 and ich.recno = 1 
+            left join intakeservicerequestcourtaction iscra on iscra.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and iscra.activeflag = 1
+            left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+            left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+    left join
+             (select objectid,up.fullname as supname from routing  join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP'  ) sup
+             on INTSR.intakenumber=sup.objectid
+             where (INTSR.intakeserviceid=NULL or INTSR.intakeserviceid=i_intakeserviceid) 
+             group by 
+             youthname,currentdate,youthid,gender,pa.address,pa.address2,pa.city,pa.state,pa.zipcode,phone_number,mothername,fathername,motheraddress,fatheraddress,dateofbirth,race,school,grade,region,youthage,medication,offensename,sup_name,provider_name,authorisation,court_date,parentguaridanname,relationship,parentaddress,cw_name,cw_address,cw_phone,cw_email,petitionnumber,judge,specialedu,youthinfo,admission_date
+    union
+     select 
+           cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+     CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+     cast(coalesce(obj->>'cjamspid','') as character varying) as youthid,
+     cast((select distinct typedescription from gendertype where gendertypekey=cast(coalesce(obj->>'Gender','') as character varying))  as character varying) as gender,
+     youthaddress1 as address,
+   youthaddress2 as address2,
+   youthcity as city,
+   youthstate as state,
+   youthzipcode as zipcode,
+    youthphone as phone_number,
+    mother_name as mothername,
+    father_name as fathername,
+            cast(coalesce(motheraddress1,'')||' '||coalesce(motherAddress2,'')||' '||coalesce(mothercity,'')||' '||coalesce(motherstate,'')||' '||coalesce(mothercounty,'')||' '||coalesce(motherzipcode,'') as character varying) as motheraddress,
+    cast(coalesce(fatheraddress1,'')||' '||coalesce(fatherAddress2,'')||' '||coalesce(fathercity,'')||' '||coalesce(fatherstate,'')||' '||coalesce(fathercounty,'')||' '||coalesce(fatherzipcode,'') as character varying) as fatheraddress, 
+   parentguaridanname ,
+   relationship ,
+            cast(coalesce(guaridanaddress1,'')||' '||coalesce(guaridanAddress2,'')||' '||coalesce(guaridancity,'')||' '||coalesce(guaridanstate,'')||' '||coalesce(guaridancounty,'')||' '||coalesce(guaridanzipcode,'') as character varying) as parentaddress,
+   cast(coalesce(obj->>'Dob','') as character varying) as dateofbirth,
+      cast((select distinct typedescription from racetype where racetypekey=cast(coalesce(obj->>'race','') as character varying)) as character varying) as race,
+          rtrim(ltrim(cast(coalesce(obj->>'school','') as character varying),'['),']') as school,
+      cast(null as character varying)  as grade,
+   cast(null as character varying) as specialedu,
+      youthcounty as youth_county,
+      cast(age(now()::date,to_date(cast(coalesce(obj->>'Dob','') as character varying),'MM/DD/YYYY')) as character varying) as youthage,
+   cast(null as jsonb)  as Hospitalizations,
+            cast(null as jsonb)  as Diagnosis,
+            cast(null as character varying)  as medication,
+            cast(null as character varying[])  as offensename,
+   cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = i_secid) as character varying) as  cw_name,
+            cast((select distinct upa.address ||','|| upa.city ||','|| upa.state ||','|| upa.country ||','|| upa.zipcode from userprofileaddress  upa where upa.securityusersid = i_secid and upa.activeflag=1 and userprofileaddresstypekey='O') as character varying) as cw_address,
+   cast((select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as character varying) as cw_phone,
+   cast((select distinct up.email from userprofile up where securityusersid = i_secid) as character varying) as cw_email,
+   CAST(sup.supname as character varying) as sup_name,
+   cast(pr.providername as character varying) as provider_name,
+   (select description from placementadmissionauthorizationtype where placementadmissionauthorizationtypekey=pl.placementadmissionauthorizationtypekey) as authorisation,
+   cast(iscra.hearingdatetime as character varying) as court_date,
+   cast(isrp.petitionid as character varying) as petitionnumber ,
+   cast(iscra.legalcounselname as character varying) as judge,
+   cast(cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)||','||cast(age(now()::date,to_date(cast(coalesce(obj->>'Dob','') as character varying),'MM/DD/YYYY')) as character varying)||','||cast(coalesce(obj->>'cjamspid','') as character varying)  as character varying) as youthinfo,
+     cast(to_char(pl.addate ,'MM/DD/YYYY') as character varying) as admission_date
+         FROM
+             intakedastaging ida 
+    left join placement pl on ida.intakenumber =pl.intakenumber and pl.activeflag=1
+            left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+            left join (select *,row_number() over(partition by intakenumber order by updatedon desc) as recno from intakeservicerequestcourthearing) ich on ich.intakenumber = ida.intakenumber and ich.activeflag = 1 and ich.recno = 1 
+            left join intakeservicerequestcourtaction iscra on iscra.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and iscra.activeflag = 1
+            left join intakeservreqpetitionhearingconfig ichc on ichc.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ichc.activeflag = 1
+            left join intakeservicerequestpetition isrp on isrp.intakeservicerequestpetitionid = ichc.intakeservicerequestpetitionid and isrp.activeflag = 1
+         left join (select objectid,up.fullname as supname from routing  join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP'  ) sup
+             on ida.intakenumber=sup.objectid
+    , jsonb_array_elements(ida.jsondata->'persons') obj 
+          where  ida.activeflag=1  and obj->>'Role' ='Youth'  and
+          (ida.intakenumber=null or ida.intakenumber=i_intakenumber) limit 1
+
+        ) ;   
+   END;
+$function$
+

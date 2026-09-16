@@ -1,0 +1,118 @@
+CREATE OR REPLACE FUNCTION as_gettagnotification(pagenumber bigint, pagesize bigint, securityusersid character varying, v_tagkey character varying, v_subject character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, usernotificationid uuid, fromname character varying, frommail character varying, touser jsonb, usernotificationtypekey character varying, url text, subject character varying, priorityleveltypekey character varying, body text, hasattachments boolean, updatedby character varying, updatedon timestamp without time zone, insertedby character varying, insertedon timestamp without time zone, attachmentlocation character, tosecurityusersid character varying, isreplied boolean, isforwarded boolean, iscarboncopy boolean, isread boolean, effectivedate timestamp without time zone, expirationdate timestamp without time zone, tagkey character varying, tagkeydescription character varying, tagconfigdate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_userID character varying;
+v_pageNumber INT;                                                          
+v_pageOffset int;
+
+BEGIN
+v_userID := securityusersid;
+v_pageNumber := pagenumber-1;
+v_pageOffset = v_pageNumber * pagesize;    
+
+RETURN query
+select count(1) over(), * from (
+(select distinct 
+ un.usernotificationid, 
+(select up1.displayname from userprofile up1 where up1.securityusersid =un.securityusersid   
+and up1.activeflag =1 limit 1),
+(select up1.email from userprofile up1 where up1.securityusersid =un.securityusersid   
+and up1.activeflag =1 limit 1),
+(select json_agg(e) as touser 
+from(select up.displayname as toname,up.email ,unmap.iscarboncopy,unmap.tosecurityusersid
+      from usernotificationmap unmap 
+  inner join userprofile up on unmap.tosecurityusersid = up.securityusersid and unmap.activeflag =1 
+  where up.activeflag =1 and unmap.usernotificationid = un.usernotificationid)e) :: jsonb ,
+un.usernotificationtypekey,
+un.url,
+un.subject,
+un.priorityleveltypekey,
+un.body,
+un.hasattachments,
+un.updatedby,
+un.insertedon as updatedon,
+un.insertedby,
+un.insertedon,
+un.attachmentlocation,
+unmap.tosecurityusersid,
+unmap.isreplied,
+unmap.isforwarded,
+unmap.iscarboncopy,
+unmap.isread,
+unmap.effectivedate,
+unmap.expirationdate,
+uncf.tagkey,
+(select rv.description as tagkeydescription
+from referencevalues rv where rv.activeflag =1 and rv.ref_key = uncf.tagkey limit 1)as tagkeydescription,
+uncf.insertedon as tagconfigdate
+from usernotification un 
+inner join usernotificationmap unmap on un.usernotificationid=unmap.usernotificationid and unmap.activeflag =1
+left join userprofile upfrom on upfrom.securityusersid=un.securityusersid and upfrom.activeflag =1
+inner join usernotificationtagconfig uncf on uncf.usernotificationid =un.usernotificationid and uncf.activeflag =1
+where  un.activeflag=1  
+and un.usernotificationtypekey = 'Manual'  
+and unmap.tosecurityusersid =v_userID
+and unmap.isdeleted =false 
+and case when v_tagkey is not null then 
+uncf.tagkey= v_tagkey else true end 
+ and uncf.insertedby=v_userID
+ and case when v_subject is not null then un.subject ilike v_subject || '%' else true end
+)
+union ALL
+(select
+un.usernotificationid, 
+(select up1.displayname from userprofile up1 where up1.securityusersid =un.securityusersid   
+and up1.activeflag =1 limit 1) as fromname,
+(select up1.email from userprofile up1 where up1.securityusersid =un.securityusersid   
+and up1.activeflag =1limit 1) as frommail,
+(select json_agg(e) as touser 
+from(select up.displayname as toname,up.email ,unmap.iscarboncopy,unmap.tosecurityusersid,unmap.isread
+      from usernotificationmap unmap 
+  inner join userprofile up on unmap.tosecurityusersid = up.securityusersid and unmap.activeflag =1 
+  where up.activeflag =1 and unmap.usernotificationid = un.usernotificationid)e) :: jsonb ,
+un.usernotificationtypekey,
+un.url,
+un.subject,
+un.priorityleveltypekey,
+un.body,
+un.hasattachments,
+un.updatedby,
+un.insertedon as updatedon,
+un.insertedby,
+un.insertedon,
+un.attachmentlocation,
+null :: character varying,
+null :: boolean,
+null :: boolean,
+null:: boolean,
+null:: boolean,
+null:: timestamp without time zone,
+null ::timestamp without time zone,
+uncf.tagkey,
+(select rv.description as tagkeydescription
+from referencevalues rv where rv.activeflag =1 and rv.ref_key = uncf.tagkey limit 1)as tagkeydescription,
+uncf.insertedon as  tagconfigdate
+from usernotification un 
+left join userprofile upfrom on upfrom.securityusersid=un.securityusersid and upfrom.activeflag =1
+inner join usernotificationtagconfig uncf on uncf.usernotificationid =un.usernotificationid and uncf.activeflag =1
+and un.securityusersid =v_userID
+where  un.activeflag=1  
+and un.usernotificationtypekey = 'Manual'  
+and un.isdeleted =false
+and case when v_tagkey is not null then 
+uncf.tagkey= v_tagkey else true end 
+ and uncf.insertedby=v_userID
+ and  case when v_subject is not null then un.subject ilike v_subject || '%' else true end
+)
+) a order by a.tagconfigdate desc
+
+LIMIT pagesize OFFSET v_pageOffset;
+
+
+ END;
+
+$function$
+

@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION prov_addprovidercontractinfo(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                              
+                                                                                                                                                                                                            
+ DECLARE                                                                                                                                                                                                    
+ returnStatus text;                                                                                                                                                                                         
+ --providerId numeric;                                                                                                                                                                                      
+ programId numeric;                                                                                                                                                                                         
+ contractNoOfbeds numeric;                                                                                                                                                                                  
+ contractCapacityPercent numeric;                                                                                                                                                                           
+ stdate date;                                                                                                                                                                                               
+ enddate date;    
+ v_insertedby character varying;    
+ v_programNM character varying;    
+ v_license_bed integer;
+ v_irc_bed_capacity integer;
+ v_fiscal_date CHARACTER VARYING ;
+ v_contract_license_type_status character varying;   
+
+  v_vacancy integer;
+  v_placements integer;
+v_securityusersid character varying;
+  
+ BEGIN                                                                                                                                                                                                      
+                                                                                                                                                                                                            
+ programId :=insertedtlsobj->>'program_id';                                                                                                                                                                  
+ v_programNM :=insertedtlsobj->>'program_nm';                                                                                                                                                                  
+ contractNoOfbeds :=insertedtlsobj->>'contract_beds_no';                                                                                                                                                     
+ contractCapacityPercent :=insertedtlsobj->>'capacity_percentage_no';                                                                                                                                        
+ stdate:=insertedtlsobj->>'start_dt';                                                                                                                                                                        
+ enddate:= insertedtlsobj->>'end_dt'; 
+v_insertedby := insertedtlsobj->>'create_user_id'; 
+v_license_bed := insertedtlsobj->>'license_bed';
+v_irc_bed_capacity := insertedtlsobj->>'irc_bed_capacity';
+v_fiscal_date := insertedtlsobj->>'fiscal_date';
+v_contract_license_type_status :=  insertedtlsobj->>'contract_license_type_status';
+--update tb_contract_program set delete_sw='Y' where program_id=programId;
+v_securityusersid := insertedtlsobj->>'update_user_id';
+
+v_vacancy := 0;
+
+select count(1) over() as countplacements into v_placements 
+from tb_placement 
+where contract_program_id = programId
+    and void_sw  is null 
+    and (exit_dt is null or exit_dt::date > now()::date)
+limit 1;
+
+if v_placements > 0 then 
+    v_vacancy := contractNoOfbeds - v_placements;
+else 
+     v_vacancy := contractNoOfbeds;
+end if;
+
+
+INSERT INTO tb_contract_program_history
+(program_id,contract_id, program_nm, start_dt, end_dt, capacity_percentage_no, contract_beds_no, vacancy_no, preferred_cd,
+program_status_cd, admission_comments_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw, program_purpose_cd,
+child_specific_agreement_cd, child_specific_update_staff_id, child_specific_change_ts, license_no,license_bed,irc_bed_capacity,fiscal_date,contract_license_type_status)
+
+select program_id,contract_id, program_nm, start_dt, end_dt, capacity_percentage_no, contract_beds_no, vacancy_no, preferred_cd,
+program_status_cd, admission_comments_tx, create_ts, create_user_id, update_ts, update_user_id, delete_sw, program_purpose_cd,
+child_specific_agreement_cd, child_specific_update_staff_id, child_specific_change_ts, license_no,license_bed,irc_bed_capacity,fiscal_date,contract_license_type_status
+from tb_contract_program where program_id=programId and delete_sw = 'N';                                                                                                                                                                                                         
+
+ update tb_contract_program set contract_beds_no=contractNoOfbeds, vacancy_no=v_vacancy,
+ capacity_percentage_no=contractCapacityPercent, start_dt=stdate, end_dt=enddate,program_nm = v_programNM,
+ update_ts = now(),
+ update_user_id = v_securityusersid,
+ license_bed=v_license_bed ,irc_bed_capacity=v_irc_bed_capacity ,fiscal_date= v_fiscal_date,contract_license_type_status = v_contract_license_type_status
+ where program_id=programId;
+
+ update tb_contract_program_archive set  start_dt=stdate, end_dt=enddate,program_nm = v_programNM,
+ update_ts = now(),
+ update_user_id = v_securityusersid
+ where program_id=programId and delete_sw='N';
+
+ returnStatus:= 'Success';                                                                                                                                                                                  
+ RETURN returnStatus;                                                                                                                                                                                       
+                                                                                                                                                                                                            
+ END;                                                                                                                                                                                                       
+                                                                                                                                                                                                            
+ $function$
+

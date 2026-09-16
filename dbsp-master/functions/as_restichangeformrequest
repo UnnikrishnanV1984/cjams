@@ -1,0 +1,75 @@
+CREATE OR REPLACE FUNCTION as_restichangeformrequest(restitution json, securityuserid character varying)
+ RETURNS uuid
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+
+ v_restitutionno int;
+ v_securityuserid character varying;
+ v_liablepersonid uuid;
+ v_liablepersonrelationtypekey character varying;
+ v_intakeserreqrestitutionid uuid;
+ v_waivedamount numeric(10,2);
+ v_additionalamount numeric(10,2);
+ l_status character varying;
+ v_changeformreasontypekey character varying;
+ v_restitutionchangeformreasonconfigid uuid;
+ j_changeformreasontype json;
+ j_changeformaddress json;
+ v_changeformreason character varying;
+ v_restitutionpersonaddressid uuid;
+ 
+BEGIN
+
+ v_restitutionno := restitution->>'restitutionno';
+ v_liablepersonid := restitution->>'liablepersonid';
+ v_waivedamount := restitution->>'waivedamount';
+ v_additionalamount := restitution->>'additionalamount';
+ v_liablepersonrelationtypekey := restitution->>'liablepersonrelationtypekey';
+ v_changeformreason := restitution->>'changeformreason';
+ j_changeformreasontype := restitution->>'changeformreasontype';
+ j_changeformaddress := restitution->>'changeformaddress';
+ v_securityuserid := securityuserid;
+ 
+ v_intakeserreqrestitutionid := gen_random_uuid();
+ 
+ INSERT INTO intakeserreqrestitution (intakeserreqrestitutionid, restitutionno, intakeserviceid, intakenumber, youthpersonid, victimpersonid, countyid, restitutiontype, ismultipleinvolvedpersons, payment, liablepersonrelationtypekey, duedate, frequency, 
+  installmentamount, courtdeferredduedate, status, paymentstartdate, inactivereasontype, 
+   activeflag,  insertedby, updatedby, insertedon, updatedon,personalertid, approvestatus, liablepersonid, waivedamount, additionalamount, changeformreason
+   , paidamount, allocatedamount,isccu,isccusent,ccuapprovedate,restitutionclosereasontypekey)
+ SELECT v_intakeserreqrestitutionid, v_restitutionno, intakeserviceid, intakenumber, youthpersonid, victimpersonid, countyid, restitutiontype, ismultipleinvolvedpersons,
+ payment , v_liablepersonrelationtypekey, duedate, frequency, 
+  installmentamount, courtdeferredduedate, status, paymentstartdate, inactivereasontype, 
+   1,  v_securityuserid, v_securityuserid, now(), now(), personalertid, 'RSTPND',  v_liablepersonid, v_waivedamount, v_additionalamount, v_changeformreason
+   , paidamount, allocatedamount,isccu,isccusent,ccuapprovedate,restitutionclosereasontypekey
+ FROM intakeserreqrestitution WHERE restitutionno = v_restitutionno AND activeflag = 1 AND approvestatus = 'RSTAPR';
+ 
+ FOR v_changeformreasontypekey IN SELECT * FROM json_array_elements_text(j_changeformreasontype)
+ LOOP
+  v_restitutionchangeformreasonconfigid := gen_random_uuid();
+  
+  INSERT INTO restitutionchangeformreasonconfig (restitutionchangeformreasonconfigid, intakeserreqrestitutionid, changeformreasontypekey, activeflag,  insertedby, updatedby, insertedon, updatedon, effectivedate)
+  VALUES (v_restitutionchangeformreasonconfigid, v_intakeserreqrestitutionid, v_changeformreasontypekey, 1, v_securityuserid, v_securityuserid, now(), now(), now());
+ 
+ END LOOP;
+ 
+ select routingintake into l_status from routingintake (v_intakeserreqrestitutionid::character varying,v_securityuserid,'RTCF',46,null);
+  
+ IF j_changeformaddress IS NOT NULL THEN
+ 
+ v_restitutionpersonaddressid := gen_random_uuid();
+ 
+ INSERT INTO restitutionpersonaddress(restitutionpersonaddressid, intakeserreqrestitutionid, restitutionno, personid, personaddresstypekey, address, address2, zipcode, city, state, county, danger, dangerreason, personadrstartdate, effectivedate, personadrenddate, expirationdate, activeflag, insertedby, updatedby, insertedon, updatedon) Values (v_restitutionpersonaddressid, v_intakeserreqrestitutionid, v_restitutionno,
+ cast(j_changeformaddress ->> 'personid' as uuid), cast(j_changeformaddress ->> 'personaddresstypekey' as character varying), cast(j_changeformaddress ->> 'address' as character varying), cast(j_changeformaddress ->> 'address2' as character varying), cast(j_changeformaddress ->> 'zipcode' as character varying), cast(j_changeformaddress ->> 'city' as character varying), cast(j_changeformaddress ->> 'state' as character varying), cast(j_changeformaddress ->> 'countycode' as character varying), cast(j_changeformaddress ->> 'danger' as boolean), cast(j_changeformaddress ->> 'dangerreason' as character varying), cast(j_changeformaddress ->> 'effectivedate' as timestamp without time zone), cast(j_changeformaddress ->> 'effectivedate' as timestamp without time zone), cast(j_changeformaddress ->> 'expirationdate' as timestamp without time zone), cast(j_changeformaddress ->> 'expirationdate' as timestamp without time zone), 1, v_securityuserid, v_securityuserid, now(), now() );
+ 
+ END IF;
+ 
+RETURN
+   v_intakeserreqrestitutionid;
+END;
+
+
+$function$
+

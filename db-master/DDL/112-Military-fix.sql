@@ -1,0 +1,12 @@
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN superiorfirstname TYPE varchar(50) USING superiorfirstname::varchar;
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN superiormiddlename TYPE varchar(50) USING superiormiddlename::varchar;
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN superiorlastname TYPE varchar(50) USING superiorlastname::varchar;
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN contactfirstname TYPE varchar(50) USING contactfirstname::varchar;
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN contactmiddlename TYPE varchar(50) USING contactmiddlename::varchar;
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN contactlastname TYPE varchar(50) USING contactlastname::varchar;
+ALTER TABLE cjams.personmilitaryservices ALTER COLUMN county TYPE varchar(20) USING county::varchar;
+alter table personhlthsleeping drop column if exists personhlthfeedingid;
+alter table personhlthsleeping add column if not exists personhlthsleepingid uuid NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE personhlthmobilityspeech ALTER COLUMN walkedage TYPE varchar USING walkedage::varchar;
+ALTER TABLE personhlthmobilityspeech ALTER COLUMN talkedage TYPE varchar USING talkedage::varchar;
+ALTER TABLE personhlthmobilityspeech ALTER COLUMN satupage TYPE varchar USING satupage::varchar;

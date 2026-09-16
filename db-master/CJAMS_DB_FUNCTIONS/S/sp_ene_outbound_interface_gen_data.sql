@@ -1,0 +1,202 @@
+CREATE OR REPLACE FUNCTION cjams.sp_ene_outbound_interface_gen_data(	vl_client_id integer, 
+																		vl_other_id bigint, 
+																		vs_transaction_type_cd character varying, 
+																		vl_transaction_sequence integer, 
+																		vd_transaction_ts timestamp without time zone, 
+																		vl_servicecasenumber character varying,
+																		vl_adoptioncasenumber character varying, 
+																		OUT vs_message character varying, 
+																		OUT vl_output_sqlcode character varying
+																	)
+RETURNS record
+LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created: 11/24/2020
+-- Description: To generate E&E Outbound data.
+
+-- Revision(s):
+------------------------------------------------------------------------
+DECLARE vs_excep_message varchar;
+Begin
+	vs_excep_message := '';
+
+	raise notice 'Input for E&E gen data '; 
+	raise notice 'vl_client_id %',vl_client_id; 
+	raise notice 'vl_other_id %',vl_other_id; 
+	raise notice 'vs_transaction_type_cd %',vs_transaction_type_cd; 
+	raise notice 'vl_transaction_sequence %',vl_transaction_sequence; 
+	raise notice 'vd_transaction_ts %',vd_transaction_ts; 
+	raise notice 'vl_servicecasenumber %',vl_servicecasenumber; 
+	raise notice 'vl_adoptioncasenumber %',vl_adoptioncasenumber; 
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_01(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											  );
+												 
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '01-' || vs_message || ';' ;
+		-- RETURN;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_10(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											  );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '10-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_15(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											  );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '15-' || vs_message || ';' ;
+		-- RETURN;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_20(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											   );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '20-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_25(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											   );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '25-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_30(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											  );
+												
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '30-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_35(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											   );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '35-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_40(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											  );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '40-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_45(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											   );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '45-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_50(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts
+											  );
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '50-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	select * 
+	into vs_message,
+		vl_output_sqlcode
+	from sp_ene_outbound_interface_gen_data_55(	vl_client_id,
+												vl_other_id,
+												vs_transaction_type_cd,
+												vl_transaction_sequence,
+												vd_transaction_ts,
+												vl_servicecasenumber,
+												vl_adoptioncasenumber -- passing the new variable 
+											  ); 
+
+	if vl_output_sqlcode <> '00000' then vs_excep_message := '55-' || vs_message || ';' ;
+		-- RETURN ;
+	end if ;
+
+	if vs_excep_message <> '' then 
+		vs_excep_message := '(E&E) FAILED TO GENERATE INTERFACE DATA FOR RECORD TYPE(s): ' || vs_excep_message || ' AND CLIENT_ID: ' || vl_client_id::varchar;
+
+		raise exception '%', vs_excep_message;
+	else 
+		vl_output_sqlcode = '00000' ;
+		vs_message := '(E&E) THE RUN WAS SUCCESSFUL.' ;
+	end if;
+End ;
+
+$function$
+;

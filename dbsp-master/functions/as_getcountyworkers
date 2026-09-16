@@ -1,0 +1,130 @@
+CREATE OR REPLACE FUNCTION as_getcountyworkers(securityusersid character varying)
+ RETURNS TABLE(userid character varying, username character varying, email character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+declare v_securityuserid character varying ='';
+declare v_countyid character varying ='';
+BEGIN
+
+ v_securityuserid := securityusersid;
+ 
+   
+   SELECT  t.countyid  into  v_countyid
+    FROM  muser m
+      INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS'
+      INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1
+      INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = m.SecurityUsersId AND   tma.activeflag =1  
+      INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+      inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+    WHERE  m.SecurityUsersId = v_securityuserid  and m.activeflag = 1
+    LIMIT 1; 
+  
+       
+   RETURN Query
+  
+ 
+select* from (  
+   
+  select tm.securityusersid, cast(up.firstname || ' ' || up.lastname as character varying) username,up.email
+    /*tm.securityusersid,t.teamname, cast (coalesce(rt.workload,0) as int) as workload,
+    cast(up.firstname || ' ' || up.lastname as character varying) username ,tm.agency,up.email,
+    cast(tm.rolename as character varying),tm.loadnumber,
+    cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+    ,supervisor,tm.zipcode,tm.zipcodeplus,tm.juridiction,up.cjamspid,  cast(coalesce(cc.casecount,0) as bigint),
+    r.roletypecode*/
+    from 
+    (SELECT distinct  tma.securityusersid,tma.teammemberid,r.roletypekey ,
+    cast(rm.teamtypekey as character varying) agency
+    ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,
+    coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction
+   
+    FROM  muser m
+    INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS'
+    INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1
+    INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = m.SecurityUsersId AND   tma.activeflag =1 
+    INNER join teammember tm ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+    INNER join team t on t.teamid = tm.teamid and t.activeflag =1 
+    INNER join teammemberroletype  tmrt ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+    left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey  AND tty.activeflag= 1
+    LEFT JOIN UserProfileAddress upa     ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+       --   INNER join routingcONfig rc     ON rc.targetrolekey  = tm.roletypekey   AND rc.activeflag= 1
+    WHERE 
+--    v_teamid  in ( tm.teamid   , t.parentteamid) 
+     t.countyid = v_countyid
+     AND tma.activeflag =1  
+     )  tm
+     inner join  userprofile up 
+      ON up.securityusersid = tm.securityusersid AND up.activeflag= 1
+     inner join team t on t.teamid = tm.teamid and t.activeflag= 1
+     LEFT JOIN (
+       select routedusersid,count(1) casecount 
+       from intakeservicerequest
+       where isrouted =true group by routedusersid) CC
+       on cc.routedusersid = up.securityusersid 
+     left join (SELECT uwc.securityusersid, uwc.workload FROM as_getuserworkloadcount() uwc) rt on 
+      rt.securityusersid = tm.securityusersid 
+     left join( select distinct  r.roletypekey , rt.roletypecode from role r inner join roletype rt on 
+       rt.shortname = r.name and rt.activeflag =1 and r.activeflag =1) r on
+       r.roletypekey = tm.roletypekey
+     --WHERE  up.securityusersid NOT IN (v_securityuserid)
+     where up.assupervisorid =v_securityuserid
+     order by  username asc , coalesce(rt.workload,0) 
+     )
+     
+union all
+select * from (
+Select tm.securityusersid, cast(up.firstname || ' ' || up.lastname as character varying) username,up.email
+    /*tm.securityusersid,t.teamname, cast (coalesce(rt.workload,0) as int),
+    cast(up.firstname || ' ' || up.lastname as character varying) username ,tm.agency,up.email,
+    cast(tm.rolename as character varying),tm.loadnumber,
+    cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+    ,supervisor,tm.zipcode,tm.zipcodeplus,tm.juridiction,up.cjamspid,  cast(coalesce(cc.casecount,0) as bigint),
+    r.roletypecode*/
+    from 
+    (SELECT distinct  tma.securityusersid,tma.teammemberid,r.roletypekey ,
+    cast(rm.teamtypekey as character varying) agency
+    ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,
+    coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction
+   
+    FROM  muser m
+    INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS'
+    INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1
+    INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = m.SecurityUsersId AND   tma.activeflag =1 
+    INNER join teammember tm ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+    INNER join team t on t.teamid = tm.teamid and t.activeflag =1 
+    INNER join teammemberroletype  tmrt ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+    left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey  AND tty.activeflag= 1
+    LEFT JOIN UserProfileAddress upa     ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+       --   INNER join routingcONfig rc     ON rc.targetrolekey  = tm.roletypekey   AND rc.activeflag= 1
+    WHERE 
+--    v_teamid  in ( tm.teamid   , t.parentteamid) 
+     t.countyid =v_countyid
+     AND tma.activeflag =1  
+     )  tm
+     inner join  userprofile up 
+      ON up.securityusersid = tm.securityusersid AND up.activeflag= 1
+     inner join team t on t.teamid = tm.teamid and t.activeflag= 1
+     LEFT JOIN (
+       select routedusersid,count(1) casecount 
+       from intakeservicerequest
+       where isrouted =true group by routedusersid) CC
+       on cc.routedusersid = up.securityusersid 
+     left join (SELECT uwc.securityusersid, uwc.workload FROM as_getuserworkloadcount() uwc) rt on 
+      rt.securityusersid = tm.securityusersid 
+     left join( select distinct  r.roletypekey , rt.roletypecode from role r inner join roletype rt on 
+       rt.shortname = r.name and rt.activeflag =1 and r.activeflag =1) r on
+       r.roletypekey = tm.roletypekey
+     --WHERE  up.securityusersid NOT IN (v_securityuserid)
+     where up.assupervisorid <>v_securityuserid
+     order by  username asc , coalesce(rt.workload,0) );
+     
+    
+    
+  end;
+ 
+
+
+$function$
+

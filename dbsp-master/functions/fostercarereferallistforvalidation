@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION fostercarereferallistforvalidation(v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, placement_id bigint, client_id bigint, servicerequestnumber character varying, clientfirstname character varying, clientlastname character varying, provider_nm character varying, service_nm character varying, program_nm character varying, entry_dt timestamp without time zone, exit_dt timestamp without time zone, validation_start_dt timestamp without time zone, validation_end_dt timestamp without time zone, address character varying, placementstructure character varying, service_id integer)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+
+ v_pagenumber int;
+ v_pageoffset int;
+
+BEGIN 
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select COUNT(1) OVER() totalcount, TBPM.placement_id, TBPM.client_id, ISR.servicerequestnumber, P.firstname clientfirstname
+, P.lastname clientlastname, TBP.provider_nm, TBS.service_nm, 
+--TBCP.program_nm
+(select TBCP.program_nm from tb_provider_contracts as TBPC 
+INNER JOIN tb_contract_program as TBCP ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = TBPM.contract_program_id and TBCP.delete_sw = 'N' where
+TBP.affiliate_provider_id= TBPC.provider_id and TBPC.delete_sw = 'N') as programname 
+, TBPM.entry_dt, TBPM.exit_dt
+, (date_trunc('month', now()) - interval '1 month'):: date validation_start_dt
+, date_trunc('month', now())::date-1 validation_end_dt,
+(CAST(INITCAP(TRIM(TBPA.adr_street_tx)||' '||TRIM(TBPA.adr_street_nm)||' '||TRIM(TBPA.adr_city_nm) ||' '||TRIM(TBPA.adr_state_cd) 
+||' '||TRIM(TBPA.adr_zip5_no::character varying)) as  character varying)) as address, TBS.service_nm, TBS.service_id
+from tb_placement TBPM 
+LEFT JOIN person p on p.cjamspid = TBPM.client_id
+JOIN tb_placement_providers as TBPMP
+     ON TBPMP.placement_id = TBPM.placement_id and TBPMP.delete_sw = 'N'
+JOIN tb_provider as TBP
+     ON TBP.provider_id = TBPM.provider_id and TBP.delete_sw = 'N' 
+     
+/*LEFT JOIN tb_provider_contracts as TBPC 
+      ON TBP.affiliate_provider_id= TBPC.provider_id  and TBPC.delete_sw = 'N'
+LEFT JOIN tb_contract_program as TBCP 
+     ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = TBPM.contract_program_id and TBCP.delete_sw = 'N' */
+     
+ JOIN intakeservicerequest as ISR 
+  ON ISR.servicerequestnumber = TBPM.case_id::character varying and ISR.activeflag=1
+LEFT JOIN tb_provider_services as TBPS ON TBPS.provider_id = TBPM.provider_id and TBPS.delete_sw = 'N'
+LEFT JOIN tb_services as TBS ON  TBS.service_id =  TBPS.service_id  and TBS.placement_structure_id = TBPM.placement_structure_id and TBS.delete_sw = 'N' -- Placement structures  
+JOIN tb_provider_addresses as TBPA ON TBPA.parent_key_id::integer = TBP.provider_id and TBPA.delete_sw = 'N' -- Placement Address
+
+where TBPM.delete_sw = 'N' and p.activeflag = 1
+and TBPM.approval_status_cd = '3047' and TBPM.entry_dt is not null and TBPM.exit_dt is null
+and TBPM.entry_dt between date_trunc('month', now()) - interval '1 month' and date_trunc('month', now())::date-1
+order by TBPM.create_ts desc
+LIMIT v_liPageNumber OFFSET v_pageoffset;
+
+END;
+
+$function$
+

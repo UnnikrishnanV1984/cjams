@@ -1,0 +1,2 @@
+INSERT INTO auditlogtype (logtypekey,logtype,modulename,effectivedate,expirationdate,insertedby,updatedby,insertedon,updatedon,old_id) VALUES 
+('CV','CV','Open Case','2018-06-06 12:15:38.000',NULL,'admin','admin','2019-04-24 18:58:36.556','2019-04-24 18:58:36.556',NULL);

@@ -1,0 +1,1 @@
+alter table Intakeservicerequestcourthearing alter column countyid TYPE character varying (50);

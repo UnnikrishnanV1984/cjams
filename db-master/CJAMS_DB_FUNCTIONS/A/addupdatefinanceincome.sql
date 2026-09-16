@@ -1,0 +1,404 @@
+/*
+-- 08-17-2026 Veera N To fix 400 Bad Request error CIDM-11600
+*/
+CREATE OR REPLACE FUNCTION cjams.addupdatefinanceincome(personid uuid, finances json, securityuserid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+    v_personid uuid;
+    v_financejson json;
+    v_securityuserid character varying;
+    v_finance json;
+    v_incomeid uuid;
+    v_deemedparentid uuid;
+    v_deemedparent json;
+    v_childcareexpenses json;
+    v_returndeemedparent json;
+    v_returnchildexpenses json;
+	  v_result json;
+
+
+
+BEGIN
+
+    v_personid := personid :: uuid;
+    v_finance := finances;
+    v_securityuserid := securityuserid;
+
+--FOR  v_finance  IN  SELECT  *  FROM    json_array_elements(v_financejson)  LOOP
+
+IF NULLIF(v_finance  ->> 'incomeid', '') IS NULL THEN
+
+v_incomeid := gen_random_uuid();
+
+insert into personincome (
+incomeid,
+personid,
+startdate,
+enddate,
+datasourcetypekey,
+incomesourcetypekey,
+incomefrequencytypekey,
+amount,
+verificationtypekey,
+incomedisregardflag,
+notes,
+monthlyamount,
+insertedon,
+insertedby,
+updatedon,
+updatedby
+)
+Values (
+v_incomeid,
+v_personid,
+NULLIF(v_finance  ->> 'startdate', '') :: timestamp without time zone,
+NULLIF(v_finance  ->> 'enddate', '') :: timestamp without time zone,
+v_finance  ->> 'datasourcetypekey',
+(v_finance  ->> 'incomesourcetypekey') :: VARCHAR,
+v_finance  ->> 'incomefrequencytypekey',
+NULLIF(v_finance  ->> 'amount', '') :: numeric,
+v_finance  ->> 'verificationtypekey',
+case when (v_finance ->> 'incomedisregardflag') = 'Y' THEN 1 when (v_finance ->> 'incomedisregardflag') = 'N' THEN 0 else NULL END,
+v_finance  ->> 'notes',
+NULLIF(v_finance  ->> 'monthlyamount', '') :: numeric,
+now(),
+v_securityuserid,
+now(),
+v_securityuserid
+);
+
+if (v_finance  ->> 'deemedparent') is not null THEN
+
+v_deemedparentid := gen_random_uuid();
+
+v_deemedparent := (v_finance  ->> 'deemedparent') :: json;
+
+insert into tb_deemed_income_stepparent (
+deemed_income_stepparent_id,
+incomeid,
+case_id,
+assistance_unit_no,
+notin_assistance_unit_no,
+schedule_h_col_iii_no,
+monthly_gross_earnings_no,
+unearned_income_no,
+court_ordered_support_no,
+create_ts,
+create_user_id,
+update_ts,
+update_user_id,
+delete_sw,
+earning_disregard_no,
+total_deemed_income_no
+)
+
+values (
+v_deemedparentid,
+v_incomeid,
+NULLIF(v_deemedparent  ->> 'caseid', '') :: uuid,
+NULLIF(v_deemedparent  ->> 'assistance_unit_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'notin_assistance_unit_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'schedule_h_col_iii_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'monthly_gross_earnings_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'unearned_income_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'court_ordered_support_no', '') :: integer,
+now(),
+v_securityuserid,
+now(),
+v_securityuserid,
+1,
+NULLIF(v_deemedparent  ->> 'earning_disregard_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'total_deemed_income_no', '') :: integer
+);
+
+insert into tb_deemed_income_clients (
+
+  deemed_income_stepparent_id,
+  deemed_income_clients_id,
+  personid,
+  delete_sw,
+  create_ts,
+  create_user_id,
+  update_ts,
+  update_user_id
+)
+values (
+  v_deemedparentid,
+  gen_random_uuid(),
+  NULLIF(v_deemedparent  ->> 'verifiedparentpersonid', '') :: uuid,
+  1,
+  now(),
+  v_securityuserid,
+  now(),
+  v_securityuserid
+);
+
+end if;
+
+if (v_finance  ->> 'childcareexpenses') is not null THEN
+
+    v_childcareexpenses := (v_finance  ->> 'childcareexpenses') :: json;
+
+    insert into tb_child_care_expense (
+
+       child_care_expense_id,
+       incomeid,
+       employment_sw,
+       amount_earned_no,
+       children_under2_no,
+       children_over2_no,
+       delete_sw,
+       create_ts,
+       create_user_id,
+       update_ts,
+       update_user_id
+    )
+    values (
+
+       gen_random_uuid(),
+       v_incomeid,
+       v_childcareexpenses  ->> 'employmenttypecode',
+       NULLIF(v_childcareexpenses  ->> 'amountearned', '') :: integer,
+       NULLIF(v_childcareexpenses  ->> 'childrenunder2', '') :: integer,
+       NULLIF(v_childcareexpenses  ->> 'childrenover2', '') :: integer,
+        1,
+       now(),
+       v_securityuserid,
+       now(),
+       v_securityuserid
+    );
+
+end if;
+
+ELSE
+
+    v_incomeid := NULLIF(v_finance  ->> 'incomeid', '') :: uuid;
+
+update personincome pi set
+
+startdate = NULLIF(v_finance  ->> 'startdate', '') :: timestamp without time zone,
+enddate = NULLIF(v_finance  ->> 'enddate', '') :: timestamp without time zone,
+datasourcetypekey = v_finance  ->> 'datasourcetypekey',
+incomesourcetypekey = (v_finance  ->> 'incomesourcetypekey') :: VARCHAR,
+incomefrequencytypekey = v_finance  ->> 'incomefrequencytypekey',
+amount = NULLIF(v_finance  ->> 'amount', '') :: numeric,
+verificationtypekey =  v_finance  ->> 'verificationtypekey',
+incomedisregardflag = case when (v_finance ->> 'incomedisregardflag') = 'Y' THEN 1 when (v_finance ->> 'incomedisregardflag') = 'N' THEN 0 else NULL END,
+notes = v_finance  ->> 'notes',
+activeflag = 1,
+monthlyamount = NULLIF(v_finance  ->> 'monthlyamount', '') :: numeric,
+updatedon = now(),
+updatedby = v_securityuserid
+
+where pi.incomeid = v_incomeid;
+
+if (v_finance  ->> 'deemedparent') is not null THEN
+
+v_deemedparent := (v_finance  ->> 'deemedparent') :: json;
+
+if NULLIF(v_deemedparent ->> 'deemed_income_stepparent_id', '') is null then
+
+v_deemedparentid := gen_random_uuid();
+
+insert into tb_deemed_income_stepparent (
+deemed_income_stepparent_id,
+incomeid,
+case_id,
+assistance_unit_no,
+notin_assistance_unit_no,
+schedule_h_col_iii_no,
+monthly_gross_earnings_no,
+unearned_income_no,
+court_ordered_support_no,
+create_ts,
+create_user_id,
+update_ts,
+update_user_id,
+delete_sw,
+earning_disregard_no,
+total_deemed_income_no
+)
+
+values (
+v_deemedparentid,
+v_incomeid,
+NULLIF(v_deemedparent  ->> 'caseid', '') :: uuid,
+NULLIF(v_deemedparent  ->> 'assistance_unit_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'notin_assistance_unit_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'schedule_h_col_iii_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'monthly_gross_earnings_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'unearned_income_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'court_ordered_support_no', '') :: integer,
+now(),
+v_securityuserid,
+now(),
+v_securityuserid,
+1,
+NULLIF(v_deemedparent  ->> 'earning_disregard_no', '') :: integer,
+NULLIF(v_deemedparent  ->> 'total_deemed_income_no', '') :: integer
+);
+
+insert into tb_deemed_income_clients (
+
+  deemed_income_stepparent_id,
+  deemed_income_clients_id,
+  personid,
+  delete_sw,
+  create_ts,
+  create_user_id,
+  update_ts,
+  update_user_id
+)
+values (
+  v_deemedparentid,
+  gen_random_uuid(),
+  NULLIF(v_deemedparent  ->> 'verifiedparentpersonid', '') :: uuid,
+  1,
+  now(),
+  v_securityuserid,
+  now(),
+  v_securityuserid
+);
+
+else
+
+v_deemedparentid := NULLIF(v_deemedparent ->> 'deemed_income_stepparent_id', '') :: uuid;
+
+update tb_deemed_income_stepparent dis set
+
+assistance_unit_no = NULLIF(v_deemedparent  ->> 'assistance_unit_no', '') :: integer,
+notin_assistance_unit_no = NULLIF(v_deemedparent  ->> 'notin_assistance_unit_no', '') :: integer,
+schedule_h_col_iii_no = NULLIF(v_deemedparent  ->> 'schedule_h_col_iii_no', '') :: integer,
+monthly_gross_earnings_no = NULLIF(v_deemedparent  ->> 'monthly_gross_earnings_no', '') :: integer,
+unearned_income_no =  NULLIF(v_deemedparent  ->> 'unearned_income_no', '') :: integer,
+court_ordered_support_no = NULLIF(v_deemedparent  ->> 'court_ordered_support_no', '') :: integer,
+update_ts = now(),
+update_user_id = v_securityuserid,
+delete_sw = 1,
+earning_disregard_no = NULLIF(v_deemedparent  ->> 'earning_disregard_no', '') :: integer,
+total_deemed_income_no = NULLIF(v_deemedparent  ->> 'total_deemed_income_no', '') :: integer
+
+where dis.deemed_income_stepparent_id = v_deemedparentid;
+
+update tb_deemed_income_clients dic SET
+
+  personid = NULLIF(v_deemedparent  ->> 'verifiedparentpersonid', '') :: uuid,
+  delete_sw = 1,
+  update_ts = now(),
+  update_user_id = v_securityuserid
+
+  where dic.deemed_income_stepparent_id = v_deemedparentid;
+
+end if;
+
+end if;
+
+if (v_finance  ->> 'childcareexpenses') is not null THEN
+
+    v_childcareexpenses := (v_finance  ->> 'childcareexpenses') :: json;
+
+if NULLIF(v_childcareexpenses  ->> 'child_care_expense_id', '') is null THEN
+
+    insert into tb_child_care_expense (
+
+       child_care_expense_id,
+       incomeid,
+       employment_sw,
+       amount_earned_no,
+       children_under2_no,
+       children_over2_no,
+       delete_sw,
+       create_ts,
+       create_user_id,
+       update_ts,
+       update_user_id
+    )
+    values (
+
+       gen_random_uuid(),
+       v_incomeid,
+       v_childcareexpenses  ->> 'employmenttypecode',
+       NULLIF(v_childcareexpenses  ->> 'amountearned', '') :: integer,
+       NULLIF(v_childcareexpenses  ->> 'childrenunder2', '') :: integer,
+       NULLIF(v_childcareexpenses  ->> 'childrenover2', '') :: integer,
+        1,
+       now(),
+       v_securityuserid,
+       now(),
+       v_securityuserid
+    );
+
+else
+
+update tb_child_care_expense cce SET
+
+    employment_sw = v_childcareexpenses  ->> 'employmenttypecode',
+    amount_earned_no = NULLIF(v_childcareexpenses  ->> 'amountearned', '') :: integer,
+    children_under2_no = NULLIF(v_childcareexpenses  ->> 'childrenunder2', '') :: integer,
+    children_over2_no = NULLIF(v_childcareexpenses  ->> 'childrenover2', '') :: integer,
+    delete_sw = 1,
+    update_ts = now(),
+    update_user_id = v_securityuserid
+
+    where  cce.child_care_expense_id = NULLIF(v_childcareexpenses  ->> 'child_care_expense_id', '') :: uuid;
+
+end if;
+
+end if;
+
+END IF;
+
+-- END LOOP;
+
+SELECT to_json(pi) into v_result FROM
+	(
+	select
+		i.incomeid,
+		i.personid,
+		i.startdate,
+		i.enddate,
+		i.datasourcetypekey,
+		i.incomesourcetypekey,
+		i.incomefrequencytypekey,
+		i.amount,
+		i.verificationtypekey,
+    i.incomedisregardflag,
+		i.notes,
+		i.monthlyamount,
+		(select to_json(rdp) from (
+  select
+        deemed_income_stepparent_id,
+        case_id as caseid,
+        assistance_unit_no,
+        notin_assistance_unit_no,
+        schedule_h_col_iii_no,
+        monthly_gross_earnings_no,
+        unearned_income_no,
+        court_ordered_support_no,
+        earning_disregard_no,
+        total_deemed_income_no,
+        (select dic.personid from tb_deemed_income_clients dic where dic.deemed_income_stepparent_id = dis.deemed_income_stepparent_id and dic.delete_sw=1 order by dic.create_ts desc limit 1) as "verifiedparentpersonid"
+          from tb_deemed_income_stepparent dis where dis.incomeid = i.incomeid and delete_sw = 1
+  ) rdp) as "deemedparent",
+    (select to_json(rce) from (
+  select
+        child_care_expense_id,
+        employment_sw as"employmenttypecode",
+        amount_earned_no as "amountearned",
+        children_under2_no as "childrenunder2",
+        children_over2_no as "childrenover2"
+
+   from tb_child_care_expense cce where cce.incomeid = i.incomeid and delete_sw = 1
+  ) rce) as "childcareexpenses"
+		from personincome i where i.personid = v_personid and i.activeflag = 1 and i.incomeid = v_incomeid
+	) pi;
+
+RETURN v_result;
+
+END;
+
+$function$;

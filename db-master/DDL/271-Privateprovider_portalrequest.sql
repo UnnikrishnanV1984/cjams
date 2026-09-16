@@ -1,0 +1,21 @@
+
+alter table providerportalrequest  add column  if not exists program_address varchar(250) null;
+alter table providerportalrequest  add column if not exists  comar_citation varchar(50) null;
+alter table providerportalrequest add column  if not exists   program_phone varchar(50) null;
+alter table providerportalrequest add column if not exists   program_fax varchar(50) null;
+alter table providerportalrequest  add column if not exists  variance_type varchar(50) null;
+alter table providerportalrequest  add column if not exists  waiver_type varchar(50) null;
+alter table providerportalrequest  add column if not exists  state varchar(50) null;
+alter table providerportalrequest add column  if not exists  city varchar(50) null;
+alter table providerportalrequest  add column  if not exists  zip_no int null;
+alter table providerportalrequest  add column if not exists request_date timestamp  null;
+alter table providerportalrequest  add column if not exists completing_person_name varchar(50) null;
+alter table providerportalrequest  add column if not exists    person_name varchar(50) null;
+alter table providerportalrequest add column if not exists  dob timestamp null;
+alter table providerportalrequest  add column  if not exists gender varchar(50) null;
+alter table providerportalrequest  add column if not exists  reason_for_request_variance varchar(50) null;
+alter table providerportalrequest  add column if not exists reason_for_request_waiver varchar(50) null;
+alter table providerportalrequest  add column if not exists  alternate_measures varchar(50) null;
+alter table providerportalrequest  add column if not exists  request_effectivedate timestamp null;
+alter table providerportalrequest  add column if not exists  request_expirationdate timestamp null;
+alter table providerportalrequest  add column if not exists  continuous varchar(50) null;

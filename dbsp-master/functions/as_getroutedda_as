@@ -1,0 +1,548 @@
+CREATE OR REPLACE FUNCTION as_getroutedda_as(userid character varying, isassigned boolean, iswaiting boolean, pagenumber bigint, pagesize bigint, servicereqno character varying, sortcolumn character varying, sortorder character varying, assignedid character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, offencecounty json, casecondtions json, assistid character varying, cjamspid bigint, servicereqid uuid, servicerequestnumber character varying, servreqtype character varying, servreqsubtype character varying, reporteddate timestamp without time zone, raname character varying, servreqstatus character varying, routedon timestamp without time zone, assignedto character varying, assigned boolean, assigneddate timestamp without time zone, isgroup boolean, acceptdate timestamp without time zone, intakenumber character varying, dadetails json, servicelogapprovestatus character varying, legalguardian json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ v_pageoffset  int;
+ v_pagenumber  int;
+ v_countyid character varying;   
+BEGIN 
+ v_pagenumber  :=  pagenumber-1;
+ v_pageoffset  =  v_pagenumber  *  pagesize;
+
+
+select countyid into v_countyid from team t join teammember tm on t.teamid=tm.teamid join as_teammemberassignment ast on ast.teammemberid =tm.teammemberid 
+where ast.securityusersid =userid and ast.activeflag=1 and t.activeflag =1 and tm.activeflag =1;
+
+ IF (isassigned  =  FALSE AND iswaiting = FALSE)  THEN
+  RETURN query
+  SELECT count(1) OVER(), *, NULL::json
+  FROM
+  (
+  SELECT
+  (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING,
+  9999999999999:: bigint as cjamspid,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype ,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING) assingeduser,
+  ISR.isrouted,
+  NULL :: timestamp without time zone AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  /*INNER JOIN (SELECT DISTINCT objectid ,cast(r.insertedon AS timestamp) assignedon FROM ROUTING R
+  WHERE R.tosecurityusersid = userid AND routingstatustypeid IN (2, 76)) R
+  ON r.objectid = ISR.intakenumber*/
+  LEFT JOIN userprofile up ON up.securityusersid = ISR.routedusersid AND up.activeflag =1
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  INNER JOIN intakedastatus AS IDAS ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 AND IDAS.status NOT IN (3) --AND (IDAS.clwstatus is NULL or IDAS.clwstatus IN(4,6))
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND coalesce(ISR.isrouted,FALSE) =isassigned
+  AND ISR.activeflag =1 AND userid IN (ISR.insertedby,
+  (SELECT insertedby FROM intakeservicerequestdispositioncode isrdc WHERE isrdc.intakeserviceid = isr.intakeserviceid AND activeflag = 1 ORDER BY isrdc.insertedon DESC LIMIT 1))
+  --AND (SELECT count(*) = 0 FROM caseassignment CA WHERE CA.objectid = ISR.intakeserviceid AND CA.activeflag = 1) AND ISR.teamtypekey='AS'
+  AND ISR.teamtypekey = 'AS'
+
+  UNION ALL 
+  SELECT
+  (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING,
+  9999999999999:: bigint as cjamspid,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype ,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING) assingeduser,
+  ISR.isrouted,
+  R.Assignedon AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT r.servicerequestnumber ,cast(r.insertedon AS timestamp) assignedon FROM ROUTING R
+  WHERE R.tosecurityusersid = userid AND routingstatustypeid IN (2, 76)) R
+  ON r.servicerequestnumber = ISR.intakenumber
+  LEFT JOIN userprofile up ON up.securityusersid = ISR.routedusersid AND up.activeflag =1
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND coalesce(ISR.isrouted,FALSE) =isassigned
+  AND ISR.activeflag =1
+  AND ISR.teamtypekey = 'AS'
+  AND (SELECT srtcdc.dispositioncode NOT IN ('WaitingList') FROM intakeservicerequestdispositioncode isrdc
+  INNER JOIN servicerequesttypeconfigdispositioncode srtcdc ON srtcdc.servicerequesttypeconfigiddispostionid = isrdc.servicerequesttypeconfigiddispostionid 
+  WHERE isrdc.intakeserviceid = ISR.intakeserviceid AND isrdc.activeflag = 1 
+  and ISR.countyid :: character varying = v_countyid 
+  ORDER BY isrdc.insertedon DESC LIMIT 1 )
+
+  UNION ALL
+  SELECT
+  (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING ,
+  9999999999999:: bigint as cjamspid,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING),
+  ISR.isrouted,
+  R.assignedon AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT objectid,tosecurityusersid,cast(r.insertedon AS timestamp) assignedon FROM ROUTING R
+  WHERE R.tosecurityusersid = userid AND routingstatustypeid =9 AND R.activeflag =1 and length(objectid)=36  ) R
+  ON r.objectid :: uuid = ISR.intakeserviceid
+  LEFT JOIN userprofile up ON up.securityusersid = R.tosecurityusersid AND up.activeflag =1
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid
+  AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  INNER JOIN intakedastatus AS IDAS
+  ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 AND IDAS.status NOT IN (3) --AND (IDAS.clwstatus is NULL or IDAS.clwstatus IN(4,6))
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND coalesce(ISR.isrouted,FALSE) =isassigned
+  AND ISR.activeflag =1
+  AND (SELECT count(*) = 0 FROM caseassignment CA WHERE CA.objectid = ISR.intakeserviceid AND CA.activeflag = 1) AND ISR.teamtypekey='AS'
+  AND ISR.teamtypekey = 'AS'
+
+  UNION ALL
+  SELECT (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING ,
+  9999999999999:: bigint as cjamspid,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING),
+  FALSE,
+  ca.insertedon AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  ISR.intakenumber AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus 
+  FROM intakeservicerequest isr
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag = 1
+  INNER JOIN caseassignment ca ON ca.objectid = isr.intakeserviceid AND ca.activeflag = 1
+  LEFT JOIN caseassignment cat ON cat.objectid = isr.intakeserviceid AND cat.toldssid = ca.toldssid AND cat.caseassignmentid <> ca.caseassignmentid AND cat.activeflag = 1
+  LEFT JOIN userprofile up ON up.securityusersid = ca.toworkeridno AND up.activeflag =1
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND ca.toworkeridno = userid AND ca.assignmenttype  = 'T' AND ca.enddate IS NULL AND cat.caseassignmentid IS NULL
+  AND ISR.teamtypekey = 'AS'
+  ) AS Assignlist   
+  ORDER  BY  ( CASE sortorder WHEN 'asc' THEN CASE sortcolumn WHEN 'servicerequestnumber' THEN cast( Assignlist.servicerequestnumber AS CHARACTER VARYING) 
+   WHEN 'assigneddate' THEN cast( Assignlist.assigneddate  AS CHARACTER VARYING)
+   WHEN 'reporteddate' THEN cast( Assignlist.reporteddate  AS CHARACTER VARYING)
+   WHEN 'routeddate' THEN  cast( Assignlist.routeddate  AS CHARACTER VARYING)
+   WHEN 'cjamspid' THEN  cast( Assignlist.cjamspid  AS CHARACTER VARYING)
+   WHEN 'intakenumber' THEN  cast( Assignlist.intakenumber  AS CHARACTER VARYING)
+   WHEN 'servreqtype' THEN cast(Assignlist.servreqtype  AS CHARACTER VARYING)
+   WHEN 'servreqsubtype' THEN cast(Assignlist.servreqsubtype  AS CHARACTER VARYING)
+   WHEN 'servreqstatus' THEN cast(Assignlist.servreqstatus  AS CHARACTER VARYING)
+   WHEN 'raname' THEN cast(Assignlist.raname  AS CHARACTER VARYING)
+   ELSE cast( Assignlist.assigneddate  AS CHARACTER VARYING) END    END)  asc 
+   ,
+
+   ( CASE sortorder WHEN 'desc' THEN CASE sortcolumn WHEN 'servicerequestnumber' THEN cast( Assignlist.servicerequestnumber  AS CHARACTER VARYING)
+   WHEN 'assigneddate' THEN cast( Assignlist.assigneddate  AS CHARACTER VARYING)
+   WHEN 'reporteddate' THEN cast( Assignlist.reporteddate  AS CHARACTER VARYING)
+   WHEN 'routeddate' THEN  cast( Assignlist.routeddate  AS CHARACTER VARYING)
+   WHEN 'cjamspid' THEN  cast( Assignlist.cjamspid  AS CHARACTER VARYING)
+   WHEN 'intakenumber' THEN  cast( Assignlist.intakenumber  AS CHARACTER VARYING)
+   WHEN 'servreqtype' THEN cast(Assignlist.servreqtype  AS CHARACTER VARYING)
+   WHEN 'servreqsubtype' THEN cast(Assignlist.servreqsubtype  AS CHARACTER VARYING)
+   WHEN 'servreqstatus' THEN cast(Assignlist.servreqstatus  AS CHARACTER VARYING)
+   WHEN 'raname' THEN cast(Assignlist.raname  AS CHARACTER VARYING)
+   ELSE cast( Assignlist.assigneddate  AS CHARACTER VARYING) END    END )  desc 
+  LIMIT  pagesize  OFFSET  v_pageoffset    ;
+
+ ELSIF (isassigned  =  FALSE AND iswaiting = TRUE)  THEN
+  RETURN query
+  SELECT count(1) OVER(), *, NULL::json
+  FROM
+  (
+  SELECT
+  (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING,
+  -- (SELECT sum(asm.score):: bigint as cjamspid FROM assessment asm where asm.objectid=isr.intakeserviceid and asm.assessmenttemplateid ='5b8d542e-f364-46c2-a65c-d605ff9d85ff') ,
+  (SELECT (asm.score) :: bigint as cjamspid FROM assessment asm where asm.objectid=isr.intakeserviceid and asm.assessmenttemplateid ='5b8d542e-f364-46c2-a65c-d605ff9d85ff' order by insertedon desc limit 1),
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING) assingeduser,
+  ISR.isrouted,
+  R.Assignedon AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT objectid ,cast(r.insertedon AS timestamp) assignedon FROM ROUTING R
+  WHERE R.tosecurityusersid = userid AND routingstatustypeid IN (2, 76) AND R.activeflag =1) R
+  ON r.objectid = ISR.intakenumber
+  LEFT JOIN userprofile up ON up.securityusersid = ISR.routedusersid AND up.activeflag =1
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  INNER JOIN intakedastatus AS IDAS ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 AND IDAS.status IN (3)--AND (IDAS.clwstatus is NULL or IDAS.clwstatus IN(4,6))
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND coalesce(ISR.isrouted,FALSE) =isassigned
+  AND ISR.activeflag =1
+  AND ISR.teamtypekey = 'AS'
+
+  UNION ALL
+  SELECT
+  (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING ,
+  (SELECT sum(asm.score):: bigint as cjamspid FROM assessment asm where asm.objectid=isr.intakeserviceid) ,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING),
+  ISR.isrouted,
+  R.assignedon AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT objectid,tosecurityusersid,cast(r.insertedon AS timestamp) assignedon FROM ROUTING R
+  WHERE R.tosecurityusersid = userid AND routingstatustypeid =9 AND R.activeflag =1 and length(objectid)=36 ) R
+  ON r.objectid :: uuid = ISR.intakeserviceid 
+  LEFT JOIN userprofile up ON up.securityusersid = R.tosecurityusersid AND up.activeflag =1
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid
+  AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  INNER JOIN intakedastatus AS IDAS
+  ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 AND IDAS.status IN (3) --AND (IDAS.clwstatus is NULL or IDAS.clwstatus IN(4,6))
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND coalesce(ISR.isrouted,FALSE) =isassigned
+  AND ISR.activeflag =1
+  AND ISR.teamtypekey = 'AS'
+
+  UNION ALL
+  SELECT (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING ,
+  (SELECT sum(asm.score):: bigint as cjamspid FROM assessment asm where asm.objectid=isr.intakeserviceid) ,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING),
+  FALSE,
+  ca.insertedon AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus 
+  FROM intakeservicerequest isr
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag = 1
+  INNER JOIN caseassignment ca ON ca.objectid = isr.intakeserviceid AND ca.activeflag = 1
+  LEFT JOIN caseassignment cat ON cat.objectid = isr.intakeserviceid AND cat.toldssid = ca.toldssid AND cat.caseassignmentid <> ca.caseassignmentid AND cat.activeflag = 1
+  LEFT JOIN userprofile up ON up.securityusersid = ca.toworkeridno AND up.activeflag =1
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND ca.toworkeridno = userid AND ca.assignmenttype  = 'T' AND ca.enddate IS NULL AND cat.caseassignmentid IS NULL
+  AND ISR.teamtypekey = 'AS'
+
+  UNION ALL 
+  SELECT
+  (NULL ::json) AS offencecounty,
+  (NULL ::json) AS caseconditions,
+  '':: CHARACTER VARYING,
+  (SELECT sum(asm.score):: bigint as cjamspid FROM assessment asm where asm.objectid=isr.intakeserviceid) ,
+  ISR.intakeserviceid,
+  (ISR.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  intakeserreqstatustypekey as servreqstatus,
+  ISR.routedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING) assingeduser,
+  ISR.isrouted,
+  NULL AS assigneddate,
+  FALSE,
+  NULL :: timestamp without time zone,
+  ISR.intakenumber AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT r.servicerequestnumber,objectid  FROM ROUTING R
+  WHERE R.tosecurityusersid = userid AND (routingstatustypeid = 16 AND eventcode='SCWL') AND R.activeflag =1) R
+  ON r.servicerequestnumber  = ISR.servicerequestnumber 
+  LEFT JOIN userprofile up ON up.securityusersid = ISR.routedusersid AND up.activeflag =1
+  INNER JOIN intakedastatus AS IDAS ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 AND (IDAS.status NOT IN (3) OR 
+  (IDAS.status IN (3) AND (SELECT count(*) = 0 FROM ROUTING R1 WHERE R1.tosecurityusersid = userid AND R1.routingstatustypeid IN (2, 76) AND R1.activeflag =1 AND R1.objectid = IDAS.intakenumber)))
+  INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND coalesce(ISR.isrouted,FALSE) =false
+  AND ISR.activeflag =1
+  AND ISR.teamtypekey = 'AS'
+  ) AS Assignlist   
+  ORDER  BY  ( CASE sortorder WHEN 'asc' THEN CASE sortcolumn WHEN 'servicerequestnumber' THEN cast( Assignlist.servicerequestnumber AS CHARACTER VARYING) 
+   WHEN 'assigneddate' THEN cast( Assignlist.assigneddate  AS CHARACTER VARYING)
+   WHEN 'reporteddate' THEN cast( Assignlist.reporteddate  AS CHARACTER VARYING)
+   WHEN 'routeddate' THEN  cast( Assignlist.routeddate  AS CHARACTER VARYING)
+   WHEN 'cjamspid' THEN  cast( Assignlist.cjamspid  AS CHARACTER VARYING)
+   WHEN 'intakenumber' THEN  cast( Assignlist.intakenumber  AS CHARACTER VARYING)
+   WHEN 'servreqtype' THEN cast(Assignlist.servreqtype  AS CHARACTER VARYING)
+   WHEN 'servreqsubtype' THEN cast(Assignlist.servreqsubtype  AS CHARACTER VARYING)
+   WHEN 'servreqstatus' THEN cast(Assignlist.servreqstatus  AS CHARACTER VARYING)
+   WHEN 'raname' THEN cast(Assignlist.raname  AS CHARACTER VARYING)
+   ELSE cast( Assignlist.assigneddate  AS CHARACTER VARYING) END    END)  asc 
+   ,
+
+   ( CASE sortorder WHEN 'desc' THEN CASE sortcolumn WHEN 'servicerequestnumber' THEN cast( Assignlist.servicerequestnumber  AS CHARACTER VARYING)
+   WHEN 'assigneddate' THEN cast( Assignlist.assigneddate  AS CHARACTER VARYING)
+   WHEN 'reporteddate' THEN cast( Assignlist.reporteddate  AS CHARACTER VARYING)
+   WHEN 'routeddate' THEN  cast( Assignlist.routeddate  AS CHARACTER VARYING)
+   WHEN 'cjamspid' THEN  cast( Assignlist.cjamspid  AS CHARACTER VARYING)
+   WHEN 'intakenumber' THEN  cast( Assignlist.intakenumber  AS CHARACTER VARYING)
+   WHEN 'servreqtype' THEN cast(Assignlist.servreqtype  AS CHARACTER VARYING)
+   WHEN 'servreqsubtype' THEN cast(Assignlist.servreqsubtype  AS CHARACTER VARYING)
+   WHEN 'servreqstatus' THEN cast(Assignlist.servreqstatus  AS CHARACTER VARYING)
+   WHEN 'raname' THEN cast(Assignlist.raname  AS CHARACTER VARYING)
+   ELSE cast( Assignlist.assigneddate  AS CHARACTER VARYING) END    END )  desc 
+  LIMIT  pagesize  OFFSET  v_pageoffset    ;
+
+ ELSE
+  return  query
+  SELECT count(1) over(), *, null::json
+  FROM (
+  SELECT
+  (NULL ::json)  AS  offencecounty,
+  NULL ::json,
+  '':: CHARACTER VARYING ,9999999999999:: bigint as cjamspid , ISR.intakeserviceid,cast(ISR.servicerequestnumber
+  AS CHARACTER VARYING) AS servicerequestnumber ,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  CASE isr.isclosecpshistory  WHEN 1 THEN 'Closed' WHEN 2 THEN 'Rejected' WHEN 0 THEN 'Review' ELSE 'Pending' END ::CHARACTER VARYING as servreqstatus,
+  ISR.insertedon AS routeddate,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING) assigneduser,
+  ISR.isrouted,
+  R.Assignedon AS assigneddate,
+  FALSE,
+  ISR.accepteddate :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid AND isrcr.activeflag = 1 ORDER BY isrcr.insertedon DESC LIMIT 1)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL ::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT objectid,cast(r.insertedon AS timestamp) assignedon ,tosecurityusersid,activeflag
+  FROM ROUTING R
+  WHERE R.fromsecurityusersid = userid AND routingstatustypeid =4  and length(objectid)=36
+  AND R.activeflag =1
+  ) R ON r.objectid  :: uuid = ISR.intakeserviceid AND r.activeflag=1
+  LEFT JOIN userprofile up ON up.securityusersid = r.tosecurityusersid AND up.activeflag =1
+  LEFT JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  LEFT JOIN intakedastatus AS IDAS ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 --AND (IDAS.clwstatus is NULL or IDAS.clwstatus IN(4,6))
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND CASE WHEN assignedid is NOT NULL THEN (r.tosecurityusersid=assignedid ) ELSE true END
+  AND coalesce(ISR.isrouted,FALSE) =true
+  AND ISR.activeflag =1
+  AND ISR.teamtypekey = 'AS'
+
+  UNION ALL
+  SELECT
+  NULL::json,
+  NULL::json,
+  '':: CHARACTER VARYING ,9999999999999:: bigint as cjamspid , ISR.intakeserviceid,cast(ISR.servicerequestnumber
+  AS CHARACTER VARYING) AS servicerequestnumber ,
+  (SELECT itsrt.intakeservreqtypekey FROM intakeservicerequesttype AS itsrt WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND itsrt.activeflag =1 LIMIT 1) AS servreqtype,
+  (SELECT srst.classkey FROM servicerequestsubtype AS srst WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid AND srst.activeflag =1 LIMIT 1) AS servreqsubtype,
+  ISR.reporteddate AS reporteddate,
+  (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+  FROM intakeservicerequestactor ISRA 
+  INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1
+  INNER JOIN person PN ON PN.personid = a.personid 
+  WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) AS raname,
+  CASE isr.isclosecpshistory WHEN 1 THEN 'Closed' WHEN 2 THEN 'Rejected' WHEN 0 THEN 'Review' ELSE 'Pending' END as servreqstatus,
+  ISR.insertedon,
+  cast(up.lastname ||', '||up.firstname AS CHARACTER VARYING),
+  ISR.isrouted,
+  R.Assignedon AS assigneddate,
+  FALSE,
+  ISR.accepteddate :: timestamp without time zone,
+  (CASE ( SELECT intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' FROM intakeservicerequest isr1 
+   WHERE isr1.intakeserviceid = ISR.intakeserviceid) 
+   WHEN TRUE 
+   THEN ( SELECT isr2.intakenumber FROM intakeservicerequest isr2 
+    INNER JOIN intakeservicerequestcrossreference isrcr ON isrcr.fromintakeservicerequestid = isr2.intakeserviceid 
+    WHERE isrcr.withintakeservicerequestid = ISR.intakeserviceid)
+   ELSE ISR.intakenumber END) AS intakenumber,
+  NULL::json,
+  NULL::CHARACTER VARYING AS serviceapprovestatus
+  FROM intakeservicerequest AS ISR
+  INNER JOIN (SELECT DISTINCT R.objectid,R.tosecurityusersid,cast(r.insertedon AS timestamp) assignedon, t.countyid FROM ROUTING R
+     INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = R.fromsecurityusersid AND   tma.activeflag =1
+     INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+     INNER JOIN  team t ON t.teamid = tm.teamid AND tm.activeflag =1
+    WHERE R.fromsecurityusersid = userid AND routingstatustypeid =9   and length(objectid)=36
+    AND R.activeflag =1 and R.eventcode ='INVT'
+  ) R ON r.objectid :: uuid = ISR.intakeserviceid 
+  INNER JOIN CASEASSIGNMENT ca ON ca.objectid = ISR.intakeserviceid AND CA.activeflag = 1 AND CA.enddate is null AND ca.toldssid::character varying = R.countyid
+  LEFT JOIN userprofile up ON up.securityusersid = r.tosecurityusersid AND up.activeflag =1
+  LEFT JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid AND irst.activeflag =1 AND lower(irst.Intakeserreqstatustypekey) Not IN ('closed','rejected')
+  LEFT JOIN intakedastatus AS IDAS ON IDAS.intakenumber=ISR.intakenumber AND IDAS.activeflag=1 --AND (IDAS.clwstatus is NULL or IDAS.clwstatus IN(4,6))
+  WHERE ISR.servicerequestnumber LIKE servicereqno ||'%'
+  AND CASE WHEN assignedid is NOT NULL THEN (ISR.routedusersid=assignedid ) ELSE true END
+  AND ISR.activeflag =1
+  AND ISR.teamtypekey = 'AS'
+  ) AS assignlist
+  ORDER  BY  (
+   CASE sortorder 
+    WHEN 'asc' THEN CASE lower(sortcolumn) WHEN 'servicerequestnumber' THEN cast( assignlist.servicerequestnumber  AS CHARACTER VARYING) 
+    WHEN 'assigneddate' THEN cast( assignlist.assigneddate  AS CHARACTER VARYING)
+    WHEN 'reporteddate' THEN cast( assignlist.reporteddate  AS CHARACTER VARYING)
+    WHEN 'routeddate' THEN  cast( assignlist.routeddate  AS CHARACTER VARYING)  
+    WHEN 'cjamspid' THEN  cast( assignlist.cjamspid  AS CHARACTER VARYING)
+    WHEN 'intakenumber' THEN  cast( assignlist.intakenumber  AS CHARACTER VARYING)
+    WHEN 'servreqtype' THEN cast(Assignlist.servreqtype  AS CHARACTER VARYING)
+   WHEN 'servreqsubtype' THEN cast(Assignlist.servreqsubtype  AS CHARACTER VARYING)
+   WHEN 'servreqstatus' THEN cast(Assignlist.servreqstatus  AS CHARACTER VARYING)
+   WHEN 'raname' THEN cast(Assignlist.raname  AS CHARACTER VARYING)
+    ELSE cast( assignlist.assigneddate  AS CHARACTER VARYING) END   END)  asc ,
+   ( CASE sortorder WHEN 'desc' THEN CASE lower(sortcolumn) WHEN 'servicerequestnumber' THEN cast( assignlist.servicerequestnumber  AS CHARACTER VARYING)
+    WHEN 'assigneddate' THEN cast( assignlist.assigneddate  AS CHARACTER VARYING)
+    WHEN 'reporteddate' THEN cast( assignlist.reporteddate  AS CHARACTER VARYING)
+    WHEN 'routeddate' THEN  cast( assignlist.routeddate  AS CHARACTER VARYING)
+    WHEN 'cjamspid' THEN  cast( assignlist.cjamspid  AS CHARACTER VARYING)
+    WHEN 'intakenumber' THEN  cast( assignlist.intakenumber  AS CHARACTER VARYING)
+    WHEN 'servreqtype' THEN cast(Assignlist.servreqtype  AS CHARACTER VARYING)
+   WHEN 'servreqsubtype' THEN cast(Assignlist.servreqsubtype  AS CHARACTER VARYING)
+   WHEN 'servreqstatus' THEN cast(Assignlist.servreqstatus  AS CHARACTER VARYING)
+   WHEN 'raname' THEN cast(Assignlist.raname  AS CHARACTER VARYING)
+    ELSE cast( assignlist.assigneddate  AS CHARACTER VARYING) END   END )  desc 
+  LIMIT  pagesize  OFFSET  v_pageoffset  ;
+
+ END  IF;               
+END;
+
+$function$
+

@@ -1,0 +1,158 @@
+CREATE OR REPLACE FUNCTION prov_listworkeralerts()
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_jsondata json;
+begin 
+
+
+select json_agg(x) into v_jsondata from (
+
+select * from (
+
+select distinct mcf.provider_id,mcf.exit_conf_number as object_id,mcf.ec_status as status , 'Exit Conference' as object_type,'exitconfcreated' as date_type,
+mcf.create_ts:: date as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf1 
+    join providerassignment pa on pa.objectid  = mcf1.site_id
+    where mcf.exit_conf_number =mcf1.exit_conf_number )a) as workerdetail, concat(tp.provider_id,' ',tp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from prov_monitoring_exit_conf mcf 
+inner join tb_provider tp on tp.delete_sw <> 'Y' and tp.provider_id  = mcf.provider_id
+inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = mcf.site_id 
+where mcf.delete_sw = 'N' and (mcf.ec_status is null or mcf.ec_status = 'Pending' or mcf.ec_status = '')
+
+UNION 
+
+select distinct mcf.provider_id,mcf.exit_conf_number as object_id,mcf.ec_status as status , 'CAP' as object_type,'capsenttoprovider' as date_type,
+(select decisiondate:: date 
+    from tb_provider_decision 
+    where eventcode ='Exit Conf' 
+    and objectid =mcf.exit_conf_number 
+    and status ='Sent to Provider' 
+    order by decisiondate desc limit 1) as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf1 
+    join providerassignment pa on pa.objectid  = mcf1.site_id
+    where mcf.exit_conf_number =mcf1.exit_conf_number )a) as workerdetail, concat(tp.provider_id,' ',tp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from prov_monitoring_exit_conf mcf 
+inner join tb_provider tp on tp.delete_sw <> 'Y' and tp.provider_id  = mcf.provider_id
+inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = mcf.site_id 
+where mcf.delete_sw = 'N' and mcf.ec_status = 'Sent to Provider'
+
+UNION 
+
+select distinct mcf.provider_id,mcf.exit_conf_number as object_id,mcf.ec_status as status , 'CAP' as object_type,'capreturnedtoprovider' as date_type,
+(select decisiondate:: date 
+    from tb_provider_decision 
+    where eventcode ='Exit Conf' 
+    and objectid =mcf.exit_conf_number 
+    and status ='Returned to Provider' 
+    order by decisiondate desc limit 1) as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf1 
+    join providerassignment pa on pa.objectid  = mcf1.site_id
+    where mcf.exit_conf_number =mcf1.exit_conf_number )a) as workerdetail, concat(tp.provider_id,' ',tp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from prov_monitoring_exit_conf mcf 
+inner join tb_provider tp on tp.delete_sw <> 'Y' and tp.provider_id  = mcf.provider_id
+inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = mcf.site_id 
+where mcf.delete_sw = 'N' and mcf.ec_status = 'Returned to Provider'
+
+UNION 
+
+select distinct m.provider_id,m.monitoring_id as object_id,
+case when pd.status is not null
+then pd.status 
+else 'Draft'  End  
+as status,
+'Joint Monitoring' as object_type,'jointmonitoring' as date_type,
+ m.monitoring_dt:: date as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf 
+    join prov_monitoring pm on pm.monitoring_id = mcf.monitoring_id 
+    join prov.prov_monitoring_site pms on pms.monitoring_id = pm.monitoring_id
+    join providerassignment pa on pa.objectid  = pms.site_id
+    where pm.monitoring_id =m.monitoring_id )a) as workerdetail,concat(tp.provider_id,' ',tp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from prov_monitoring m 
+left join tb_provider_decision pd on pd.objectid = m.monitoring_id and pd.eventcode = 'MVR'
+                                             and pd.status not in ('Approved')
+ inner join prov.prov_monitoring_site pms1 on pms1.monitoring_id = m.monitoring_id
+ inner join tb_provider tp on tp.delete_sw <> 'Y' and tp.provider_id  = m.provider_id 
+ inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = pms1.site_id 
+where  m.delete_sw='N' and m.typeofinspection = 'Joint'
+        and m.agency ='DHS' and m.inspectedwith ='DJS'
+        and m.monitoring_id not in (select object_id 
+            from provider_communication pc where pc.object_type ='MONITORING_NOTES' and (pc.sent_from->>'agency')::character varying = 'OLMDJS'::character  varying)
+
+UNION
+
+select distinct m.provider_id,m.monitoring_id as object_id,tbp.status  as status , 'Independent Monitoring' as object_type,'independentmonitoring' as date_type,
+tbp.decisiondate::date as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf 
+    join prov_monitoring pm on pm.monitoring_id = mcf.monitoring_id 
+    join prov.prov_monitoring_site pms on pms.monitoring_id = pm.monitoring_id
+    join providerassignment pa on pa.objectid  = pms.site_id
+    where pm.monitoring_id =m.monitoring_id )a) as workerdetail,concat(tp.provider_id,' ',tp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from  prov_monitoring m
+ left join tb_provider_decision tbp on tbp.objectid = m.monitoring_id and tbp.activeflag = '1' and tbp.eventcode = 'MVR'
+ inner join prov.prov_monitoring_site pms1 on pms1.monitoring_id = m.monitoring_id
+ inner join tb_provider tp on tp.delete_sw <> 'Y' and tp.provider_id  = m.provider_id 
+ inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = pms1.site_id  where m.delete_sw='N' and m.agency = 'DJS' 
+ and m.typeofinspection = 'Independent'and tbp.status = 'Returned to Worker'
+ 
+UNION
+
+select distinct m.provider_id,m.monitoring_id as object_id,'Draft' as status, 'Independent Monitoring' as object_type,'independentmonitoring' as date_type,
+ m.monitoring_dt:: date as object_date,
+(select jsonb_agg(a) from (select pa.toworkeridno from prov_monitoring_exit_conf mcf 
+    join prov_monitoring pm on pm.monitoring_id = mcf.monitoring_id 
+    join prov.prov_monitoring_site pms on pms.monitoring_id = pm.monitoring_id
+    join providerassignment pa on pa.objectid  = pms.site_id
+    where pm.monitoring_id =m.monitoring_id )a) as workerdetail,concat(tp.provider_id,' ',tp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from  prov_monitoring m
+ left join tb_provider_decision tbp on tbp.objectid = m.monitoring_id and tbp.activeflag = '1' and tbp.eventcode = 'MVR'
+ inner join prov.prov_monitoring_site pms1 on pms1.monitoring_id = m.monitoring_id
+ inner join tb_provider tp on tp.delete_sw <> 'Y' and tp.provider_id  = m.provider_id 
+ inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = pms1.site_id
+ where m.delete_sw='N' and m.agency = 'DJS' 
+ and m.typeofinspection = 'Independent'
+ and tbp.status is null
+
+ UNION
+
+select distinct papp.provider_id,papp.site_id::character varying as object_id,'Draft' as status, (case when papp.application_type = 'RELICENSURE' then 'Re-Licensure' else 'Mid-Licensure' end) as object_type,lower(papp.application_type) as date_type,
+papp.document_send_by_date:: date as object_date, null::jsonb as workerdetail,concat(tbp.provider_id,' ',tbp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from prov_application_details papp
+inner join tb_provider tbp on tbp.provider_id = papp.provider_id and tbp.delete_sw = 'N'
+inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = papp.site_id
+ where papp.delete_sw = 'N' and (papp.documents_received is null or papp.documents_received = false) and papp.application_type in ('RELICENSURE','MIDLICENSURE')
+
+UNION
+
+select distinct tpl.provider_id,tpl.site_id::varchar as object_id,'Draft' as status,'Re-Licensure Letter' as object_type,'relicensureletter' as date_type,
+tpl.license_expiry_dt:: date as object_date, null::jsonb as workerdetail,concat(tbp.provider_id,' ',tbp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from tb_provider_licensing tpl
+join tb_provider_picklist plist on plist.provider_id =  tpl.site_id and trim(plist.picklist_value_cd) in ('3274','3302','3794','3795','3796') 
+inner join tb_provider tbp on tbp.provider_id = tpl.provider_id and tbp.delete_sw = 'N'
+inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = tpl.site_id
+where tpl.delete_sw = 'N' and tpl.active_sw = 'Y' and date(tpl.license_expiry_dt - interval  '160 days') <= now() and
+not exists(select 1 from tb_provider_applicant tbpa where tbpa.site_id = tpl.site_id and tbpa.delete_sw = 'N' and tbpa.application_type = 'RELICENSURE' and tbpa.application_status = 'Pending')
+
+UNION 
+
+select distinct tpl.provider_id,tpl.site_id::varchar as object_id,'Draft' as status, 'Mid-Licensure Letter' as object_type,'midlicensureletter' as date_type,
+ date(tpl.license_issue_dt + interval  '1 year' - interval  '60 days'):: date as object_date, null::jsonb as workerdetail,concat(tbp.provider_id,' ',tbp.provider_nm)::varchar as provider_name, concat(ts.provider_id,' ',ts.provider_nm) as site_info
+from tb_provider_licensing tpl
+join tb_provider_picklist plist on plist.provider_id =  tpl.site_id and trim(plist.picklist_value_cd) in ('3274','3302','3794','3795','3796') 
+inner join tb_provider tbp on tbp.provider_id = tpl.provider_id and tbp.delete_sw = 'N'
+inner join tb_provider ts on ts.delete_sw <> 'Y' and ts.provider_id = tpl.site_id
+where tpl.delete_sw = 'N' and tpl.active_sw = 'Y' and date( tpl.license_issue_dt + interval  '1 year' - interval  '70 days') <= now() and 
+not exists(select 1 from tb_provider_applicant tbpa where tbpa.site_id = tpl.site_id and tbpa.delete_sw = 'N' and tbpa.application_type = 'MIDLICENSURE' and tbpa.application_status = 'Pending')
+
+ ) t where t.object_date is not null
+order by t.object_date desc, t.object_id desc
+
+) x
+
+;  
+
+return v_jsondata;       
+END;
+$function$
+

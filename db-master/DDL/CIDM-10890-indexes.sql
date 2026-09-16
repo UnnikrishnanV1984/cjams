@@ -1,0 +1,2 @@
+CREATE INDEX investigationallegation_test_idx ON cjams.investigationallegation USING btree (allegationid);
+CREATE INDEX investigationmaltreatmentactor_test_idx ON cjams.investigationmaltreatmentactor USING btree (maltreatmentid);

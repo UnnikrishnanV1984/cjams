@@ -1,0 +1,2 @@
+update assessmenttemplatecategoryfiltermap set activeflag=0 where assessmenttemplatecategoryfiltermapid in ('6d416ef0-312d-453a-b4e0-2ad9f38ebd2e',
+'cdb7dd49-c001-4658-b047-96c65b441c7b','f86cd53f-bbd7-4299-8ed3-ce4feb21f32e','24f29a47-7859-43ef-b7ab-6aca4960b86d');

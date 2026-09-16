@@ -1,0 +1,1 @@
+CREATE INDEX idx_person_trim_cisclientid ON cjams.person USING btree (trim(cisclientid));

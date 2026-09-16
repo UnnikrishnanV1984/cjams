@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION prov_getproviders(reqobj json, v_skip integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+    v_category_cd character VARYING;
+    v_provider_id CHARACTER VARYING;
+    v_provider_nm character VARYING;
+    v_affiliate_provider_id integer;
+    v_status_cd integer;
+    v_limit integer;
+ 
+ BEGIN
+    
+    v_category_cd := reqobj->>'provider_category_cd';
+    v_provider_id := reqobj->>'provider_id';
+    v_provider_nm := reqobj->>'provider_nm';
+    v_affiliate_provider_id := reqobj->>'affiliate_provider_id';
+    v_status_cd := reqobj->>'provider_status_cd'; 
+
+    v_provider_nm := lower(trim(v_provider_nm));
+
+    v_limit := null;
+    if(v_skip is not null) then 
+        v_limit := 10;
+    end if;
+
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+    select count(1) over(), * from (
+        select distinct tp.*,LOWER(trim(provider_first_nm)),LOWER(trim(provider_last_nm)),LOWER(trim(provider_nm)), (select * from prov_get_formatted_addresses(tp.provider_id)) as provider_address
+  from tb_provider tp 
+        inner join tb_provider_picklist tpp 
+        on tpp.provider_id = tp.provider_id 
+        where tpp.delete_sw='N' and tp.delete_sw='N'
+        and (v_category_cd is null or tpp.picklist_value_cd = v_category_cd) 
+        and (v_status_cd is null or tp.provider_status_cd = v_status_cd)
+        and (v_provider_id is null or tp.provider_id::character VARYING like '%'||v_provider_id||'%' ) 
+        and (v_affiliate_provider_id is null or tp.affiliate_provider_id =v_affiliate_provider_id ) 
+        and (v_provider_nm = '' or v_provider_nm is null or (
+              lower(tp.provider_nm) like '%'||v_provider_nm||'%' or
+              lower(tp.provider_first_nm) like '%'||v_provider_nm||'%' or
+              lower(tp.provider_last_nm) like '%'||v_provider_nm||'%' 
+        ) )
+        order by LOWER(trim(provider_first_nm)),LOWER(trim(provider_last_nm)),LOWER(trim(provider_nm)) ASC NULLS last 
+    )
+    limit v_limit offset v_skip
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

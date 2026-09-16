@@ -1,0 +1,1 @@
+ALTER TABLE cjams.visitationlog ALTER COLUMN visitlocation TYPE text USING visitlocation::text;

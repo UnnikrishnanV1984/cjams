@@ -1,0 +1,1093 @@
+CREATE OR REPLACE FUNCTION as_getpersonsbyinvestigationcw(_page integer, _limit integer, v_intakeserviceid uuid DEFAULT NULL::uuid, v_intakenumber character varying DEFAULT NULL::character varying, v_servicerequestnumber character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, rolename character varying, dcn character varying, personid uuid, fullname character varying, firstname character varying, lastname character varying, suffix character varying, gender character varying, dob timestamp without time zone, age character varying, incidentage character varying, timereceived timestamp with time zone, dateofdeath timestamp without time zone, isapproxdod integer, residencetype character varying, address character varying, address2 character varying, state character varying, city character varying, zipcode character varying, county character varying, nameoffacility character varying, durationday character varying, comments character varying, height character varying, weight character varying, haircolortypekey character varying, hairtexturetypekey character varying, eyecolortypekey character varying, physicalbuildtypekey character varying, skintonetypekey character varying, hairtextureotherdesc character varying, haircolorotherdesc character varying, isglasses boolean, employername character varying, clienttitle character varying, race json, phonenumber character varying, dangerous text, actorid uuid, intakeservicerequestactorid uuid, isalleged integer, priorscount bigint, reported boolean, refusessn boolean, refusedob boolean, userphoto text, primarylanguageid character varying, primarylanguage character varying, secondarylanguageid character varying, secondarylanguage character varying, otherprimarylanguagetypekey character varying, otherreligion character varying, email character varying, roles json, relationship character varying, relationshiparray json, relationshipdescription character varying, ishousehold integer, iscollateralcontact integer, schoolname json, ssn character varying, assistpid character varying, cjamspid bigint, cisclientid character varying, strengths character varying, needs character varying, hospitalization json, medicalinformation json, medicationinformation json, addendum json, medicalcondition json, allergies json, appointmentdates json, personmilitaryservices json, emergency json, guardianinfo json, guardianpropertyinfo json, guardianattornyinfo json, guardianworkerinfo json, guardiafuneralinfo json, guardiacodeinfo json, personpayeeinfo json, ethinicity character varying, religion character varying, maritalstatus character varying, racetypekey character varying, fetalalcoholspctrmdisordflag integer, drugexposednewbornflag integer, probationsearchconductedflag integer, sexoffenderregisteredflag integer, citizenalenageflag integer, isqualifiedalien integer, alienregistrationtext character varying, verificationremarks character varying, alienstatustypekey character varying, issafe integer, programarea json)
+ LANGUAGE plpgsql
+AS $function$
+
+ declare 
+_offset integer;
+jsondatas json;
+narativeval json;
+obj json;
+incidentdate timestamp without time zone;
+incidentdateval character varying;
+v_tempintake character varying;
+v_refintakeserviceid uuid;
+
+v_tempintakeserviceid uuid; -- added 12/13/2020 Saranyan for conversion fix
+begin
+
+ -- added  below sql 12/13/2020 Saranyan for conversion fix
+select distinct intakeserviceid into v_tempintakeserviceid 
+from intakeservicerequest where servicerequestnumber = v_servicerequestnumber;
+
+select distinct intakenumber into v_tempintake from intakeservicerequest where intakeserviceid = v_intakeserviceid;
+
+select fromintakeservicerequestid into v_refintakeserviceid from intakeservicerequestcrossreference 
+ where withintakeservicerequestid  = v_intakeserviceid ;
+
+
+/*Get adoption case person*/
+IF EXISTS (SELECT * FROM adoptioncase WHERE adoptioncaseid=v_intakeserviceid) THEN
+RETURN QUERY 
+ SELECT * FROM as_getadoptionperson(_page,_limit,v_intakeserviceid);
+END IF;
+
+_offset := (_page - 1) * _limit;
+
+For    jsondatas    in    SELECT   idas.jsondata::json    FROM    intakedastaging idas where 
+ idas.intakenumber =coalesce(v_intakenumber, (select inss.intakenumber from intakeservicerequest inss where inss.intakeserviceid = v_intakeserviceid)) and idas.activeflag =1
+LOOP 
+    obj := jsondatas->>'narrative';
+   
+    For   narativeval    in    SELECT * from   json_array_elements(obj) 
+LOOP 
+raise notice 'teslsldst %' ,incidentdate;
+incidentdateval := narativeval->>'incidentdate';
+if(incidentdateval != '' )
+then
+raise notice 'qqqqqqqqqqqqqqqqqqqq %' ,incidentdate;
+ incidentdate := incidentdateval ::timestamp without time zone; 
+else 
+incidentdate := null;
+raise notice 'else %' ,incidentdate;
+end if;
+END  loop ;
+END  loop ;
+
+raise notice 'test %',incidentdate;
+
+return QUERY 
+
+--WITH reports(data) AS (
+--   VALUES ('{"objects":[{"src":"foo.png"}, {"src":"bar.png"}]
+--           , "background":"background.png"}'::json)
+--   )
+
+select
+ "Person".totalcount,
+ "Person"."intakeservicerequestpersontypekey",
+ "Person".dcn,
+ "Person".personid,
+ "Person".fullname,
+ "Person".firstname,
+ "Person".lastname,
+ "Person".suffix,
+ "Person".gendertypekey,
+ --"Person".genderdescription,
+ 
+ "Person".dob,
+ (CASE WHEN EXTRACT(YEAR FROM age(now(), "Person".dob)) <= 0 THEN 
+   CASE WHEN EXTRACT(MONTH FROM age(now(), "Person".dob)) <= 0 THEN 
+    CONCAT (EXTRACT(DAY FROM age(now(), "Person".dob)) :: CHARACTER varying, ' ', 'Day(s)') 
+    ELSE CONCAT (EXTRACT(MONTH FROM age(now(), "Person".dob)) :: CHARACTER varying, ' ', 'Month(s)') 
+   END 
+  ELSE CONCAT (EXTRACT(YEAR FROM age(now(), "Person".dob)) :: CHARACTER varying,' ', 'Yrs') end)::character varying AS age,
+ 
+--  case when incidentdate is not null  
+--   then 
+ (CASE WHEN EXTRACT(YEAR FROM age(coalesce(incidentdate,"Person".timerecieved,"Person".reporterincidentdate,null) , "Person".dob)) <= 0 THEN 
+   CASE WHEN EXTRACT(MONTH FROM age(coalesce(incidentdate,"Person".timerecieved,"Person".reporterincidentdate,null), "Person".dob)) <= 0 THEN 
+    CONCAT (EXTRACT(DAY FROM age(coalesce(incidentdate,"Person".timerecieved,"Person".reporterincidentdate,null), "Person".dob)) :: CHARACTER varying, ' ', 'Day(s)') 
+    ELSE CONCAT (EXTRACT(MONTH FROM age(coalesce(incidentdate,"Person".timerecieved,"Person".reporterincidentdate,null) ,"Person".dob)) :: CHARACTER varying, ' ', 'Month(s)') 
+   END 
+  ELSE CONCAT (EXTRACT(YEAR FROM age(coalesce(incidentdate,"Person".timerecieved,"Person".reporterincidentdate,null), "Person".dob)) :: CHARACTER varying,' ', 'Yrs') end)::character varying 
+as incidentage,
+ "Person".timerecieved,
+ "Person".dateofdeath::timestamp without time zone,
+ "Person".isapproxdod,
+ "Person".residencetype,
+ "Person".address,
+ "Person".address2,
+ "Person".state,
+ "Person".city,
+ "Person".zipcode,
+ "Person".county,
+ "Person".nameoffacility,
+ "Person".durationday,
+ "Person".comments,
+ "Person".height,
+ "Person".weight,
+ "Person".haircolortypekey,
+  "Person".hairtexturetypekey,
+  "Person".eyecolortypekey,
+  "Person".physicalbuildtypekey,
+  "Person".skintonetypekey,
+  "Person".hairtextureotherdesc,
+      "Person".haircolorotherdesc,
+      "Person".isglasses,
+      "Person".employername,
+      "Person".clienttitle,
+   (select json_agg(x) from (select prt.racetypekey,rv.value_text from personracetypemap prt 
+   join referencevalues rv on rv.ref_key=prt.racetypekey and rv.referencetypeid=171 and prt.activeflag=1
+   where prt.personid="Person".personid
+   ) x)
+  as race,
+ (
+  select ph.phonenumber
+ from
+  personphonenumber ph
+ where
+  ph.personid = "Person".personid
+  --and ph.personphonetypekey = 'P'
+  and activeflag = 1
+ order by
+  insertedon desc
+ limit 1),
+ "Person".dangerous,
+ "Person".actorid,
+ "Person".intakeservicerequestactorid,
+ case
+  "Person".isvictim
+  when 1 then 0
+  else "Person".isvictim
+ end,
+ (
+  select count(*)
+ from
+  intakeservicerequest as A
+ inner join intakeservicerequestactor as B on
+  A.intakeserviceid = B.intakeserviceid
+ inner join actor as C on
+  C.ActorId = B.ActorId
+ inner join person as D on
+  C.personid = D.personid
+ where
+  A.activeflag = 1
+  and C.activeflag = 1
+  and D.personid = "Person".personid
+  and D.activeflag = 1
+  and (A.intakeserviceid <> v_intakeserviceid or A.intakenumber <>  v_intakenumber or  A.servicerequestnumber =v_servicerequestnumber)) as "priorscount",
+ "Person".reported,
+ "Person".RefuseSSN,
+ "Person".RefuseDOB,
+ "Person".userphoto ::text,
+ "Person".primarylanguageid,
+ (
+  select description as primarylanguage
+ from
+  referencevalues
+ where
+  ref_key = "Person".primarylanguageid
+  and activeflag = 1
+ order by
+  insertedon desc
+ limit 1),
+ "Person".secondarylanguageid,
+ (
+  select description as secondarylanguage
+ from
+  referencevalues
+ where
+  ref_key = "Person".secondarylanguageid and activeflag=1 limit 1),
+ "Person".otherprimarylanguagetypekey,
+ "Person".otherreligion,
+ "Person".email :: character varying,
+ "Person".roles :: json,
+ "Person".relationship :: character varying,
+ "Person".relationshiparray :: json,
+ "Person".relationshipdescription :: character varying,
+ "Person".ishousehold,
+ "Person".iscollateralcontact,
+ "Person".schoolname :: json,
+ (
+  select pi.personidentifiervalue
+ from
+  personidentifier pi
+ where
+  pi.personid = "Person".personid
+  and pi.activeflag = 1
+  and pi.personidentifiertypekey = 'SSN'
+ order by
+  insertedon desc
+ limit 1),
+ "Person".assistpid,
+ "Person".cjamspid,
+ "Person".cisclientid,
+ "Person".strengths,
+ "Person".needs,
+ "Person".hospitalization ::json,
+ "Person".medicalinformation ::json,
+ "Person".medicationinformation ::json,
+ "Person".addendum ::json,
+ "Person".medicalcondition ::json,
+ "Person".allergies ::json,
+ "Person".appointmentdates ::json,
+ "Person".personmilitaryservices :: json,
+ "Person".emergency ::json,
+ "Person".guardianinfo::json,
+ "Person".guardianpropertyinfo::json,
+ "Person".guardianattornyinfo::json,
+ "Person".guardianworkerinfo::json,
+ "Person".guardiafuneralinfo::json,
+ "Person".guardiacodeinfo::json,
+ "Person".personpayeeinfo::json,
+ "Person".ethinicity,
+ "Person".religion,
+ "Person".maritalstatus,
+ "Person".racetypekey,
+ "Person".fetalalcoholspctrmdisordflag,
+ "Person".drugexposednewbornflag,
+ "Person".probationsearchconductedflag,
+ "Person".sexoffenderregisteredflag,
+ "Person".citizenalenageflag,
+ "Person".isqualifiedalien,
+ "Person".alienregistrationtext,
+ "Person".verificationremarks,
+ "Person".alienstatustypekey, 
+ (
+ select
+  coalesce(aa.issafe, 0)
+ from
+  assessmentactor aa
+ inner join routing r on
+  r.objectid = aa.assessmentid :: character varying
+  and r.activeflag = 1
+  and r.routingstatustypeid = 16
+ where
+  aa.intakeservicerequestactorid = "Person".intakeservicerequestactorid
+  and aa.activeflag = 1
+   ORDER BY routingstatustypeid, r.updatedon DESC
+ limit 1 ),
+ "Person".programarea::json
+from
+ (
+ select
+  count(1) over() as totalcount,
+  iar.intakeservicerequestpersontypekey as "intakeservicerequestpersontypekey",
+  (
+  select
+   personidentifiervalue
+  from
+   personidentifier pid
+  where
+   pid.personid = p.personid
+   and personidentifiertypekey = 'DCN'
+   and activeflag = 1
+  limit 1) as dcn,
+  p.personid,
+     concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as fullname,
+--   ( p.firstname|| '' ||case when p.middlename is not null then '' else ' '||p.middlename end :: character varying|| '' ||
+--  case when p.lastname is not null then '' else ' '||p.lastname end :: character varying|| '' ||
+--  case when p.suffix is not null then '' else ' '||p.suffix end :: character varying ) :: character varying as fullname,
+  
+     p.firstname,
+  p.lastname,
+  p.suffix,
+  p.gendertypekey,
+  --CASE  WHEN  p.gendertypekey = 88  THEN  ' ' WHEN  p.gendertypekey = 99  THEN  ' ' ELSE  p.gendertypekey END  ,
+    
+  --grt.typedescription as genderdescription,
+  p.dob,
+  p.dateofdeath,
+  p.isapproxdod,
+  p.userphoto,
+  p.primarylanguageid,
+  p.secondarylanguageid,
+  p.otherprimarylanguagetypekey,
+  p.otherreligion,
+  (select pat.typedescription  from personaddress AS pa 
+  inner join personaddresstype pat on pat.personaddresstypekey = pa.personaddresstypekey
+   where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by pa.updatedon desc limit 1) residencetype,
+  (select pa.address  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) address,
+  (select pa.address2  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) address2,
+  (select pa.state  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) state,
+  (select pa.city  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) city,
+  (select pa.zipcode  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) zipcode,
+  (select pa.county from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+       order by pa.updatedon desc limit 1) county,
+    (select pa.nameoffacility  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) nameoffacility,
+  (select pa.durationday  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) durationday,
+  (select pa."comments"  from personaddress AS pa  where pa.personid=p.personid and  pa.currentlocationflag = 1 AND pa.activeflag=1 
+        order by updatedon desc limit 1) "comments",  
+  /*pa.address,
+  pa.address2,
+  pa.state,
+  pa.city,
+  pa.zipcode,
+  pa.county,*/
+  ppa.attributevalue as height,
+  ppat.attributevalue as weight,
+  p.haircolortypekey,
+  p.hairtexturetypekey,
+  p.eyecolortypekey,
+  p.physicalbuildtypekey,
+  p.skintonetypekey,
+  p.hairtextureotherdesc,
+      p.haircolorotherdesc,
+      p.isglasses,
+      p.employername,
+      p.clienttitle,
+    (select reporterincidentdate from intakeservicerequest 
+  where (intakenumber= v_intakenumber or intakeserviceid=v_intakeserviceid
+  or intakeserviceid= v_tempintakeserviceid) 
+  and activeflag=1  limit 1
+  ) reporterincidentdate,
+  --irs.reporterincidentdate,
+--      (
+--  select pe.employername from personemployerdetail pe  
+--   --inner  join personemployerdetail ped on pe.personemployerdetailsid = ped.personemployerdetailid and ped.activeflag = 1
+--   where pe.personid=p.personid and pe.activeflag=1 order by pe.insertedon desc limit 1
+--     ),
+--     (
+--  select pe.clienttitle from personemployment pe 
+--   where pe.personid=p.personid and pe.activeflag=1 order by pe.insertedon desc limit 1
+--     ),
+--      peed.employername,
+--      peed.clienttitle,
+  (
+  case
+   when p.dangerlevel = 0 then 'NO'
+   when p.dangerlevel = 1 then 'YES'
+   else 'UNKNOWN'
+  end ) as dangerous,
+  ac.actorid,
+  max(iar.intakeservicerequestactorid:: character varying) :: uuid as intakeservicerequestactorid,
+  iar.isvictim,
+  max(coalesce(iar.reported, false):: character varying)::bool reported ,
+  max(coalesce(iar.refusessn, false):: character varying)::bool refusessn,
+  max(coalesce(iar.refusedob, false):: character varying)::bool refusedob,
+  (
+   select max(personemail.email)
+  from
+   personemail
+  where
+   personemail.personid = P.personid
+   and personemail.activeflag = 1 ) email,
+  (
+  select
+   json_agg(e) as roles
+  from
+   (
+            select distinct isrpn.intakeservicerequestactorid ,
+    isrpn.intakeservicerequestpersontypekey,
+    ISRPN.Intakeservicerequestactorid,
+    --at.typedescription,
+    ISRPN.rcexpungementflag,ISRPN.spexpungementflag,
+    at.value_text as typedescription
+   from
+    intakeservicerequestactor ISRPN
+   --inner join actortype at on
+    --at.actortype = isrpn.intakeservicerequestpersontypekey
+   inner join referencevalues at on 
+   at.ref_key = isrpn.intakeservicerequestpersontypekey
+    where
+    isrpn.actorid = ac.actorid
+    and (isrpn.intakeserviceid = v_intakeserviceid  OR isrpn.intakenumber =v_intakenumber  )
+    and isrpn.activeflag = 1
+        and at.referencetypeid in (175,176,358) -- newly added by venky
+        and at.teamtypekey  = 'AS'  
+    
+   group by
+    isrpn.intakeservicerequestpersontypekey,
+    isrpn.intakeservicerequestactorid,
+    --at.typedescription 
+    at.value_text 
+   ) as e ) ::json,
+  (
+  select
+   rt.relationshiptypekey
+  from
+   relationshiptype rt
+  inner join actorrelationship ar on
+   rt.relationshiptypekey = ar.relationshiptypekey
+   and ar.activeflag = 1
+   and rt.activeflag = 1
+  where
+   ar.intakeservicerequestactorid = max( iar.INTAKESERVICEREQUESTACTORID:: character varying) :: uuid
+  group by
+   rt.relationshiptypekey
+  limit 1 ) as relationship,
+  
+  (
+   select json_agg(x) from (
+       select
+   ar.person1id as secondaryuserid,ar.person2id as primaryuserid,rt.description,up.firstname,up2.firstname
+  from
+   relationshiptype rt
+  inner join actorrelationship ar on
+   rt.relationshiptypekey = ar.relationshiptypekey
+  
+   and ar.activeflag = 1
+   and rt.activeflag = 1
+  join person up on up.personid = ar.person1id
+ join person up2 on up2.personid = ar.person2id
+  where
+   ar.intakeservicerequestactorid in (
+  select ina.intakeservicerequestactorid from  intakeservicerequestactor ina 
+ where --ina.intakeserviceid =  irs.intakeserviceid -- 12/13/2020
+  ina.intakeserviceid =v_intakeserviceid OR ina.intakeserviceid =v_tempintakeserviceid       
+  )
+ ) x
+) :: json as relationshiparray,
+
+  
+  (
+  select
+   rt.description
+  from
+   relationshiptype rt
+  inner join actorrelationship ar on
+   rt.relationshiptypekey = ar.relationshiptypekey
+   and ar.activeflag = 1
+   and rt.activeflag = 1
+  where
+   ar.intakeservicerequestactorid = max( iar.INTAKESERVICEREQUESTACTORID:: character varying) :: uuid
+  group by
+   rt.description
+  limit 1 ) as relationshipdescription,
+  PR.ishouseholdmember as ishousehold,
+  COALESCE (pr.iscollateralcontact,0) as iscollateralcontact,
+  (
+  select
+   json_agg(f) as schoolname
+  from
+   (
+   select
+    pe.educationname
+   from
+    personeducation pe
+   where
+    pe.personid = p.personid
+    and activeflag = 1 ) as f ) ::json,
+  p.old_id as assistpid,
+  p.cjamspid,
+  p.cisclientid,
+  p.strengths,
+  p.needs,
+  (
+  select 
+   json_agg(e) as hospitalization
+  from 
+   (
+    select 
+     isra.intakeserviceid,
+     act.actorid,
+     ph.personid,
+     (select value_tx from tb_picklist_values 
+     where trim(picklist_value_cd)=trim(ph.hospitalization_type) and picklist_type_id=230 limit 1) as hosptializationType,
+     ph.hospitalization_reason,(select value_tx from tb_picklist_values
+      where trim(picklist_value_cd)=trim(ph.hospitalization_reason) and picklist_type_id=310 limit 1) as hosptializationReason,
+     ph.diagnosistx as "reasonOrDiagnosis",
+      ph.startdt as "startdate", ph.enddt as "enddate"
+    from
+    intakeservicerequestactor isra
+    inner join actor act on
+     act.actorid = isra.actorid
+     and act.activeflag = 1
+    inner join person per on
+     per.personid = act.personid
+     and per.activeflag = 1
+    inner join personhospitalization as ph on
+     ph.personid = per.personid
+     and ph.activeflag = 1
+    where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as medicalinformation
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    phi.ismedicaidmedicare,
+    phi.insurancetype,
+    phi.providertype,
+    phi.policyname,
+    ppi.name ,
+    ppi.phone,
+    ppi.address1,
+    ppi.address2,
+    ppi.city,
+    ppi.state,
+    ppi.zip,
+    pbh.currentdiagnoses,
+    pbh.clinicianname,
+    pbh.phone as behavioralphone,
+    pbh.address1 as behavioraladdress1,
+    pbh.address2 as behavioraladdress2,
+    pbh.city as behavioralcity,
+    pbh.state as behavioralstate,
+    pbh.zip as behavioralzip,
+    phi.personid,
+    ppi.isprimaryphycisian,
+    pbh.isbehavioralhealth,
+    pbh.reportname,
+    phi.medicarenumber
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personhealthinsurance as phi on
+    phi.personid = per.personid
+    and phi.activeflag = 1
+   left join personphycisianinfo as ppi on
+    ppi.personid = per.personid
+    and ppi.activeflag = 1
+   left join personbehavioralhealth as pbh on
+    pbh.personid = per.personid
+    and pbh.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as medicationinformation
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    pmpt.dosage,
+    pmpt.medicationname,
+    pmpt.frequency,
+    pmpt.compliant,
+    pmpt.personid,
+    pmpt.medicationcomments,
+    pmpt.prescribingdoctor,
+    pmpt.lastdosetakendate,
+    pmpt.monitoring,
+    prt.description as prescriptionreason ,
+    ist.description as informationsource,
+    pmpt.medicationeffectivedate,
+    pmpt.medicationexpirationdate,
+    pmpt.medicationname
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personmedicpshychotropic as pmpt on
+    pmpt.personid = per.personid
+    and pmpt.activeflag = 1
+   left join prescriptionreasontype prt on
+    prt.prescriptionreasontypekey = pmpt.prescriptionreasontypekey
+    and prt.activeflag = 1
+   left join informationsourcetype ist on
+    ist.informationsourcetypekey = pmpt.informationsourcetypekey
+    and ist.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber)
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as addendum
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    pas.isusealcohol,
+    pas.isusedrug,
+    pas.isusetobacco,
+    pas.alcoholfrequencydetails,
+    pas.drugfrequencydetails ,
+    pas.personid
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personabusesubstance as pas on
+    pas.personid = per.personid
+   where
+    pas.activeflag = 1
+    and (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and isra.activeflag = 1
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as medicalcondition
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    pmci.medicalconditiontypekey,
+    mct.description,
+    pmc.begindate,
+    pmc.enddate,
+    pmc.recordedby
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personmedicalcondition as pmc on
+    pmc.personid = per.personid
+    and pmc.activeflag = 1
+   left join personmedicalconditioninfo as pmci on
+    pmc.personmedicalconditionid = pmci.personmedicalconditionid
+    and pmci.activeflag = 1
+   left join medicalconditiontype as mct on
+    mct.medicalconditiontypekey = pmci.medicalconditiontypekey
+    and mct.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as allergies
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    pmc.allergies_adverse_reactions
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   inner join personmedicalcondition as pmc on
+    pmc.personid = per.personid
+    and pmc.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+    (
+  select
+   json_agg(e) as appointmentdates
+  from
+   (
+   select
+    isra.intakeserviceid,
+    pex.appoinmentdate
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   inner join personexamination as pex on
+    pex.personid = per.personid
+    and pex.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as personmilitaryservices
+  from
+   (
+   select
+    isra.intakeserviceid,
+    pms.servicestatuskey
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   inner join personmilitaryservices as pms on
+    pms.personid = per.personid
+    and pms.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as emergency
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    p1.firstname,
+    p1.lastname,
+    ph.phonenumber
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join emergencycontactperson ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join person as p1 on
+    p1.personid = ecp.contactpersonid
+    and p1.activeflag = 1
+   left join personphonenumber ph on
+    ph.personid = p1.personid
+    and ph.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as guardianinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    p1.firstname,
+    ecp.startdate,
+    ecp.enddate,
+    p1.lastname,
+    ph.phonenumber,
+    pa.address
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personguardian ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join person as p1 on
+    p1.personid = ecp.guadianpersonid
+    and p1.activeflag = 1
+   left join personphonenumber ph on
+    ph.personid = p1.personid
+    and ph.activeflag = 1
+   left join personaddress pa on
+    pa.personid = p1.personid
+    and pa.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ecp.guardianpersontypekey = 'GOP'
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as guardianpropertyinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    p1.firstname,
+    p1.lastname,
+    ecp.startdate,
+    ecp.enddate,
+    ph.phonenumber,
+    ph.personphonetypekey,
+    pa.address
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personguardian ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join person as p1 on
+    p1.personid = ecp.guadianpersonid
+    and p1.activeflag = 1
+   left join personphonenumber ph on
+    ph.personid = p1.personid
+    and ph.activeflag = 1
+   left join personaddress pa on
+    pa.personid = p1.personid
+    and pa.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ecp.guardianpersontypekey = 'GOPT'
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as guardianattornyinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    p1.firstname,
+    p1.lastname,
+    ecp.startdate,
+    ecp.enddate,
+    ph.phonenumber,
+    pa.address
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personguardian ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join person as p1 on
+    p1.personid = ecp.guadianpersonid
+    and p1.activeflag = 1
+   left join personphonenumber ph on
+    ph.personid = p1.personid
+    and ph.activeflag = 1
+   left join personaddress pa on
+    pa.personid = p1.personid
+    and pa.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ecp.guardianpersontypekey = 'ATTY'
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as guardianworkerinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    p1.firstname,
+    p1.lastname,
+    ecp.startdate,
+    ecp.enddate,
+    ph.phonenumber,
+    pa.address
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personguardian ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join person as p1 on
+    p1.personid = ecp.guadianpersonid
+    and p1.activeflag = 1
+   left join personphonenumber ph on
+    ph.personid = p1.personid
+    and ph.activeflag = 1
+   left join personaddress pa on
+    pa.personid = p1.personid
+    and pa.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ecp.guardianpersontypekey = 'WRK'
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as guardiafuneralinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    ecp.contact,
+    ecp.contactnumber,
+    ecp.arrangementsdescription
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   inner join personguardianfuneral ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as guardiacodeinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    ecp.codestatustypekey,
+    rv.description,
+    ecp.othercodestatus,
+    pgd.hhsclientid,
+    pgd.notes
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   inner join personguardiancode ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join referencevalues rv on
+    rv.ref_key = ecp.codestatustypekey
+   inner join personguardiandetails pgd on
+    pgd.personid = per.personid
+    and pgd.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  (
+  select
+   json_agg(e) as personpayeeinfo
+  from
+   (
+   select
+    isra.intakeserviceid,
+    act.actorid,
+    p1.firstname,
+    p1.lastname,
+    ecp.startdate,
+    ecp.enddate,
+    ph.phonenumber ,
+    up.lastname || ',' || up.firstname as username
+   from
+    intakeservicerequestactor isra
+   inner join actor act on
+    act.actorid = isra.actorid
+    and act.activeflag = 1
+   inner join person per on
+    per.personid = act.personid
+    and per.activeflag = 1
+   left join personrepresentativepayee ecp on
+    ecp.personid = per.personid
+    and ecp.activeflag = 1
+   left join person as p1 on
+    p1.personid = ecp.personrepresentativepersonid
+    and p1.activeflag = 1
+   left join userprofile up on
+    up.securityusersid = ecp.personrepresentativeworkerid
+    and ecp.activeflag = 1
+   left join personphonenumber ph on
+    ph.personid = p1.personid
+    and ph.activeflag = 1
+   where
+    (isra.intakeserviceid = v_intakeserviceid OR isra.intakenumber =v_intakenumber )
+    and ac.actorid = act.actorid ) as e ) ::json,
+  egt.typedescription as ethinicity,
+  rt.typedescription as religion,
+  MT.typedescription as maritalstatus,
+  RAT.typedescription as racetypekey,
+  IAR.fetalalcoholspctrmdisordflag ,
+  IAR.drugexposednewbornflag,
+  IAR.probationsearchconductedflag,
+  IAR.sexoffenderregisteredflag,
+  p.citizenalenageflag,
+  p.isqualifiedalien,
+  p.alienregistrationtext,
+  p.verificationremarks,
+  p.alienstatustypekey,
+  idass.timerecieved,
+  (
+  SELECT json_agg(e) AS programarea
+   FROM
+            (
+    SELECT
+     ppa.programkey,
+     ppa.subprogramkey,
+     (SELECT rv.description  FROM referencevalues rv 
+     WHERE rv.ref_key = ppa.subprogramkey AND rv.referencetypeid = 12 AND rv.activeflag =1 LIMIT 1) subprogramname,
+     (SELECT ap.programname FROM agencyprogramarea ap 
+     WHERE ap.programkey = ppa.programkey AND ap.activeflag =1 LIMIT 1) programname
+    FROM personprogramarea ppa 
+    WHERE ppa.personid = p.personid AND ppa.objectid=v_intakeserviceid ::character varying AND ppa.activeflag=1
+                order by ppa.insertedon desc 
+   ) AS e
+  ) ::json  
+ FROM
+   actor as ac
+  INNER JOIN (select isra.*, row_number() over (partition by isra.actorid order by isprimary DESC, updatedon DESC, insertedon DESC) rnum
+    FROM intakeservicerequestactor isra  where isra.activeflag=1 and
+    (
+   (v_intakeserviceid is not null and isra.intakeserviceid=v_intakeserviceid ) OR
+   ( v_intakenumber  is not null and isra.intakenumber= v_intakenumber ) OR  
+   (v_tempintakeserviceid is not null and isra.intakeserviceid =v_tempintakeserviceid)
+   )
+  ) iar ON ac.actorid =iar.actorid and iar.activeflag=1 and iar.rnum =1 
+  INNER JOIN person as p on p.personid = ac.personid and p.activeflag = 1
+  --LEFT JOIN gendertype grt on grt.gendertypekey = p.gendertypekey and grt.activeflag=1
+ /* LEFT JOIN (
+   select paa.personid, (max(paa.personaddressid::character varying))::uuid personaddressid
+   from personaddress as paa where paa.activeflag = 1 and paa.currentlocationflag = 1
+   group by paa.personid 
+  ) pa1 on pa1.personid = p.personid 
+  LEFT JOIN personaddress as pa on pa.activeflag = 1 and pa.personaddressid = pa1.personaddressid  */
+  LEFT JOIN personphysicalattribute as ppa on ppa.personid = P.personid and ppa.physicalattributetypekey = 'Ht' and ppa.activeflag = 1
+  LEFT JOIN personphysicalattribute as ppat on ppat.personid = P.personid and ppat.physicalattributetypekey = 'Wt' and ppat.activeflag = 1
+  LEFT JOIN ethnicgrouptype egt on egt.ethnicgrouptypekey = p.ethnicgrouptypekey and egt.activeflag = 1
+  LEFT JOIN religiontype RT on rt.religiontypekey = p.religiontypekey and rt.activeflag = 1
+  LEFT JOIN racetype RAT on RAT.racetypekey = P.racetypekey and RAT.activeflag = 1
+  LEFT JOIN(
+   SELECT prole.* from personrole as prole WHERE activeflag=1 
+   and (
+   (v_intakeserviceid is not null and prole.intakeserviceid=v_intakeserviceid ) OR
+   ( v_intakenumber  is not null and prole.intakenumber= v_intakenumber ) OR
+   (v_tempintake is not null and prole.intakenumber = v_tempintake)
+   )
+  ) PR on PR.personid:: character varying = p.personid :: character varying
+  LEFT JOIN (select idas.timerecieved,idas.intakenumber from intakedastaging idas where   idas.activeflag =1 ) as idass 
+  on  idass.intakenumber = ac.intakenumber
+  LEFT JOIN maritalstatustype MT on MT.maritalstatustypekey = p.maritalstatustypekey and MT.activeflag = 1
+ WHERE ac.activeflag=1 and
+ (ac.intakeserviceid =v_intakeserviceid OR ac.intakenumber = v_intakenumber  OR ac.intakeserviceid =v_tempintakeserviceid  OR ac.intakeserviceid = v_refintakeserviceid )
+ group by
+  iar.intakeservicerequestpersontypekey,
+  --irs.intakeserviceid, --12/13/2020
+  iar.intakeserviceid,--12/13/2020
+  p.personid,
+  --genderdescription,
+  ac.actorid,
+  address,
+  address2,
+  state,
+  city,
+  zipcode,
+  county,
+  ppa.attributevalue,
+  ppat.attributevalue,
+  egt.typedescription ,
+  rt.typedescription,
+  rat.typedescription,
+  iar.fetalalcoholspctrmdisordflag ,
+  iar.drugexposednewbornflag,
+  iar.probationsearchconductedflag,
+  iar.sexoffenderregisteredflag,
+  iar.isvictim,
+  MT.typedescription ,
+  idass.timerecieved,
+  pr.ishouseholdmember,
+  COALESCE (pr.iscollateralcontact,0)
+ )as "Person"
+limit _limit offset _offset;
+end;
+
+$function$
+

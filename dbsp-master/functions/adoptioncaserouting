@@ -1,0 +1,680 @@
+CREATE OR REPLACE FUNCTION adoptioncaserouting(v_adoptioncaseid uuid, v_objectid uuid, v_securityuserid character varying, appeventcode character varying, v_status integer)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+-----------------------------------------------------------------
+
+-- CIDM - 4203 03-07-2022 Veera Updating approval date for adoption agreement table
+-- CIDM-3920 = 04-11-2022 -VN - Revision Record with active flag 1
+---------------------------------------------------------------------------
+DECLARE
+  v_case_county_id uuid;
+  v_fromroleid character varying;
+ v_toroleid character varying;
+ v_tosecurityusersid character varying;
+ v_teamid uuid;
+ v_routingid uuid;
+ v_revisionid uuid;
+ v_adoptioncasenumber character varying;
+ v_notifymsg character varying;
+
+ v_cnt integer;
+ v_row_cnt integer;
+ v_new_revisionid uuid;
+
+ v_effectiveswitchdate timestamp;
+ v_max_rate_id uuid; 
+ v_rate_app_status varchar;
+ v_rate_end_date timestamp;
+
+BEGIN
+ 
+ RAISE  NOTICE  '  appeventcode  %', appeventcode;
+ RAISE  NOTICE  '  v_objectid  %', v_objectid;
+
+ --get Adoption Case Number
+ select adoptioncasenumber into v_adoptioncasenumber from adoptioncase s where adoptioncaseid = v_adoptioncaseid; 
+
+ --get Case county id
+ select c.countyid into v_case_county_id 
+  from caseassignment ca 
+   join team t on t.teamid = ca.fromteamid and t.activeflag=1
+   join county c on c.countyid :: character varying = t.countyid and c.activeflag =1
+ where ca.objectid = v_adoptioncaseid 
+  and ca.activeflag = 1 
+  and lower(ca.responsibilitytypekey) = 'family'
+        order by ca.insertedon desc
+        limit 1;
+ 
+ --get Supervisor ID; worker role into from_role
+ select supervisorid, roletypekey, teamid
+   into v_tosecurityusersid, v_fromroleid, v_teamid
+  from v_userprofile vu 
+ where securityusersid = v_securityuserid;
+  --and countyid = v_case_county_id;
+
+ --set Supervisor role into to_role
+ select roletypekey
+  into v_toroleid
+ from v_userprofile vu 
+  where securityusersid = v_tosecurityusersid;
+
+
+ RAISE NOTICE '  v_case_county_id  %', v_case_county_id;
+ RAISE NOTICE '  v_securityuserid  %', v_securityuserid;
+ RAISE NOTICE '  v_tosecurityusersid  %', v_tosecurityusersid;
+ RAISE NOTICE '  v_fromroleid  %', v_fromroleid;
+ RAISE NOTICE '  v_toroleid  %', v_toroleid;
+
+ IF (appeventcode='ASAR') THEN 
+  --get most recent un-approved revisionid 
+  SELECT adoptioncaseagreementrevisionid into v_revisionid
+   FROM adoptioncaseagreementrevision
+  WHERE adoptioncaseagreementid = v_objectid 
+   AND (
+     (v_status = 15 and coalesce(approvalstatustypekey,'') <> '3047')  
+     OR
+     (v_status in (16, 17) and coalesce(approvalstatustypekey,'') = '3045')
+    )
+   AND activeflag = 1 
+  ORDER BY insertedon 
+  DESC LIMIT 1;
+
+  IF v_revisionid is NOT NULL THEN
+
+   if v_status = 15 then -- Review
+    --create review record
+     INSERT INTO routing (
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag,
+      insertedby, updatedby, insertedon, updatedon, isreviewrequest,
+      servicerequestnumber, remarks, routeddescription )
+    VALUES (appeventcode, v_securityuserid, v_tosecurityusersid, v_teamid, 
+      v_fromroleid, v_toroleid, v_objectid, v_status, 1,
+      v_securityuserid, v_securityuserid, now(), now(), true, 
+      v_adoptioncasenumber, 'Adoption Agreement Submitted for Review', 'Adoption Agreement Submitted for Review');
+       
+       UPDATE  providerswitchinfo 
+     SET approvedby = v_tosecurityusersid, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+    WHERE objectid = v_revisionid and activeflag = 1;   
+    
+    
+    --update revision record status as Review
+    UPDATE  adoptioncaseagreementrevision 
+     SET approvalstatustypekey = '3045', 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+    WHERE adoptioncaseagreementrevisionid = v_revisionid;
+
+   elsif v_status = 16 then -- Approved
+
+         --update revision record status as Review
+    UPDATE  adoptioncaseagreementrevision 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+    WHERE adoptioncaseagreementrevisionid = v_revisionid and activeflag = 1 and approvalstatustypekey = '3045' ;
+
+
+    --generate new adoptioncaseagreementrevisionid
+                select gen_random_uuid() into v_new_revisionid ;       
+
+    --create agreement revision
+    INSERT INTO adoptioncaseagreementrevision
+      (adoptioncaseagreementrevisionid, adoptioncaseagreementid, isofferedsubsidy, offeraccepteddate, startdate, enddate, 
+      finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, activeflag, effectivedate, 
+      insertedby, insertedon, updatedby, updatedon, old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, 
+      agreementcomments, childplacedby, childplacedfrom, providerid, adoptiveparent1id, adoptiveparent2id, approvalstatustypekey, approvaldate, switchproviderreason, effectiveswitchdate)
+    SELECT  v_new_revisionid, adoptioncaseagreementid, isofferedsubsidy, offeraccepteddate, startdate, enddate, 
+      finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, 1, effectivedate, 
+      v_securityuserid, now(), v_securityuserid, now(), old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, 
+      agreementcomments, childplacedby, childplacedfrom, providerid, adoptiveparent1id, adoptiveparent2id, '3047', now(), switchproviderreason, effectiveswitchdate
+    FROM adoptioncaseagreementrevision 
+    WHERE adoptioncaseagreementrevisionid = v_revisionid 
+    ORDER BY insertedon DESC LIMIT 1;
+
+     UPDATE providerswitchinfo SET approvedby = v_securityuserid, 
+        approvaldate =  now(),
+        approvalstatus = 'Approved',
+        updatedby = v_securityuserid, 
+        updatedon = now() 
+    WHERE objectid = v_revisionid and activeflag = 1; 
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate revision review record 
+     UPDATE  adoptioncaseagreementrevision 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now()
+     WHERE adoptioncaseagreementrevisionid = v_revisionid;
+
+    end if;
+
+    SELECT routingid into v_routingid
+     FROM routing
+    WHERE objectid = v_objectid::character varying 
+     and eventcode = appeventcode
+     AND routingstatustypeid = 15 
+     and activeflag = 1 
+    ORDER BY insertedon DESC LIMIT 1;
+
+    --update routing with approval record
+    INSERT INTO routing (
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+      insertedby,  updatedby, insertedon, updatedon, isreviewrequest,
+      servicerequestnumber,remarks,routeddescription )
+    SELECT  appeventcode, R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+      R.toroleid, R.fromroleid, v_objectid, 16, 1,
+      R.insertedby, R.updatedby, now(), now(), R.isreviewrequest,
+      v_adoptioncasenumber, 'Adoption Agreement Approved', 'Adoption Agreement Approved' 
+    FROM routing as R 
+    WHERE R.routingid = v_routingid;
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate routing review record 
+     UPDATE  routing 
+     SET activeflag = 0,
+      updatedby = v_securityuserid, 
+      updatedon = now()
+     --WHERE routingid = v_routingid;
+     WHERE objectid = v_objectid::character varying 
+      and eventcode = appeventcode
+      AND routingstatustypeid = 15 
+      and activeflag = 1;
+
+    end if;
+    
+    -- Update or Insert adoptioncaseagreement
+    select count(1) 
+     into v_cnt
+    from adoptioncaseagreement
+    where adoptionagreementid = v_objectid
+     and activeflag = 1 ;
+    
+    IF coalesce(v_cnt, 0) > 0 THEN
+     -- Update
+     UPDATE  adoptioncaseagreement a
+     SET  a.adoptionagreementid = aa.adoptioncaseagreementid, 
+       a.isofferedsubsidy = aa.isofferedsubsidy, a.offeraccepteddate = aa.offeraccepteddate, a.startdate = aa.startdate, a.enddate = aa.enddate, 
+       a.finalizationdate = aa.finalizationdate, a.isunderappeal = aa.isunderappeal, a.parent1signdate = aa.parent1signdate, a.parent2signdate = aa.parent2signdate, 
+       a.ldssdate = aa.ldssdate, a.issubsidypaid = aa.issubsidypaid, a.activeflag = 1, a.effectivedate = aa.effectivedate, 
+       a.insertedby = v_securityuserid, a.insertedon = now(), a.updatedby = v_securityuserid, a.updatedon = now(), a.old_id = aa.old_id, a.ismedassist = aa.ismedassist, 
+       a.parent1providerid = aa.parent1providerid, a.parent2providerid = aa.parent2providerid, a.parent1providername = aa.parent1providername, a.parent2providername = aa.parent2providername, 
+       a.issingleparent = aa.issingleparent, a.singleparentadoptioncheck = aa.singleparentadoptioncheck, a.adoptiveparent1signature = aa.adoptiveparent1signature, 
+       a.adoptiveparent2signature = aa.adoptiveparent2signature, a.ldssdirectorsignature = aa.ldssdirectorsignature, 
+       a.agreementcomments = aa.agreementcomments, a.childplacedby = aa.childplacedby, a.childplacedfrom = aa.childplacedfrom, a.providerid = aa.providerid, 
+       a.adoptiveparent1id = aa.adoptiveparent1id, a.adoptiveparent2id = aa.adoptiveparent2id, 
+       a.switchproviderreason = aa.switchproviderreason, a.effectiveswitchdate = aa.effectiveswitchdate
+     FROM adoptioncaseagreementrevision aa
+     WHERE a.adoptionagreementid = aa.adoptioncaseagreementid
+     AND aa.adoptioncaseagreementrevisionid = v_new_revisionid ;
+    ELSE
+     -- Insert
+     INSERT INTO adoptioncaseagreement
+       (adoptionagreementid, adoptioncaseid, isofferedsubsidy, offeraccepteddate, startdate, enddate, 
+       finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, activeflag, effectivedate, 
+       insertedby, insertedon, updatedby, updatedon, old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, 
+       issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, 
+       agreementcomments, childplacedby, childplacedfrom, providerid, adoptiveparent1id, adoptiveparent2id, switchproviderreason, effectiveswitchdate)
+     SELECT  adoptioncaseagreementid, v_adoptioncaseid, isofferedsubsidy, offeraccepteddate, startdate, enddate, 
+       finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, 1, effectivedate, 
+       v_securityuserid, now(), v_securityuserid, now(), old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, 
+       issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, 
+       agreementcomments, childplacedby, childplacedfrom, providerid, adoptiveparent1id, adoptiveparent2id, switchproviderreason, effectiveswitchdate
+     FROM adoptioncaseagreementrevision WHERE adoptioncaseagreementrevisionid = v_new_revisionid ;
+
+    END IF;
+
+    -- Update enddate in adoptioncase
+    UPDATE  adoptioncase a
+    SET  a.enddate = aa.enddate, a.updatedby = v_securityuserid, a.updatedon = now()
+    FROM adoptioncaseagreementrevision aa
+    WHERE a.adoptioncaseid = v_adoptioncaseid
+    AND aa.adoptioncaseagreementrevisionid = v_new_revisionid ;
+   
+   
+    -- Adoption Rate End date logic
+    -- Get effectective End date
+    select effectiveswitchdate
+     into v_effectiveswitchdate
+    from adoptioncaseagreementrevision
+    where adoptioncaseagreementrevisionid = v_revisionid;
+    
+    IF v_effectiveswitchdate is not null then
+     -- Get most recent Rate End ddate 
+     select adoptionagreementrateid, status, enddate  
+      into v_max_rate_id, v_rate_app_status, v_rate_end_date 
+     from adoptioncaseagreementrate 
+     where adoptionagreementid = v_objectid
+      and activeflag  = 1
+     order by insertedon desc
+     Limit 1 ;
+    
+     IF btrim(lower(v_rate_app_status)) = 'approved' AND v_rate_end_date > v_effectiveswitchdate THEN
+      -- Update Rate End date & trigger under over
+      update adoptioncaseagreementrate
+       set enddate = v_effectiveswitchdate,
+           approvaldate = now(),
+        updatedon = now(), -- to trigger under over
+        updatedby = v_securityuserid
+      where adoptionagreementrateid = v_max_rate_id ;
+     end if; 
+    END IF;
+    
+   elsif v_status = 17 then -- Reject
+    --generate new adoptioncaseagreementrevisionid
+                select gen_random_uuid() into v_new_revisionid ;  
+
+    --create agreement revision
+    INSERT INTO adoptioncaseagreementrevision
+      (adoptioncaseagreementrevisionid, adoptioncaseagreementid, isofferedsubsidy, offeraccepteddate, startdate, enddate, 
+      finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, activeflag, effectivedate, 
+      insertedby, insertedon, updatedby, updatedon, old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, 
+      agreementcomments, childplacedby, childplacedfrom, providerid, adoptiveparent1id, adoptiveparent2id, approvalstatustypekey, approvaldate)
+    SELECT  v_new_revisionid, adoptioncaseagreementid, isofferedsubsidy, offeraccepteddate, startdate, enddate, 
+      finalizationdate, isunderappeal, parent1signdate, parent2signdate, ldssdate, issubsidypaid, 1, effectivedate, 
+      v_securityuserid, now(), v_securityuserid, now(), old_id, ismedassist, parent1providerid, parent2providerid, parent1providername, parent2providername, issingleparent, singleparentadoptioncheck, adoptiveparent1signature, adoptiveparent2signature, ldssdirectorsignature, 
+      agreementcomments, childplacedby, childplacedfrom, providerid, adoptiveparent1id, adoptiveparent2id, '3046', now()
+    FROM adoptioncaseagreementrevision 
+    WHERE adoptioncaseagreementrevisionid = v_revisionid 
+    ORDER BY insertedon DESC LIMIT 1;
+
+    UPDATE providerswitchinfo SET approvedby = v_securityuserid, 
+        approvaldate =  now(),
+        approvalstatus = 'Rejected',
+        updatedby = v_securityuserid, 
+        updatedon = now() 
+    WHERE objectid = v_revisionid and activeflag = 1; 
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate revision review record 
+     UPDATE  adoptioncaseagreementrevision 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now()
+     WHERE adoptioncaseagreementrevisionid = v_revisionid;
+
+    end if;
+
+    SELECT routingid into v_routingid
+     FROM routing
+    WHERE objectid = v_objectid::character varying 
+     and eventcode = appeventcode
+     AND routingstatustypeid = 15 
+     and activeflag = 1 
+    ORDER BY insertedon DESC LIMIT 1;
+
+    --update routing with rejection record
+    INSERT INTO routing (
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+      insertedby,  updatedby, insertedon, updatedon, isreviewrequest,
+      servicerequestnumber,remarks,routeddescription )
+    SELECT  appeventcode, R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+      R.toroleid, R.fromroleid, v_objectid, 17, 1,
+      R.insertedby, R.updatedby, now(), now(), R.isreviewrequest,
+      v_adoptioncasenumber, 'Adoption Agreement Rejected', 'Adoption Agreement Rejected' 
+    FROM routing as R 
+    WHERE R.routingid = v_routingid;
+     
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate routing review record 
+     UPDATE  routing 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+     WHERE routingid = v_routingid;
+
+    end if;
+ 
+   end if;
+  ELSE
+   RETURN  'Agreement Revision record not found!';
+  END IF;
+
+ ELSIF (appeventcode='ADSR') THEN
+
+   if v_routingstatustypeid = 16 then -- Approved
+   update  adoptionsuspensionrevision set approvalstatustypekey = '3047', approvaldate = now()::date 
+    where  adoptionsuspensionid = v_objectid ;
+   
+   update  adoptionsuspension set approvalstatustypekey = '3047', updatedon = now(), approvaldate = now()::date
+    where  adoptionsuspensionid = v_objectid ;
+    end if;
+
+ ELSIF (appeventcode = 'AARR' ) THEN
+  
+  --generate new adoptioncaseagreementraterevisionid
+        select gen_random_uuid() into v_new_revisionid ; 
+
+  --get most recent un-approved revisionid 
+  SELECT adoptionrevisionid into v_revisionid
+   FROM adoptioncaserevision
+  WHERE adoptionagreementrateid = v_objectid 
+   AND (
+     (v_status = 15 and coalesce(approvalstatustypekey,'') <> '3047')  
+     OR
+     (v_status in (16, 17) and coalesce(approvalstatustypekey,'') = '3045')
+    )
+   AND activeflag = 1 
+  ORDER BY insertedon 
+  DESC LIMIT 1;
+
+  IF v_revisionid is NOT NULL THEN
+   if v_status = 15 then -- Review
+    
+    INSERT INTO routing (
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid, routingstatustypeid, activeflag,
+      insertedby, updatedby, insertedon, updatedon, isreviewrequest,
+      servicerequestnumber, remarks, routeddescription )
+    VALUES (appeventcode, v_securityuserid, v_tosecurityusersid, v_teamid, 
+      v_fromroleid, v_toroleid, v_objectid, v_status, 1,
+      v_securityuserid, v_securityuserid, now(), now(), true, 
+      v_adoptioncasenumber, 'Adoption Agreement Rate Submitted for Review', 'Adoption Agreement Rate Submitted for Review');
+
+    --update revision record status as Review
+    UPDATE  adoptioncaserevision 
+     SET approvalstatustypekey = '3045', 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+    WHERE adoptionrevisionid = v_revisionid;
+    
+   elsif v_status = 16 then -- Approved
+
+    --create rate revision
+    INSERT INTO adoptioncaserevision 
+      (adoptionrevisionid, adoptionagreementrateid, adoptionagreementid, startdate, enddate, 
+      provider_id, paymentamout, isssaapproved, ssaapproveddate, isspeacialneeds,
+      parent1providername, parent2providername, childrelationship, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, 
+      old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw, status, approvalstatustypekey, approvaldate, isoriginal)
+    SELECT  v_new_revisionid, adoptionagreementrateid, adoptionagreementid, startdate, enddate, 
+      provider_id, paymentamout, isssaapproved, ssaapproveddate, isspeacialneeds,
+      parent1providername, parent2providername, childrelationship, notes, 1, effectivedate, v_securityuserid, now(), v_securityuserid, now(), 
+      old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw, 'Approved', '3047', now(), isoriginal
+    FROM adoptioncaserevision 
+    WHERE adoptionrevisionid = v_revisionid 
+    AND activeflag = 1;
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate revision review record 
+     UPDATE  adoptioncaserevision 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+     WHERE adoptionrevisionid = v_revisionid;
+    
+    end if;
+
+    SELECT routingid into v_routingid
+     FROM routing
+    WHERE objectid = v_objectid :: character varying 
+     AND eventcode = appeventcode
+     AND routingstatustypeid = 15 
+     AND activeflag = 1 
+    ORDER BY insertedon DESC LIMIT 1;
+
+    --update routing with approval record
+    INSERT INTO routing (
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+      insertedby,  updatedby, insertedon, updatedon, isreviewrequest,
+      servicerequestnumber,remarks,routeddescription )
+    SELECT  appeventcode, R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+      R.toroleid, R.fromroleid, v_objectid, v_status, 1,
+      R.insertedby, R.updatedby, now(), now(), R.isreviewrequest, 
+      v_adoptioncasenumber, 'Adoption Agreement Rate Approved', 'Adoption Agreement Rate Approved' 
+    FROM routing as R 
+    WHERE R.routingid = v_routingid;
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate routing review record 
+     UPDATE  routing 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+     WHERE routingid = v_routingid;
+    
+    end if;
+    
+    -- Update or Insert adoptioncaseagreementrate
+    select count(1) 
+     into v_cnt
+    from adoptioncaseagreementrate
+    where adoptionagreementrateid = v_objectid
+     and activeflag = 1 ;
+    
+    IF coalesce(v_cnt, 0) > 0 THEN
+     -- Update
+     UPDATE  adoptioncaseagreementrate r
+     SET  r.adoptionagreementrateid = rrv.adoptionagreementrateid, r.adoptionagreementid = rrv.adoptionagreementid, r.startdate = rrv.startdate, r.enddate = rrv.enddate, 
+       r.provider_id = rrv.provider_id, r.paymentamout = rrv.paymentamout, 
+       r.isssaapproved = (case when rrv.isssaapproved = 'true' then 1
+             when rrv.isssaapproved = 'false' then 2
+             else null
+            end )::integer,  
+       r.isspeacialneeds = (case when rrv.isspeacialneeds = 'true' then 1
+             when rrv.isspeacialneeds = 'false' then 2
+             else null
+            end )::integer, r.ssaapproveddate = rrv.ssaapproveddate,
+       r.childrelationship = rrv.childrelationship, r.notes = rrv.notes, r.activeflag = 1, r.effectivedate = rrv.effectivedate, 
+       r.insertedby = v_securityuserid, r.insertedon = now(), r.updatedby = v_securityuserid, r.updatedon = now(), r.approvaldate = rrv.approvaldate,
+       r.old_id = rrv.old_id, r.specialneedtypekey = rrv.specialneedtypekey, r.specialneedremarks = rrv.specialneedremarks, r.transactiondate = rrv.transactiondate, 
+       r.rateoverwrittensw = rrv.rateoverwrittensw, r.status = 'Approved'
+     FROM adoptioncaserevision rrv
+     WHERE r.adoptionagreementrateid = rrv.adoptionagreementrateid 
+     AND rrv.adoptionrevisionid = v_new_revisionid ;
+    ELSE
+     -- Insert
+     INSERT INTO adoptioncaseagreementrate
+       (adoptionagreementrateid, adoptionagreementid, startdate, enddate, provider_id, paymentamout, 
+       isssaapproved, 
+       isspeacialneeds, ssaapproveddate, 
+       childrelationship, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, approvaldate,
+       old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw, status)
+     SELECT  adoptionagreementrateid, adoptionagreementid, startdate, enddate, provider_id, paymentamout, 
+       (case when isssaapproved = 'true' then 1
+        when isssaapproved = 'false' then 2
+        else null
+       end )::integer, 
+       (case when isspeacialneeds = 'true' then 1
+        when isspeacialneeds = 'false' then 2
+        else null
+       end )::integer, ssaapproveddate, 
+       childrelationship, notes, 1, effectivedate, v_securityuserid, now(), v_securityuserid, now(), approvaldate,
+       old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw, 'Approved'
+     FROM adoptioncaserevision WHERE adoptionrevisionid = v_new_revisionid ;
+     
+    END IF;
+    
+   elsif v_status = 17 then -- Reject
+    
+    --create rate revision
+    INSERT INTO adoptioncaserevision 
+      (adoptionrevisionid, adoptionagreementrateid, adoptionagreementid, startdate, enddate, 
+      provider_id, paymentamout, isssaapproved, ssaapproveddate, isspeacialneeds,
+      parent1providername, parent2providername, childrelationship, notes, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, 
+      old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw, status, approvalstatustypekey, approvaldate, isoriginal)
+    SELECT  v_new_revisionid, adoptionagreementrateid, adoptionagreementid, startdate, enddate, 
+      provider_id, paymentamout, isssaapproved, ssaapproveddate, isspeacialneeds,
+      parent1providername, parent2providername, childrelationship, notes, 1, effectivedate, v_securityuserid, now(), v_securityuserid, now(), 
+      old_id, specialneedtypekey, specialneedremarks, transactiondate, rateoverwrittensw, 'Rejected', '3046', now(), isoriginal
+    FROM adoptioncaserevision 
+    WHERE adoptionrevisionid = v_revisionid 
+    AND activeflag = 1;
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate revision review record 
+     UPDATE  adoptioncaserevision 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+     WHERE adoptionrevisionid = v_revisionid;
+
+    end if;
+
+    SELECT routingid into v_routingid
+     FROM routing
+    WHERE objectid = v_objectid :: character varying 
+     and eventcode = appeventcode
+     AND routingstatustypeid = 15 
+     and activeflag = 1 
+    ORDER BY insertedon DESC LIMIT 1;
+
+    --update routing with rejection record
+    INSERT INTO routing (
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+      insertedby,  updatedby, insertedon, updatedon, isreviewrequest,
+      servicerequestnumber,remarks,routeddescription )
+    SELECT  appeventcode, R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+      R.toroleid, R.fromroleid, v_objectid, v_status, 1,
+      R.insertedby, R.updatedby, now(), now(), R.isreviewrequest, 
+      v_adoptioncasenumber, 'Adoption Agreement Rate Rejected', 'Adoption Agreement Rate Rejected' 
+    FROM routing as R 
+    WHERE R.routingid = v_routingid;
+
+    GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+    if coalesce(v_row_cnt, 0) > 0 then
+     --de-activate routing review record 
+     UPDATE  routing 
+     SET activeflag = 0, 
+      updatedby = v_securityuserid, 
+      updatedon = now() 
+     WHERE routingid = v_routingid;
+
+    end if;
+    
+   end if; 
+  ELSE
+   RETURN  'Agreement Rate Revision record not found!';
+  END IF; 
+ 
+ ELSIF (appeventcode='ADYR') THEN 
+  if v_status = 15 then -- Review
+   --create review record
+    INSERT INTO routing (
+     eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+     fromroleid, toroleid, objectid, routingstatustypeid, activeflag,
+     insertedby, updatedby, insertedon, updatedon, isreviewrequest,
+     servicerequestnumber, remarks, routeddescription )
+   VALUES (appeventcode, v_securityuserid, v_tosecurityusersid, v_teamid, 
+     v_fromroleid, v_toroleid, v_objectid, v_status, 1,
+     v_securityuserid, v_securityuserid, now(), now(), true, 
+     v_adoptioncasenumber, 'Adoption Annual Review Submitted for Review', 'Adoption Annual Review Submitted for Review');
+
+   SELECT send_notification into v_notifymsg FROM send_notification(
+     v_tosecurityusersid :: character varying,
+     v_securityuserid :: character varying,
+     v_tosecurityusersid :: character varying,
+     'System' :: character varying,
+     'High' :: character varying,
+     'Adoption Annual Review Submitted for Review' :: character varying,
+     'Adoption Annual Review Submitted for Review' :: character varying,
+     v_objectid :: character varying);
+  
+  elsif v_status = 16 then -- Approved
+   
+   SELECT routingid into v_routingid
+    FROM routing
+   WHERE objectid = v_objectid::character varying 
+    and eventcode = appeventcode
+    AND routingstatustypeid = 15 
+    and activeflag = 1 
+   ORDER BY insertedon DESC LIMIT 1;
+
+   --update routing with approval record
+   INSERT INTO routing (
+     eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+     fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+     insertedby,  updatedby, insertedon, updatedon, isreviewrequest,
+     servicerequestnumber,remarks,routeddescription )
+   SELECT  appeventcode, R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+     R.toroleid, R.fromroleid, v_objectid, 16, 1,
+     R.insertedby, R.updatedby, now(), now(), R.isreviewrequest,
+     v_adoptioncasenumber, 'Adoption Annual Review Approved', 'Adoption Annual Review Approved' 
+   FROM routing as R 
+   WHERE R.routingid = v_routingid;
+
+   GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+   
+   if coalesce(v_row_cnt, 0) > 0 then
+    --de-activate routing review record 
+    UPDATE  routing 
+    SET activeflag = 0,
+     updatedby = v_securityuserid, 
+     updatedon = now()
+    --WHERE routingid = v_routingid;
+    WHERE objectid = v_objectid::character varying 
+     and eventcode = appeventcode
+     AND routingstatustypeid = 15 
+     and activeflag = 1;
+
+   end if;
+
+  elsif v_status = 17 then -- Reject
+
+   SELECT routingid into v_routingid
+    FROM routing
+   WHERE objectid = v_objectid::character varying 
+    and eventcode = appeventcode
+    AND routingstatustypeid = 15 
+    and activeflag = 1 
+   ORDER BY insertedon DESC LIMIT 1;
+
+   --update routing with rejection record
+   INSERT INTO routing (
+     eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+     fromroleid, toroleid, objectid , routingstatustypeid, activeflag,
+     insertedby,  updatedby, insertedon, updatedon, isreviewrequest,
+     servicerequestnumber,remarks,routeddescription )
+   SELECT  appeventcode, R.tosecurityusersid, R.fromsecurityusersid, R.teamid, 
+     R.toroleid, R.fromroleid, v_objectid, 17, 1,
+     R.insertedby, R.updatedby, now(), now(), R.isreviewrequest,
+     v_adoptioncasenumber, 'Adoption Annual Review Denied', 'Adoption Annual Review Denied' 
+   FROM routing as R 
+   WHERE R.routingid = v_routingid;
+    
+   GET DIAGNOSTICS v_row_cnt = ROW_COUNT;
+
+   if coalesce(v_row_cnt, 0) > 0 then
+    --de-activate routing review record 
+    UPDATE  routing 
+    SET activeflag = 0, 
+     updatedby = v_securityuserid, 
+     updatedon = now() 
+    WHERE routingid = v_routingid;
+
+   end if;
+
+  end if;
+
+ END IF;
+
+ RETURN  'Success';
+
+END;
+
+
+$function$
+

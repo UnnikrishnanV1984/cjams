@@ -1,0 +1,1 @@
+Alter table cjams.meetingparticipants add column if not exists electronicsignature text;

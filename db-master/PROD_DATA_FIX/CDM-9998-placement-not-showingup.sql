@@ -1,0 +1,1 @@
+update placement set responseacceptedkey = '4612', updatedon = now(), updatedby = 'CDM-9998' where placementid = 'de6d12f0-e9f3-41f9-8091-829af6cb0886';

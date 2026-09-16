@@ -1,0 +1,61 @@
+CREATE OR REPLACE FUNCTION prov_midyrgetnoncompliance(v_monitoring_id character varying, v_record_type character varying, v_module_name character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ v_provider_id character varying;
+ v_prgram character varying;
+ 
+ v_reporting_start_date timestamp without time zone;
+ v_reporting_end_date timestamp without time zone;
+
+ begin
+ 
+  select provider_id, prgram, 
+  monitoring_period_start_date, monitoring_period_end_date 
+  into v_provider_id,v_prgram, v_reporting_start_date,v_reporting_end_date 
+  from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+
+  
+ SELECT JSON_AGG(pla) INTO jsondata FROM (select prs.site_id,prq.question,
+      ps.first_nm,ps.last_nm,
+                        hh.first_nm as hh_first_nm,hh.last_nm as hh_last_nm,hh.provider_id as hh_provider_id,
+                        p.firstname,p.lastname,
+  prq.question,prq.question_data_type,split_part( prq.question_hint, 'pg', 1) as question_hint,prq.question_options,prq.question_type,prq.record_question_id ,
+  prq.question_mandatory,prq.record_id,pr.records_type,
+  prq.is_group,prq.on_expand,pv.frequency_deficiency,pv.impact_deficiency,pv.scope_deficiency
+  ,tp.provider_nm,pr.module_name, pv.cap_number,prdt.findings
+  from prov_monitoring_record_site prs 
+  join tb_provider tp on tp.provider_id::character varying = prs.site_id 
+  join prov_record pr on pr.record_id = prs.record_id
+  join prov_monitoring m on m.monitoring_id = prs.monitoring_id
+  join prov_monitoring_record_data prdt on prdt.monitoring_record_site_id = prs.monitoring_record_site_id::uuid
+  join prov_record_question prq on prq.record_question_id = prdt.record_question_id
+  inner join prov_violation pv                 on pv.record_question_id = prdt.record_question_id 
+        and (pv.site_id = prs.site_id or pv.applicant_id = prs.applicant_id ) 
+        and pv.reference_value_id = prs.monitoring_id
+  left join providerstaff ps                  on provider_staff_id::character varying = prs.objectid and ps.delete_sw = 'N'
+  left join person p                          on (case when prs.objectid = 'null' then p.personid = '00000000-0000-0000-0000-000000000000' else p.personid  = prs.objectid :: uuid end) and prs.objecttype != 'Parent' and p.activeflag = 1
+  left join tb_prov_cpa_adop_person hh        on hh.provider_cpa_adop_person_id = (select prs1.objectid from prov_monitoring_record_site prs1 where prs1.objecttype = 'Parent'
+  and prs.monitoring_record_site_id = prs1.monitoring_record_site_id) 
+                                    
+
+  where 
+   (case when v_reporting_start_date is null or prs.recordreviewdate is null then prs.monitoring_id =v_monitoring_id 
+                        else prs.recordreviewdate::date between v_reporting_start_date::date and v_reporting_end_date::date 
+                    end)
+  and m.provider_id = v_provider_id 
+  and pr.prgram=v_prgram 
+  and pr.records_type = v_record_type 
+  and pr.module_name=v_module_name 
+  and prs.delete_sw = 'N'  
+  and coalesce(prdt.monitoring_record_value) = 'Non-Compliance'
+  
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

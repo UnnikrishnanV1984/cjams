@@ -1,0 +1,31 @@
+ CREATE OR REPLACE FUNCTION public.addprovidercontractinfo(insertedtlsobj json)                                                                                                                             
+  RETURNS text                                                                                                                                                                                              
+  LANGUAGE plpgsql                                                                                                                                                                                          
+ AS $function$                                                                                                                                                                                              
+                                                                                                                                                                                                            
+ DECLARE                                                                                                                                                                                                    
+ returnStatus text;                                                                                                                                                                                         
+ --providerId numeric;                                                                                                                                                                                      
+ programId numeric;                                                                                                                                                                                         
+ contractNoOfbeds numeric;                                                                                                                                                                                  
+ contractCapacityPercent numeric;                                                                                                                                                                           
+ stdate date;                                                                                                                                                                                               
+ enddate date;                                                                                                                                                                                              
+                                                                                                                                                                                                            
+ BEGIN                                                                                                                                                                                                      
+                                                                                                                                                                                                            
+ programId =insertedtlsobj->>'program_id';                                                                                                                                                                  
+ contractNoOfbeds =insertedtlsobj->>'contract_beds_no';                                                                                                                                                     
+ contractCapacityPercent =insertedtlsobj->>'capacity_percentage_no';                                                                                                                                        
+ stdate=insertedtlsobj->>'start_dt';                                                                                                                                                                        
+ enddate= insertedtlsobj->>'end_dt';                                                                                                                                                                        
+                                                                                                                                                                                                            
+ update tb_contract_program set contract_beds_no=contractNoOfbeds, vacancy_no=contractNoOfbeds, capacity_percentage_no=contractCapacityPercent, start_dt=stdate, end_dt=enddate  where program_id=programId;
+                                                                                                                                                                                                            
+ returnStatus:= 'Success';                                                                                                                                                                                  
+ RETURN returnStatus;                                                                                                                                                                                       
+                                                                                                                                                                                                            
+ END;                                                                                                                                                                                                       
+                                                                                                                                                                                                            
+ $function$                                                                                                                                                                                                 
+

@@ -1,0 +1,63 @@
+CREATE OR REPLACE FUNCTION as_f_fm305r_cld(start_date date, end_date date)
+ RETURNS TABLE(county_cd character varying, client_id bigint, child_last_name character varying, child_first_name character varying, receipt_type character varying, exepected_amount numeric, caseworker_last_name character varying, caseworker_first_name character varying, ldss character varying)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+( 
+
+
+SELECT distinct as_f_plvalue(TB_CLIENT_ACCOUNT.COUNTY_CD,'104') COUNTY_CD,
+TB_CLIENT_ACCOUNT.CLIENT_ID,     
+PERSON.lastname  as CHILD_LAST_NAME,
+PERSON.firstname  as CHILD_FIRST_NAME,
+F_PLVALUE(TRANSACTION_SOURCE_CD, 38) AS RECEIPT_TYPE,                                                                                               
+TB_ACCOUNT_TRANSACTION.TRANSACTION_AMOUNT_NO  as EXEPECTED_AMOUNT,
+(SELECT lastname
+     FROM userprofile WHERE securityusersid IN (SELECT caseassignment.toworkeridno 
+                                                                                  FROM caseassignment
+                                                                                  WHERE caseassignment.activeflag = 1
+                                                                                  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                                                                                                                     FROM SERVICECASE SC, TB_CLIENT_ACCOUNT 
+                                                                                                                     WHERE SC.servicecasenumber = TB_CLIENT_ACCOUNT.case_id::varchar )
+                                                                                                                               AND caseassignment.responsibilitytypekey::text = 'family'::text
+                                                                                                                                   AND (caseassignment.enddate IS NULL OR caseassignment.enddate > now())
+                                                                                                                                           ORDER BY
+                                                                                                                           coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                                                                                                                                                            FETCH FIRST 1 ROWS ONLY
+                                                                                                                                                                   ) AND activeflag = 1) AS CASEWORKER_LAST_NAME,
+(SELECT firstname
+     FROM userprofile WHERE securityusersid IN (SELECT caseassignment.toworkeridno 
+                                                                                  FROM caseassignment
+                                                                                  WHERE caseassignment.activeflag = 1
+                                                                                  AND caseassignment.objectid IN ( SELECT SC.servicecaseid 
+                                                                                                                                     FROM SERVICECASE SC, TB_CLIENT_ACCOUNT 
+                                                                                                                                   WHERE SC.servicecasenumber = TB_CLIENT_ACCOUNT.case_id::varchar )
+                                                                                                                                       AND caseassignment.responsibilitytypekey::text = 'family'::text
+                                                                                                                                          AND (caseassignment.enddate IS NULL OR caseassignment.enddate > now())
+                                                                                                                                                      ORDER BY
+                                                                                                                                  coalesce(caseassignment.enddate, now()) DESC, caseassignment.startdate DESC
+                                                                                                                                                                                         FETCH FIRST 1 ROWS ONLY
+                                                                                                                                                                              ) AND activeflag = 1) AS CASEWORKER_FIRST_NAME,
+(SELECT description_tx
+       FROM TB_PICKLIST_VALUES
+       WHERE PICKLIST_TYPE_ID = 104 AND
+       RTRIM(LTRIM(PICKLIST_VALUE_CD)) = RTRIM(LTRIM(TB_CLIENT_ACCOUNT.COUNTY_CD)) AND
+       DELETE_SW <> 'Y' AND ACTIVE_SW = 'Y') AS LDSS                                                                                                                                                                                                                                                                     
+FROM TB_CLIENT_ACCOUNT,
+     PERSON,
+     TB_ACCOUNT_TRANSACTION
+WHERE TB_CLIENT_ACCOUNT.CLIENT_ID = PERSON.CJAMSPID AND PERSON.ACTIVEFLAG = 1 AND 
+       TB_CLIENT_ACCOUNT.STATUS_CD = '592' AND TB_CLIENT_ACCOUNT.DELETE_SW = 'N' AND 
+       TB_CLIENT_ACCOUNT.CLIENT_ACCOUNT_ID = TB_ACCOUNT_TRANSACTION.CLIENT_ACCOUNT_ID AND TB_ACCOUNT_TRANSACTION.DELETE_SW = 'N' AND
+       TB_ACCOUNT_TRANSACTION.FREQUENCY_CD = 'Y' AND TB_ACCOUNT_TRANSACTION.CREDIT_DEBIT_SW = 'C' AND
+       TB_ACCOUNT_TRANSACTION.TRANSACTION_ID not in (SELECT TB_ACCOUNT_FAST_ENTRY.TRANSACTION_ID 
+                                                                                         FROM TB_ACCOUNT_FAST_ENTRY 
+                                                                                         WHERE DELETE_SW = 'N' AND TB_ACCOUNT_FAST_ENTRY.TRANSACTION_ID IS NOT NULL)
+           --   AND F_PRIM_COUNTY(TB_CLIENT_ACCOUNT.case_id, null, null)
+      AND BENEFIT_START_DT >= CAST ('09/09/1994' AS DATE) --PREV_MONTH_FIRST_DAY
+                AND BENEFIT_END_DT <= CAST ('09/09/1994' AS DATE)
+ );
+ END;
+ $function$
+

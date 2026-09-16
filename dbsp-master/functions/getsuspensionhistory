@@ -1,0 +1,49 @@
+CREATE OR REPLACE FUNCTION getsuspensionhistory(v_adoptionagreementid uuid, v_page integer, v_limit integer)
+ RETURNS TABLE(adoptionsuspensionid uuid, reasonforsuspension character varying, suspensionreasontypekey character varying, suspensionbegindate timestamp without time zone, suspensionenddate timestamp without time zone, suspensionremarks character varying, requestedby text, requesteddate timestamp without time zone, approvedby text, approvaldate timestamp without time zone, approvalstatus text, adoptionactiveflag integer)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_pagenumber   int;
+v_pageoffset  int;  
+
+BEGIN
+
+        v_pagenumber  :=  v_page-1;
+        v_pageoffset  =  v_pagenumber  *  v_limit;
+    
+
+RETURN query
+
+SELECT 
+    adspr.adoptionsuspensionid,
+ (SELECT rv.description 
+ FROM 
+ referencevalues rv WHERE activeflag =1 AND rv.ref_key = adspr.suspensionreasontypekey LIMIT 1) as description,
+ adspr.suspensionreasontypekey,
+ adspr.suspensionbegindate,
+ adspr.suspensionenddate,
+ adspr.suspensionremarks,--1 as activeflag,
+-- adspr.activeflag as activeflag,
+ (SELECT up.firstname || ' '|| up.lastname 
+  FROM userprofile up 
+  WHERE up.securityusersid = adspr.insertedby AND up.activeflag =1 LIMIT 1 ) as requestedby,
+ adspr.transactiondate as requesteddate,
+ CASE r.routingstatustypeid WHEN  15  THEN ''
+ ELSE (SELECT up1.firstname || ' '|| up1.lastname 
+  FROM userprofile up1 
+  WHERE up1.securityusersid = r.fromsecurityusersid AND up1.activeflag =1 )  END as approvedby,
+ CASE r.routingstatustypeid WHEN  15  THEN NULL ELSE  r.insertedon END :: timestamp without time zone  as approveddate,
+ rs.typedescription as approvalstatus ,
+  adspr.activeflag  as activeflag
+FROM adoptionsuspension adspr
+INNER JOIN routing r ON r.objectid = (adspr.adoptionsuspensionid) :: character varying 
+AND r.eventcode = 'ADSR' AND r.activeflag =1
+INNER JOIN routingstatustype rs ON r.routingstatustypeid = rs.sequencenumber and rs.activeflag =1
+WHERE  adspr.adoptionagreementid = v_adoptionagreementid
+LIMIT  v_limit  OFFSET  v_pageoffset; 
+
+END;
+
+$function$
+

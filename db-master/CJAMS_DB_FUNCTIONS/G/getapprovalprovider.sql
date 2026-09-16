@@ -1,0 +1,37 @@
+drop function if exists getapprovalprovider(character varying,bigint,bigint);
+CREATE OR REPLACE FUNCTION cjams.getapprovalprovider(v_providerid character varying, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, approvaltype character varying,approvaldesc character varying,approvaldate character varying,approved_beds_no int,approvalcomments text)
+ LANGUAGE plpgsql
+AS $function$
+	
+DECLARE
+	v_pageoffset int;
+    v_pagenumber int;
+   v_applicantid character varying;
+	
+BEGIN
+
+	v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+   
+   select applicantid  into v_applicantid from providerapprovetypeconfig where providerid=v_providerid;
+raise notice 'v_providerid%',v_providerid;
+if (v_applicantid is null) then 
+select applicant_id into v_applicantid from providerapprovalphaserecord where provider_id=v_providerid;--program type change request table
+end if;
+return query	
+
+	select count(1) over() as totalcount,tpa.approval_type_cd as approvaltype,tpv.value_tx as approvaldesc,tpa.create_ts as approvaldate,tpa.approved_beds_no,
+	tppp.reason as approvalcomments
+ from tb_provider_approval tpa
+  inner join tb_picklist_values tpv on trim(tpv.picklist_value_cd) = trim(tpa.approval_type_cd) and tpv.picklist_type_id='367'
+  left outer join tb_public_provider_applicant tppp on tppp.applicant_id=v_applicantid
+  where tpa.provider_id=v_providerid::bigint
+  LIMIT pagesize OFFSET v_pageoffset;
+
+END;
+
+$function$
+
+--table
+--tb_provider_approval

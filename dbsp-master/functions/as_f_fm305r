@@ -1,0 +1,80 @@
+CREATE OR REPLACE FUNCTION as_f_fm305r(start_date date, end_date date)
+ RETURNS TABLE(county_cd character varying, client_id bigint, child_last_name character varying, child_first_name character varying, receipt_type character varying, exepected_amount numeric, caseworker_last_name character varying, caseworker_first_name character varying, ldss character varying)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+   RETURN QUERY
+      (  SELECT TB_CLIENT_ACCOUNT.COUNTY_CD
+                   COUNTY_CD,
+                TB_CLIENT_ACCOUNT.CLIENT_ID,
+                PERSON.LASTNAME
+                   AS CHILD_LAST_NAME,
+                PERSON.FIRSTNAME
+                   AS CHILD_FIRST_NAME,
+                F_PLVALUE (TRANSACTION_SOURCE_CD, 38)
+                   AS RECEIPT_TYPE,
+                TB_ACCOUNT_TRANSACTION.TRANSACTION_AMOUNT_NO
+                   AS EXEPECTED_AMOUNT,
+                TB_STAFF.LAST_NM
+                   AS CASEWORKER_LAST_NAME,
+                TB_STAFF.FIRST_NM
+                   AS CASEWORKER_FIRST_NAME,
+                (SELECT DISTINCT F_PLVALUE (LDSSLOCATIONS.COUNTYTYPEKEY, 104)
+                   FROM LDSSLOCATIONS
+                  WHERE     COUNTYTYPEKEY = PRIMARY_COUNTY_CD
+                        AND LOCATION LIKE 'RETURN ADDRESS%'
+                  FETCH FIRST ROW ONLY)
+                   AS LDSS
+           FROM TB_CLIENT_ACCOUNT,
+                TB_ACCOUNT_TRANSACTION,
+                PERSON,
+                TB_STAFF,
+              -- servicecase,
+                CASECLIENT
+          WHERE     (TB_ACCOUNT_TRANSACTION.TRANSACTION_ID NOT IN
+                        (SELECT DISTINCT TB_ACCOUNT_FAST_ENTRY.TRANSACTION_ID
+                           FROM TB_ACCOUNT_FAST_ENTRY
+                          WHERE     DELETE_SW = 'N'
+                                AND TB_ACCOUNT_FAST_ENTRY.TRANSACTION_ID
+                                       IS NOT NULL))
+                AND (TB_CLIENT_ACCOUNT.CLIENT_ACCOUNT_ID =
+                     TB_ACCOUNT_TRANSACTION.CLIENT_ACCOUNT_ID)
+                AND (CAST (TB_CLIENT_ACCOUNT.CLIENT_ID AS CHARACTER VARYING) =
+                     PERSON.CJAMSPID::VARCHAR)
+                AND                       -- FIND ALTERNATIVE FOR PERSON.FK_ID
+                    (TB_CLIENT_ACCOUNT.STATUS_CD = '592')
+                AND (TB_ACCOUNT_TRANSACTION.DELETE_SW = 'N')
+                AND (TB_CLIENT_ACCOUNT.DELETE_SW = 'N')
+                AND (TB_ACCOUNT_TRANSACTION.DELETE_SW = 'N')
+                AND (PERSON.ACTIVEFLAG = 1)
+                AND (TB_ACCOUNT_TRANSACTION.FREQUENCY_CD = 'Y')
+                AND (TB_ACCOUNT_TRANSACTION.CREDIT_DEBIT_SW = 'C')
+               -- AND (SELECT DISTINCT CS.OLD_ID
+                   --    FROM CASECLIENT CST
+                     --       JOIN servicecase CS ON CS.servicecasenumber = CAST(CST.CASEID AS VARCHAR) =
+                   --servicecase.OLD_ID
+                AND (SELECT DISTINCT PR.PERSONIDENTIFIERVALUE
+                       FROM PERSONIDENTIFIER PR
+                            JOIN CASECLIENT CA ON PR.PERSONID = CA.PERSONID) =
+                    CAST (TB_CLIENT_ACCOUNT.CLIENT_ID AS CHARACTER VARYING)
+              --  AND CASE.ACTIVEFLAG = 0
+              --  AND CASECLIENT.ACTIVEFLAG = 0
+                --AND F_RPT_CASEWORKER(TB_CLIENT_ACCOUNT.CLIENT_ID,CASE.OLD_ID,'2952', CAST('$(VSTARTDATE)' AS DATE), CAST('$(VENDDATE)'  AS DATE) /*PREV_MONTH_FIRST_DAY,PREV_MONTH_LAST_DAY*/) = TB_STAFF.STAFF_ID
+                --AND F_PRIM_COUNTY("CASE".OLD_ID ,'NULL')  = '1427' --AS_COUNTY_CD
+                AND BENEFIT_START_DT >= CAST (START_DATE AS DATE) --PREV_MONTH_FIRST_DAY
+                AND BENEFIT_END_DT <= CAST (END_DATE AS DATE) --PREV_MONTH_LAST_DAY
+                GROUP BY TRANSACTION_SOURCE_CD,
+                TB_CLIENT_ACCOUNT.CLIENT_ID,
+                PERSON.LASTNAME,
+                PERSON.FIRSTNAME,
+                PRIMARY_COUNTY_CD,
+                TB_STAFF.LAST_NM,
+                TB_STAFF.FIRST_NM,
+                TRANSACTION_AMOUNT_NO,
+                TB_CLIENT_ACCOUNT.COUNTY_CD
+       ORDER BY PERSON.LASTNAME,
+                PERSON.FIRSTNAME,
+                TB_CLIENT_ACCOUNT.CLIENT_ID);
+END;
+$function$
+

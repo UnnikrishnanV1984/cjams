@@ -1,0 +1,20 @@
+DROP FUNCTION IF EXISTS  getcommunicationtype(v_teamtypekey character varying);
+ CREATE OR REPLACE FUNCTION getcommunicationtype(v_teamtypekey character varying)                                                       
+  RETURNS TABLE(intakeservreqinputtypeid uuid, intakeservreqinputtypekey character varying, description text, activeflag integer, isdjs boolean)
+  LANGUAGE plpgsql                                                                                                                              
+ AS $function$                                                                                                                                  
+                                                                                                                                                
+ BEGIN                                                                                                                                          
+ RETURN Query                                                                                                                                   
+                                                                                                                                                
+         SELECT DISTINCT                                                                                                                                 
+         ity.intakeservreqinputtypeid,ity.intakeservreqinputtypekey,ity.description,ity.activeflag,ity.isdjs                                    
+         FROM intakeservicerequestinputtype ity                                                                                                 
+         INNER JOIN intakeservreqinputtypeagency itya ON ity.intakeservreqinputtypekey = itya.intakeservreqinputtypekey AND itya.activeflag =1  
+         WHERE itya.teamtypekey = v_teamtypekey AND ity.activeflag =1                                                                           
+         ORDER BY ity.description ASC;                                                                                                          
+                                                                                                                                                
+ END;                                                                                                                                           
+                                                                                                                                                
+ $function$                                                                                                                                     
+

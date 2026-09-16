@@ -1,0 +1,198 @@
+CREATE OR REPLACE FUNCTION f_fm135r(startdate date, enddate date)
+ RETURNS TABLE(child_id bigint, child_last_name character varying, child_first_name character varying, child_worker character varying, child_supervisor character varying, child_worker_jurisdiction character varying, family_worker character varying, family_supervisor integer, family_worker_jurisdiction character varying, provider_name text, service_name character varying, start_dt date, end_dt date, validation_status character varying)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+   RETURN QUERY
+      (                                                          -------FM135R
+       SELECT DISTINCT TAB1.CHILD_ID,
+                       TAB1.CHILD_LAST_NAME,
+                       TAB1.CHILD_FIRST_NAME,
+                       TAB1.CHILD_WORKER,
+                       TAB1.CHILD_SUPERVISOR,
+                       TAB1.CHILD_WORKER_JURISDICTION,
+                       TAB1.FAMILY_WORKER,
+                       TAB1.FAMILY_SUPERVISOR,
+                       TAB1.FAMILY_WORKER_JURISDICTION,
+                       TAB1.PROVIDER_NAME,
+                       TAB1.SERVICE_NAME,
+                       TAB1.START_DT,
+                       TAB1.END_DT,
+                       TAB1.VALIDATION_STATUS
+         FROM (SELECT (SELECT F_PLVALUE (TB_ASSIGNMENT.TO_COUNTY_CD, 104)
+                              FROM TB_ASSIGNMENT, ASSIGNMENTCLIENTS
+                             WHERE     TB_ASSIGNMENT.ASSIGNMENT_ID =
+                                       ASSIGNMENTCLIENTS.ASSIGNMENTID -- ASSIGNMENTCLIENTS.ASSIGNMENTID IS UUID
+                                   AND TB_ASSIGNMENT.ENTITY_KEY_ID = PL.CASE_ID
+                                   AND (SELECT CAST (P.CJAMSPID AS INTEGER)
+                                        FROM PERSON P
+                                             INNER JOIN ASSIGNMENTCLIENTS AC
+                                                ON P.PERSONID = AC.PERSONID) =
+                                       PL.CLIENT_ID -- ASSIGNMENTCLIENTS.PERSONID IS UUID. HENCE THE CHANGE, STILL WE HAVE FK_ID
+                                   AND TB_ASSIGNMENT.RESPONSIBILITY_CD = 'S'
+                                   AND TB_ASSIGNMENT.DELETE_SW = 'N'
+                                   AND ASSIGNMENTCLIENTS.ACTIVEFLAG = 0
+                                   AND (   TB_ASSIGNMENT.END_DT IS NULL
+                                        OR TB_ASSIGNMENT.END_DT >
+                                           CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY*/
+                                                                 )        --**
+                          ORDER BY COALESCE (TB_ASSIGNMENT.END_DT, CURRENT_DATE) DESC,
+                                   TB_ASSIGNMENT.START_DT DESC
+                       FETCH FIRST 1 ROWS ONLY)
+                         AS CHILD_WORKER_JURISDICTION        -- INCIDENT#21453
+                                                     ,
+                      F_SERVICENAME (PL.PLACEMENT_STRUCTURE_ID)
+                         AS SERVICE_NAME,
+                      PL.CLIENT_ID
+                         AS CHILD_ID,
+                      CL.LASTNAME
+                         AS CHILD_LAST_NAME,
+                      CL.FIRSTNAME
+                         AS CHILD_FIRST_NAME,
+                      (CASE
+                          WHEN LENGTH (RTRIM (PROVIDER_NM)) > 0
+                          THEN
+                             PROVIDER_NM
+                          ELSE
+                             (PROVIDER_LAST_NM || ', ' || PROVIDER_FIRST_NM)
+                       END)
+                         AS PROVIDER_NAME,
+                      F_PLVALUE (PV.VALIDATION_STATUS_CD, 146)
+                         AS VALIDATION_STATUS,
+                      PV.VALIDATION_START_DT
+                         AS START_DT,
+                      PV.VALIDATION_END_DT
+                         AS END_DT,
+                      (SELECT F_SNAME (CAST (CJAMSPID AS INTEGER))
+                        FROM USERPROFILE
+                       WHERE     CJAMSPID IN
+                                    (SELECT TB_ASSIGNMENT.ASSIGN_TO_STAFF_ID
+                                            FROM TB_ASSIGNMENT, ASSIGNMENTCLIENTS
+                                           WHERE     TB_ASSIGNMENT.ASSIGNMENT_ID =
+                                                     ASSIGNMENTCLIENTS.ASSIGNMENTID -- ASSIGNMENTCLIENTS.ASSIGNMENTID IS UUID
+                                                 AND TB_ASSIGNMENT.ENTITY_KEY_ID =
+                                                     PL.CASE_ID
+                                                 AND (SELECT CAST (
+                                                                P.CJAMSPID
+                                                                   AS INTEGER)
+                                                      FROM PERSON P
+                                                           INNER JOIN
+                                                           ASSIGNMENTCLIENTS AC
+                                                              ON P.PERSONID =
+                                                                 AC.PERSONID) =
+                                                     PL.CLIENT_ID -- ASSIGNMENTCLIENTS.PERSONID IS UUID. HENCE THE CHANGE, STILL WE HAVE FK_ID
+                                                 AND TB_ASSIGNMENT.RESPONSIBILITY_CD =
+                                                     'S'
+                                                 AND TB_ASSIGNMENT.DELETE_SW = 'N'
+                                                 AND ASSIGNMENTCLIENTS.ACTIVEFLAG =
+                                                     0
+                                                 AND (   TB_ASSIGNMENT.END_DT
+                                                            IS NULL
+                                                      OR TB_ASSIGNMENT.END_DT >
+                                                         CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY*/
+                                                                               ) --**
+                                        ORDER BY COALESCE (TB_ASSIGNMENT.END_DT,
+                                                           CURRENT_DATE) DESC,
+                                                 TB_ASSIGNMENT.START_DT DESC
+                                     FETCH FIRST 1 ROWS ONLY)
+                             AND ACTIVEFLAG = 1)
+                         AS CHILD_WORKER                      --INCIDENT#21453
+                                        ,
+                      (SELECT F_SNAME (
+                                 CAST (
+                                    F_SUPERVISOR (CJAMSPID::VARCHAR)
+                                       AS INTEGER))
+                        FROM USERPROFILE
+                       WHERE     CJAMSPID IN
+                                    (SELECT TB_ASSIGNMENT.ASSIGN_TO_STAFF_ID
+                                            FROM TB_ASSIGNMENT, ASSIGNMENTCLIENTS
+                                           WHERE     TB_ASSIGNMENT.ASSIGNMENT_ID =
+                                                     ASSIGNMENTCLIENTS.ASSIGNMENTID -- ASSIGNMENTCLIENTS.ASSIGNMENTID IS UUID
+                                                 AND TB_ASSIGNMENT.ENTITY_KEY_ID =
+                                                     PL.CASE_ID
+                                                 AND (SELECT CAST (
+                                                                P.CJAMSPID
+                                                                   AS INTEGER)
+                                                      FROM PERSON P
+                                                           INNER JOIN
+                                                           ASSIGNMENTCLIENTS AC
+                                                              ON P.PERSONID =
+                                                                 AC.PERSONID) =
+                                                     PL.CLIENT_ID -- ASSIGNMENTCLIENTS.PERSONID IS UUID. HENCE THE CHANGE, STILL WE HAVE FK_ID
+                                                 AND TB_ASSIGNMENT.RESPONSIBILITY_CD =
+                                                     'S'
+                                                 AND TB_ASSIGNMENT.DELETE_SW = 'N'
+                                                 AND ASSIGNMENTCLIENTS.ACTIVEFLAG =
+                                                     0
+                                                 AND (   TB_ASSIGNMENT.END_DT
+                                                            IS NULL
+                                                      OR TB_ASSIGNMENT.END_DT >
+                                                         CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY*/
+                                                                               ) --**
+                                        ORDER BY COALESCE (TB_ASSIGNMENT.END_DT,
+                                                           CURRENT_DATE) DESC,
+                                                 TB_ASSIGNMENT.START_DT DESC
+                                     FETCH FIRST 1 ROWS ONLY)
+                             AND ACTIVEFLAG = 1)
+                         AS CHILD_SUPERVISOR                  --INCIDENT#21453
+                                            ,
+                      (SELECT F_SNAME (ASSIGN_TO_STAFF_ID)
+                              FROM TB_ASSIGNMENT
+                             WHERE     ENTITY_KEY_ID = CASE_ID
+                                   AND (   TB_ASSIGNMENT.END_DT IS NULL
+                                        OR TB_ASSIGNMENT.END_DT >
+                                           CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY*/
+                                                                 )        --**
+                                   AND RESPONSIBILITY_CD = 'P'
+                          ORDER BY TB_ASSIGNMENT.END_DT DESC
+                       FETCH FIRST 1 ROWS ONLY)
+                         AS FAMILY_WORKER,
+                      (SELECT F_SNAME(F_SUPERVISOR(ASSIGN_TO_STAFF_ID) )
+                              FROM TB_ASSIGNMENT
+                             WHERE     ENTITY_KEY_ID = CASE_ID
+                                   AND (   TB_ASSIGNMENT.END_DT IS NULL
+                                        OR TB_ASSIGNMENT.END_DT >
+                                           CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY*/
+                                                                 )        --**
+                                   AND RESPONSIBILITY_CD = 'P'
+                          ORDER BY TB_ASSIGNMENT.END_DT DESC
+                       FETCH FIRST 1 ROWS ONLY)
+                         AS FAMILY_SUPERVISOR,
+                      F_PLVALUE (ASGN.TO_COUNTY_CD, 104)
+                         AS FAMILY_WORKER_JURISDICTION
+                 FROM TB_ASSIGNMENT ASGN
+                      INNER JOIN TB_PLACEMENT PL
+                         ON (    ASGN.ENTITY_KEY_ID = PL.CASE_ID
+                             AND ASGN.DELETE_SW = 'N'
+                                                          AND (   ASGN.END_DT IS NULL
+                                  OR ASGN.END_DT > CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY*/
+                                                                         ))
+                      INNER JOIN PERSON CL
+                         ON CAST (CL.CJAMSPID AS INTEGER) = PL.CLIENT_ID
+                      INNER JOIN TB_PLACEMENT_VALIDATION PV
+                         ON (PL.PLACEMENT_ID = PV.PLACEMENT_ID)
+                      INNER JOIN TB_PROVIDER PR
+                         ON PR.PROVIDER_ID = PL.PROVIDER_ID
+                WHERE     (PL.VOID_SW IS NULL)
+                      AND (PL.DELETE_SW = 'N')
+                      AND (PV.DELETE_SW = 'N')
+                      AND (   (PV.VALIDATION_STATUS_CD IS NULL)
+                           OR (PV.VALIDATION_STATUS_CD <> '1750'))
+                      AND PV.VALIDATION_START_DT >= CAST (STARTDATE AS DATE) --PREV_MONTH_FIRST_DAY---**
+                      AND PV.VALIDATION_END_DT <= CAST (ENDDATE AS DATE) --PREV_MONTH_LAST_DAY---**
+                      AND (   (    (   PL.EXIT_REASON_CD IS NULL
+                                    OR PL.EXIT_REASON_CD <> '4529')
+                               AND (   PL.EXIT_DT IS NULL
+                                    OR PL.EXIT_DT >= CAST (STARTDATE AS DATE) /*PREV_MONTH_FIRST_DAY*/
+                                                                             )
+                               AND                                        --**
+                                   F_SERVICENAME (PL.PLACEMENT_STRUCTURE_ID) NOT LIKE
+                                      'ADOPTIVE HOME')
+                           OR (    PL.EXIT_REASON_CD = '4529'
+                               AND PL.EXIT_DT > DATE (CAST (ENDDATE AS DATE) /*PREV_MONTH_LAST_DAY)+ 60 DAYS*/
+                                                                            )) ---**
+                                                                              ))
+              AS TAB1);
+END;
+$function$
+

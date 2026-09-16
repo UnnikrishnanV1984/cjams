@@ -1,0 +1,151 @@
+DROP FUNCTION IF exists sp_fiscalunitticklers_dashboard(bigint,bigint,character varying,character varying,character varying,character varying,character varying,character varying);
+CREATE OR REPLACE FUNCTION cjams.sp_fiscalunitticklers_dashboard(pagenumber bigint, pagesize bigint, v_statusval character varying, v_typeval character varying, v_dueval character varying, v_county_cd character varying, v_providertype character varying DEFAULT NULL::character varying, v_roletypekey character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, tickler_id bigint, tickler_tx character varying, create_ts timestamp without time zone, due_dt date, action_sw character, action_dt date, data_valid_sw character, update_ts timestamp without time zone, approve_staff_id integer, system_tickler_tx character varying, delete_sw character, ticklertype character varying, entity_key_id bigint, entity_nm character varying, clientname character varying, overduecount bigint, currentduecount bigint, upcomingcount bigint)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- Vineet Tirodkar - 05/04/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+-- Vigneshwar Kumar - 02/10/2023 - CDM-19155 - Modifications to Order by for pagination dulipcate issue
+-- Vineet Tirodkar - 05/16/2023 - Modifications for New Tickler Type "Placement voided" (CDM-31225)
+-- Chandra/Palani - 09/27/2023 - Query tuning and adding index(CIDM-8000)
+-- CIDM-10263 - 03/06/2025 - Veera fixed data type issue related cjams_to_date conversion 
+-- Yogeshvar Senthilkumar - 04/2025 = CIDM-9361 - Query tuning for better performance (Memory efficent)
+------------------------------------------------------------------------------------------------
+
+DECLARE
+
+v_pageoffset int;
+v_pagenumber int;
+v_data_valid_sw character default null;
+v_rstatus int[];
+v_overduecount bigint;
+v_currentduecount bigint;
+v_upcomingcount bigint;
+
+BEGIN
+
+v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+
+    if(v_statusval = 'Unread') then
+v_data_valid_sw := 'Y';
+end if;  
+
+if (v_typeval = 'AR') then v_rstatus = '{42}'; end if;
+if (v_typeval = 'CB') then v_rstatus = '{54}'; end if;
+if (v_typeval = 'PV') then v_rstatus = '{439}'; end if;
+if (v_typeval = 'All') then
+if (v_roletypekey = 'FNSFW') then
+v_rstatus = '{54,439,42}';
+end if;
+if (v_roletypekey = 'FNSFS') then
+v_rstatus = '{54,439,42}';
+end if;
+if (v_roletypekey = 'FNSCOSP') then
+v_rstatus = '{42,439}';
+end if;
+if (v_roletypekey = 'FNSCOFW') then
+v_rstatus = '{42,439}';
+end if;
+end if;
+
+raise notice 'v_rstatus%',v_rstatus;
+
+select 
+	count(case when t.create_ts:: date + INTERVAL '30 day' < now()::date then 1 else null end) as overdue_count,
+	count(case when t.create_ts:: date + INTERVAL '30 day' > now()::date and t.create_ts:: date + INTERVAL '30 day' < (now() + INTERVAL '30 day')::date then 1 else null end) as upcoming_count,
+	count(case when t.create_ts:: date + INTERVAL '30 day' = now()::date then 1 else null end) currentduecount
+into v_overduecount, v_upcomingcount, v_currentduecount 
+from tb_ticklers t
+where t.delete_sw = 'N' and t.action_sw is null
+and (
+	case 
+		when v_providertype='central' and trim(t.entity_type_cd)='2953' then
+			t.entity_key_id in (
+				select PRPL.provider_id
+				from tb_provider_picklist PRPL
+				where PRPL.picklist_type_id=155
+				and PRPL.delete_sw='N'
+				and trim(PRPL.picklist_value_cd) in ('3049','3274','3302','1782','3794')
+			)
+		when v_providertype='others' and trim(t.entity_type_cd)='2953' then
+			t.entity_key_id in (
+				select PRPL.provider_id
+				from tb_provider_picklist PRPL
+				where PRPL.picklist_type_id=155 and PRPL.delete_sw='N'
+				and trim(PRPL.picklist_value_cd) in ('1783')
+			)
+		end
+	) and t.system_tickler_id = any(v_rstatus) and trim(t.county_cd) = v_county_cd;
+
+    return query
+
+select count(1) over() as totalcount,
+tt.tickler_id,
+tt.tickler_tx,
+tt.create_ts,
+(tt.create_ts:: date + INTERVAL '30 day'):: date as due_dt,
+tt.action_sw,
+tt.action_dt,
+tt.data_valid_sw,
+tt.update_ts,
+tt.action_by_staff_id,
+tst.system_tickler_tx,
+tt.delete_sw,
+(select value_tx
+from tb_picklist_values plv
+where TRIM(plv.PICKLIST_VALUE_CD)=tt.entity_type_cd
+AND plv.PICKLIST_TYPE_ID='275'
+and plv.delete_sw='N' limit 1
+) as ticklertype,
+tt.entity_key_id,
+tt.entity_nm,
+concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),
+coalesce(p.suffix,null) ):: character varying as clientname,
+v_overduecount,
+v_currentduecount,
+v_upcomingcount
+from tb_ticklers tt
+left join tb_system_ticklers tst on tt.system_tickler_id = tst.system_tickler_id
+left join person p on p.cjamspid = tt.client_id
+where tt.delete_sw = 'N'  
+and trim(tt.county_cd) = v_county_cd
+and case when v_dueval = 'overdue' then
+tt.create_ts:: date + INTERVAL '30 day' < now()::date and tt.delete_sw = 'N' and tt.action_sw is null
+when v_dueval = 'currentdue' then
+tt.create_ts:: date + INTERVAL '30 day' = now()::date and tt.delete_sw = 'N' and tt.action_sw is null
+when v_dueval = 'upcomingdue' then
+tt.create_ts:: date + INTERVAL '30 day' > now()::date and tt.create_ts:: date + INTERVAL '30 day' < (now() + INTERVAL '30 day')::date and tt.delete_sw = 'N' and tt.action_sw is null
+else
+true
+end
+AND CASE WHEN v_data_valid_sw is NOT NULL THEN
+(tt.data_valid_sw not in (v_data_valid_sw) or tt.data_valid_sw is null)
+ELSE
+TRUE
+end
+and (v_typeval is null or tt.system_tickler_id =any(v_rstatus))
+and case when  tt.system_tickler_id = '42' then
+(case when v_providertype='central' and trim(tt.entity_type_cd)='2953'
+and exists (select 1 
+from tb_provider_picklist PRPL
+where PRPL.picklist_type_id=155
+and PRPL.delete_sw='N' and tt.entity_key_id = PRPL.provider_id
+and trim(PRPL.picklist_value_cd) =  any(string_to_array('3049,3274,3302,1782,3794',','))) then true
+when v_providertype='others' and trim(tt.entity_type_cd)='2953'
+and exists (select 1
+from tb_provider_picklist PRPL
+where PRPL.picklist_type_id=155
+and PRPL.delete_sw='N' and tt.entity_key_id = PRPL.provider_id
+and trim(PRPL.picklist_value_cd) = '1783') then true
+end) else true end
+-- 12/04/2020 to filter out Expired Ticklers
+and coalesce(expiry_dt, current_date + 1) >= current_date
+order by tt.tickler_id desc
+LIMIT pagesize OFFSET v_pageoffset;
+
+END;
+
+$function$
+;

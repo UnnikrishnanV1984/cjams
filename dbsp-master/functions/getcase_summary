@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION getcase_summary(v_intakeserviceid uuid)
+ RETURNS TABLE(general json, workerdetails json, supervisorinfo json, maltreatment json, assessment json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_investigationid uuid;
+l_general json;
+l_caseworkerdetails json;
+l_maltreatment json;
+l_assessment json;
+l_supervisordetails json;
+
+
+BEGIN  
+
+     SELECT  investigationid INTO v_investigationid 
+  FROM investigation WHERE intakeserviceid  = v_intakeserviceid;
+  
+  SELECT caseworkerdetails,supervisordetails INTO l_caseworkerdetails,l_supervisordetails from getldssusers(v_intakeserviceid);
+ 
+  SELECT Json_agg(gen) INTO l_general FROM   ( SELECT isr.reporteddate, 
+         isr.servicerequestnumber, 
+         isr.narrative, 
+         isr.actiontype,
+      r.typedescription as routingstatus
+     ,r.Description as dispstatus 
+   FROM   intakeservicerequest isr 
+         left join  (SELECT rs.typedescription,sd.intakeserviceid,st.Description from IntakeServiceRequestDispositionCode sd
+         left join routing r on r.objectid  =  sd.intakeservicerequestdispositioncodeid:: character varying and r.eventcode = 'INDR'and r.activeflag = 1
+     INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber
+     left join IntakeSerReqStatusType st on st.IntakeSerReqStatusTypeid = sd.IntakeSerReqStatusTypeid 
+     order by sd.insertedon desc  ) r 
+     on r.intakeserviceid = isr.intakeserviceid
+   WHERE isr.intakeserviceid = v_intakeserviceid) gen ;
+
+   SELECT getmaltreatment_invsummary INTO l_maltreatment FROM getmaltreatment_invsummary(v_investigationid);
+
+
+   SELECT Json_agg(asst) INTO l_assessment from 
+  (SELECT
+  amt.name,
+  asm.assessmentstatustypekey,
+  amt.updatedon
+  FROM
+  assessment asm
+  JOIN assessmenttemplate amt ON amt.assessmenttemplateid=asm.assessmenttemplateid AND amt.activeflag=1
+  and amt.titleheadertext in ('CANS-F','SAFE-C','MARYLAND FAMILY INITIAL  RISK ASSESSMENT','SAFETY PLAN')
+  WHERE asm.objectid=v_intakeserviceid)asst ;
+
+
+RETURN QUERY 
+select  l_general,l_caseworkerdetails,l_supervisordetails,l_maltreatment,l_assessment;
+
+ END;
+ $function$
+

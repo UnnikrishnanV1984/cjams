@@ -1,0 +1,1 @@
+update intakeservicerequest set responsetimer = '2020-11-20 15:26:41.923965',  updatedon = now(), updatedby = 'CDM-7692' where servicerequestnumber = '20200325056232';

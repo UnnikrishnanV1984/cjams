@@ -1,0 +1,76 @@
+CREATE OR REPLACE FUNCTION getrestitutionpaymentapprove(v_contentid uuid, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, ismatched boolean, restitutionpaymentflatfileid uuid, asofdate character varying, lockboxno character varying, vakaccountnumber character varying, contentflatfilefirstname character varying, contentflatfilelastname character varying, contentflatfileaddressline1 character varying, contentflatfileaddressline2 character varying, contentflatfilecity character varying, contentflatfilestate character varying, contentflatfilezip character varying, contentflatfilecustomernumber character varying, contentflatfilecheckno character varying, contentflatfilecheckamt numeric, contentflatfilepaymentno bigint, flatfilefilename character varying, flatfilepathname text, restitutionallocatedamount numeric, restitutionbalanceamount numeric, approvedrestitutionacc jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+  v_pagenumber int;
+  v_pageoffset int;
+  
+BEGIN 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select count(1) over() as totalcount ,rfc.ismatched,rfc.restitutionpaymentflatfileid,rfc.asofdate,rfc.lockboxno,rfc.vakaccountnumber,rfc.firstname as contentflatfilefirstname,rfc.lastname as contentflatfilelastname,
+rfc.addressline1 as contentflatfileaddressline1,rfc.addressline2 as contentflatfileaddressline2,rfc.city as contentflatfilecity,rfc.state as contentflatfilestate,
+rfc.zip as contentflatfilezip,rfc.customernumber as contentflatfilecustomernumber, rfc.checkno as contentflatfilecheckno ,rfc.checkamt as contentflatfilecheckamt,
+rfc.paymentno as contentflatfilepaymentno,rpf.filename as flatfilefilename,rpf.pathname as flatfilepathname,
+
+(select coalesce(sum(irp.allocatedamount),0) from intakeserreqrestitutionpayment as irp 
+ Join intakeserreqrestitution ir on ir.intakeserreqrestitutionid = irp.intakeserreqrestitutionid and ir.activeflag=1
+ where irp.restitutionpaymentflatfilecontentid = rfc.restitutionpaymentflatfilecontentid and irp.activeflag=1 ) as restitutionallocatedamount,
+ 
+ /*(select coalesce(sum(ir.payment),0) - coalesce(sum(ir.allocatedamount),0) from intakeserreqrestitutionpayment as irp 
+ Join intakeserreqrestitution ir on ir.intakeserreqrestitutionid = irp.intakeserreqrestitutionid and ir.activeflag=1
+ where irp.restitutionpaymentflatfilecontentid = rfc.restitutionpaymentflatfilecontentid and irp.activeflag=1 ) as restitutionbalanceamount, */
+coalesce(rfc.balanceamount,0) as restitutionbalanceamount,
+ 
+
+ (SELECT Json_agg(actor) FROM (
+   select irps.restitutionno as restitutionno,isr.intakeserreqrestitutionid,intakenumber,irps.payment as restitutionpayment,
+   --(irps.payment - coalesce(irps.paidamount,0)) as restitutionpaymentbalance,
+   --(coalesce(irps.payment,0) - coalesce(irps.waivedamount,0) + coalesce(irps.additionalamount,0)) - coalesce(irps.paidamount,0) as restitutionpaymentbalance,
+   --(coalesce(irps.payment,0) - coalesce(irps.waivedamount,0) + coalesce(irps.additionalamount,0)) - coalesce(isr.allocatedamount,0) as restitutionpaymentbalance,
+   -- irps.paidamount,irps.restitutiontype,irps.duedate,(CASE WHEN isr.restitutionstatus = 'Approved' THEN 0 ELSE isr.paymentamount END) as allocatedamount,
+   (coalesce(irps.payment,0) - coalesce(irps.waivedamount,0) + coalesce(irps.additionalamount,0)) - coalesce(irps.paidamount,0) as restitutionpaymentbalance,irps.paidamount,
+    --(CASE WHEN isr.restitutionstatus = 'Approved' THEN (coalesce(irps.payment,0) - coalesce(irps.waivedamount,0) + coalesce(irps.additionalamount,0)) - (coalesce(irps.paidamount,0) - coalesce(isr.paymentamount,0)) 
+   -- ELSE (coalesce(irps.payment,0) - coalesce(irps.waivedamount,0) + coalesce(irps.additionalamount,0)) - coalesce(irps.paidamount,0) END) as restitutionpaymentbalance,
+    --(CASE WHEN isr.restitutionstatus = 'Approved' THEN (coalesce(irps.paidamount,0) - coalesce(isr.paymentamount,0)) ELSE coalesce(irps.paidamount,0) END) as paidamount,
+    irps.restitutiontype,irps.duedate,(CASE WHEN isr.restitutionstatus = 'Approved' THEN 0 ELSE isr.paymentamount END) as allocatedamount,
+   
+   json_build_object('youthpersonid',isr.youthpersonid,'youthfirstname',pp.firstname,
+   'youthlastname', pp.lastname ,'youthcjamspid', pp.cjamspid, 'youthdob',pp.dob, 'youthgendertypekey',pp.gendertypekey ) as youthpersondetails,
+  
+   json_build_object('victimpersonid',isr.victimpersonid,'victimfirstname',pv.firstname,
+   'victimlastname', pv.lastname ,'victimcjamspid', pv.cjamspid, 'victimdob',pv.dob, 'victimgendertypekey',pv.gendertypekey ) as victimpersondetails
+     
+   from intakeserreqrestitutionpayment isr
+   join person pp on pp.personid= isr.youthpersonid
+   join person pv on pv.personid = isr.victimpersonid 
+   join intakeserreqrestitution irps on irps.intakeserreqrestitutionid= isr.intakeserreqrestitutionid
+   where isr.restitutionpaymentflatfilecontentid=rfc.restitutionpaymentflatfilecontentid
+)actor) :: jsonb  as approvedrestitutionacc
+  
+from restitutionpaymentflatfilecontent as rfc
+join restitutionpaymentflatfile as rpf on rpf.restitutionpaymentflatfileid = rfc.restitutionpaymentflatfileid
+where restitutionpaymentflatfilecontentid = v_contentid
+
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+$function$
+

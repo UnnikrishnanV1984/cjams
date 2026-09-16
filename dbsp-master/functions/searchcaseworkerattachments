@@ -1,0 +1,131 @@
+CREATE OR REPLACE FUNCTION searchcaseworkerattachments(v_servicecaseid character varying, v_servicerequestid character varying, v_adoptioncaseid character varying, v_objecttypekey character varying, pageno integer, pagesize integer, v_category character varying, v_subcategory character varying, v_sortcol character varying, v_sortorder character varying, v_displayname character varying, v_intakenumber character varying, v_personid character varying, v_doctitle character varying, v_actualdocdate timestamp without time zone)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ jsondata json;
+
+BEGIN
+ 
+SELECT JSON_AGG(pla) INTO jsondata FROM (
+
+SELECT COUNT(1) over(),
+dp.documentpropertiesid, 
+dp.objecttypekey,
+dp.title,   
+dp.documenttypekey, 
+dp.insertedon, 
+dp.updatedon, 
+dp.insertedby,  
+dp.updatedby,  
+dp.documentdate,  
+dp.mime,  
+dp.insertedby,  
+dp.s3bucketpathname,
+dp.description,  
+dp.filename,  
+dp.numberofbytes,  
+dp.originalfilename,  
+dp.servicecaseid,
+up.displayname,
+dp.ecmsdocumentid,
+dp.actualdocumentdate,
+(
+ SELECT json_agg (e) FROM 
+ (
+  select da.documentpropertiesid, da.attachmenttypekey, da.attachmentclassificationtypekey, da.assessmenttemplateid, da.attachmentclassificationsubtypekey 
+  from documentattachment da where da.documentpropertiesid = dp.documentpropertiesid and da.activeflag=1 
+ )as  e 
+) as documentattachment,
+(
+ SELECT json_agg (e) FROM
+ ( 
+  select securityusersid, firstname, lastname, displayname, fullname  from userprofile up 
+  where up.securityusersid = dp.insertedby and up.activeflag=1 
+ )as  e 
+) as userprofile ,
+(
+ SELECT json_agg (e) FROM( select securityusersid, firstname, lastname, displayname from userprofile up 
+ where up.securityusersid = dp.updatedby and up.activeflag=1 )as  e 
+) as updateduserprofile
+
+FROM documentproperties dp 
+LEFT JOIN documentattachment da on da.documentpropertiesid = dp.documentpropertiesid and dp.activeflag=1
+LEFT JOIN userprofile up on up.securityusersid = da.insertedby and up.activeflag=1
+WHERE dp.activeflag=1 and 
+CASE 
+ WHEN v_servicecaseid IS NOT NULL THEN dp.servicecaseid=v_servicecaseid :: uuid and (dp.objecttypekey = v_objecttypekey or dp.objecttypekey in('CasePerson', 'courtorder', 'gapagreement'))
+ WHEN v_adoptioncaseid IS NOT NULL THEN dp.objectid=v_adoptioncaseid :: uuid --and dp.objecttypekey = v_objecttypekey
+ WHEN v_servicerequestid IS NOT NULL THEN dp.servicerequestid=v_servicerequestid :: uuid and (dp.objecttypekey = v_objecttypekey or dp.objecttypekey in('CasePerson', 'courtorder', 'gapagreement'))
+ WHEN v_intakenumber IS NOT NULL and v_objecttypekey='ServiceRequest' THEN dp.intakenumber=v_intakenumber   
+ WHEN v_personid IS NOT NULL THEN 
+ (dp.objecttypekey = 'Person'and dp.objectid = v_personid :: uuid ) or (dp.objecttypekey = 'CasePerson' and dp.objectid = v_personid :: uuid )
+ELSE true END 
+AND CASE WHEN v_category IS NOT NULL and v_category!='' THEN 
+ (da.attachmentclassificationtypekey = any (v_category :: text[])) ELSE true end
+AND CASE WHEN v_subcategory IS NOT NULL and v_subcategory!='' THEN 
+ (da.attachmentclassificationsubtypekey  = any (v_subcategory :: text[])) ELSE true END
+AND case when v_displayname is not null and v_displayname!='' THEN up.fullname ilike '%' || v_displayname || '%' else true end 
+AND CASE WHEN v_doctitle IS NOT NULL AND v_doctitle!='' THEN dp.title ilike '%' || v_doctitle || '%' ELSE true END 
+AND CASE WHEN v_actualdocdate IS NOT NULL AND v_actualdocdate::text!='' THEN date(dp.actualdocumentdate) = date(v_actualdocdate) ELSE true END
+group by  
+dp.documentpropertiesid, dp.title, dp.documenttypekey, dp.insertedon, dp.updatedon, 
+dp.insertedby, dp.updatedby, dp.documentdate, dp.mime, dp.insertedby, dp.s3bucketpathname,
+dp.description, dp.filename, dp.numberofbytes, dp.originalfilename, dp.servicecaseid,up.displayname,
+dp.ecmsdocumentid, dp.actualdocumentdate
+ 
+ORDER BY 
+    (
+ case
+  v_sortorder
+  when 'asc' then
+  case v_sortcol
+  when 'title' then COALESCE(dp.title  ,'')
+  when 'documenttypekey' then COALESCE(dp.documenttypekey ,'')
+  when 'insertedon' then dp.insertedon :: character varying
+  when 'updatedon' then dp.updatedon :: character varying
+  when 'insertedby' then COALESCE(dp.insertedby  ,'')
+  when 'updatedby' then COALESCE(dp.updatedby ,'')
+  when 'documentdate' then dp.documentdate :: character varying
+  when 'mime' then COALESCE(dp.mime ,'')
+  when 'description' then COALESCE(dp.description ,'')
+  when 'filename' then COALESCE(dp.filename ,'')
+  when 'originalfilename' then COALESCE(dp.originalfilename ,'')
+  when 'actualdocumentdate' then COALESCE(dp.actualdocumentdate::character varying ,'')
+   else dp.updatedon  :: character varying
+  end
+  else  NULL 
+ end) ASC, case v_sortorder when 'asc' then COALESCE(dp.title  ,'') else NULL end ,
+ (
+ case
+  v_sortorder
+  when 'desc' then
+  case
+   v_sortcol
+  when 'title' then COALESCE(dp.title  ,'')
+  when 'documenttypekey' then COALESCE(dp.documenttypekey ,'')
+  when 'insertedon' then dp.insertedon :: character varying
+  when 'updatedon' then dp.updatedon :: character varying
+  when 'insertedby' then COALESCE(dp.insertedby ,'')
+  when 'updatedby' then COALESCE(dp.updatedby ,'')
+  when 'documentdate' then dp.documentdate :: character varying
+  when 'mime' then COALESCE(dp.mime ,'')
+  when 'description' then COALESCE(dp.description ,'')
+  when 'filename' then COALESCE(dp.filename ,'')
+  when 'originalfilename' then COALESCE(dp.originalfilename ,'')
+  when 'actualdocumentdate' then COALESCE(dp.actualdocumentdate::character varying ,'')
+   else dp.updatedon  :: character varying
+  end
+  else NULL
+ end ) DESC,  case v_sortorder when 'desc' then COALESCE(dp.title  ,'') else NULL end
+
+
+ LIMIT pagesize OFFSET (pageno - 1) * pagesize ) AS pla;
+
+RETURN jsondata ;
+
+END;
+
+$function$
+

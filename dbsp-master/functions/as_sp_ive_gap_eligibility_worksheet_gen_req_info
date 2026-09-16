@@ -1,0 +1,84 @@
+CREATE OR REPLACE FUNCTION as_sp_ive_gap_eligibility_worksheet_gen_req_info(reqobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+ v_clientid  BIGINT;
+ returnStatus text;
+ v_num_grd INT;
+ v_num_co INT;
+ v_cofinaldate TIMESTAMP;
+ v_successorguardianname VARCHAR(250);
+ v_successorguardianid INTEGER;
+ v_fosterhomeapprover VARCHAR(50);
+ v_primaryrelationshipkey VARCHAR(50);
+ v_secondaryrelationshipkey VARCHAR(50);
+ v_fiscalcodepayment INTEGER;
+ v_courtorderdatetime TIMESTAMP;
+ 
+ v_gapid UUID;
+ v_intakeservreqcourtorderid UUID;
+ 
+   
+BEGIN
+
+ v_clientid := reqObj ->> 'clientId';
+ v_cofinaldate := reqObj ->> 'coFinalDate';
+ v_successorguardianname := reqObj ->> 'successorGuardianName';
+ v_successorguardianid := reqObj ->> 'successorGuardianID';
+ v_fosterhomeapprover := reqObj ->> 'fosterHomeApprover';
+ v_primaryrelationshipkey := reqObj ->> 'primaryRelationshipKey';
+ v_secondaryrelationshipkey := reqObj ->> 'secondaryRelationshipKey';
+ v_courtorderdatetime := reqObj ->> 'courtOrderDateTime';
+ v_fiscalcodepayment := reqObj ->> 'fiscalCodePayment';
+
+ returnStatus := 'Success';
+ 
+ SELECT count(*), grd.gapid
+ into v_num_grd, v_gapid 
+   FROM guardianship grd, intakeservicerequestactor isra, person per     
+WHERE grd.servicecaseid = isra.servicecaseid AND grd.activeflag = 1 
+   AND isra.intakeservicerequestpersontypekey = 'CHILD' AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = v_clientid AND per.activeflag = 1
+ GROUP BY grd.gapid;
+
+ SELECT count(*), isrco.intakeservreqcourtorderid 
+ into v_num_co, v_intakeservreqcourtorderid
+ FROM intakeservreqcourtorder isrco, intakeservreqchildremoval isrcr, person per, intakeservicerequestactor isra     
+ WHERE isrco.servicecaseid = isra.servicecaseid AND isrco.activeflag = 1
+ AND isra.intakeservicerequestpersontypekey = 'CHILD' AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = v_clientid AND per.activeflag = 1
+ GROUP BY isrco.intakeservreqcourtorderid;
+
+ IF (v_num_grd) >= 1
+ THEN
+   UPDATE guardianship  
+ SET      
+  cofinaldate = v_cofinaldate,
+  successorguardianname = v_successorguardianname,
+  successorguardianid = v_successorguardianid,
+  fosterhomeapprover = v_fosterhomeapprover,
+  primaryrelationshipkey = v_primaryrelationshipkey,
+  secondaryrelationshipkey = v_secondaryrelationshipkey,
+  fiscalcodepayment = v_fiscalcodepayment
+  
+ WHERE gapid = v_gapid; 
+
+ end if;
+
+ IF (v_num_co) >= 1
+ THEN
+   UPDATE intakeservreqcourtorder 
+ SET     
+  courtorderdatetime = v_courtorderdatetime  
+ WHERE intakeservreqcourtorderid = v_intakeservreqcourtorderid; 
+
+ end if;
+
+RETURN format('%s', returnStatus);
+
+end;
+ 
+$function$
+

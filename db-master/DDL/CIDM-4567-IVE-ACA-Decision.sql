@@ -1,0 +1,2 @@
+ALTER TABLE tb_ive_adoption_audit ADD COLUMN IF NOT EXISTS adoptionacasubmitted boolean; 
+COMMENT ON COLUMN tb_ive_adoption_audit.adoptionacasubmitted IS 'Boolean flag to to check the ACA submitted after the adoption was finalized';

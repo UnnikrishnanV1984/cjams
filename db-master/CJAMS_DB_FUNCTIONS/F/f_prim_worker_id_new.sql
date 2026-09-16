@@ -1,0 +1,86 @@
+-- FUNCTION: cjams.f_prim_worker_id_new(al_entity_key_id BIGINT, ai_entity_cd character varying)
+
+-- DROP FUNCTION cjams.f_prim_worker_id_new(al_entity_key_id BIGINT, ai_entity_cd character varying);
+
+CREATE OR REPLACE FUNCTION cjams.f_prim_worker_id_new(al_entity_key_id BIGINT, ai_entity_cd character varying)
+ RETURNS UUID
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+	vl_case_cd 										character varying;
+--	ai_entity_cd 									character varying;
+	AL_SERVICE_CASE 								int4;
+	AL_ADOPTION_CASE 								int4;
+	AL_SERVICE_CASE_ID 								UUID;
+	AL_ADOPTION_CASE_ID 							UUID;
+	CASE_ID 										UUID;
+	VN_STAFF_ID										UUID;
+
+BEGIN	
+
+	--- CASE ID
+	SELECT servicecaseid 
+	INTO AL_SERVICE_CASE_ID
+	FROM servicecase 
+	WHERE servicecasenumber = al_entity_key_id:: VARCHAR AND activeflag = 1;
+
+	SELECT adoptioncaseid
+	INTO AL_ADOPTION_CASE_ID
+	FROM adoptioncase
+	WHERE adoptioncasenumber = al_entity_key_id:: VARCHAR AND activeflag = 1;
+
+	IF AL_SERVICE_CASE_ID IS NOT NULL
+	THEN
+		CASE_ID = AL_SERVICE_CASE_ID;
+	ELSE 
+		CASE_ID = AL_ADOPTION_CASE_ID; 
+	END IF;
+
+--	SELECT count(*) 
+--	INTO AL_SERVICE_CASE
+--	FROM servicecase 
+--	WHERE servicecaseid = AL_SERVICE_CASE_ID AND activeflag = 1;
+--
+--	SELECT count(*)
+--	INTO AL_ADOPTION_CASE
+--	FROM adoptioncase
+--	WHERE adoptioncaseid = AL_ADOPTION_CASE_ID AND activeflag = 1;	
+--	
+--	IF ai_entity_cd = 'NULL' THEN
+--		                             
+--		IF AL_SERVICE_CASE = 1
+--		THEN
+--			vl_case_cd = 'servicecase';
+--		ELSE 
+--			vl_case_cd = 'adoptioncase'; 
+--		END IF;	
+--		
+--		IF vl_case_cd = 'adoptioncase' THEN
+--		    ai_entity_cd ='adoptioncase';
+--		ELSE
+--		    ai_entity_cd ='servicecase';	
+--		END IF;	       
+--	ELSE
+--		 ai_entity_cd = ai_entity_cd;	
+--	END IF;
+
+VN_STAFF_ID = 
+	(SELECT staff_id FROM (
+	SELECT row_number() over() AS num, staff_id, assignment_id FROM
+	   (SELECT  userprofile.securityusersid as staff_id, caseassignment.caseassignmentid as assignment_id
+	    FROM  caseassignment,
+		  	  userprofile  
+	     WHERE 	 
+		 ( caseassignment.objectid = CASE_ID) AND
+		 ( caseassignment.objecttypekey = 'servicecase') AND
+		 ( caseassignment.responsibilitytypekey = 'family') AND 
+		 ( userprofile.securityusersid = caseassignment.toworkeridno) AND 
+		 ( caseassignment.activeflag = 1) AND
+		 ( userprofile.activeflag = 1))AS te )AS rty WHERE num = 1);
+
+RETURN VN_STAFF_ID;
+
+END;
+
+$function$

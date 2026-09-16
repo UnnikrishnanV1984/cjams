@@ -1,0 +1,4 @@
+INSERT INTO cjams.routing
+(eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid, reassignnotes)
+VALUES('CHRR', 'a2ec173b-aab4-4da2-8d2b-443bbe55d1ba', 'eca6f2d2-e3c6-474c-8c4a-d4ee53381883', '381f1793-744c-4c4f-a409-809a260dcc45'::uuid, 'CWCW', 'CWSP', '3a448a5d-980c-41ba-9c97-e80f93ea4535', 15, 1, 'a2ec173b-aab4-4da2-8d2b-443bbe55d1ba', now(), 'CDM-11580', now(), true, 'Child Removal Submitted for review', NULL, 'Child Removal Submitted for review', '3289635', 'Servicecase', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+

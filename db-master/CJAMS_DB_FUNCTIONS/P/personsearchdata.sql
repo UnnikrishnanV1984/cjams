@@ -1,0 +1,348 @@
+DROP FUNCTION if exists cjams.personsearchdata(searchobj json);
+ 
+CREATE OR REPLACE FUNCTION cjams.personsearchdata(
+	searchobj json)
+RETURNS TABLE(totalcount bigint,
+ personid uuid, 
+ firstname character varying,
+  middlename character varying, 
+  lastname character varying, 
+  dob timestamp without time zone, 
+  ssn character varying, 
+  dlno character varying, 
+  cjamsid character varying, 
+  chessieid character varying, 
+  suffix character varying, 
+  priors bigint, 
+  querytype text, 
+  aliasname text, 
+  dod timestamp without time zone,
+   address character varying, 
+   prefix character varying
+   ) 
+    LANGUAGE 'plpgsql'
+    VOLATILE 
+    COST 100
+    ROWS 1000
+AS $BODY$
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+ DECLARE       
+ v_pageNumber    INT;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+ v_pageSize      INT; 
+ v_pageOffset    INT;
+ v_firstName   	 VARCHAR(50);     
+ v_middleName    VARCHAR(50);   
+ v_lastName      VARCHAR(50);  
+ v_ssn 			 VARCHAR(50);
+ v_dob           VARCHAR(50);
+ v_cjamsid  	 VARCHAR(50);  
+ v_chessieid     VARCHAR(50);  
+ v_dlno          VARCHAR(50);  
+ v_sortCol       VARCHAR(50);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+ v_sortDir       VARCHAR(10);   
+ 
+ 
+ v_lSSNType  VARCHAR(50);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+ v_lSSNValue  VARCHAR(50);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+ v_lDLType  VARCHAR(50);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+ v_lDLValue  VARCHAR(50); 
+ 
+ v_tempcount bigint;
+  BEGIN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+ 
+	
+ v_pageNumber    :=  searchObj  ->>  'pagenumber';                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+ v_pageSize      :=  searchObj  ->>  'pagesize';                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+ v_firstName   	 :=  searchObj  ->>  'firstname';        
+ v_middleName    :=  searchObj  ->>  'middlename';      
+ v_lastName      :=  searchObj  ->>  'lastname';      
+ v_ssn 			 :=  searchObj  ->>  'ssn';      
+ v_dob           :=  searchObj  ->>  'dob';      
+ v_cjamsid  	 :=  searchObj  ->>  'cjamsid';      
+ v_chessieid     :=  searchObj  ->>  'chessieid';      
+ v_dlno          :=  searchObj  ->>  'dlno';      
+ v_sortCol       :=  searchObj  ->>  'sortcol';                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
+ v_sortDir       :=  searchObj  ->>  'sortdir';      
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+ v_pageNumber  :=  v_pageNumber-1;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+ v_pageOffset  =  (v_pageNumber  *  v_pageSize)  ;    
+ 
+ RAISE  NOTICE  '%','==========================================================';     
+ RAISE  NOTICE  'v_pageNumber>>>>>>>>>>>%',v_pageoffset;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+ RAISE  NOTICE  'v_pageSize>>>>>>>>>>>%',v_pageSize;  
+ RAISE  NOTICE  'v_pageOffset>>>>>>>>>>>%',v_pageOffset;  
+ RAISE  NOTICE  'v_firstName>>>>>>>>>>>%',v_firstName;       
+ RAISE  NOTICE  'v_middleName>>>>>>>>>>>%',v_middleName;   
+ RAISE  NOTICE  'v_lastName>>>>>>>>>>>%',v_lastName;  
+ RAISE  NOTICE  'v_ssn >>>>>>>>>>>%',v_ssn;  
+ RAISE  NOTICE  'v_dob>>>>>>>>>>>%',v_dob;  
+ RAISE  NOTICE  'v_cjamsid >>>>>>>>>>>%',v_cjamsid;   
+ RAISE  NOTICE  'v_chessieid>>>>>>>>>>>%',v_chessieid;  
+ RAISE  NOTICE  'v_dlno >>>>>>>>>>>%',v_dlno;   
+ RAISE  NOTICE  'v_sortCol>>>>>>>>>>>%',v_sortCol;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+ RAISE  NOTICE  'v_sortDir>>>>>>>>>>>%',v_sortDir; 
+RAISE  NOTICE  'v_pageSize>>>>>>>>>>>%',v_pageSize;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+ RAISE  NOTICE  'v_pageOffset>>>>>>>>>>>%',v_pageOffset;  
+ RAISE  NOTICE  '%','==========================================================';     
+ 
+ 
+----------------------------------------------------------------------
+
+ CREATE TEMP TABLE temp_results                                                                                                           
+                 (                                                                                                                                                                   
+               --  totalcount bigint,  
+				 personid1 uuid,
+				 firstname1 character varying,
+				 middlename1 character varying, 
+				 lastname1 character varying, 
+				 dob1 timestamp without time zone, 
+				 ssn1 character varying, 
+				 dlno1 character varying,
+				 cjamsid1 character varying, 
+				 chessieid1 character varying,
+				 suffix1 character varying,
+				 priors1 bigint,
+				 querytype1 text,
+				 aliasname1 text,
+				 dod1 timestamp without time zone, 
+				 address1 character varying,
+				 prefix1 character varying                                                                                                                                                 
+                );  
+
+  IF ( (v_firstName is not null) or (v_lastName is not null)  or (v_dob is not null)) THEN  	 
+	  
+	  RAISE NOTICE 'count v_firstName : %', v_firstName ;   
+	 RAISE NOTICE 'count v_dob : %', v_dob ;   
+         insert into temp_results (
+           personid1 , firstname1 , middlename1 , lastname1 , dob1 ,  ssn1 , dlno1 ,cjamsid1 , 
+		 chessieid1 , suffix1 , priors1 , querytype1 , aliasname1 , dod1 , address1 , prefix1 
+         )   
+		SELECT  
+	 --	count(1) over() as totalcount ,
+		pp.personid AS personid1,
+		pp.FirstName AS firstname1 ,
+		pp.MiddleName AS middlename1, 
+		pp.LastName AS lastname1, 
+		pp.DOB  AS dob1  ,
+	 
+		 pp.ssnno as ssn1,
+		 
+		(SELECT perid.PersonIdentifierValue 
+		 FROM personidentifier perid  				 
+		 WHERE perid.personidentifiertypekey  = 'DL'
+		 AND pp.personid=perid.personid
+	     AND pp.ActiveFlag  =  1 	
+	     AND perid.activeflag=1		
+	     ORDER BY perid.insertedon DESC 
+		 LIMIT 1) AS dlno1,	 
+	 
+		 
+		 pp.cjamspid  :: character varying  AS cjamsid1 ,
+		 pp.old_id :: character varying  AS chessieid1  ,
+		 
+		pp.suffix as  suffix1,
+		 
+		(SELECT  COALESCE(COUNT(1),0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+         FROM  IntakeServiceRequest  ISR                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+         JOIN  IntakeSerReqStatusType  ISRST  ON  ISR.IntakeSerReqStatusTypeId  =  ISRST.IntakeSerReqStatusTypeId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+         LEFT  JOIN    ServiceRequestSubType  SRST  ON  SRST.ServiceRequestSubTypeId  =  ISR.IntakeServiceRequestClassId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+         JOIN  IntakeServiceRequestActor  ISRA  ON  ISR.IntakeServiceId  =  ISRA.IntakeServiceId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+         JOIN  Actor  AC  ON  AC.ActorId  =  ISRA.ActorId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+         AND  AC.ActiveFlag  =  1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+         AND  pp.PersonId  =  AC.PersonId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+         WHERE  ISR.ActiveFlag  =  1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+         )  AS  priors1,
+		 
+		 'OR' AS querytype1,
+		 
+		 
+		(SELECT   CONCAT  (al.firstname, ' ', al.lastname)  
+         FROM alias al 
+         WHERE al.personid = pp.personid and al.activeflag=1 and pp.activeflag=1 
+		 ORDER BY insertedon DESC 
+		 LIMIT 1 )   AS aliasname1 ,
+		 
+		 pp.dateofdeath AS  dod1 , 
+		 
+	 (SELECT  CAST(substring(COALESCE(TRIM(PA.address),''),1,20)||' '||  substring(COALESCE(TRIM(PA.address2),''),1,20)  ||' '||  COALESCE(TRIM(PA.city),'')  ||' '||  COALESCE(TRIM(PA.county),'')||' '||  COALESCE(TRIM(PA.state),'')  ||' '||  COALESCE(PA.zipcode,'')as  character  varying)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+      	 FROM  PersonAddress  AS  PA                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+      	 WHERE PA.PersonId = pp.PersonId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+         AND PA.activeflag=1 AND pp.activeflag=1 
+         LIMIT  1)   
+            AS  address1,
+       
+        pp.prefx AS prefix1
+           
+		FROM    Person  AS  pp    
+		WHERE 
+			CASE  WHEN  v_firstName  is  NOT  NULL  THEN  ( soundex(pp.firstname) = soundex(v_firstName)			   
+			     )   END  
+ 			  
+          OR  CASE  WHEN  v_lastName  is  NOT  NULL  THEN  ( 
+                soundex(pp.LastName) = soundex(v_lastName))   END  
+          OR  CASE  WHEN  v_dob  is  NOT  NULL  THEN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                 CASE  WHEN  length(v_dob)  >  4  THEN  (pp.DOB >=  cast(v_dob AS  timestamp ) - interval '1095' day
+                 and pp.DOB <=  cast(v_dob AS  timestamp  ) + interval '1095' day
+                 )   END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+                   END      
+         AND    pp.ActiveFlag  =  1 ;
+    end if;   
+   
+   select count(*) into v_tempcount from temp_results;
+   
+ RAISE NOTICE 'count temp : %', v_tempcount ;   
+RETURN  QUERY                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+ 
+    select --distinct on (x.personid)
+    count(1) over() as totalcount , x.* from  (
+   	SELECT distinct 
+	 --	count(1) over() as totalcount ,
+		p.personid AS personid,
+		p.FirstName AS firstname ,
+		p.MiddleName AS middlename, 
+		p.LastName AS lastname, 
+		p.DOB  AS dob  ,
+	 
+		 p.ssnno as ssn,
+		 
+		(SELECT perid.PersonIdentifierValue 
+		 FROM personidentifier perid  				 
+		 WHERE perid.personidentifiertypekey  = 'DL'
+		 AND p.personid=perid.personid
+	     AND p.ActiveFlag  =  1 	
+	     AND perid.activeflag=1		
+	     ORDER BY perid.insertedon DESC 
+		 LIMIT 1) AS dl,	 
+	 
+		 
+		 p.cjamspid  :: character varying  AS cjamsid ,
+		 p.old_id :: character varying  AS chessieid  ,
+		 
+		 p.suffix AS suffix,
+		 
+		(SELECT  COALESCE(COUNT(1),0)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+         FROM  IntakeServiceRequest  ISR                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+         JOIN  IntakeSerReqStatusType  ISRST  ON  ISR.IntakeSerReqStatusTypeId  =  ISRST.IntakeSerReqStatusTypeId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+         LEFT  JOIN    ServiceRequestSubType  SRST  ON  SRST.ServiceRequestSubTypeId  =  ISR.IntakeServiceRequestClassId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+         JOIN  IntakeServiceRequestActor  ISRA  ON  ISR.IntakeServiceId  =  ISRA.IntakeServiceId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+         JOIN  Actor  AC  ON  AC.ActorId  =  ISRA.ActorId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+         AND  AC.ActiveFlag  =  1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+         AND  p.PersonId  =  AC.PersonId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+         WHERE  ISR.ActiveFlag  =  1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+         )  AS  priors,
+		 
+		 'AND' AS querytype,
+		 
+		 
+		(SELECT   CONCAT  (al.firstname, ' ', al.lastname)  
+         FROM alias al 
+         WHERE al.personid = p.personid and al.activeflag=1 and p.activeflag=1 
+		 ORDER BY insertedon DESC 
+		 LIMIT 1 )   AS aliasname ,
+		 
+		 p.dateofdeath AS  dod , 
+		 
+		(SELECT  CAST(substring(COALESCE(TRIM(PA.address),''),1,20)||' '||  substring(COALESCE(TRIM(PA.address2),''),1,20)  ||' '||  COALESCE(TRIM(PA.city),'')  ||' '||  COALESCE(TRIM(PA.county),'')||' '||  COALESCE(TRIM(PA.state),'')  ||' '||  COALESCE(PA.zipcode,'')as  character  varying)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+      	 FROM  PersonAddress  AS  PA                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+      	 WHERE  PA.PersonId  =  p.PersonId                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+         AND PA.activeflag=1 AND p.activeflag=1 
+         LIMIT  1)    AS  address,
+         p.prefx AS prefix
+           
+		FROM    Person  AS  p    
+		WHERE 
+			  CASE  WHEN  v_firstName  is  NOT  NULL  THEN  (p.FirstName  ILIKE    v_firstName   			   
+			     )ELSE  TRUE  END  
+		 AND  CASE  WHEN  v_middleName  is  NOT  NULL  THEN  (p.MiddleName  ILIKE  v_middleName  
+			   )  ELSE  TRUE  END   			  
+         AND  CASE  WHEN  v_lastName  is  NOT  NULL  THEN  ( p.LastName ILIKE  v_lastName   --and
+             --   soundex(p.LastName) = soundex(v_lastName)
+                )  ELSE  TRUE  END  
+         AND  CASE  WHEN  v_ssn  is  NOT  NULL  THEN  (p.ssnno ILIKE  v_ssn || '%')  ELSE  TRUE  END  
+         AND  CASE  WHEN  v_dlno  is  NOT  NULL  THEN  (p.personid in (
+			SELECT perid.personid 
+			 FROM personidentifier perid  				 
+			 WHERE perid.personidentifiertypekey  = 'DL'
+			 AND  perid.PersonIdentifierValue ilike v_dlno
+	    	 AND perid.activeflag=1		
+	    	 ORDER BY perid.insertedon DESC 
+			 ))
+	          ELSE  TRUE  END  
+		 AND  CASE  WHEN  v_chessieid  is  NOT  NULL  THEN  ( p.old_id  =  v_chessieid)    ELSE  TRUE  END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+         AND  CASE  WHEN  v_cjamsid  is  NOT  NULL  THEN  ( p.cjamspid  =  v_cjamsid::bigint) ELSE  TRUE  END	          
+     	  AND  CASE  WHEN  v_dob  is  NOT  NULL  THEN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                 CASE  WHEN  length(v_dob)  >  4  THEN  (p.DOB  =  cast(v_dob  AS  timestamp))  ELSE  TRUE  END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+                 ELSE  TRUE  END   
+         
+    /*     AND  CASE  WHEN  v_dob  is  NOT  NULL  THEN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                 CASE  WHEN  length(v_dob)  >  4  THEN  (p.DOB >=  cast(v_dob AS  timestamp ) - interval '1095' day
+                 and p.DOB <=  cast(v_dob AS  timestamp  ) + interval '1095' day
+                 )  ELSE  TRUE  END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+                 ELSE  TRUE  END         */                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+                
+         AND    p.ActiveFlag  =  1 
+    	-- AND  CASE  WHEN  v_firstName  is  NOT  NULL  THEN  ( 
+	--		     soundex(p.firstname) = soundex(v_firstName))  ELSE  TRUE  END  
+       group by p.personid ,
+		p.FirstName  ,
+		p.MiddleName , 
+		p.LastName , 
+		p.DOB ,p.ssnno,p.DOB,p.old_id,p.cjamspid
+		
+	 	union all 
+			
+			select 
+				personid1 as personid, firstname1 as firstname  , middlename1 as middlename, lastname1 as lastname, 
+				dob1 as dob,  ssn1 as ssn, dlno1 as dlno,cjamsid1 as cjamsid, 
+		 chessieid1 as chessieid, suffix1 as suffix , priors1 as priors , querytype1 as querytype, aliasname1  as aliasname,
+		 dod , address , prefix 
+		 from 
+			 temp_results 
+		 where personid1 not in 
+			 (select p.personid
+			 FROM    Person  AS  p    
+		WHERE 
+			  CASE  WHEN  v_firstName  is  NOT  NULL  THEN  (p.FirstName  ILIKE    v_firstName   			   
+			     )ELSE  TRUE  END  
+		 AND  CASE  WHEN  v_middleName  is  NOT  NULL  THEN  (p.MiddleName  ILIKE  v_middleName  
+			   )  ELSE  TRUE  END   			  
+         AND  CASE  WHEN  v_lastName  is  NOT  NULL  THEN  ( p.LastName ILIKE  v_lastName   --and
+             --   soundex(p.LastName) = soundex(v_lastName)
+                )  ELSE  TRUE  END  
+         AND  CASE  WHEN  v_ssn  is  NOT  NULL  THEN  (p.ssnno ILIKE  v_ssn || '%')  ELSE  TRUE  END  
+         AND  CASE  WHEN  v_dlno  is  NOT  NULL  THEN  (p.personid in (
+			SELECT perid.personid 
+			 FROM personidentifier perid  				 
+			 WHERE perid.personidentifiertypekey  = 'DL'
+			 AND  perid.PersonIdentifierValue ilike v_dlno
+	    	 AND perid.activeflag=1		
+	    	 ORDER BY perid.insertedon DESC 
+			 ))
+	          ELSE  TRUE  END  
+		 AND  CASE  WHEN  v_chessieid  is  NOT  NULL  THEN  ( p.old_id  =  v_chessieid)    ELSE  TRUE  END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+         AND  CASE  WHEN  v_cjamsid  is  NOT  NULL  THEN  ( p.cjamspid  =  v_cjamsid::bigint) ELSE  TRUE  END	          
+     	  AND  CASE  WHEN  v_dob  is  NOT  NULL  THEN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                 CASE  WHEN  length(v_dob)  >  4  THEN  (p.DOB  =  cast(v_dob  AS  timestamp))  ELSE  TRUE  END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+                 ELSE  TRUE  END   
+         
+    /*     AND  CASE  WHEN  v_dob  is  NOT  NULL  THEN                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                 CASE  WHEN  length(v_dob)  >  4  THEN  (p.DOB >=  cast(v_dob AS  timestamp ) - interval '1095' day
+                 and p.DOB <=  cast(v_dob AS  timestamp  ) + interval '1095' day
+                 )  ELSE  TRUE  END                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+                 ELSE  TRUE  END         */                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+                
+         AND    p.ActiveFlag  =  1 
+			 )
+			 
+	 
+		) x
+		-- order by x.querytype ,x.personid
+         LIMIT v_pageSize offset v_pageOffset;
+	  drop  table if exists temp_results ;
+  END;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+ 
+ $BODY$;

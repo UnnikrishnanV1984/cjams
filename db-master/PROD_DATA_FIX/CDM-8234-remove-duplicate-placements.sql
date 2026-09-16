@@ -1,0 +1,1 @@
+update placement set activeflag = 0, updatedby = 'CDM-8234', updatedon = now() where placementid in ('8fff444b-3c19-4d7a-b583-226fcd187d77', '01d1b48f-c3da-42d7-99ee-bd20b2c8836a', '2ee38a69-bd7f-4c59-ae09-b6f5b36a09ab');

@@ -1,0 +1,150 @@
+CREATE OR REPLACE FUNCTION getpersonsbyinvestigation11(invetsigationid uuid, _page integer, _limit integer)
+ RETURNS TABLE(totalcount bigint, rolename character varying, dcn character varying, personid uuid, firstname character varying, lastname character varying, gender character varying, dob timestamp without time zone, address character varying, address2 character varying, city character varying, state character varying, zipcode character varying, phonenumber character varying, dangerous text, actorid uuid, intakeservicerequestactorid uuid, priorscount bigint, reported boolean, refusessn boolean, refusedob boolean, userphoto text, email character varying, roles json, school json, relationship character varying, ishousehold integer, iscollateralcontact integer, ethnicgrouptypekey character varying, maritalstatustypekey character varying, currentaddress character varying, secondaryphone character varying, medicalinformation json, medicationinformation json, addendum json, medicalcondition json, primaryphone character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE          
+_offset  integer;
+BEGIN
+_offset := (_page - 1) * _limit;  
+
+RETURN QUERY
+
+select "Person".totalcount,
+"Person"."intakeservicerequestpersontypekey",
+"Person".dcn,
+"Person".personid,
+"Person".firstname,
+"Person".lastname,
+"Person".gendertypekey,
+"Person".dob,
+"Person".address,
+"Person".address2,
+"Person".city,
+"Person".state,
+"Person".zipcode,
+(select ph.phonenumber from personphonenumber ph where ph.personid = "Person".personid and ph.personphonetypekey = 'P' and activeflag = 1 order by insertedon desc limit 1),
+
+"Person".dangerous,
+"Person".actorid,
+"Person".intakeservicerequestactorid,
+(SELECT COUNT(*) FROM intakeservicerequest as A 
+JOIN  intakeservicerequestactor as B  ON A.intakeserviceid = B.intakeserviceid 
+JOIN  actor as C on C.ActorId = B.ActorId  
+JOIN person as D ON C.personid=D.personid 
+WHERE A.activeflag=1 AND C.activeflag=1 AND D.personid="Person".personid AND D.activeflag=1 AND A.intakeserviceid <> invetsigationid) as "priorscount",
+"Person".reported,
+"Person".RefuseSSN,
+"Person".RefuseDOB,
+"Person".userphoto ::text,
+
+"Person".email  :: character varying ,
+"Person".roles ::json,
+"Person".school ::json,
+"Person".relationship :: character varying,
+"Person".ishouseholdmember,
+"Person".iscollateralcontact ,
+"Person".ethnicgrouptypekey :: character varying(15),
+"Person".maritalstatustypekey :: character varying(15),
+(select pa.address  as currentaddress from personaddress pa where pa.personid = "Person".personid and pa.personaddresstypekey = 'H' and activeflag = 1 order by insertedon desc limit 1),
+(select ph.phonenumber as secondaryphone from personphonenumber ph where ph.personid = "Person".personid and ph.personphonetypekey = 'P' and activeflag = 1 order by insertedon desc limit 1),
+"Person".medicalinformation ::json,
+"Person".medicationinformation ::json,
+"Person".addendum ::json,
+"Person".medicalcondition ::json,
+(select ph.phonenumber as primaryphone from personphonenumber ph where ph.personid = "Person".personid and ph.personphonetypekey = 'O' and activeflag = 1 order by insertedon desc limit 1)
+
+ FROM 
+ 
+        (SELECT count(1)   over() as totalcount,
+  IAR.intakeservicerequestpersontypekey as "intakeservicerequestpersontypekey",
+  (select personidentifiervalue from personidentifier pid where pid.personid = P.personid and personidentifiertypekey = 'DCN' and activeflag = 1 limit 1) as dcn,
+  P.personid,p.firstname,p.lastname,p.gendertypekey,p.dob,p.userphoto,
+   
+   PA.address,PA.address2,PA.city,Pa.state,PA.zipcode,
+  (CASE WHEN p.dangerlevel = 0 THEN 'NO'
+  WHEN p.dangerlevel= 1 THEN 'YES'
+  ELSE 'UNKNOWN' END) AS dangerous,
+  AC.actorid,
+     max( IAR.intakeservicerequestactorid:: character varying) :: uuid as intakeservicerequestactorid,
+  max(coalesce(IAR.reported,false):: character varying)::bool reported ,
+  max(coalesce(IAR.RefuseSSN,false):: character varying)::bool RefuseSSN,
+  max(coalesce(IAR.RefuseDOB,false):: character varying)::bool RefuseDOB,
+  max(pe.email) email,
+  (SELECT json_agg(e)  as roles from
+          (select ISRPN.intakeservicerequestpersontypekey,AT.typedescription from Intakeservicerequestactor ISRPN 
+          inner join Actortype AT on AT.Actortype = ISRPN.intakeservicerequestpersontypekey where  
+          ISRPN.actorid = AC.actorid and isrpn.intakeserviceid = invetsigationid 
+    and ISRPN.activeflag =1 and AC.activeflag =1
+    group by ISRPN.intakeservicerequestpersontypekey,AT.typedescription ) as e) ::json,
+      (SELECT json_agg(e)  as school from
+          (SELECT PE.educationname,PE.currentgradetypekey,GT.typedescription FROM Personeducation PE INNER JOIN gradetype GT on GT.gradetypekey = PE.currentgradetypekey where PE.personid = P.personid and PE.activeflag =1) as e) ::json,
+          
+  (SELECT RT.relationshiptypekey from relationshiptype RT inner join actorrelationship AR on 
+        RT.relationshiptypekey= AR.relationshiptypekey and AR.activeflag=1 
+  and RT.activeflag =1
+        where AR.intakeservicerequestactorID = max( IAR.intakeservicerequestactorid:: character varying) :: uuid  group by RT.relationshiptypekey) as relationship,
+        AC.ishouseholdmember,AC.iscollateralcontact,
+        --p.ethnicgrouptypekey, p.maritalstatustypekey,
+         (select egtt.typedescription as ethnicgrouptypekey from ethnicgrouptype egtt inner join person p on p.ethnicgrouptypekey=egtt.ethnicgrouptypekey where egtt.activeflag=1),
+   
+   (select mst.typedescription as maritalstatustypekey from maritalstatustype mst inner join person p on p.maritalstatustypekey=mst.maritalstatustypekey where mst.activeflag=1),
+   
+        
+         (SELECT json_agg(e)  as medicalinformation from
+          (  select phi.ismedicaidmedicare,phi.insurancetype,phi.policyname,ppi.name ,ppi.phone,
+    ppi.address1,ppi.address2,ppi.city,ppi.state,ppi.zip,pbh.currentdiagnoses,pbh.clinicianname,
+    pbh.phone as behavioralphone,
+    pbh.address1 as behavioraladdress1,pbh.address2 as behavioraladdress2,pbh.city as behavioralcity,
+    pbh.state as behavioralstate, pbh.zip as behavioralzip,phi.personid,ppi.isprimaryphycisian,pbh.isbehavioralhealth
+    from personhealthinsurance as phi 
+    left join personphycisianinfo as ppi on ppi.personid=phi.personid    
+    left join personbehavioralhealth as pbh on pbh.personid=ppi.personid
+    where   phi.personid=p.personid 
+          
+    group by phi.ismedicaidmedicare,phi.insurancetype,phi.policyname,ppi.name ,ppi.phone,
+    ppi.address1,ppi.address2,ppi.city,ppi.state,ppi.zip,pbh.currentdiagnoses,pbh.clinicianname,
+    pbh.phone ,
+    pbh.address1 ,pbh.address2 ,pbh.city,pbh.state , pbh.zip,phi.personid ,ppi.isprimaryphycisian,pbh.isbehavioralhealth
+    
+    ) as e) ::json ,
+    
+    (SELECT json_agg(e)  as medicationinformation from
+          (  select  pmpt.dosage,pmpt.medicationname,pmpt.frequency,pmpt.compliant,pmpt.personid from personmedicpshychotropic pmpt    
+    where pmpt.activeflag=1 and  pmpt.personid=p.personid
+    
+    group by  pmpt.dosage,pmpt.medicationname,pmpt.frequency,pmpt.compliant,pmpt.personid
+  --  order by pmpt.insertedon desc limit 1
+               
+    ) as e) ::json,
+     (SELECT json_agg(e)  as addendum from
+          (  select  pas.isusealcohol,pas.isusedrug,pas.isusetobacco,pas.alcoholfrequencydetails,pas.drugfrequencydetails ,pas.personid
+          from personabusesubstance  as pas where pas.activeflag=1  and  pas.personid=p.personid
+             group by   pas.isusealcohol,pas.isusedrug,pas.isusetobacco,pas.alcoholfrequencydetails,pas.drugfrequencydetails ,pas.personid
+            -- order by pas.insertedon desc limit 1
+    ) as e) ::json ,
+    
+      (SELECT json_agg(e)  as medicalcondition from
+          (SELECT pmci.medicalconditiontypekey,mct.description from personmedicalcondition as pmc
+          left join personmedicalconditioninfo as pmci on pmc.personmedicalconditionid= pmci.personmedicalconditionid
+           left join medicalconditiontype as mct  on mct.medicalconditiontypekey=pmci.medicalconditiontypekey
+          where pmc.activeflag=1  and pmci.activeflag =1 and p.personid=pmc.personid
+         group by pmci.medicalconditiontypekey,mct.description ) as e) ::json
+         
+     
+FROM Intakeservicerequestactor as IAR 
+JOIN actor AS AC ON IAR.actorid=AC.actorid  and AC.activeflag =1 and IAR.activeflag =1
+JOIN person AS P ON P.personid=AC.personid and P.activeflag =1
+LEFT JOIN (select pa.personid,max(personaddressid::character varying)::uuid personaddressid from  personaddress Pa where pa.personaddresstypekey = 'C' and activeflag = 1 group by pa.personid)  PA1
+left join personaddress PA on PA.personaddressid = pa1.personaddressid 
+on PA.personid = P.personid  and pa.personaddresstypekey = 'C'
+LEFT JOIN personemail AS PE on PE.personid = P.personid and PE.activeflag =1 
+ and PE.personemailtypekey = 'P'
+        WHERE IAR.IntakeServiceId=invetsigationid    and coalesce(iar.isprimary,false) =true 
+        group by IAR.intakeservicerequestpersontypekey,P.personid,AC.actorid,PA.address,PA.address2,PA.city,Pa.state,PA.zipcode) as "Person" 
+     LIMIT _limit OFFSET _offset;
+
+ END;
+
+$function$
+

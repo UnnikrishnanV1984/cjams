@@ -1,0 +1,72 @@
+ CREATE OR REPLACE FUNCTION public.update_child_account_balance(client_account_id bigint, transaction_amount_no numeric, credit_debit_sw character, update_user_id character varying)
+  RETURNS text                                                                                                                                                                       
+  LANGUAGE plpgsql                                                                                                                                                                   
+ AS $function$                                                                                                                                                                     
+                                                                                                                                                                                   
+ -----------------------------------------------------------------------------                                                                                                     
+ -- SP for update the child account total_balance_no and available_balance_no against the transactions                                                                             
+ -----------------------------------------------------------------------------                                                                                                     
+ DECLARE                                                                                                                                                                           
+         v_total_balance_no numeric DEFAULT 0;                                                                                                                                     
+         v_available_balance_no numeric DEFAULT 0;                                                                                                                                 
+         v_client_account_id bigint;                                                                                                                                               
+         v_transaction_amount_no numeric;                                                                                                                                          
+         v_credit_debit_sw character;                                                                                                                                              
+         v_comm_account_id integer;                                                                                                                                                
+         v_account_type_cd character varying;                                                                                                                                      
+         v_comm_total_balance_no numeric DEFAULT 0;                                                                                                                                
+         v_update_user_id character varying;                                                                                                                                       
+ BEGIN                                                                                                                                                                             
+     v_client_account_id := client_account_id;                                                                                                                                     
+         v_transaction_amount_no:=transaction_amount_no;                                                                                                                           
+         v_credit_debit_sw := lower(credit_debit_sw);                                                                                                                              
+         v_update_user_id := update_user_id;                                                                                                                                       
+ SELECT coalesce(total_balance_no,0) AS total_balance_no,coalesce(available_balance_no,0) AS available_balance_no,comm_account_id,account_type_cd                                  
+ INTO v_total_balance_no,v_available_balance_no,v_comm_account_id,v_account_type_cd                                                                                                
+ FROM TB_CLIENT_ACCOUNT WHERE TB_CLIENT_ACCOUNT.delete_sw='N' AND TB_CLIENT_ACCOUNT.client_account_id=v_client_account_id;                                                         
+                                                                                                                                                                                   
+ IF (v_comm_account_id IS NOT NULL AND v_comm_account_id > 0 AND v_account_type_cd in ('590','592') ) THEN                                                                         
+ SELECT coalesce(total_balance_no,0) AS total_balance_no INTO v_comm_total_balance_no from TB_COMMINGLED_ACCOUNT where comm_account_id=v_comm_account_id;                          
+ END IF;                                                                                                                                                                           
+                                                                                                                                                                                   
+ IF(v_credit_debit_sw IS NOT NULL AND v_credit_debit_sw != '' AND v_credit_debit_sw='c') THEN                                                                                      
+ v_total_balance_no=v_total_balance_no+v_transaction_amount_no;                                                                                                                    
+ v_available_balance_no=v_available_balance_no+v_transaction_amount_no;                                                                                                            
+         IF (v_comm_account_id IS NOT NULL AND v_comm_account_id > 0 AND v_account_type_cd in ('590','592') ) THEN                                                                 
+         v_comm_total_balance_no=v_comm_total_balance_no+v_transaction_amount_no;                                                                                                  
+         END IF;                                                                                                                                                                   
+ ELSEIF (v_credit_debit_sw IS NOT NULL AND v_credit_debit_sw != '' AND v_credit_debit_sw='d') THEN                                                                                 
+ v_total_balance_no=v_total_balance_no-v_transaction_amount_no;                                                                                                                    
+ v_available_balance_no=v_available_balance_no-v_transaction_amount_no;                                                                                                            
+         IF (v_comm_account_id IS NOT NULL AND v_comm_account_id > 0 AND v_account_type_cd in ('590','592') ) THEN                                                                 
+         v_comm_total_balance_no=v_comm_total_balance_no-v_transaction_amount_no;                                                                                                  
+         END IF;                                                                                                                                                                   
+                                                                                                                                                                                   
+ END IF;                                                                                                                                                                           
+                                                                                                                                                                                   
+ IF (v_client_account_id is not null and v_client_account_id > 0)  THEN                                                                                                            
+                                                                                                                                                                                   
+ UPDATE TB_CLIENT_ACCOUNT                                                                                                                                                          
+ SET total_balance_no=v_total_balance_no                                                                                                                                           
+ ,available_balance_no=v_available_balance_no                                                                                                                                      
+ ,update_user_id= v_update_user_id                                                                                                                                                 
+ ,update_ts= CURRENT_TIMESTAMP                                                                                                                                                     
+ WHERE TB_CLIENT_ACCOUNT.delete_sw='N' AND TB_CLIENT_ACCOUNT.client_account_id=v_client_account_id;                                                                                
+         IF (v_comm_account_id IS NOT NULL AND v_comm_account_id > 0 AND v_account_type_cd in ('590','592') ) THEN                                                                 
+                 UPDATE TB_COMMINGLED_ACCOUNT                                                                                                                                      
+                 SET total_balance_no=v_comm_total_balance_no                                                                                                                      
+                 ,update_user_id= v_update_user_id                                                                                                                                 
+                 ,update_ts= CURRENT_TIMESTAMP                                                                                                                                     
+                 WHERE comm_account_id=v_comm_account_id;                                                                                                                          
+         END IF;                                                                                                                                                                   
+                                                                                                                                                                                   
+ RETURN  'success';                                                                                                                                                                
+                                                                                                                                                                                   
+ ELSE                                                                                                                                                                              
+ RETURN  'failed';                                                                                                                                                                 
+ END IF;                                                                                                                                                                           
+                                                                                                                                                                                   
+ END;                                                                                                                                                                              
+                                                                                                                                                                                   
+ $function$                                                                                                                                                                          
+

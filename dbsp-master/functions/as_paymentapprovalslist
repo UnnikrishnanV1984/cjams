@@ -1,0 +1,171 @@
+CREATE OR REPLACE FUNCTION as_paymentapprovalslist(v_securityid character varying, v_role character varying, v_status character varying, pagenumber bigint, pagesize bigint, v_sortcolumn character varying DEFAULT NULL::character varying, v_sortorder character varying DEFAULT NULL::character varying, v_searchobj character varying DEFAULT NULL::character varying, assigned_pa boolean DEFAULT true)
+ RETURNS TABLE(totalcount bigint, funding_approval_dt date, payment_approval_dt date, ads_approval_dt date, client_name text, age integer, dob timestamp without time zone, gender character varying, service_nm character varying, provider_nm character varying, service_start_dt date, service_end_dt date, authorization_id integer, justification_tx character varying, cost_no numeric, voucher character, fiscal_category_cd character, fiscal_category_desc character varying, payee character varying, ads_approval_status_cd character varying, service_log_id integer, actionstatus text, payment_end_dt date, payment_start_dt date, provider_id integer, remarks text, isapproved integer, request_date date, client_account_id integer, routingstatustypeid integer, reason_tx text, objecttypekey character varying, bmanualrouting boolean, programkey character varying, description_tx character varying, case_id bigint, service_id integer, client_id bigint)
+ LANGUAGE plpgsql
+AS $function$
+ 
+DECLARE 
+
+ query_payment text;
+ v_pageoffset int;
+ v_pagenumber int;
+ v_sprvsr_approval_status_cd character varying default '';
+ v_funding_approval_status_cd character varying default '';
+ v_payment_approval_status_cd character varying default '';
+ v_ads_approval_status_cd character varying default '';
+ v_fromroleid character varying default null;
+ v_toroleid character varying default null;
+ v_appendstring character varying default '';
+ v_sortval character varying default '';
+ v_payee_nm character varying;
+ v_addresstype character varying;
+ v_approvestatus  character varying;
+ assigned_auth character varying default ''; 
+ v_countyid character varying;
+
+begin
+ v_pagenumber := pagenumber-1;
+ v_pageoffset = v_pagenumber * pagesize;
+ v_payee_nm := v_searchObj;
+ v_addresstype := '{3356,3357}';
+ v_approvestatus := '3047';
+ if(v_searchObj is null) then
+  v_searchObj :='';
+ end if;
+ 
+ IF (v_role = 'ASSP') THEN
+  RAISE NOTICE '%', 'INSIDE BLOCK';
+  v_fromroleid = '{ASSP}';
+  v_toroleid = 'ASSP';
+  v_sprvsr_approval_status_cd= '3047';
+  v_funding_approval_status_cd='' ;
+  v_payment_approval_status_cd= '' ;
+  v_ads_approval_status_cd = '3047';
+ END IF;
+ 
+ if(v_role = 'ASFS') then
+  v_fromroleid = '{ASFW,ASFS}';
+  v_toroleid = 'ASFS';
+  v_sprvsr_approval_status_cd= '3047';
+  v_funding_approval_status_cd='3047' ;
+  v_payment_approval_status_cd= '' ;
+  v_ads_approval_status_cd = '3047';
+ end if;
+ 
+ if(v_role = 'ASLDSSD') then
+  v_fromroleid = '{ASSP}';
+  v_toroleid = '{ASSP,ASLDSSD}';
+  v_sprvsr_approval_status_cd= '3047';
+  v_funding_approval_status_cd='' ;
+  v_payment_approval_status_cd= '' ;
+  v_ads_approval_status_cd = '3047';
+ end if;
+ 
+ SELECT t.countyid INTO v_countyid from team t 
+  join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+  join as_teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+  join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+  where mu.securityusersid = v_securityid;
+    
+ 
+ RETURN QUERY
+  select  count(1) over(),
+   tspa.funding_approval_dt,
+   tspa.payment_approval_dt, 
+   tspa.ads_approval_dt,
+   concat(p.firstname,' ',p.middlename,' ',p.lastname) as pname,
+   (EXTRACT(YEAR FROM age(now(), p.dob)))::int age,
+   p.dob,
+   gt.typedescription,
+   ts.service_nm,
+   CASE WHEN (tp.provider_nm = null OR tp.provider_nm='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) ELSE tp.provider_nm END AS provider_nm,
+   tsl.start_dt as startdate,
+   tsl.end_dt as enddate,
+   tspa.authorization_id,
+   tspa.justification_tx::character varying,
+   tspa.cost_no,
+   tspa.voucher_sw,
+   Trim(tspa.fiscal_category_cd)  ::bpchar as fiscal_category_cd,
+   tfcm.fiscal_category_desc, 
+   CASE WHEN (tp.provider_nm = null OR tp.provider_nm='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm)::character varying ELSE tp.provider_nm::character varying END as payee,
+   tspa.ads_approval_status_cd,
+   tspa.service_log_id,
+   case when tspa.ads_approval_status_cd='3047' then 'Approved' else 'Pending' end as actionval,
+   tspa.end_dt,
+   tspa.start_dt,
+   tp.provider_id,
+   case when v_status = 'A' then 'Approved'
+    when r.remarks= 'Approved' then 'Approved'   
+    when r.activeflag=1 and r.routingstatustypeid !=62  then 'Pending'  
+    else r3.remarks end as remarks1,
+   r.activeflag,
+   tspa.sprvsr_approval_dt as request_date,
+   (case when (trim(tspa.fiscal_category_cd) in ('7502','7503')) then tspa.client_account_id else null end) as client_account_id1,
+   r.routingstatustypeid,
+   tspa.reason_tx,
+   r.objecttypekey,
+   case when r.objecttypekey ='ServiceCase' then false else true end as is_servicecase,
+   APA.programkey,
+   tsl.description_tx,
+   tsl.case_id,
+   ts.service_id,
+   tsl.client_id
+  from tb_service_purchase_authorization tspa 
+   join routing r on r.objectid = tspa.authorization_id :: character varying 
+   join tb_service_log tsl on tsl.service_log_id=tspa.service_log_id and tsl.delete_sw='N'
+   LEFT JOIN agencyprogramarea  AS APA ON APA.programkey = tsl.agency_program_area_id and APA.activeflag=1
+   join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id and tps.delete_sw = 'N'
+   join tb_provider tp on tp.provider_id=tps.provider_id
+   join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd=tspa.fiscal_category_cd 
+   join person p on p.cjamspid = tsl.client_id 
+   left join gendertype gt on gt.gendertypekey = p.gendertypekey
+   join tb_services ts on ts.service_id=tps.service_id and ts.delete_sw='N'
+   LEFT JOIN team tt ON tt.teamid = r.teamid
+   LEFT JOIN routing r1 on r1.objectid = tspa.authorization_id :: character varying  AND r1.routingstatustypeid in (41,43) AND r1.eventcode in ('ASPCAUTH','ASPCAUTHR') 
+   LEFT JOIN routing r2 on r2.objectid = tspa.authorization_id :: character varying  AND r2.routingstatustypeid in (40,44) and r2.eventcode in ('ASPCAUTH','ASPCAUTHR')
+   LEFT JOIN routing r3 on r3.objectid = tspa.authorization_id :: character varying  and r3.eventcode in ('ASPCAUTH','ASPCAUTHR') 
+  where 
+   (CASE WHEN v_role = 'ASSP' THEN r.fromroleid ='ASSP'
+      WHEN v_role = 'ASFS' THEN r.fromroleid IN ('ASFW','ASFS') 
+      WHEN v_role = 'ASLDSSD' THEN r.fromroleid = 'ASSP'
+    ELSE TRUE END)
+   AND r.activeflag = 1 
+   AND sprvsr_approval_status_cd= v_sprvsr_approval_status_cd 
+   -- AND coalesce(funding_approval_status_cd,'') = v_funding_approval_status_cd
+   -- AND coalesce(tspa.ads_approval_status_cd,'') = v_ads_approval_status_cd
+   AND funding_approval_status_cd = v_funding_approval_status_cd
+   AND tspa.ads_approval_status_cd = v_ads_approval_status_cd
+   AND r.toroleid= v_toroleid 
+   AND (CASE WHEN v_status = 'A' THEN  r3.remarks = 'Approved'
+    WHEN v_status = 'R' THEN r3.routingstatustypeid = '62'
+    WHEN v_status = 'P' THEN r.routingstatustypeid = 41 and r.activeflag=1
+    ELSE TRUE END)
+   AND tsl.client_id IS NOT NULL
+   AND (CASE WHEN v_payee_nm IS NOT NULL THEN (tp.provider_nm ilike v_payee_nm || '%' OR tp.provider_first_nm ilike v_payee_nm || '%' OR tp.provider_last_nm ilike v_payee_nm || '%') ELSE TRUE END)
+   AND
+   ((v_securityid != r1.fromsecurityusersid and r.eventcode = 'ASPCAUTH' 
+    AND CASE WHEN assigned_pa = true THEN r.tosecurityusersid = v_securityid ELSE r.tosecurityusersid != v_securityid end)
+     OR
+   (tt.countyid = v_countyid and v_securityid != r2.tosecurityusersid  and r.eventcode= 'ASPCAUTHR'))
+  GROUP BY tsl.client_id, pname, 
+     p.dob, gt.typedescription, ts.service_nm, 
+     tsl.start_dt, tsl.end_dt, 
+     tspa.authorization_id,tspa.justification_tx, tspa.cost_no, tspa.voucher_sw,
+     tfcm.fiscal_category_desc, tspa.ads_approval_status_cd, tspa.service_log_id,
+     actionval,tspa.end_dt,tspa.start_dt, tp.provider_id,
+     remarks1, 
+     payee, tspa.fiscal_category_cd,
+     r.activeflag,
+     tspa.sprvsr_approval_dt, 
+     client_account_id1, 
+     r.routingstatustypeid,
+     tspa.reason_tx, r.objecttypekey,
+     is_servicecase, APA.programkey,tsl.description_tx,
+     tspa.funding_approval_dt, tspa.payment_approval_dt, tspa.ads_approval_dt,
+     tsl.case_id, ts.service_id
+  order by tspa.authorization_id desc
+   
+ limit pagesize offset v_pageoffset;
+END;
+
+$function$
+

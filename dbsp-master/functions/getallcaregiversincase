@@ -1,0 +1,65 @@
+CREATE OR REPLACE FUNCTION getallcaregiversincase(v_caseid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                                                              
+ 
+ DECLARE
+  v_response json;   
+                                                                                                                                                                                                                                                                                                                                                               
+ BEGIN
+      
+   SELECT
+    jsonb_agg(a) INTO v_response 
+   FROM 
+ ( 
+    SELECT DISTINCT person1id AS personid, 
+  concat( p.prefx, ' ', p.firstname, ' ', p.middlename, ' ', p.lastname, ' ', p.suffix) as personname,
+  p.firstname,
+  p.middlename,
+  p.lastname,
+  p.cjamspid,
+  (select pno.phonenumber from personphonenumber pno where pno.personid = p.personid and pno.activeflag = 1 order by pno.updatedon desc limit 1) as phonenumber,
+  (select jsonb_agg(b) from (
+   select p.streetname, c.countyname as countydescription, p.adrstreetno,  p.address, p.address2, p.zipcode, p.city, s.statename
+   from personaddress p 
+   left join state s on s.stateabbr = p.state 
+   left join county c on c.countyid::varchar = p.county 
+   where personid = person1id order by p.updatedon desc limit 1) b
+  ) as address
+    FROM 
+     actorrelationship ar JOIN person p ON  ar.person1id = p.personid
+    WHERE
+     ar.activeflag = 1
+  AND 
+   ar.caregiverflag= 1
+    AND
+   ar.person2id
+   IN (
+    SELECT
+     isra.personid 
+    FROM 
+     intakeservicerequestactor isra 
+    WHERE
+     isra.activeflag = 1 AND
+     --isra.intakeservicerequestpersontypekey in ('CHILD', 'AV') AND --can remove AV if not needed
+     (isra.intakeserviceid= v_caseid::uuid
+     OR isra.servicecaseid = v_caseid::uuid)
+    )
+  AND 
+   ar.person1id --make sure other person is in this case
+   IN (
+    SELECT
+     isra.personid 
+    from 
+     intakeservicerequestactor isra 
+    where 
+     isra.activeflag = 1 AND
+     (isra.intakeserviceid = v_caseid::uuid
+     OR isra.servicecaseid = v_caseid::uuid)
+    )
+ ) AS a;
+
+ RETURN v_response;                                                                                                                                                                                                                                                                                                                                                       
+ END;                                                                                                                                                                                                                                                                                                                                                
+ $function$
+

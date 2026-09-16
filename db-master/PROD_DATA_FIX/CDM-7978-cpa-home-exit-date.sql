@@ -1,0 +1,1 @@
+update tb_placement_cpa_homes set exit_dt = '2020-07-31 00:00:00', exit_tm = '2020-07-31 09:00:00', update_ts = now(), update_user_id = 'CDM-7978' where placement_id = '326695';

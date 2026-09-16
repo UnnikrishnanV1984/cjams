@@ -1,0 +1,52 @@
+ DROP FUNCTION  IF EXISTS getcaseworkerlist(character varying);
+CREATE OR REPLACE FUNCTION getcaseworkerlist(v_securityusersid character varying)
+ RETURNS TABLE(userid character varying, teammemberid uuid, roletypekey character varying, agency character varying, teamid uuid, loadnumber character varying, rolename text, firstname character varying, lastname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE 
+        
+ declare v_teamid uuid = null;
+declare v_teamtypekey character varying ='';
+declare v_countyid character varying='';
+	
+	
+BEGIN 
+
+    SELECT  tm.teamid ,t.teamtypekey ,t.countyid into v_teamid,v_teamtypekey,v_countyid
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+            ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = v_securityusersid
+        AND   tma.activeflag =1;
+return query 
+SELECT distinct  tma.securityusersid,tma.teammemberid,tm.roletypekey ,
+         cast(tty.teamtypekey as character varying) agency
+        ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,up.firstname,up.lastname
+   
+        FROM teammemberassignment tma
+        INNER join teammember tm
+       		 ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+       	inner join team t on t.teamid=tm.teamid and t.activeflag=1
+        INNER join teammemberroletype  tmrt 
+       		 ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+        	
+        left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey 
+       		 AND tty.activeflag= 1
+       		 left join userprofile up on up.securityusersid=tma.securityusersid
+        left JOIN UserProfileAddress upa 
+         	ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1 
+        
+        WHERE   tm.roletypekey ='ASCW' and t.teamid=v_teamid
+        AND tma.activeflag =1;
+        
+
+
+
+
+END;
+
+$function$
+

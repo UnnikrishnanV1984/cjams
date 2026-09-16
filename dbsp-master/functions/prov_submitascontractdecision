@@ -1,0 +1,109 @@
+CREATE OR REPLACE FUNCTION prov_submitascontractdecision(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_tosecurityuserid character varying;
+v_prgstatus character varying;
+v_objectid character varying;
+v_subject character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_tousersid json;
+v_eventcode character varying;
+v_phase character varying;
+v_sign json;
+v_appstatus character varying;
+response json;
+v_type character varying;
+v_username CHARACTER VARYING;
+v_appstatustext CHARACTER VARYING;
+v_objectname CHARACTER VARYING;
+v_role_name CHARACTER VARYING;
+v_list_user_roles record;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+
+v_appstatus := objectls->>'status';
+v_username := objectls->>'username';
+v_objectname := objectls->>'objectname';
+v_objectid := objectls->>'objectid';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_phase := objectls->>'phase';
+v_sign := objectls->>'signature';
+v_role_name := objectls->>'fromroleid';
+v_tosecurityuserid := objectls->>'tosecurityusersid';
+
+---------------
+if v_eventcode = 'ASCON'
+then
+   v_type = 'AS Contract';
+end if;
+---------------
+if v_appstatus = 'Submit'
+then
+   v_appstatustext = 'Submitted for approval';
+else 
+   if v_appstatus = 'Approved'
+   then
+      v_appstatustext = 'Approved';
+   else 
+      v_appstatustext = 'Returned to worker';
+   end if;
+end if;
+
+
+v_subject := v_type||' "'||v_objectname||'" '|| v_appstatustext||' by ' ||v_username ;
+   
+/* if v_role_name in ('AS_PROV_RESOURCE_WORKER' , 'AS_PROV_SUPERVISOR') then
+select json_agg(x)::json  into response from 
+   (select distinct mu.securityusersid as securityusersid 
+   from team t 
+   join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+   join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+   join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+   join role r on r.id = rm.roleid :: int and r.activeflag =1
+   where  r.name in ('AS_PROV_SUPERVISOR') and mu.securityusersid != v_fromsecurityuserid
+   ) as x ; 
+end if; */
+
+/* if v_role_name in ('SSA_CONTRACT_ADM' ,'SSA_CONTRACT_ADM_SUP' , 'SSA_CONTRACT_PM') then
+select json_agg(x)::json  into response from 
+   (select mu.securityusersid as securityusersid 
+   from team t 
+   join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+   join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+   join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+   join role r on r.id = rm.roleid :: int and r.activeflag =1
+   where  r.name in ('SSA_CONTRACT_PM','SSA_CONTRACT_ADM_SUP','SSA_CONTRACT_EXE') and mu.securityusersid != v_fromsecurityuserid
+   ) as x ; 
+end if; */
+
+if v_appstatustext = 'Returned to worker' then
+   response := (objectls->>'tosecurityusersid')::json;
+end if;
+
+
+
+
+   INSERT INTO tb_provider_decision
+      (decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+      toroleid,tosecurityusersid, signature)
+      VALUES(gen_random_uuid(),objectls->>'eventcode', v_fromsecurityuserid, v_role_name, v_objectid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+      now(), false, objectls->>'remarks', v_appstatus,  now(),null,v_tosecurityuserid,  v_sign);
+
+
+ 
+      SELECT prov_send_notification into v_success
+      FROM  prov_send_notification(v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid, 'System', 'High', v_subject, v_subject, v_objectid,  false, false);
+   
+RETURN json_build_object('response',v_success);
+end;
+$function$
+

@@ -1,0 +1,2 @@
+update intakedastaging set activeflag = 0 where intakenumber = 'I202000205989' and id = '875633';
+update intakedastatus set activeflag = 0 where intakenumber = 'I202000205989' and intakedastatusid = '6ad98eac-896c-4e3e-9aa6-a0c08480d4d3';

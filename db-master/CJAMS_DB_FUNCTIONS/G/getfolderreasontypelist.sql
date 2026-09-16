@@ -1,0 +1,26 @@
+ CREATE OR REPLACE FUNCTION public.getfolderreasontypelist(v_foldertypekey character varying)                                                                                
+  RETURNS TABLE(folderreasontypeid uuid, folderreasontypekey character varying, description character varying)                                                               
+  LANGUAGE plpgsql                                                                                                                                                           
+ AS $function$                                                                                                                                                               
+                                                                                                                                                                             
+                                                                                                                                                                             
+ BEGIN                                                                                                                                                                       
+                                                                                                                                                                             
+ IF (lower(v_foldertypekey) = 'administrative') THEN                                                                                                                         
+ RETURN QUERY                                                                                                                                                                
+ select FRT.folderreasontypeid,FRT.folderreasontypekey,FRT.description from folderreasontype as FRT where FRT.folderreasontypekey not in('Other','CD','EM','ERC','Shelter') ;
+                                                                                                                                                                             
+ ELSIF (lower(v_foldertypekey) = 'atd') THEN                                                                                                                                 
+ RETURN QUERY                                                                                                                                                                
+ select FRT.folderreasontypeid,FRT.folderreasontypekey,FRT.description from folderreasontype as FRT  where FRT.folderreasontypekey  in ('CD','EM','ERC','Shelter') ;         
+                                                                                                                                                                             
+ ELSE                                                                                                                                                                        
+ RETURN QUERY                                                                                                                                                                
+ select FRT.folderreasontypeid,FRT.folderreasontypekey,FRT.description from folderreasontype as FRT  where FRT.folderreasontypekey  in ('Other') ;                           
+                                                                                                                                                                             
+ END IF;                                                                                                                                                                     
+                                                                                                                                                                             
+ END;                                                                                                                                                                        
+                                                                                                                                                                             
+ $function$                                                                                                                                                                  
+

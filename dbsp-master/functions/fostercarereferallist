@@ -1,0 +1,174 @@
+CREATE OR REPLACE FUNCTION fostercarereferallist(v_casenumber character varying, v_lipagenumber bigint, v_lipagesize bigint, v_personid character varying)
+ RETURNS TABLE(totalcount bigint, placement_id bigint, provider_id integer, servicerequestnumber character varying, intakeserviceid uuid, referaliniateddate date, referaldescription character varying, provideraddress character varying, reasonforrejection character varying, reasonnonpreferred character varying, responseaccepted character varying, comarratecategory character varying, providerphonenumber character varying, referalstartdate date, referalstarttime character varying, contract_program_id integer, programname character varying, providername character varying, clientid bigint, clientname character varying, payment_header_id integer, fostercareisapprove boolean, isaddfostercareplacement boolean, childreremovaldate date, childreremovaltime character varying, provider_parent_id integer, removal_id integer, placemententrydate date, placemententrytime character varying, placement_cpa_home_id integer, cpahome_placemententrydate date, cpahome_placemententrytime character varying, placementexitdate date, placementexittime character varying, provider_category_cd character varying, provider_category_name character varying, issearchprovider boolean, placementstructure character varying, dob timestamp without time zone, status text, statusremarks text, placementlog json)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- 05/04/2021 - Vineet Tirodkar - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+-- 07/19/2021 - Vineet Tirodkar - Modifications to replace TB_PLACEMENT_REVISION with placementrevision
+------------------------------------------------------------------------------------------------
+DECLARE
+
+ v_picklist_value_cd_childcharacteristics VARCHAR(100);
+ v_service_id_placementstructures INTEGER;
+ v_service_id_bundledplacementservices INTEGER;
+ v_prov_tax_type_cd_taxid VARCHAR(30);
+ v_adr_zip5_no_zipcode numeric;
+ v_localdepartmenthomecaregiver boolean;
+
+ v_lvService VARCHAR(50);
+ v_lvServiceSubType VARCHAR(50);
+ v_lvPaymentType VARCHAR(50);
+ v_lvChildCharacter json;
+ v_liZipCode INT;
+ v_liCounty uuid;
+ v_lvProvider VARCHAR(50);
+ v_liCount INT;
+ v_lvSortCol VARCHAR(50);
+ v_lvSortDir VARCHAR(10);
+ v_pagenumber int;
+ v_pageoffset int;
+ v_fodertype VARCHAR(50);
+ v_isoperatedbydjs bool;
+ issearchprovider bool;
+
+BEGIN
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+RETURN query
+
+SELECT
+ COUNT(1) OVER() totalcount,
+ TBPM.placement_id::bigint,
+ TBPM.provider_id,
+ ISR.servicerequestnumber,
+ ISR.intakeserviceid,
+ TBPMP.info_sent_dt :: date as referaliniateddate,
+ TBPMP.info_description_tx as referaldescription,
+    CAST (concat_ws(', ', TBPA.adr_street_no, TBPA.adr_street_nm, TBPA.adr_city_nm, TBPA.adr_state_cd, TBPA.adr_zip5_no)  as character varying ) as provideraddress,
+    (select value_tx from tb_picklist_values where PICKLIST_type_id=143 AND delete_sw='N' AND active_sw='Y' AND TRIM(PICKLIST_VALUE_CD)=TRIM(TBPMP.reject_reason_cd)) AS reasonforrejection,
+    TBPMP.reason_non_preferred_tx as reasonnonpreferred,
+    (select value_tx from tb_picklist_values where PICKLIST_type_id=756 AND delete_sw='N' AND active_sw='Y' AND TRIM(PICKLIST_VALUE_CD)=TRIM(TBPMP.accepted_cd)) AS responseaccepted,
+    TBSV.service_nm as comarratecategory,
+    TBP.adr_home_phone_tx as providerphonenumber,
+ TBPMP.entry_dt::date as entry_dt,
+ TBPMP.entry_tm,
+ --TBCP.program_id as contract_program_id,
+ --TBCP.program_nm as programname,
+ (SELECT TBCP.program_id FROM tb_provider_contracts AS TBPC
+ INNER JOIN tb_contract_program AS TBCP ON TBPC.contract_id=TBCP.contract_id AND TBCP.program_id = TBPM.contract_program_id AND TBCP.delete_sw = 'N'
+ WHERE TBP.affiliate_provider_id= TBPC.provider_id and TBPC.delete_sw = 'N'
+ ) AS contract_program_id,
+ (SELECT TBCP.program_nm FROM tb_provider_contracts as TBPC
+ INNER JOIN tb_contract_program AS TBCP ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = TBPM.contract_program_id and TBCP.delete_sw = 'N'
+ WHERE TBP.affiliate_provider_id= TBPC.provider_id and TBPC.delete_sw = 'N'
+ ) AS programname ,
+ (CASE WHEN TBP.provider_nm !='' or TBP.provider_nm != null THEN TBP.provider_nm
+ ELSE (CAST(INITCAP(TRIM(TBP.provider_first_nm) ||' '|| TRIM(TBP.provider_last_nm) || CASE WHEN TBP.provider_middle_nm IS NOT NULL AND
+ TRIM(TBP.provider_middle_nm) != '' THEN ', ' || TRIM(TBP.provider_middle_nm) ELSE '' END) AS  character varying))  END
+ ) AS providername,
+ P.cjamspid AS clientid,
+ CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+  CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as  character varying
+ ),
+ TBPM.payment_header_id,
+ /*(select true::boolean from tb_placement as TBPM
+ JOIN Person as P ON  P.cjamspid = TBPM.client_id and P.activeflag=1
+ where TBPM.case_id::character varying = ISR.servicerequestnumber and TBPM.delete_sw = 'N'
+ and (TBPM.exit_dt is null ) and (TBPM.exit_tm is null )  and
+ (TBPM.approval_status_cd is null or TBPM.approval_status_cd ='' or TBPM.approval_status_cd!='3047')limit 1) as fostercareisapprove,
+        (select true::boolean from tb_placement as TBPM
+ JOIN Person as P ON  P.cjamspid = TBPM.client_id and P.activeflag=1
+ where TBPM.case_id::character varying = ISR.servicerequestnumber and TBPM.delete_sw = 'N'
+        and ( TBPM.approval_status_cd='3047')limit 1) as isaddfostercareplacement, */
+ (CASE WHEN TBPM.approval_status_cd = '3047' THEN true::boolean WHEN TBPM.approval_status_cd = '3281' THEN false::boolean ELSE null::boolean END
+ ) AS fostercareisapprove,
+ (CASE WHEN TBPM.approval_status_cd = '3047' THEN true::boolean ELSE null::boolean END ) AS isaddfostercareplacement,
+    TBR.removal_dt::date as removal_dt,
+ TBR.removal_tm,
+ TBP.affiliate_provider_id,
+ TBR.removal_id,
+ TBPM.entry_dt::date as entry_dt,
+ TBPM.entry_tm,
+ TBPCPAH.placement_cpa_home_id,
+ TBPCPAH.entry_dt::date as entry_dt,
+ TBPCPAH.entry_tm::character varying as entry_tm,
+ TBPM.exit_dt::date as exit_dt,
+ TBPM.exit_tm::character varying as exit_tm,
+ TBP.provider_category_cd,
+    (CASE WHEN TBP.provider_category_cd = '1783' THEN 
+  'Local Department Home' 
+ WHEN TBP.provider_category_cd = '3274' THEN 
+  'RCC Facility'
+ WHEN TBP.provider_category_cd = '3794' THEN 
+  'Residential Treatment Center'  
+    WHEN TBP.provider_category_cd = '3302' THEN 
+  'CPA Office' 
+ ELSE 
+  ''::character varying 
+ END),
+ (select CASE WHEN TBP.provider_category_cd = '1783' THEN 
+    true 
+   WHEN TBP.provider_category_cd = '3274' THEN 
+    false
+   WHEN TBP.provider_category_cd = '3794' THEN 
+    false
+   WHEN TBP.provider_category_cd = '3302' THEN 
+    true 
+   END )
+   AS issearchprovider,
+ (SELECT TBS.service_nm FROM tb_provider_services as TBPS
+ INNER JOIN tb_services as TBS ON  TBS.service_id =  TBPS.service_id and TBS.structure_service_cd='P' and TBS.delete_sw = 'N' -- Placement structures
+ WHERE TBPS.provider_id = TBP.provider_id and TBPM.placement_structure_id = TBS.service_id and TBPS.delete_sw = 'N'
+ ),
+ P.dob,
+ r.typedescription AS status
+ ,r.remarks
+ ,(select json_agg(l_placementlog) 
+  from 
+  ( select TBPM.placement_id,
+    tbpr.entrydate::date as entry_dt,
+    tbpr.entrytime as entry_tm,
+    tbpr.exitdate::date as exit_dt,
+    tbpr.endtime as exit_tm,
+    tbpr.exittypetypkey as exit_type_cd,
+    tbpr.exitreasontypkey as exit_reason_cd,
+    tbpr.exitexplanation as exit_explanation_tx,
+    tbpr.approvaldate::date as approval_dt 
+   from placementrevision tbpr 
+   where tbpr.placementid = TBPM.placementid 
+  ) 
+ l_placementlog)
+FROM tb_placement AS TBPM
+JOIN tb_placement_providers AS TBPMP ON TBPMP.placement_id = TBPM.placement_id AND TBPMP.delete_sw = 'N'
+JOIN tb_provider AS TBP ON TBP.provider_id = TBPM.provider_id AND TBP.delete_sw = 'N'
+
+/*LEFT JOIN tb_provider_contracts as TBPC ON TBP.affiliate_provider_id= TBPC.provider_id  and TBPC.delete_sw = 'N'
+LEFT JOIN tb_contract_program as TBCP ON TBPC.contract_id= TBCP.contract_id and TBCP.program_id = TBPM.contract_program_id and TBCP.delete_sw = 'N'*/
+JOIN intakeservicerequest AS ISR ON ISR.servicerequestnumber = TBPM.case_id::character varying AND ISR.activeflag=1
+JOIN person AS P ON P.cjamspid = TBPM.client_id AND P.activeflag=1
+LEFT OUTER JOIN tb_provider_addresses AS TBPA ON CAST(TBPA.parent_key_id as integer) = TBPM.provider_id
+-- get structure name/comar category
+LEFT OUTER JOIN tb_services AS TBSV ON TBSV.service_id = TBPM.rate_structure_id
+LEFT OUTER JOIN tb_removal AS TBR ON TBR.client_id = TBPM.client_id
+LEFT OUTER JOIN TB_PLACEMENT_CPA_HOMES AS TBPCPAH ON TBPCPAH.placement_id = TBPM.placement_id AND TBPCPAH.delete_sw = 'N'
+
+LEFT JOIN
+ (SELECT objectid,(typedescription) typedescription,remarks
+ FROM routing r
+ INNER JOIN routingstatustype rt ON rt.sequencenumber=r.routingstatustypeid AND rt.activeflag=1
+ WHERE r.activeflag=1 AND r.eventcode = 'PLTR' AND r.activeflag =1 ORDER BY r.insertedon DESC LIMIT 1
+ ) r ON r.objectid=TBPM.placement_id:: character varying
+
+WHERE ISR.servicerequestnumber = v_casenumber AND TBPM.delete_sw = 'N' 
+    AND CASE WHEN v_personid = '' then P.personid = P.personid   
+    ELSE P.personid::text = v_personid END 
+ORDER BY TBPM.placement_id DESC
+LIMIT v_liPageSize OFFSET v_pageoffset;
+
+END;
+
+$function$
+

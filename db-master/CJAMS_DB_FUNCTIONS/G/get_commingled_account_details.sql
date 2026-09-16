@@ -1,0 +1,78 @@
+CREATE OR REPLACE FUNCTION cjams.get_commingled_account_details(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, comm_account_id integer, open_dt date, close_dt date, account_no character varying, bank_nm character varying, total_balance_no numeric, create_user_id character varying, county_cd character varying, approval_status_cd character varying, account_status_nm character varying, entered_by character varying, county_nm character varying, client_account_details jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+	v_comm_ac_id bigint;
+	v_pagenumber int;
+	v_pageoffset int;
+	v_countyid varchar;
+BEGIN
+v_comm_ac_id := searchobj ->> 'comm_ac_id';
+v_countyid := searchobj ->> 'localdepartment';
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+RETURN QUERY
+/*SELECT COUNT(1) OVER() totalcount, COA.comm_account_id 
+      ,CLA.client_id AS "clientid"
+	  ,CASE WHEN CLI.last_nm IS NOT NULL THEN CONCAT(CLI.first_nm,' ',CLI.last_nm) END AS "client_name"
+      ,COA.bank_nm   AS "bank_name"
+      ,COA.account_no AS "bank_account_number"  
+	  ,COA.total_balance_no AS "total_balance"
+	  ,CNTY.countyname AS "localdepartment"
+	  ,COA.open_dt AS "opendate"
+	  ,COA.close_dt AS "closedate"
+	  ,CASE WHEN COA.delete_sw = 'Y' THEN 'Active' 
+	        WHEN COA.delete_sw = 'N' THEN 'Inactive' 
+	   END AS "account_status"
+	  ,COA.create_user_id AS "entered_by"	  
+	  
+
+FROM tb_commingled_account   AS COA
+LEFT JOIN  tb_client_account AS CLA ON CLA.account_no_tx = COA.account_no
+LEFT JOIN  tb_client         AS CLI ON CLI.client_id = CLA.client_id
+LEFT JOIN  county            AS CNTY ON CNTY.statecountycode = COA.county_cd*/
+
+SELECT COUNT(1) OVER() totalcount, 
+   CA.comm_account_id AS comm_account_id,
+   CA.open_dt AS open_dt,
+   CA.close_dt AS close_dt,
+   CA.account_no AS account_no,
+   CA.bank_nm AS bank_nm,
+   ROUND(AVG(CA.total_balance_no)::numeric,2) AS total_balance_no,
+   CA.create_user_id AS create_user_id,
+   CA.county_cd AS county_cd,
+   CA.approval_status_cd AS approval_status_cd,
+   PLVS.value_tx AS account_status,
+  -- CAT.interest_amount_no AS interest_amount_no,
+   UP.displayname AS entered_by,
+   PLV.value_tx AS county_nm,
+   (SELECT json_agg(e) as clint_details 
+from (select CLAC.client_account_id,CLAC.client_id,
+TRIM(CLAC.status_cd) As status_cd,
+ (select value_tx from tb_picklist_values where PICKLIST_TYPE_ID=41 AND  TRIM(PICKLIST_VALUE_CD)=CLAC.status_cd::text) As  status_nm,
+CONCAT(pr.firstname,' ',pr.lastname) AS client_name,
+CLAC.account_no_tx AS account_no_tx,
+ round( CAST( CLAC.total_balance_no as numeric), 2)
+   AS total_balance_no
+from tb_client_account CLAC
+LEFT JOIN person pr ON CLAC.client_id=pr.cjamspid --and pr.activeflag=1
+WHERE CLAC.comm_account_id=CA.comm_account_id and CLAC.status_cd ='592' and CLAC.delete_sw='N'
+group by CLAC.client_account_id,CLAC.client_id,CLAC.account_no_tx,CLAC.total_balance_no,
+pr.firstname,pr.lastname 
+				)e)::jsonb AS client_account_details
+FROM tb_commingled_account   AS CA 
+--LEFT JOIN TB_COMM_ACCT_TRANSACTIONS AS CAT ON CA.comm_account_id=CAT.comm_account_id AND CAT.delete_sw='N'
+LEFT JOIN userprofile UP on UP.securityusersid=CA.create_user_id
+LEFT JOIN tb_picklist_values PLV ON TRIM(PLV.picklist_value_cd)=TRIM(CA.county_cd) AND PLV.picklist_type_id=104 AND PLV.delete_sw='N'
+LEFT JOIN tb_picklist_values PLVS ON TRIM(PLVS.picklist_value_cd)=TRIM(CA.approval_status_cd) AND PLVS.picklist_type_id=41 AND PLVS.delete_sw='N'
+AND CA.delete_sw='N'and PLV.active_sw='Y' and PLVS.active_sw='Y' where Trim(CA.county_cd)=Trim(v_countyid)
+group by CA.comm_account_id,CA.open_dt, CA.close_dt,CA.account_no, CA.bank_nm,CA.total_balance_no,CA.create_user_id,
+CA.county_cd,CA.approval_status_cd,PLVS.value_tx, UP.displayname,PLV.value_tx,CA.open_dt order by CA.close_dt asc nulls first,CA.open_dt desc
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+END 
+
+$function$
+;

@@ -1,0 +1,52 @@
+CREATE OR REPLACE FUNCTION as_gpsprogramexpectations(i_intakenumber character varying, i_intakeserviceid uuid)
+ RETURNS TABLE(youthname character varying, guardian_name character varying)
+ LANGUAGE plpgsql
+AS $function$
+declare P_ID UUID;
+   BEGIN  
+             
+ RETURN QUERY    
+ (        select distinct
+             cast(INITCAP(TRIM(coalesce(lastname,''))|| CASE WHEN (suffix is not null and suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(suffix,'')) || ', ' ||TRIM(coalesce(firstname,''))) as  character varying)   as youthname,
+    CAST(COALESCE(
+                  (select distinct person.firstname||' '||person.lastname 
+         from  intakeservicerequest INT
+                        left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='mother'
+                        left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                        left join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakenumber=INTSR.intakenumber limit 1),
+              (select distinct person.firstname||' '||person.lastname 
+         from  intakeservicerequest INT 
+                        left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey='father'
+                        left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                        left join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakenumber=INTSR.intakenumber limit 1),
+              (select distinct person.firstname||' '||person.lastname 
+         from  intakeservicerequest INT 
+                        left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INT.intakeserviceid and INSRA.activeflag=1 
+                        join actorrelationship ar on ar.intakeservicerequestactorid=INSRA.intakeservicerequestactorid and ar.activeflag=1 and ar.relationshiptypekey not in ('father','mother')
+                        left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+                        left join person  on ACC.personid=person.personid and person.activeflag=1 and INT.intakenumber=INTSR.intakenumber limit 1)) as character varying ) 
+             as guardian_name
+             from  intakeservicerequest INTSR 
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1 and INSRA.intakeservicerequestpersontypekey='Youth'
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+             join person p on ACC.personid=p.personid and p.activeflag=1
+              where  
+               (INTSR.intakeserviceid=NULL or INTSR.intakeserviceid=i_intakeserviceid)  or
+                (INTSR.intakenumber=NULL or INTSR.intakenumber=i_intakenumber)  
+  union
+             select distinct
+             cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+               cast((select cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   
+                       from intakedastaging ida , jsonb_array_elements(ida.jsondata->'persons') obj
+                       where ida.activeflag=1  and (obj->>'RelationshiptoRA' ='father' or obj->>'RelationshiptoRA' ='mother') and ida.intakenumber=i_intakenumber)  as character varying) as guardian_name
+             from    intakedastaging ida  
+                ,jsonb_array_elements(ida.jsondata->'persons') obj        
+               where 
+               ida.activeflag=1  and obj->>'Role' ='Youth' and  obj->>'cjamspid' is not null and
+                (ida.intakenumber =NULL or ida.intakenumber=i_intakenumber)
+                limit 1) ;   
+   end;
+   $function$
+

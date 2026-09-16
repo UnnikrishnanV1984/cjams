@@ -1,0 +1,61 @@
+ DROP FUNCTION IF EXISTS cjams.getpriorbyservicecase(uuid);    
+ CREATE OR REPLACE FUNCTION cjams.getpriorbyservicecase(v_servicecaseid uuid)                                                                                                     
+  RETURNS json                                                                                                                                                                     
+  LANGUAGE plpgsql                                                                                                                                                                 
+ AS $function$  
+
+DECLARE  
+
+jsondata  json;
+BEGIN
+
+SELECT
+	Json_agg(a) INTO jsondata 
+FROM 
+(
+	SELECT         
+		p.personid,  
+		p.firstname,  
+		p.lastname,  
+		p.middlename,  
+		p.suffix,  
+		p.dob,  
+		CASE 
+			WHEN EXTRACT(YEAR FROM age(now(), p.dob)) <= 0 THEN 
+				CASE WHEN EXTRACT(MONTH FROM age(now(), p.dob)) <= 0 THEN 
+					CONCAT (EXTRACT(DAY FROM age(now(), p.dob)) :: CHARACTER VARYING, ' ', 'Day(s)') 
+					ELSE CONCAT (EXTRACT(MONTH FROM age(now(), p.dob)) :: CHARACTER VARYING, ' ', 'Month(s)') 
+				END 
+			ELSE CONCAT (EXTRACT(YEAR FROM age(now(), p.dob)) :: CHARACTER VARYING,' ', 'Yrs') 	
+		END AS age,
+		g.typedescription AS gender,  
+		p.dateofdeath,  
+		p.cjamspid,
+		(
+			SELECT
+				typedescription
+			FROM actortype 
+			WHERE actortype=isra.intakeservicerequestpersontypekey LIMIT 1
+		) AS role, 
+		(
+			SELECT 
+				Json_agg(a)
+			FROM 
+			(
+				SELECT 
+					* 
+				FROM Getpersonpriorcase(p.personid)
+			)a
+		) AS servicecases
+    FROM intakeservicerequestactor isra 
+	INNER JOIN person p ON p.personid=isra.personid AND p.activeflag=1
+	INNER JOIN gendertype g ON g.gendertypekey=p.gendertypekey AND g.activeflag=1
+	WHERE servicecaseid=v_servicecaseid AND isra.isprimary=true
+    GROUP BY p.personid,p.firstname,p.lastname,p.middlename,p.suffix,p.dob,age,g.typedescription,p.dateofdeath,p.cjamspid,isra.intakeservicerequestpersontypekey 		
+)  a;
+
+RETURN jsondata;
+END;
+
+$function$;  
+

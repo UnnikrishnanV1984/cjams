@@ -1,0 +1,60 @@
+CREATE OR REPLACE FUNCTION as_communitydetentionprogramcontract(i_intakenumber character varying, i_intakeserviceid uuid)
+ RETURNS TABLE(youthname character varying, jsondata text, parentorguardianname character varying, provider_name character varying, intakeid character varying)
+ LANGUAGE plpgsql
+AS $function$
+declare 
+P_ID UUID;
+
+   BEGIN    
+    
+    RETURN QUERY    
+   (        select distinct
+              CAST(p.firstname||' '||p.lastname as character varying)  as youthname,
+              '',
+     CAST(COALESCE(
+               (select person.firstname||' '||person.lastname from person  
+               where person.personid IN (select a.actorid 
+                              from actor a join intakeservicerequestactor insa
+                              on a.actorid=insa.actorid and insa.activeflag=1
+                              join actorrelationship ar on ar.intakeservicerequestactorid=insa.intakeservicerequestactorid and ar.activeflag=1
+                              where  ar.relationshiptypekey='mother' and a.personid=p.personid)),
+              (select person.firstname||' '||person.lastname from person  
+               where person.personid IN (select a.actorid 
+                              from actor a join intakeservicerequestactor insa
+                              on a.actorid=insa.actorid and insa.activeflag=1
+                              join actorrelationship ar on ar.intakeservicerequestactorid=insa.intakeservicerequestactorid and ar.activeflag=1
+                              where  ar.relationshiptypekey='father' and a.personid=p.personid)),
+              (select person.firstname||' '||person.lastname from person  
+               where person.personid IN (select a.actorid 
+                              from actor a join intakeservicerequestactor insa
+                              on a.actorid=insa.actorid and insa.activeflag=1
+                              join actorrelationship ar on ar.intakeservicerequestactorid=insa.intakeservicerequestactorid and ar.activeflag=1
+                              where  ar.relationshiptypekey not in ('mother','father') and a.personid=p.personid))) as character varying) 
+             as parentorguardianname,
+             
+              cast(pr.providername as character varying) as provider_name,
+     cast(INTSR.intakenumber as character varying) as intakeid
+             from 
+             intakeservicerequest INTSR 
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             left join placement pl on INTSR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+             where  INTSR.intakeserviceid = i_intakeserviceid             
+             union
+              select 
+              '',
+             ida.jsondata ->> 'persons' ,
+              '',
+              cast(pr.providername as character varying) as provider_name,
+              ida.intakenumber
+              from intakedastaging ida 
+              left join placement pl on ida.intakenumber = pl.intakenumber and pl.activeflag=1
+              left join provider pr on pl.providerid = pr.providerid and pr.activeflag =1
+              where ida.intakenumber = i_intakenumber and ida.activeflag=1
+            );
+             
+   end;
+  $function$
+

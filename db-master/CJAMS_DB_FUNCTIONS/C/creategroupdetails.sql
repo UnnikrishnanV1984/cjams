@@ -1,0 +1,57 @@
+ CREATE OR REPLACE FUNCTION public.creategroupdetails(requestobj json)                                                                          
+  RETURNS TABLE(datype character varying, dasubtype character varying, servicerequesttypeconfigroleid uuid, entityroletypekey character varying)
+  LANGUAGE plpgsql                                                                                                                              
+ AS $function$                                                                                                                                  
+    DECLARE                                                                                                                                     
+    groupid uuid;                                                                                                                               
+    teamidval character varying;                                                                                                                
+    teamid character varying[];                                                                                                                 
+    effectivedate timestamp;                                                                                                                    
+    cnt INT;                                                                                                                                    
+    field character varying;                                                                                                                    
+    I int;                                                                                                                                      
+                                                                                                                                                
+ BEGIN                                                                                                                                          
+                                                                                                                                                
+    groupid := requestObj ->> 'usernotificationgroupid' ;                                                                                       
+    teamidval := requestObj ->> 'teammemberid' ;                                                                                                
+    effectivedate := requestObj ->> 'effectivedate' ;                                                                                           
+                                                                                                                                                
+     RAISE  NOTICE 'teamid111111111-->%' , teamidval;                                                                                           
+                                                                                                                                                
+     --teamidval = regexp_replace(teamidval, '\[*\"*\s*\]*','','g');                                                                            
+                                                                                                                                                
+     select REPLACE(teamidval, '"','''') into teamidval;                                                                                        
+                                                                                                                                                
+     select REPLACE(teamidval, '[','{') into teamidval;                                                                                         
+                                                                                                                                                
+     select REPLACE(teamidval, ']','}') into teamidval;                                                                                         
+                                                                                                                                                
+                                                                                                                                                
+     RAISE  NOTICE 'teamid222222222222-->%' , teamidval;                                                                                        
+                                                                                                                                                
+                                                                                                                                                
+    select cast (teamidval as character varying[]) INTO teamid;                                                                                 
+                                                                                                                                                
+                                                                                                                                                
+     RAISE  NOTICE 'teamid333333333333333-->%' , teamid;                                                                                        
+                                                                                                                                                
+                                                                                                                                                
+      --RAISE NOTICE 'Team ID-->%',json_array_elements(teamid)[1];                                                                              
+      -- RAISE NOTICE 'Team ID-->%',json_array_elements(teamid)[1];                                                                             
+                                                                                                                                                
+ FOR I IN 1..array_length(teamid, 1) LOOP                                                                                                       
+                                                                                                                                                
+     field := teamid[I];                                                                                                                        
+                                                                                                                                                
+     RAISE NOTICE 'val: %', field;                                                                                                              
+                                                                                                                                                
+    END LOOP;                                                                                                                                   
+                                                                                                                                                
+ --FOR field IN  SELECT * FROM json_array_elements(teamid) LOOP                                                                                 
+     --  RAISE NOTICE 'field field-->%',field;                                                                                                  
+                                                                                                                                                
+ --END LOOP;                                                                                                                                    
+   END;                                                                                                                                         
+ $function$                                                                                                                                     
+

@@ -1,0 +1,1 @@
+update intakeagencyserv set plantypekey='FC' where intakeservid in (select intakeservid from intakeserv where intakeservtypekey='ICPC') and teamtypekey='CW';

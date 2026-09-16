@@ -1,0 +1,1 @@
+ALTER TABLE cjams.inputfromsailpoint RENAME COLUMN v_message TO message;

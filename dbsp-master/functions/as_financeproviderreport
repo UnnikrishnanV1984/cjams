@@ -1,0 +1,47 @@
+CREATE OR REPLACE FUNCTION as_financeproviderreport(v_providerid bigint)
+ RETURNS TABLE(financeproviderreport json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+BEGIN  
+    RETURN QUERY (
+ SELECT json_agg(x) FROM (
+  SELECT json_agg(x) FROM (
+   SELECT COUNT(1) OVER() totalcount, TBP.provider_id, 
+   (CASE 
+    WHEN (TBP.provider_nm IS NULL OR TBP.provider_nm='') 
+    THEN CONCAT(TBP.provider_first_nm,' ',TBP.provider_last_nm)::CHARACTER VARYING ELSE TBP.provider_nm
+   END) AS provider_nm,
+   (SELECT (
+    CASE 
+     WHEN (TBPP.provider_nm IS NULL OR TBPP.provider_nm='') 
+     THEN CONCAT(TBPP.provider_first_nm,' ',TBPP.provider_last_nm)::CHARACTER VARYING
+     ELSE TBPP.provider_nm 
+    END) 
+   FROM tb_provider TBPP WHERE TBPP.provider_id = TBP.affiliate_provider_id) AS parent_provider,
+   TBP.affiliate_provider_id, TBP.vacancy_no, 
+   concat_ws(' ',TBP.provider_first_nm,TBP.provider_middle_nm,TBP.provider_last_nm) AS primarycontactname,
+   concat_ws(' ',TBP.adm_contact_first_nm,TBP.adm_contact_middle_nm,TBP.adm_contact_last_nm) AS admincontactname,
+   (SELECT json_agg(x) FROM (
+    SELECT picklist_value_cd FROM tb_provider_picklist TBPP WHERE TBPP.provider_id = v_providerid AND picklist_type_id = 155 AND delete_sw='N') AS x
+    ) AS provider_category_cd,
+   (SELECT value_tx FROM tb_picklist_values WHERE trim(picklist_value_cd)=TBP.provider_category_cd AND picklist_type_id=155 LIMIT 1) AS provider_category_nm,
+   TBP.county_cd,
+   (SELECT value_tx FROM tb_picklist_values WHERE trim(picklist_value_cd)=TBP.county_cd AND picklist_type_id=328 LIMIT 1) AS local_dept,
+   TBP.provider_status_cd,
+   (SELECT value_tx FROM tb_picklist_values WHERE trim(picklist_value_cd)=TBP.provider_status_cd AND picklist_type_id=159 limit 1) AS provider_status_nm,
+   (SELECT json_agg(x) FROM (SELECT provider_adr AS paymentaddress FROM get_provider_address(TBP.provider_id,trim('{3356,3357}') :: CHARACTER VARYING))x) AS paymentaddress,
+   (SELECT json_agg(x) FROM (SELECT provider_adr AS businessaddress FROM get_provider_address(TBP.provider_id,trim('{3357,35}') :: CHARACTER VARYING))x) AS businessaddress,
+   TBP.adr_cell_phone_tx AS primarycontactnumber, TBP.adm_cell_phone_tx AS admincontactnumber, TBP.adr_work_phone_tx AS primaryworknumber, 
+   TBP.adm_work_phone_tx AS adminworknumber, TBP.adm_email_tx AS adminemail, TBP.adr_email_tx AS primaryemail,TBP.mail_code_tx,
+   LPAD(TBP.tax_id_no::text, 9, '0') ::text AS tax_id_no, TBP.indicator_1099_sw, TBP.withhold_payment_sw, TBP.eft_sw 
+   FROM tb_provider AS TBP 
+   WHERE TBP.delete_sw = 'N' AND TBP.provider_id=v_providerid LIMIT 1)x
+  )x
+ );
+ END;
+
+$function$
+

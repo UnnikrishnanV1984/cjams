@@ -1,0 +1,1 @@
+DELETE FROM personaddress WHERE personaddressid = 'ff40f79c-2269-4726-b4f5-b2fe450b1f6c';

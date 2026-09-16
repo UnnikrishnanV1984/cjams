@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION as_getabscondedform(p_intakenumber character varying, p_intakeserviceid uuid, i_secid character varying)
+ RETURNS TABLE(youthpid character varying, persons text, region character varying, officeworkername character varying, youthnamewithsuffix character varying)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+ RETURN QUERY 
+      (select distinct 
+        cast(p.cjamspid as character varying) as youthpid,
+        '',
+        cast(pa.county as character varying) as region,
+        (select distinct cast(concat(lastname,',',' ',firstname) as character varying) from userprofile up where securityusersid = i_secid) as officeworkername,
+          --  cast(concat(p.lastname,case when (p.suffix is null or p.suffix ='') then '' else concat(' ',p.suffix) end,', ',p.firstname) as character varying) as youthnamewithsuffix
+            cast((case when  p.suffix in ('i','ii','iii')
+                 then  cast(concat(p.lastname,concat(' ',UPPER(p.suffix),', ',p.firstname)) as character varying)
+                else
+                 cast(concat(p.lastname,case when (p.suffix is null or p.suffix ='') then '' else concat(' ',p.suffix) end,', ',p.firstname) as character varying)
+                 end)as character varying) as youthnamewithsuffix 
+        from intakeservicerequest isr  
+  left join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and  isra.activeflag = 1
+  left join actor a on a.actorid = isra.actorid  and a.activeflag =1
+  left join person p on p.personid = a.personid and p.activeflag = 1
+  left join (select *,row_number() over(partition by personid,personaddresstypekey order by coalesce(personadrstartdate,effectivedate) desc) as recno from personaddress where personaddresstypekey = '31') pa on pa.personid = p.personid and pa.recno = 1 
+  where isr.activeflag = 1
+  and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+  and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end)
+  union
+              select 
+              '',
+             ida.jsondata ->> 'persons' ,
+              '',
+              (select distinct cast(concat(lastname,',',' ',firstname) as character varying) from userprofile up where securityusersid = i_secid) as officeworkername,
+              ''
+              from intakedastaging ida 
+              left join placement pl on ida.intakenumber = pl.intakenumber and pl.activeflag=1
+              left join provider pr on pl.providerid = pr.providerid and pr.activeflag =1
+              left join county jc on jc.countyid = pl.county and jc.activeflag = 1
+              where ida.intakenumber = p_intakenumber and ida.activeflag=1 limit 1);
+  
+END;
+$function$
+

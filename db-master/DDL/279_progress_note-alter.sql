@@ -1,0 +1,1 @@
+alter table cjams.progressnote alter column progressnotereasontypekey type character varying(500);

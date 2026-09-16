@@ -1,0 +1,1 @@
+update routing set activeflag = 0, updatedby = 'CDM-11992',updatedon =now() where routingid in ('dd2c9413-44fc-44a0-b8cd-a6066b01e444','84632b0c-5b8c-435d-b09a-09e39e0000e3','c88e1c80-a121-41ba-b5e4-90598741f10a') and activeflag = 1;

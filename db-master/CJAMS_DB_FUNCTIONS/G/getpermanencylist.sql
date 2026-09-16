@@ -1,0 +1,107 @@
+DROP FUNCTION IF EXISTS cjams.getpermanencylist(v_intakeserviceid uuid, _page integer, _limit integer);
+
+	CREATE OR REPLACE FUNCTION cjams.getpermanencylist(v_intakeserviceid uuid, _page integer, _limit integer)
+	RETURNS TABLE(totalcount bigint, childname character varying, dateofbirth timestamp without time zone, primarypermanency json, concurrentpermanency json, 
+	caseworkername character varying, projecteddate timestamp without time zone, achieveddate timestamp without time zone, establisheddate timestamp without time zone, 
+	reviseddate timestamp without time zone, remarks text, intakeservicerequestactorid uuid, resourcename character varying, address1 character varying, address2 character varying,
+	state character varying, city character varying, countyid uuid, country character varying, zipcode character varying, 
+	primaryrelativename character varying, primarynonrelativename character varying, primaryprovidercode character varying, ispriresourceidentified integer,
+	concurrentrelativename character varying, concurrentnonrelativename character varying, concurrentprovidercode character varying,
+	isconresourceidentified integer, primaryprovider character varying, permanencyplanid uuid, status text, provider_id integer, isprivate boolean,parentname uuid, parent2name uuid)
+	LANGUAGE plpgsql
+	
+	AS $function$
+
+	DECLARE                    
+	_offset    integer;
+	BEGIN
+	_offset  :=  (_page  -  1)  *  _limit;    
+
+	RETURN  QUERY  
+	SELECT  
+		COUNT(1)  OVER()  AS  totalcount,
+		(p.firstname  ||'  '||p.lastname  )::  character  varying  as  childname,
+		p.dob,
+		CASE COALESCE(pp.primarypermanencytype,'') WHEN '' THEN    
+			(SELECT json_agg(e) as primarypermanency FROM 
+			(
+				SELECT pd.permanencyplantypekey,pd.permanencyplansubtypekey FROM Permanencyplandetail pd  
+				WHERE pd.permanencyplanid=pp.permanencyplanid AND pd.plantype='PP' AND pd.activeflag=1
+			)e):: json  
+			ELSE
+			(SELECT  json_Agg(row_to_json(e))    FROM(  
+				SELECT  primarypermanencytype  as  permanencyplantypekey,pnpt.description as primaryplandescription,
+						pnpst.description as primaryplansubdescription,primaryarrangetype  as  permanencyplansubtypekey)  as    e
+			)::  json
+			END  primarypermanency,
+		CASE COALESCE(pp.primarypermanencytype,'') WHEN '' THEN    
+			(SELECT json_agg(e) as concurrentpermanency FROM
+				(SELECT pd.permanencyplantypekey,pd.permanencyplansubtypekey FROM Permanencyplandetail pd  
+				WHERE  pd.permanencyplanid  =  pp.permanencyplanid    AND  pd.plantype  ='CP'    AND  pd.activeflag  =1
+				)e
+			):: json
+			ELSE
+			(SELECT  json_Agg(row_to_json(e))    FROM(  
+				SELECT  concurrentpermanencytype  as  permanencyplantypekey,pnpt1.description as concurrentplandescription,
+						pnpst1.description as concurrentsubdescription,concurrentarrangetype  as  permanencyplansubtypekey)  as    e
+			)::  json  
+			END  concurrentpermanency,
+		pp.CASEworkername,
+		pp.projecteddate,
+		pp.achieveddate,
+		pp.establisheddate,
+		pp.reviseddate,
+		pp.remarks,
+		pp.intakeservicerequestactorid,
+	--	pp.enddate,
+	--	pp.reason,
+	--	pp.permplanquestdata,
+		COALESCE(pp.resourcename,''),
+		COALESCE(pp.address1,''),
+		COALESCE(pp.address2,''),
+		COALESCE(pp.state,''),
+		COALESCE(pp.city,''),
+		pp.countyid,
+		COALESCE(pp.country,''),
+		COALESCE(pp.zipcode,''),
+		COALESCE(pp.primaryrelativename,''),
+		COALESCE(pp.primarynonrelativename,''),
+		COALESCE(pp.primaryprovidercode,''),
+		pp.ispriresourceidentified,
+		COALESCE(pp.concurrentrelativename,''),
+		COALESCE(pp.concurrentnonrelativename,''),
+		COALESCE(pp.concurrentprovidercode,''),
+		pp.isconresourceidentified,
+		coalesce(tbp.provider_nm,''),
+		pp.permanencyplanid,
+		r.typedescription AS status,
+		pl.provider_id,
+		(CASE WHEN pl.provider_category_cd = '1783' THEN true ELSE false END ) AS isprivate,
+		pp.parentname,
+		pp.parent2name  
+	FROM Permanencyplan pp    
+	INNER JOIN intakeservicerequestactor isr ON pp.intakeservicerequestactorid=isr.intakeservicerequestactorid
+	INNER JOIN person p ON p.personid=isr.personid AND p.activeflag  =  1
+	LEFT JOIN tb_provider tbp ON tbp.provider_id::integer = pp.primaryproviderid  --AND  tbp.delete_sw  = 'N'
+	LEFT JOIN (
+			SELECT pl.intakeservicerequestactorid,pr.provider_category_cd,pr.provider_id
+			FROM tb_provider pr 
+			INNER JOIN tb_placement pl ON pl.provider_id=pr.provider_id
+	) pl ON pl.intakeservicerequestactorid=isr.intakeservicerequestactorid
+	LEFT JOIN permanencyplantype pnpt ON pnpt.permanencyplantypekey=pp.primarypermanencytype AND pnpt.activeflag=1
+	LEFT JOIN permanencyplansubtype pnpst ON pnpst.permanencyplantypekey=pnpt.permanencyplantypekey  AND pnpst.permanencyplansubtypekey = pp.primaryarrangetype AND pnpst.activeflag=1
+	LEFT JOIN permanencyplantype pnpt1 ON pnpt1.permanencyplantypekey=pp.concurrentpermanencytype AND pnpt1.activeflag=1
+	LEFT JOIN permanencyplansubtype pnpst1 ON pnpst1.permanencyplantypekey=pnpt1.permanencyplantypekey  AND pnpst1.permanencyplansubtypekey = pp.concurrentarrangetype  AND pnpst1.activeflag=1
+	LEFT JOIN  
+		(SELECT objectid,(typedescription) typedescription    
+		FROM routing r
+		INNER JOIN routingstatustype rt ON rt.sequencenumber=r.routingstatustypeid AND rt.activeflag=1
+		WHERE r.activeflag=1
+		) r ON r.objectid=pp.permanencyplanid :: character varying
+	WHERE  (pp.servicecaseid=v_intakeserviceid or pp.intakeserviceid=v_intakeserviceid AND pp.activeflag=1 ) --AND Isr.servicecaseid=v_intakeserviceid
+	LIMIT _limit OFFSET _offset;
+	
+	END;
+
+	$function$
+	;

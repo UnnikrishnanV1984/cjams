@@ -1,0 +1,84 @@
+CREATE OR REPLACE FUNCTION probationpetitionlist(i_personid uuid, pagenumber bigint, pagesize bigint, i_currentuserid uuid)
+ RETURNS TABLE(totalcount bigint, petitionid character varying, intakeservicerequestpetitionid uuid, youthname character varying, orderdate timestamp without time zone, petitiontype character varying, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, allegation character varying[], caseworker character varying, supervisor character varying, voppetitionwithversion text, initiatedby character varying, conditiontype json, vopversion bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+
+begin
+ 
+  return query
+  select  count(1) over() ,inp.petitionid,inp.intakeservicerequestpetitionid,
+(select upp.lastname ||' '|| upp.firstname from focuspersoncasestatus fp 
+left join person upp on upp.personid=fp.personid where  fp.intakenumber=ins.intakenumber limit 1):: character varying as youthname
+,inac.courtorderdatetime,pt.description as petitiontype,ins.intakeserviceid,ins.servicerequestnumber,inp.intakenumber,
+--(select array_agg(AG.name)  from  allegation AG
+--      join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+--      join intakeservicerequestevaluation ine on ine.intakeservicerequestevaluationid=ITSEC.intakeservicerequestevaluationid 
+--      join Intakeservreqevalpetitionconfig inep on inep.intakeservicerequestevaluationid=ine.intakeservicerequestevaluationid and inep.activeflag=1
+--      where  inep.intakeservicerequestpetitionid=inp.intakeservicerequestpetitionid and ITSEC.activeflag=1 )
+      (select array_agg( distinct AG.name)  from  allegation ag 
+join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=ag.allegationid and ITSEC.activeflag=1
+join intakeservreqevalpetitionconfig inpe on inpe.intakeservicerequestevaluationid=ITSEC.intakeservicerequestevaluationid and inpe.activeflag=1
+where inpe.intakeservicerequestpetitionid=inp.intakeservicerequestpetitionid
+and (
+select count(1) from intakeservicerequestcourtordertypeconfig incoc 
+join courtactionallegationconfig cac on cac.courtactionallegationconfigid=incoc.courtactionallegationconfigid and cac.activeflag=1
+join intakeservicerequestevaluationconfig itc on cac.intakeservicerequestevaluationconfigid=itc.intakeservicerequestevaluationconfigid and itc.activeflag=1
+where incoc.courtordertypekey='PB' and itc.intakeservicerequestevaluationconfigid=ITSEC.intakeservicerequestevaluationconfigid)>0
+) as allegationname
+      ,(select m.fullname from userprofile m join  routing r on r.tosecurityusersid =m.securityusersid where 
+r.objectid=ins.intakeserviceid ::character varying and r.toroleid='JSCW' and r.activeflag=1 limit 1 ) as caseworker,
+(select m.fullname from userprofile m join  routing r on r.tosecurityusersid =m.securityusersid where 
+r.objectid=ins.intakenumber ::character varying and r.toroleid='JSSP' and r.activeflag=1 limit 1 ) as supervisor ,
+inp.petitionid ||'-VOP-'|| inp.vopversion + 1 as vopversionpet,
+case when  (select r.roletypekey from muser mu 
+join  rolemapping rm on rm.principalid=mu.id::character varying  and rm.activeflag=1
+join "role" r on r.id=rm.roleid and r.activeflag=1
+where mu.securityusersid=I_currentuserid:: character varying)='JSCLW' then 'SAO'::character varying  else 'DJS Internal' :: character varying end as initiatedby 
+
+ ,(select json_agg(x) from (
+ select cndt.conditiontypekey, cndt.description,cctc.conditiontypedescription,cctc.completiondate,cctc.intakeservicerequestcourtconditiontypeconfigid
+ from intakeservicerequestcourtconditiontypeconfig cctc 
+ join conditiontype cndt on cndt.conditiontypekey = cctc.conditiontypekey
+ where cctc.courtactionallegationconfigid in
+(select cac.courtactionallegationconfigid  from intakeservicerequestcourtordertypeconfig incoc 
+join courtactionallegationconfig cac on cac.courtactionallegationconfigid=incoc.courtactionallegationconfigid and cac.activeflag=1
+join intakeservicerequestevaluationconfig itc on cac.intakeservicerequestevaluationconfigid=itc.intakeservicerequestevaluationconfigid and itc.activeflag=1
+join courtordertype ct on ct.courtordertypekey=incoc.courtordertypekey
+where incoc.courtordertypekey='PB'
+and itc.intakeservicerequestevaluationconfigid in 
+(select ITSEC.intakeservicerequestevaluationconfigid from intakeservicerequestevaluationconfig ITSEC 
+join intakeservreqevalpetitionconfig inpe on inpe.intakeservicerequestevaluationid=ITSEC.intakeservicerequestevaluationid and inpe.activeflag=1
+where  ITSEC.activeflag=1 and (inpe.intakeservicerequestpetitionid=inp.intakeservicerequestpetitionid or 
+inpe.intakeservicerequestpetitionid in (select ipr.intakeservicerequestpetitionid from intakeservicerequestpetition ipr where 
+ipr.voppetitionid=inp.intakeservicerequestpetitionid))
+))) as  x) as conditiontype,inp.vopversion
+from intakeservicerequestpetition inp 
+join petitiontype pt on pt.petitiontypekey=inp.petitiontypekey
+join Intakeservreqpetitionhearingconfig inph on inph.intakeservicerequestpetitionid=inp.intakeservicerequestpetitionid and inph.activeflag=1
+join intakeservicerequestcourthearing inch on inch.intakeservicerequestcourthearingid=inph.intakeservicerequestcourthearingid and inch.hearingtypekey='Disp' and inch.activeflag=1
+join intakeservicerequestcourtaction inac on inac.intakeservicerequestcourthearingid=inch.intakeservicerequestcourthearingid and inac.activeflag=1
+join courtactionallegationconfig cac on cac.intakeservicerequestcourtactionid=inac.intakeservicerequestcourtactionid and cac.activeflag=1
+join intakeservicerequestcourtordertypeconfig incoc on incoc.courtactionallegationconfigid=cac.courtactionallegationconfigid and incoc.activeflag=1 and  incoc.courtordertypekey='PB'
+join intakeservicerequest ins on ins.intakenumber=inp.intakenumber and ins.activeflag=1
+
+where incoc.courtordertypekey='PB' and  
+(select count(1)  from  allegation ag 
+join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=ag.allegationid and ITSEC.activeflag=1
+join intakeservreqevalpetitionconfig inpe on inpe.intakeservicerequestevaluationid=ITSEC.intakeservicerequestevaluationid and inpe.activeflag=1
+where inpe.intakeservicerequestpetitionid=inp.intakeservicerequestpetitionid
+and (
+select count(1) from intakeservicerequestcourtordertypeconfig incoc 
+join courtactionallegationconfig cac on cac.courtactionallegationconfigid=incoc.courtactionallegationconfigid and cac.activeflag=1
+join intakeservicerequestevaluationconfig itc on cac.intakeservicerequestevaluationconfigid=itc.intakeservicerequestevaluationconfigid and itc.activeflag=1
+where incoc.courtordertypekey='PB' and itc.intakeservicerequestevaluationconfigid=ITSEC.intakeservicerequestevaluationconfigid)>0
+)>0
+and
+inp.isvop=false and inp.intakenumber in 
+(select distinct fp.intakenumber from focuspersoncasestatus fp where fp.personid= i_personid and activeflag=1)
+group by inp.petitionid,inp.intakeservicerequestpetitionid,inac.intakeservicerequestcourtactionid,inac.courtorderdatetime,youthname, petitiontype,ins.intakeserviceid,ins.servicerequestnumber,inp.intakenumber,allegationname,caseworker,supervisor,vopversionpet
+order by inp.insertedon ::date desc  limit pagesize  offset pagenumber;
+  end;
+
+$function$
+

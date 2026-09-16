@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION as_getforwardedassociatepetitionslist(v_intake character varying, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, petitionid character varying, intakeservicerequestpetitionid uuid, intakenumber character varying, associatedpetition json, associatedcomplaint json, complaint json)
+ LANGUAGE plpgsql
+AS $function$
+
+declare v_pagenumber bigint;
+  
+begin
+  v_pagenumber := (pagenumber-1)*   10;
+ 
+  RETURN QUERY 
+select count(1) over() as totalcount,  INTSRP.petitionid ,INTSRP.intakeservicerequestpetitionid,INTSRP.intakenumber
+    ,(select json_agg(x) from (select associatedpetitionid, (select IIN.petitionid from intakeservicerequestpetition IIN where IIN.intakeservicerequestpetitionid=associatedpetitionid) as associatepetition 
+   from associatedpetitionsconfig ASPC 
+   join intakeservicerequestpetition INRP on INRP.intakeservicerequestpetitionid=ASPC.intakeservicerequestpetitionid and INRP.activeflag=1
+   where ASPC.activeflag=1 and INRP.intakeservicerequestpetitionid =INTSRP.intakeservicerequestpetitionid  and associatedevalfieldid is null) as X ) as AssociatedPetition,
+   
+   (select json_agg(x) from (select associatedevalfieldid, (select IIE.complaintid from intakeservicerequestevaluation IIE where IIE.intakeservicerequestevaluationid=associatedevalfieldid) as associatecomplaint
+   from associatedpetitionsconfig ASPC 
+   join intakeservicerequestpetition INRP on INRP.intakeservicerequestpetitionid=ASPC.intakeservicerequestpetitionid and INRP.activeflag=1
+   where ASPC.activeflag=1 and INRP.intakeservicerequestpetitionid =INTSRP.intakeservicerequestpetitionid and associatedpetitionid  is null ) as X ) as AssociatedComplaint,
+
+    (select json_agg(x) from (select  INTSRE.complaintid as complaintID  ,INTSRE.intakeservicerequestevaluationid ,
+ 
+    (select array_agg(AG.name)  from  allegation AG
+        join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+        where  ITSEC.intakeservicerequestevaluationid=INTSRE.intakeservicerequestevaluationid and ITSEC.activeflag=1 ) as allegationname,
+           case when INTSRE.unknownrange=0 then to_char(INTSRE.offensedate,'MM/DD/YYYY') 
+        when INTSRE.unknownrange=1 then '' :: character varying 
+        when INTSRE.unknownrange=2 then to_char(INTSRE.begindate,'MM/DD/YYYY')|| ' - ' || to_char(INTSRE.enddate,'MM/DD/YYYY')
+        end as offensedate 
+   from intakeservicerequestevaluation INTSRE 
+    join Intakeservreqevalpetitionconfig INTSREPC on INTSRE.intakeservicerequestevaluationid =INTSREPC.intakeservicerequestevaluationid and INTSREPC.activeflag=1
+    where INTSREPC.intakeservicerequestpetitionid=INTSRP.intakeservicerequestpetitionid 
+   -- join intakeservicerequestpetition INTSRP on INTSRP.intakeservicerequestpetitionid =INTSREPC.intakeservicerequestpetitionid and INTSRP.activeflag=1  
+   ) as X ) as COMPLAINT
+   
+   from (select IPN.petitionstatustypekey,IPN.petitionid,IPN.intakeservicerequestpetitionid,IPN.intakenumber,false as petitionforwarded  
+from intakeservicerequestpetition IPN where IPN.intakenumber=v_intake
+union 
+select distinct INP.petitionstatustypekey, INP.petitionid,INP.intakeservicerequestpetitionid,INP.intakenumber,true as petitionforwarded  
+from intakeservicerequestpetition INP  
+join Intakeservreqevalpetitionconfig INPC on INPC.intakeservicerequestpetitionid=INP.intakeservicerequestpetitionid 
+and INPC.activeflag=1 and INPC.forwardcomplaintstatustypekey='PEFW' 
+where INP.intakenumber=v_intake and INP.activeflag=1) INTSRP where INTSRP.petitionforwarded!=false
+ --  limit pagesize offset v_pagenumber
+  ;
+end
+
+$function$
+

@@ -1,0 +1,2 @@
+ALTER TABLE cjams.tb_client_eligibility ALTER COLUMN adoption_id TYPE int8 USING adoption_id::int8;
+ALTER TABLE cjams.tb_client_eligibility ALTER COLUMN guardian_subsidy_id TYPE int8 USING guardian_subsidy_id::int8;

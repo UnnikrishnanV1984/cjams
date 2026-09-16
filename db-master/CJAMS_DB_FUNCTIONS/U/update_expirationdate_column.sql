@@ -1,0 +1,18 @@
+ CREATE OR REPLACE FUNCTION public.update_expirationdate_column()
+  RETURNS trigger                                                
+  LANGUAGE plpgsql                                               
+ AS $function$                                                 
+ begin                                                         
+                                                               
+    IF new.activeflag = 0 THEN                                 
+       new."expirationdate"  := now();                         
+    END IF;                                                    
+                                                               
+    IF new.activeflag = 1 THEN                                 
+       new."expirationdate"  := null;                          
+    END IF;                                                    
+                                                               
+ return new;                                                   
+ end;                                                          
+ $function$                                                      
+

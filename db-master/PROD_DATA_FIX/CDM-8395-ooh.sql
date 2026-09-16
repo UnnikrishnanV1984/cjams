@@ -1,0 +1,4 @@
+INSERT INTO cjams.personprogramarea
+(personprogramid, personid, startdate, enddate, insertedon, insertedby, updatedon, updatedby, activeflag, datavalidflag, clientmergeid, endreasonkey, ifpsatriskflag, old_id, programkey, subprogramkey, objecttypekey, objectid, entityid, datatransferflag, datasentdate, etl_userid, etl_load_date, sourcetype)
+VALUES(gen_random_uuid(), '84545c2d-a42f-4487-8bdf-35a95eaa494c', '2020-12-14 00:00:00', null, now(), '53adb63f-3406-45b7-8ae5-35216ecb03c2', now(), '53adb63f-3406-45b7-8ae5-35216ecb03c2', 1, null, 0, null, null, null, 'OOH', null, 'servicecase', 'e6adcc26-3e0c-4f91-b6b7-46d3d29a4486', '2020035004790', null, null, null, null, 'CW');
+	

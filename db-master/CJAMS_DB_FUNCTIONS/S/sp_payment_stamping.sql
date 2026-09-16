@@ -1,0 +1,833 @@
+CREATE OR REPLACE FUNCTION cjams.sp_payment_stamping(ad_run_dt date)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- This process will take all the payment generated from the previous month
+-- and allocate the money for each payment depand upon availability from each
+-- funds and then interface to FMIS / AFS
+
+-- 586 SSA
+-- 587 SSI
+-- 585 Other [COC]
+-- 583 CHILD SUPPORT - (Commented CIS-17739)
+
+-- Created by: Amit Rastogi
+-- Date created: 05/20/2004
+-- added code to check transaction only for the previous month for the child account 12/28/2005
+-- 04/02/2007 added the logic for system adjustement for under payments
+-- 05/10/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in TB_BATCH_ERROR_LOG # 14088
+-- 05/31/2007 Amit Rastogi - changed the logic to verify eligibility status for the client
+-- 05/31/2007 Amit Rastogi - check the client accounts
+-- 05/31/2007 Amit Rastogi - Initializing variables
+-- 10/24/2008 Vineet Tirodkar - # 18838
+--            1) Commented PAYMENT_DT update in table TB_PAYMENT_HEADER
+--            2) Commented logic of child support, for new requirement of CIS-17739, 
+--               i.e. 'Child Support funds will always be used for ancillary goods/services'.
+-- 03/03/2009 Vineet Tirodkar - CIS-17739
+--	      1) To add New Parameter as Run Date : 
+--               Payment Stamping for the prior month based on the parameter run date.
+--               e.g. Pass any date from Feb 2009 to run payment stamping for the month of Jan 2009.
+--            2) Changes in Logic of Payment Stamping 	
+--            3) To pass new parameter for SP_ACCOUNT_TRANSACTION_INSERT as Run Date 
+--            4) To call SP_CHILD_ACCOUNT_RELEASE_COC
+-- 03/23/2009 Vineet Tirodkar - Change in logic to get already Stamped Payments.
+-- 03/24/2009 Vineet Tirodkar - 1) To consider Receivables for Payment Stamping. 
+--            2) For Payment Stamping consider for Adjustments for Maintenance Payments Only.
+--            3) For Payment Stamping ignore payments against Voided Placements.
+-- 03/31/2009 Vineet Tirodkar - To Reset vl_child_account_id before in a loop
+-- 05/11/2009 Vineet Tirodkar - Change in logic to get already stamped amounts based on new table TB_FUND_ALLOCATION_MASTER - CIS-18372	
+-- 05/04/2010 Vineet Tirodkar - To add cur1 CURSOR WITH HOLD FOR and COMMIT in main CURSOR	
+-- 09/01/2010 Vinodh Magimaidas - PRJ00917 - Re-calculate fiscal category code while stamping CALL SP_RS_FISCAL_CAT_CD.
+-- 09/23/2010 Vinodh Magimaidas - PRJ00917 - Introduce Update_user_id while updating, update_ts needs to be researched for impact
+-- 02/27/2012 Vineet Tirodkar - PRJ-02312
+-- To pass new argument to SP_ACCOUNT_TRANSACTION_INSERT -  Eligibility Status Code
+-- 05/15/2012 Vineet Tirodkar - PRJ-02515 - To move the Get Fiscal category code logic at the beginning of SP. (Defect 8515 )
+-- 09/04/2012 Vineet Tirodkar - Payment stamping batch production issue fix (Sept 2012)
+-- New condition ORDER BY ELIGIBILITY_ID DESC FETCH FIRST ROW ONLY in the SQL to get client's Eligibility Status.
+-- Added RETURN -1 for execptions & RETURN 0 for success
+-- 09/25/2020 Vineet Tirodkar - Changes to trim and compare Eligibility Status Code - CDM-4684
+------------------------------------------------------------------------
+
+DECLARE vl_child_account_id BIGINT DEFAULT 0;--
+DECLARE vl_client_id BIGINT DEFAULT 0;--
+DECLARE vl_case_id BIGINT DEFAULT 0;--
+
+DECLARE vd_previous_month_start_dt 	DATE DEFAULT NULL;--
+DECLARE vd_previous_month_end_dt 	DATE DEFAULT NULL;--
+DECLARE vd_current_month_end_dt 	DATE DEFAULT NULL;--
+DECLARE vdc_child_support_amount 	decimal(10,2);--
+DECLARE vdc_final_payment_amount 	decimal(10,2);--
+DECLARE vdc_child_ssi_amount 		decimal(10,2);--
+DECLARE vdc_child_ssa_amount 		decimal(10,2);--
+DECLARE vdc_child_other_amount 		decimal(10,2);--
+DECLARE vdc_child_iv_e_amount 		decimal(10,2);--
+DECLARE vdc_child_state_amount 		decimal(10,2);--
+DECLARE vdc_remaining_support_amount decimal(10,2);--
+DECLARE vdc_amount_needed 			decimal(10,2);--
+DECLARE vs_transaction_source 		varchar(5);--
+DECLARE vs_funding_source 			varchar(5);--
+DECLARE vs_flag 					char(1);--
+
+DECLARE vdc_ssi_amt_adj_credit 		decimal(10,2);--
+DECLARE vdc_ssi_amt_adj_debit 		decimal(10,2);--
+DECLARE vdc_ssi_stamped_amt 		decimal(10,2);--
+
+DECLARE vdc_ssa_amt_adj_credit 		decimal(10,2);--
+DECLARE vdc_ssa_amt_adj_debit 		decimal(10,2);--
+DECLARE vdc_ssa_stamped_amt 		decimal(10,2);--
+
+DECLARE vdc_othcoc_amt_adj_credit 	decimal(10,2);--
+DECLARE vdc_othcoc_amt_adj_debit 	decimal(10,2);--
+DECLARE vdc_othcoc_stamped_amt 		decimal(10,2);--
+
+DECLARE vs_final_fiscal_category_cd varchar(5);--
+DECLARE vs_eligiblity_status_cd varchar(5);--
+
+--PRJ-00917
+DECLARE VS_ELIG_SW    				CHAR(1) DEFAULT NULL;--
+
+--Log Error
+DECLARE SQLCODE 				INT DEFAULT 0;--
+DECLARE al_sqlcode 				INT DEFAULT 0;--
+DECLARE as_error 				VARCHAR(3000);--
+DECLARE SQLSTATE 				CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION 	FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text 		VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status 			INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm 		VARCHAR(100) DEFAULT 'SP_PAYMENT_STAMPING';--
+DECLARE vs_identity_column 		VARCHAR(100);--
+DECLARE vs_identity_val 		VARCHAR(100);--
+DECLARE vl_count 				INTEGER;--
+ cur_payment_detail record;
+ cur_payment_detail_refcur REFCURSOR;
+--DECLARE CONTINUE HANDLER FOR SQLWARNING
+BEGIN
+begin
+	EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+   	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;    -- SET al_sqlcode = -1 ;--
+	 al_sqlcode := SQLCODE;
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( vs_Procedure_nm ,
+									    NULL::bigint,
+				        NULL::bigint,
+                		NULL::character varying,
+				        NULL::INTEGER,
+						NULL::character varying,
+				        SQLSTATE::character varying,
+                		as_error::character varying,
+				        'finance'::character varying) INTO
+                		vl_ret_status;
+
+     as_error := '';--
+     al_sqlcode := 0;--
+END;
+/*
+
+DECLARE EXIT HANDLER FOR SQLEXCEPTION
+BEGIN
+	GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+	 al_sqlcode := SQLCODE;
+	 as_error := COALESCE(as_error ,'') || TO_CHAR(CURRENT_TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;--
+	 as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+	 as_error := as_error || vs_message_text;--
+
+	SELECT SP_BATCH_ERROR_LOG  ( vs_Procedure_nm
+										, NULL
+										, NULL
+										, NULL
+										, NULL
+										, as_error
+										, 'STAMPING'
+										, vl_ret_status );--
+	RETURN -1;									
+END;--
+*/
+--Log error
+
+--  Get the last month start date and end date based on parameter date - CIS-17739
+/*SELECT ( DATE(SUBSTR(CHAR(ad_run_dt  -  DAY(ad_run_dt) DAYS,ISO),1,8)||'01'))
+	 , ( ad_run_dt  -  DAY(ad_run_dt) DAYS )
+	 , ( ad_run_dt + 1 month - DAY(ad_run_dt) DAYS)
+  INTO vd_previous_month_start_dt
+	 , vd_previous_month_end_dt
+	 , vd_current_month_end_dt
+  FROM sysibm.sysdummy1;--*/
+SELECT (date_trunc('month', ad_run_dt::date) - interval '1 month')::date,
+       (date_trunc('month', ad_run_dt::date)::date - 1),
+       ((date_trunc('month', ad_run_dt::date) + interval '1 month')- interval '1 Day')::date
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt,
+        vd_current_month_end_dt;
+
+-- Update payment header table with code interface to FMIS
+
+-- 5585	FMIS
+UPDATE TB_PAYMENT_HEADER
+   SET INTERFACE_TO_CD = '5585'
+     , UPDATE_USER_ID = 'STAMPING'
+ WHERE DELETE_SW = 'N' 
+   AND PAYMENT_TYPE_CD = '6'
+   AND MANUAL_SW= 'N' 
+   AND PAYMENT_START_DT = vd_previous_month_start_dt 
+   AND PAYMENT_END_DT = vd_previous_month_end_dt 
+   AND PAYMENT_ID IN (SELECT PAYMENT_ID 
+       			        FROM TB_PAYMENT_DETAIL 
+         		       WHERE DELETE_SW = 'N'
+			             AND FINAL_SERVICE_ID IS NOT NULL
+						 AND county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) 
+					  );--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode < 0 THEN
+     as_error := 'Error in Updating Payment Header with code interface to FMIS'  ;--
+     vs_identity_column := 'Payment ID';--
+     vs_identity_val := 'Multiple';--
+    --SIGNAL p_sp_error  ;--
+END IF ;--
+
+-- 5583 AFS
+UPDATE TB_PAYMENT_HEADER
+   SET INTERFACE_TO_CD = '5583' 
+     , UPDATE_USER_ID = 'STAMPING'
+ WHERE DELETE_SW = 'N' 
+   AND PAYMENT_TYPE_CD = '3294' 
+   AND MANUAL_SW= 'N' 
+   AND PAYMENT_START_DT = vd_previous_month_start_dt 
+   AND PAYMENT_END_DT = vd_previous_month_end_dt 
+   AND PAYMENT_ID IN (SELECT PAYMENT_ID 
+      			        FROM TB_PAYMENT_DETAIL 
+         		       WHERE DELETE_SW = 'N'
+			             AND FINAL_SERVICE_ID IS NOT NULL
+			             AND PLACEMENT_ID IS NOT NULL 
+						 AND county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) 
+					 ) ;--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode < 0 THEN
+     as_error := 'Error in Updating Payment Header with code interface to AFS'  ;--
+     vs_identity_column := 'Payment ID';--
+     vs_identity_val := 'Multiple';--
+   -- SIGNAL p_sp_error  ;--
+END IF ;--
+
+-- Allocation of money from different sources
+-- Changes in SQL to exclude Payments with Status as 'Hold and 'Released' - CIS-17739 
+--FOR cur_payment_detail AS
+--cur1 CURSOR WITH HOLD FOR
+OPEN cur_payment_detail_refcur FOR
+SELECT PD.CLIENT_ID
+	 , ( PD.FINAL_AMOUNT_NO - COALESCE(( SELECT SUM(COALESCE(RD.AMOUNT_NO,0))
+										   FROM TB_RECEIVABLE_DETAIL RD
+										  WHERE RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID
+											AND RD.DELETE_SW = 'N' ),0) 
+	   ) AS FINAL_AMOUNT_NO
+	 , PD.PAYMENT_DETAIL_ID
+	 , PD.CASE_ID
+	 , PD.FINAL_FISCAL_CATEGORY_CD
+  FROM TB_PAYMENT_HEADER PH
+	 , TB_PAYMENT_DETAIL PD
+	 , TB_PAYMENT_STATUS PS
+	 , TB_PLACEMENT PL
+ WHERE PH.PAYMENT_ID = PD.PAYMENT_ID 
+   AND PH.PAYMENT_ID = PS.PAYMENT_ID 
+   AND PL.PLACEMENT_ID = PD.PLACEMENT_ID      
+   AND PH.PAYMENT_START_DT = vd_previous_month_start_dt 
+   AND PH.PAYMENT_END_DT = vd_previous_month_end_dt 
+   AND PH.DELETE_SW = 'N' 
+   AND PD.DELETE_SW = 'N' 
+   AND PS.DELETE_SW = 'N' 
+   AND PL.DELETE_SW = 'N' 
+   AND PH.PAYMENT_TYPE_CD IN ('6','3294') 
+   AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+   AND PD.FINAL_SERVICE_ID IS NOT NULL
+   AND PS.PAYMENT_STATUS_CD NOT IN ('1635','1639') 
+   AND PD.PLACEMENT_ID IS NOT NULL
+   AND ( PL.VOID_SW = 'N' OR PL.VOID_SW is null OR RTRIM(LTRIM(PL.VOID_SW)) = '')
+   AND PD.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE ) ; 
+      
+--DO
+loop
+	fetch cur_payment_detail_refcur into cur_payment_detail;
+ exit when not found;
+     vdc_final_payment_amount := 0.00;--
+     vdc_final_payment_amount := cur_payment_detail.FINAL_AMOUNT_NO;--
+     vl_client_id := cur_payment_detail.CLIENT_ID;--
+     vdc_remaining_support_amount := 0.00;--
+     vdc_amount_needed := 0.00;--
+     vdc_child_iv_e_amount := 0.00;--
+     vdc_child_state_amount := 0.00;--
+     vl_case_id := NULL; --INITIAL VALUE	
+     vl_case_id := cur_payment_detail.CASE_ID;--
+     vs_final_fiscal_category_cd := NULL; --INITIAL VALUE	
+     vs_final_fiscal_category_cd := cur_payment_detail.FINAL_FISCAL_CATEGORY_CD;--
+    
+    --  PRJ-02312 To get client's Eligibility Status
+	 VS_ELIG_SW := NULL;
+	 vs_eligiblity_status_cd :=  NULL;
+				
+	SELECT btrim(ELIGIBILITY_STATUS_CD)
+	    INTO vs_eligiblity_status_cd
+	  FROM TB_CLIENT_ELIGIBILITY
+	WHERE CLIENT_ID = vl_client_id 
+		AND CASE_ID = vl_case_id 
+		AND btrim(ELIGIBILITY_TYPE_CD) = '2931' -- IV-E Foster Care  
+		AND DELETE_SW = 'N' 
+		AND START_DT <= vd_previous_month_end_dt 
+		AND (END_DT >= vd_previous_month_start_dt or END_DT is null)
+    ORDER BY ELIGIBILITY_ID DESC
+    FETCH FIRST ROW ONLY;		
+
+	IF vs_eligiblity_status_cd is NOT NULL AND vs_eligiblity_status_cd = '2913' THEN -- Eligibility Reimb
+		 VS_ELIG_SW := 'Y'; 
+	ELSE
+		 VS_ELIG_SW := 'N';	
+	END IF;
+RAISE NOTICE 'sp_payment_stamping>>>> before call SP_RS_FISCAL_CAT_CD';
+	-- PRJ-02515 - START				
+	-- PRJ-00917 Start - re-calculate fiscal category code
+	SELECT a.as_fiscalcat,a.al_sqlcode,a.as_error from SP_RS_FISCAL_CAT_CD ( vl_CLIENT_ID
+									 , cur_payment_detail.PAYMENT_DETAIL_ID 
+									 , VS_ELIG_SW
+									 , vd_previous_month_start_dt
+									 , vd_previous_month_end_dt) a INTO
+									 vs_final_fiscal_category_cd
+									 , al_sqlcode
+									 , as_error;--
+	RAISE NOTICE 'sp_payment_stamping>>>> call SP_RS_FISCAL_CAT_CD Output  %',vs_final_fiscal_category_cd;
+
+	IF al_sqlcode <> 0 THEN
+		 as_error := as_error  ;--
+		IF as_error is NULL OR as_error = '' THEN
+			 as_error := 'SP_RS_FISCAL_CAT_CD failed'  ;--
+		END IF;--
+		--SIGNAL p_sp_error  ;		    			--
+	END IF; 	--
+	-- PRJ-00917 End
+	-- PRJ-02515 - END
+	
+     vl_count := 0; --INITIAL VALUE	
+
+    SELECT COUNT(*) 
+      INTO vl_count
+      FROM TB_FUND_ALLOCATION_MASTER
+     WHERE PAYMENT_DETAIL_ID = cur_payment_detail.PAYMENT_DETAIL_ID
+       AND DELETE_SW = 'N' ;--
+
+    IF vl_count = 0 THEN -- PAYMENT NOT STAMPED
+       -- Get Active Conserved Account ID of the client 	
+        vl_child_account_id := NULL; --INITIAL VALUE
+       
+       IF vl_client_id is not null then
+          SELECT TA.CLIENT_ACCOUNT_ID
+         	INTO vl_child_account_id
+            FROM TB_CLIENT_ACCOUNT TA
+           WHERE TA.DELETE_SW = 'N' 
+       	     AND TA.ACCOUNT_TYPE_CD = '590' 
+             AND TA.CLIENT_ID = vl_client_id 
+             AND TA.STATUS_CD = '592';--
+       END IF; 		--
+
+       IF vl_child_account_id is NULL THEN
+       	   vl_child_account_id := 0; 	--
+       END IF;--
+       
+       IF vdc_final_payment_amount <> 0 THEN -- FINAL AMOUNT NOT ZERO 
+			-- Set entire Final payment amount as remaining support amt, as child support logic has been commented.
+			 vdc_remaining_support_amount := vdc_final_payment_amount;--
+		
+			-- START - SSI --
+			IF vl_child_account_id > 0 THEN -- CLIENT ACC EXIST (SSI) -- Start	
+				-- if amount still remain then look for SSI
+				 vdc_child_ssi_amount := 0.00; -- INITIAL VALUE
+				 vdc_ssi_amt_adj_credit := 0.00; -- INITIAL VALUE
+				 vdc_ssi_amt_adj_debit := 0.00; -- INITIAL VALUE
+				 vdc_ssi_stamped_amt := 0.00; -- INITIAL VALUE
+	      
+				IF vdc_remaining_support_amount > 0 THEN
+					-- SSI Receipts 
+					SELECT SUM(TB.TRANSACTION_AMOUNT_NO)
+					  INTO vdc_child_ssi_amount
+					  FROM TB_ACCOUNT_TRANSACTION TB
+					 WHERE TB.CLIENT_ACCOUNT_ID = vl_child_account_id 
+					   AND TB.DELETE_SW = 'N' 
+					   AND TB.TRANSACTION_SOURCE_CD = '587'  
+					   AND TB.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt;		--
+
+					IF vdc_child_ssi_amount is NULL THEN
+					   vdc_child_ssi_amount := 0.00;	--
+					END IF;--
+		 
+					-- Credit Adjustments Against Ref Transaction with source SSI
+					SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))	    
+					  INTO vdc_ssi_amt_adj_credit
+					  FROM TB_ACCOUNT_TRANSACTION TR1
+					 WHERE TR1.TRANSACTION_TYPE_CD = '588'
+					   AND TR1.CREDIT_DEBIT_SW = 'C'
+					   AND TR1.TRANSACTION_SOURCE_CD = '5473'	
+					   AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+					   AND TR1.REFERENCE_TRANSACTION_ID in 
+						   (SELECT TR.TRANSACTION_ID
+							  FROM TB_ACCOUNT_TRANSACTION TR
+							 WHERE TR.CLIENT_ACCOUNT_ID = vl_child_account_id
+							   AND TR.DELETE_SW = 'N' 
+							   AND TR.CREDIT_DEBIT_SW = 'C'
+							   AND TR.TRANSACTION_SOURCE_CD = '587'
+							   AND TR.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt 
+							);--
+
+					IF vdc_ssi_amt_adj_credit is NULL THEN
+						 vdc_ssi_amt_adj_credit := 0.00;--
+					END IF;   --
+		 
+					-- Debit Adjustments Against Ref Transaction with source SSI
+					SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))	    
+					  INTO vdc_ssi_amt_adj_debit
+					  FROM TB_ACCOUNT_TRANSACTION TR1
+					 WHERE TR1.TRANSACTION_TYPE_CD = '588'
+					   AND TR1.CREDIT_DEBIT_SW = 'D'
+					   AND TR1.TRANSACTION_SOURCE_CD = '5473'	
+					   AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+					   AND TR1.REFERENCE_TRANSACTION_ID in 
+						   (SELECT TR.TRANSACTION_ID
+							  FROM TB_ACCOUNT_TRANSACTION TR
+							 WHERE TR.CLIENT_ACCOUNT_ID = vl_child_account_id
+							   AND TR.DELETE_SW = 'N' 
+							   AND TR.CREDIT_DEBIT_SW = 'C'
+							   AND TR.TRANSACTION_SOURCE_CD = '587'
+							   AND TR.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt 
+						   );--
+						 
+					IF vdc_ssi_amt_adj_debit is NULL THEN
+						 vdc_ssi_amt_adj_debit := 0.00;--
+					END IF;   --
+		 
+					-- Stamped COC Payments Against Transaction with source SSI
+					SELECT SUM(SSI_FUNDING_AMT)
+					  INTO vdc_ssi_stamped_amt
+					  FROM TB_FUND_ALLOCATION_MASTER  TF
+						 , TB_PAYMENT_DETAIL PD
+						 , TB_PAYMENT_HEADER PH
+					 WHERE TF.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID
+					   AND PH.PAYMENT_ID = PD.PAYMENT_ID 	
+					   AND PH.PAYMENT_TYPE_CD IN ('6','3294')
+					   AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+					   AND PD.FINAL_SERVICE_ID IS NOT NULL
+					   AND TF.DELETE_SW = 'N'
+					   AND PD.DELETE_SW = 'N'
+					   AND PH.DELETE_SW = 'N'
+					   AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+					   AND PH.PAYMENT_END_DT = vd_previous_month_end_dt
+					   AND PD.CLIENT_ID = vl_client_id 
+					   AND PD.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE )
+					   ;	  --
+
+						-- Commented CIS-18372
+
+					IF vdc_ssi_stamped_amt is NULL THEN
+						 vdc_ssi_stamped_amt := 0.00;	--
+					END IF;--
+		 
+					 vdc_child_ssi_amount := ( vdc_child_ssi_amount + vdc_ssi_amt_adj_credit ) - ( vdc_ssi_amt_adj_debit + vdc_ssi_stamped_amt ) ;	--
+		
+					IF vdc_child_ssi_amount > 0 THEN  -- SSI have some money
+						IF vdc_remaining_support_amount > vdc_child_ssi_amount THEN
+							 vdc_remaining_support_amount := vdc_remaining_support_amount - vdc_child_ssi_amount;--
+							 vdc_amount_needed := vdc_child_ssi_amount;--
+						ELSE
+							--SET vdc_amount_needed = vdc_child_ssi_amount - vdc_remaining_support_amount;--
+							 vdc_amount_needed := vdc_remaining_support_amount;--
+							 vdc_remaining_support_amount := 0;--
+						END IF ;--
+						-- inserting in child account table with transaction type automatic charge and transaction source
+						-- SSI
+
+						 vs_transaction_source := '587';--
+						 vs_funding_source := '587';--
+						 vs_flag := 'Y';--
+
+						SELECT a.al_sqlcode,a.as_error from SP_ACCOUNT_TRANSACTION_INSERT 	( vl_child_account_id
+																	, cur_payment_detail.PAYMENT_DETAIL_ID
+																	, vs_transaction_source
+																	, vs_funding_source
+																	, vdc_amount_needed
+																	, vs_flag
+																	, ad_run_dt
+																	, vdc_final_payment_amount
+																	, vs_final_fiscal_category_cd
+																	, vs_eligiblity_status_cd) a INTO
+																	 al_sqlcode
+																	, as_error;--
+
+						IF al_sqlcode <> 0 THEN
+							 as_error := as_error  ;--
+							IF as_error is NULL OR as_error = '' THEN
+								 as_error := 'SP_ACCOUNT_TRANSACTION_INSERT failed - SSI'  ;--
+							END IF;--
+							--SIGNAL p_sp_error  ;--
+						END IF;--
+					END IF;--
+				END IF;--
+			END IF;  -- CLIENT ACC EXIST (SSI) -- End
+			-- END - SSI --
+
+			-- START - SSA --
+			IF vl_child_account_id > 0 THEN -- CLIENT ACC EXIST (SSA) -- Start
+				-- if amount still remain then look for SSA
+				 vdc_child_ssa_amount := 0.00; -- INITIAL VALUE
+				 vdc_ssa_amt_adj_credit := 0.00; -- INITIAL VALUE
+				 vdc_ssa_amt_adj_debit := 0.00; -- INITIAL VALUE
+				 vdc_ssa_stamped_amt := 0.00; -- INITIAL VALUE
+	      
+				IF vdc_remaining_support_amount > 0 THEN
+					-- SSA Receipts 
+					SELECT SUM(TB.TRANSACTION_AMOUNT_NO)
+					  INTO vdc_child_ssa_amount
+					  FROM TB_ACCOUNT_TRANSACTION TB
+					 WHERE TB.CLIENT_ACCOUNT_ID = vl_child_account_id 
+					   AND TB.DELETE_SW = 'N' 
+					   AND TB.TRANSACTION_SOURCE_CD = '586'  
+					   AND TB.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt;	--
+
+					IF vdc_child_ssa_amount is NULL THEN
+						 vdc_child_ssa_amount := 0.00;--
+					END IF;--
+					   
+					-- Credit Adjustments Against Ref Transaction with source SSA
+					SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))	    
+					  INTO vdc_ssa_amt_adj_credit
+					  FROM TB_ACCOUNT_TRANSACTION TR1
+					 WHERE TR1.TRANSACTION_TYPE_CD = '588'
+					   AND TR1.CREDIT_DEBIT_SW = 'C'
+					   AND TR1.TRANSACTION_SOURCE_CD = '5473'	
+					   AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+					   AND TR1.REFERENCE_TRANSACTION_ID in 
+						   (SELECT TR.TRANSACTION_ID
+							  FROM TB_ACCOUNT_TRANSACTION TR
+							 WHERE TR.CLIENT_ACCOUNT_ID = vl_child_account_id
+							   AND TR.DELETE_SW = 'N' 
+							   AND TR.CREDIT_DEBIT_SW = 'C'
+							   AND TR.TRANSACTION_SOURCE_CD = '586'
+							   AND TR.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt 
+						   );--
+
+					IF vdc_ssa_amt_adj_credit is NULL THEN
+					   vdc_ssa_amt_adj_credit := 0.00;--
+					END IF;   --
+		   		 
+					-- Debit Adjustments Against Ref Transaction with source SSA
+					SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))	    
+					  INTO vdc_ssa_amt_adj_debit
+					  FROM TB_ACCOUNT_TRANSACTION TR1
+					 WHERE TR1.TRANSACTION_TYPE_CD = '588'
+					   AND TR1.CREDIT_DEBIT_SW = 'D'
+					   AND TR1.TRANSACTION_SOURCE_CD = '5473'	
+					   AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+					   AND TR1.REFERENCE_TRANSACTION_ID in 
+						   (SELECT TR.TRANSACTION_ID
+							  FROM TB_ACCOUNT_TRANSACTION TR
+							 WHERE TR.CLIENT_ACCOUNT_ID = vl_child_account_id
+							   AND TR.DELETE_SW = 'N' 
+							   AND TR.CREDIT_DEBIT_SW = 'C'
+							   AND TR.TRANSACTION_SOURCE_CD = '586'
+							   AND TR.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt 
+						   );--
+								 
+					IF vdc_ssa_amt_adj_debit is NULL THEN
+						 vdc_ssa_amt_adj_debit := 0.00;--
+					END IF;   --
+		 
+					-- Stamped COC Payments Against Transaction with source SSA
+					SELECT SUM(SSA_FUNDING_AMT)
+					  INTO vdc_ssa_stamped_amt
+					  FROM TB_FUND_ALLOCATION_MASTER  TF
+						 , TB_PAYMENT_DETAIL PD
+						 , TB_PAYMENT_HEADER PH
+					 WHERE TF.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID
+					   AND PH.PAYMENT_ID = PD.PAYMENT_ID 	
+					   AND PH.PAYMENT_TYPE_CD IN ('6','3294')
+					   AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+					   AND PD.FINAL_SERVICE_ID IS NOT NULL
+					   AND TF.DELETE_SW = 'N'
+					   AND PD.DELETE_SW = 'N'
+					   AND PH.DELETE_SW = 'N'
+					   AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+					   AND PH.PAYMENT_END_DT = vd_previous_month_end_dt
+					   AND PD.CLIENT_ID = vl_client_id 
+					   AND PD.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE )
+					   ;	  --
+		
+					-- Commented CIS-18372	   
+						
+					IF vdc_ssa_stamped_amt is NULL THEN
+						 vdc_ssa_stamped_amt := 0.00;	--
+					END IF;--
+				   
+					 vdc_child_ssa_amount := ( vdc_child_ssa_amount + vdc_ssa_amt_adj_credit ) - ( vdc_ssa_amt_adj_debit + vdc_ssa_stamped_amt );--
+
+					IF vdc_child_ssa_amount > 0 THEN  -- SSA have some money
+						IF vdc_remaining_support_amount > vdc_child_ssa_amount THEN
+							 vdc_remaining_support_amount := vdc_remaining_support_amount - vdc_child_ssa_amount;--
+							 vdc_amount_needed := vdc_child_ssa_amount;--
+						ELSE
+							--SET vdc_amount_needed = vdc_child_ssa_amount - vdc_remaining_support_amount;--
+							 vdc_amount_needed := vdc_remaining_support_amount;--
+							 vdc_remaining_support_amount := 0;--
+						END IF ;--
+						-- inserting in child account table with transaction type automatic charge and transaction source
+						-- SSA
+
+						 vs_transaction_source := '586';--
+						 vs_funding_source := '586';--
+						 vs_flag := 'Y';--
+						SELECT a.al_sqlcode,a.as_error from SP_ACCOUNT_TRANSACTION_INSERT	( vl_child_account_id
+																	, cur_payment_detail.PAYMENT_DETAIL_ID
+																	, vs_transaction_source
+																	, vs_funding_source
+																	, vdc_amount_needed
+																	, vs_flag
+																	, ad_run_dt
+																	, vdc_final_payment_amount
+																	, vs_final_fiscal_category_cd
+																	, vs_eligiblity_status_cd) a into
+																	 al_sqlcode
+																	, as_error;--
+
+						IF al_sqlcode <> 0 THEN
+							 as_error := as_error  ;--
+							IF as_error is NULL OR as_error = '' THEN
+								 as_error := 'SP_ACCOUNT_TRANSACTION_INSERT failed - SSA'  ;--
+							END IF;--
+							--SIGNAL p_sp_error  ;--
+						END IF ;--
+					END IF;--
+				END IF;--
+			END IF; -- CLIENT ACC EXIST (SSA) -- End	
+			-- END - SSA --
+
+			-- START -- other [COC]
+			IF vl_child_account_id > 0 THEN -- CLIENT ACC EXIST (Other[COC]) -- Start
+				-- if amount still remain then look for other money in child account
+				 vdc_child_other_amount := 0.00; -- INITIAL VALUE
+				 vdc_othcoc_amt_adj_credit := 0.00; -- INITIAL VALUE
+				 vdc_othcoc_amt_adj_debit := 0.00; -- INITIAL VALUE
+				 vdc_othcoc_stamped_amt := 0.00; -- INITIAL VALUE
+		
+				IF vdc_remaining_support_amount > 0 THEN
+					SELECT SUM(TB.TRANSACTION_AMOUNT_NO)
+					  INTO vdc_child_other_amount
+					  FROM TB_ACCOUNT_TRANSACTION TB
+					 WHERE TB.CLIENT_ACCOUNT_ID = vl_child_account_id 
+					   AND TB.DELETE_SW = 'N' 
+					   AND TB.TRANSACTION_SOURCE_CD = '585'  
+					   AND TB.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt;		--
+			   
+					IF vdc_child_other_amount is NULL THEN
+						 vdc_child_other_amount := 0.00 ;	--
+					END IF;--
+		   
+					-- Credit Adjustments Against Ref Transaction with source OTHER [COC]
+					SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))	    
+					  INTO vdc_othcoc_amt_adj_credit
+					  FROM TB_ACCOUNT_TRANSACTION TR1
+					 WHERE TR1.TRANSACTION_TYPE_CD = '588'
+					   AND TR1.CREDIT_DEBIT_SW = 'C'
+					   AND TR1.TRANSACTION_SOURCE_CD = '5473'	
+					   AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+					   AND TR1.REFERENCE_TRANSACTION_ID in 
+						   ( SELECT TR.TRANSACTION_ID
+							   FROM TB_ACCOUNT_TRANSACTION TR
+							  WHERE TR.CLIENT_ACCOUNT_ID = vl_child_account_id
+								AND TR.DELETE_SW = 'N' 
+								AND TR.CREDIT_DEBIT_SW = 'C'
+								AND TR.TRANSACTION_SOURCE_CD = '585'
+								AND TR.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt 
+						   );--
+
+					IF vdc_othcoc_amt_adj_credit is NULL THEN
+						 vdc_othcoc_amt_adj_credit := 0.00;--
+					END IF;   --
+		   		 
+					-- Debit Adjustments Against Ref Transaction with source OTHER [COC]
+					SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))	    
+					  INTO vdc_othcoc_amt_adj_debit
+					  FROM TB_ACCOUNT_TRANSACTION TR1
+					 WHERE TR1.TRANSACTION_TYPE_CD = '588'
+					   AND TR1.CREDIT_DEBIT_SW = 'D'
+					   AND TR1.TRANSACTION_SOURCE_CD = '5473'	
+					   AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+					   AND TR1.REFERENCE_TRANSACTION_ID in 
+						   ( SELECT TR.TRANSACTION_ID
+							   FROM TB_ACCOUNT_TRANSACTION TR
+							  WHERE TR.CLIENT_ACCOUNT_ID = vl_child_account_id
+								AND TR.DELETE_SW = 'N' 
+								AND TR.CREDIT_DEBIT_SW = 'C'
+								AND TR.TRANSACTION_SOURCE_CD = '585'
+								AND TR.BENEFIT_START_DT BETWEEN vd_previous_month_start_dt and vd_previous_month_end_dt 
+						   );--
+							 
+					IF vdc_othcoc_amt_adj_debit is NULL THEN
+						 vdc_othcoc_amt_adj_debit := 0.00;--
+					END IF;   --
+	   
+					-- Stamped COC Payments Against Transaction with source OTHER [COC]
+					SELECT SUM(COC_FUNDING_AMT)
+					  INTO vdc_othcoc_stamped_amt
+					  FROM TB_FUND_ALLOCATION_MASTER  TF
+					     , TB_PAYMENT_DETAIL PD
+						 , TB_PAYMENT_HEADER PH
+					 WHERE TF.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID
+					   AND PH.PAYMENT_ID = PD.PAYMENT_ID 	
+					   AND PH.PAYMENT_TYPE_CD IN ('6','3294')
+					   AND ( PH.MANUAL_SW = 'N' OR PH.MANUAL_SW IS NULL )
+					   AND PD.FINAL_SERVICE_ID IS NOT NULL
+					   AND TF.DELETE_SW = 'N'
+					   AND PD.DELETE_SW = 'N'
+					   AND PH.DELETE_SW = 'N'
+					   AND PH.PAYMENT_START_DT = vd_previous_month_start_dt
+					   AND PH.PAYMENT_END_DT = vd_previous_month_end_dt
+					   AND PD.CLIENT_ID = vl_client_id 
+					   AND PD.county_cd  IN( select statecountycode from county where activeflag = 1 and golivedate <= CURRENT_DATE )
+					   ;	  --
+		
+					   -- Commented CIS-18372	       
+
+					IF vdc_othcoc_stamped_amt is NULL THEN
+						 vdc_othcoc_stamped_amt := 0.00;	--
+					END IF;		   --
+		   
+					 vdc_child_other_amount := ( vdc_child_other_amount + vdc_othcoc_amt_adj_credit ) - ( vdc_othcoc_amt_adj_debit + vdc_othcoc_stamped_amt );--
+		   
+					IF vdc_child_other_amount > 0 THEN  -- OTHER [COC] have some money
+						IF vdc_remaining_support_amount > vdc_child_other_amount THEN
+							 vdc_remaining_support_amount := vdc_remaining_support_amount - vdc_child_other_amount;--
+							 vdc_amount_needed := vdc_child_other_amount;--
+						ELSE
+							--SET vdc_amount_needed = vdc_child_other_amount - vdc_remaining_support_amount;--
+							 vdc_amount_needed := vdc_remaining_support_amount;--
+							 vdc_remaining_support_amount := 0;--
+						END IF ;--
+						  -- inserting in child account table with transaction type automatic charge and transaction source
+						  -- OTHER [COC]
+
+						 vs_transaction_source := '585';--
+						 vs_funding_source := '4893';--
+						 vs_flag := 'Y';--
+						SELECT a.al_sqlcode,a.as_error from SP_ACCOUNT_TRANSACTION_INSERT	( vl_child_account_id
+																	, cur_payment_detail.PAYMENT_DETAIL_ID
+																	, vs_transaction_source
+																	, vs_funding_source
+																	, vdc_amount_needed
+																	, vs_flag
+																	, ad_run_dt
+																	, vdc_final_payment_amount
+																	, vs_final_fiscal_category_cd
+																	, vs_eligiblity_status_cd) a into
+																	 al_sqlcode
+																	, as_error;--
+
+						IF al_sqlcode <> 0 THEN
+							 as_error := as_error  ;--
+							IF as_error is NULL OR as_error = '' THEN
+								 as_error := 'SP_ACCOUNT_TRANSACTION_INSERT failed - Other [COC]'  ;--
+							END IF;--
+							--SIGNAL p_sp_error  ;--
+						END IF ;--
+					END IF;--
+				END IF;--
+			END IF; -- CLIENT ACC EXIST (Other[COC]) -- End   
+			-- END -- other [COC]
+
+			-- STATE AND IV-E MONEY START HERE
+			-- once child support, ssi and ssa is looked into, if money is still required then
+			-- look if child is IV-E eligible
+			IF vdc_remaining_support_amount > 0 THEN
+				-- PRJ-02312 moved the logic to get client's Eligibility Status on top
+
+				IF VS_ELIG_SW = 'Y' THEN -- client is IV-E eligible
+					 vdc_child_iv_e_amount := vdc_remaining_support_amount/2;--
+					 vdc_child_state_amount := vdc_remaining_support_amount/2;--
+				ELSE
+					 vdc_child_iv_e_amount := 0;--
+					 vdc_child_state_amount := vdc_remaining_support_amount;--
+				END IF;
+				
+				-- PRJ-02515 - Moved the Get Fiscal category code logic at the beginning of SP.
+			END IF;--
+			-- STATE AND IV-E MONEY END HERE
+
+			-- inserting state money record
+			IF vdc_child_state_amount > 0 THEN 
+				 vs_transaction_source := '';--
+				 vs_funding_source := '4895';--
+				 vs_flag := 'N';--
+				SELECT a.al_sqlcode,a.as_error from SP_ACCOUNT_TRANSACTION_INSERT ( vl_child_account_id
+														   , cur_payment_detail.PAYMENT_DETAIL_ID
+														   , vs_transaction_source
+														   , vs_funding_source
+														   , vdc_child_state_amount
+														   , vs_flag
+														   , ad_run_dt
+														   , vdc_final_payment_amount
+														   , vs_final_fiscal_category_cd
+														   , vs_eligiblity_status_cd) a into
+														    al_sqlcode
+														   , as_error;--
+
+				IF al_sqlcode <> 0 THEN
+					 as_error := as_error  ;--
+					IF as_error is NULL OR as_error = '' THEN
+						 as_error := 'SP_ACCOUNT_TRANSACTION_INSERT failed - STATE Money'  ;--
+					END IF;--
+					--SIGNAL p_sp_error  ;--
+				END IF ;--
+
+				-- inserting iv-e money record
+				IF vdc_child_iv_e_amount > 0 THEN
+					 vs_transaction_source := '';--
+					 vs_funding_source := '4894';--
+					 vs_flag := 'N';--
+					SELECT a.al_sqlcode,a.as_error from SP_ACCOUNT_TRANSACTION_INSERT ( vl_child_account_id
+															   , cur_payment_detail.PAYMENT_DETAIL_ID
+															   , vs_transaction_source
+															   , vs_funding_source
+															   , vdc_child_iv_e_amount
+															   , vs_flag
+															   , ad_run_dt
+															   , vdc_final_payment_amount
+															   , vs_final_fiscal_category_cd
+															   , vs_eligiblity_status_cd) a into
+															    al_sqlcode
+															   , as_error;--
+
+					IF al_sqlcode <> 0 THEN
+						 as_error = as_error  ;--
+						IF as_error is NULL OR as_error = '' THEN
+							 as_error := 'SP_ACCOUNT_TRANSACTION_INSERT failed - IV-E Money'  ;--
+						END IF;--
+						--SIGNAL p_sp_error  ;--
+					END IF ;--
+				END IF;--
+			END IF;    --
+		END IF; -- FINAL AMOUNT NOT ZERO
+		--COMMIT;--
+	END IF; -- PAYMENT NOT STAMPED	
+--END FOR;--
+END Loop;
+
+--COMMIT;--
+
+PERFORM SP_CHILD_ACCOUNT_RELEASE_COC(ad_run_dt);--
+RETURN 0;
+--END P1
+END;
+
+$function$
+;

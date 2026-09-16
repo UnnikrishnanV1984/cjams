@@ -1,0 +1,2 @@
+update livingarrangement set streetname = '1200 Hillcreek Rd', updatedon = now(), updatedby = 'CDM-7927'
+	where placementid in ('a8ce9c71-e56f-4160-b43e-c6323cfcfdb6', '455d5a7a-9438-4516-b448-0713fa70697e', '10ff3301-d32b-44e2-8172-c2b20a68ee1a', 'aad6ea9f-7857-4b94-8ef9-09641bacd423');

@@ -1,0 +1,72 @@
+CREATE OR REPLACE FUNCTION as_getvisitorlist(v_intakeserviceid uuid, v_page bigint, v_limit bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+    visitors json;
+ v_pageoffset int;
+ v_pagenumber int;
+
+BEGIN
+
+    v_pagenumber := v_page-1;
+    v_pageoffset = v_pagenumber * v_page;
+  
+SELECT json_agg(e) INTO visitors 
+FROM (
+  SELECT COUNT(1)OVER() as totalcount,
+  p.personid,
+  p.firstname,
+  p.lastname,
+  p.suffix,
+   (SELECT r.description 
+   FROM  referencevalues r 
+   WHERE 
+    r.ref_key = p.suffix 
+   AND activeflag =1  LIMIT 1) suffixdesc,
+  (SELECT json_agg(e) as  address from
+  (SELECT  pa.personaddressid, 
+   pa.address,
+  pa.address2,
+  pa.state,
+   pa.city, 
+  pa.zipcode,
+  pa.county 
+  FROM personaddress pa
+  WHERE pa.personaddresstypekey = '31' and pa.personid= vr.personid 
+  and pa.activeflag =1
+  ) e) ,
+   p.ethnicgrouptypekey,
+  p.gendertypekey,
+  P.racetypekey,
+  p.dob,
+  p.userphoto,
+  egt.typedescription as ethinicitytypedesc,
+  RAT.typedescription as racetypedesc,
+  vr.placementid,
+  vr.iscontact,
+  vr.relationship as relationshiptypekey,
+  vr.reasoncode ,
+  vr.visitorid,
+  (SELECT r.description 
+   FROM  referencevalues r 
+   WHERE 
+    r.ref_key = vr.relationship 
+   AND activeflag =1  LIMIT 1) relationshipdesc,
+   (SELECT r.description 
+   FROM  referencevalues r 
+   WHERE r.ref_key = vr.reasoncode 
+   AND activeflag =1  LIMIT 1) reasoncodedesc
+  FROM visitor vr
+  INNER JOIN intakeservicerequest irs ON vr.intakeserviceid = irs.intakeserviceid AND irs.activeflag =1
+  INNER JOIN person as p ON p.personid = vr.personid AND p.activeflag = 1 
+  LEFT JOIN ethnicgrouptype egt ON egt.ethnicgrouptypekey = p.ethnicgrouptypekey and egt.activeflag = 1
+  LEFT JOIN racetype RAT ON RAT.racetypekey = P.racetypekey AND RAT.activeflag = 1
+  WHERE vr.intakeserviceid = v_intakeserviceid 
+  AND vr.activeflag =1
+  LIMIT v_limit OFFSET v_pageoffset
+  )e;
+RETURN visitors;
+END;
+$function$
+

@@ -1,0 +1,132 @@
+CREATE OR REPLACE FUNCTION getservicecaseremovallist(v_objectid uuid, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(cjamspid bigint, firstname character varying, lastname character varying, middlename character varying, suffix character varying, personname text, dob date, age text, gender character varying, childremoval json, personid uuid)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset  int;
+ v_pagenumber  int;  
+ 
+BEGIN
+ v_pagenumber  :=  pagenumber-1;
+ v_pageoffset  =  v_pagenumber  *  pagesize;
+RETURN QUERY  
+ 
+SELECT 
+ pr.cjamspid, 
+ pr.firstname,
+ pr.lastname,
+ pr.middlename,
+ pr.suffix,
+ pr.firstname || ' ' || pr.lastname personname,
+ pr.dob :: date,
+ CASE 
+  WHEN EXTRACT(YEAR FROM age(now(), pr.dob)) <= 0 THEN 
+   CASE WHEN EXTRACT(MONTH FROM age(now(), pr.dob)) <= 0 THEN 
+    CONCAT (EXTRACT(DAY FROM age(now(), pr.dob)) :: CHARACTER VARYING, ' ', 'Day(s)') 
+    ELSE CONCAT (EXTRACT(MONTH FROM age(now(), pr.dob)) :: CHARACTER VARYING, ' ', 'Month(s)') 
+   END 
+  ELSE CONCAT (EXTRACT(YEAR FROM age(now(), pr.dob)) :: CHARACTER VARYING,' ', 'Yrs')  
+ END AS age,
+ gr.typedescription,
+ 
+ (SELECT JSON_aGG(TT) FROM 
+  (
+   SELECT   
+    irl.intakeservreqchildremovalid,
+    irl.intakeserviceid,
+    irl.intakeservicerequestactorid,
+    irl.rmvdfrmisractorid,
+    irl.agencytypekey ,
+    irl.fathername,
+    irl.mothername, 
+    irl.rmvdfrmpersonname,
+    irl.removalreasontypeid,
+    irl.removaladd1, 
+    irl.removaladd2 ,
+    irl.removalzip,
+    irl.removalstatecd,
+    irl.removalcity,
+    irl.removaldate,
+    irl.removaltime,
+    irl.familystructuretypekey,
+    irl.primarycaregiverid,
+    irl.vpabegindate,
+    irl.vpaparentssigneddate,
+    irl.agencysigneddate,
+    irl.isbothparentssigned,
+    irl.reasonableeffortsmade,
+    irl.childfactorsentry,
+    irl.removaltypekey,
+    irl.removalid,
+    irl.primarycaregiveractorid,
+    irl.seccaregiveractorid,
+    irl.seccaregiveradd,
+    irl.primarycaregiveradd,
+    irl.isverifiedreporteradd,
+    irl.isverifiedcaregiver1add,
+    irl.isverifiedcaregiver2add,
+    irl.relativeactorid,
+    irl.isdisability,
+    irl.servicecaseid,
+    irl.vpaenddate,
+    irl.vpayouthsigneddate,
+    irl.vpaparentssigneddate,
+    irl.parent2signeddate,
+    irl.comments,
+    irl.specifiedrelativedatechildlastlivedwith,
+    irl.specifiedrelativename,
+    irl.parent2comments,
+    irl.returndate,
+    irl.returntime,
+    (
+     SELECT  
+      rv.description 
+     FROM referencevalues rv
+     WHERE rv.referencetypeid =53 AND rv.ref_key = irl.removaltypekey AND rv.activeflag=1 
+    ) AS removaltypekeydescription,      
+    irl.primarycaregiveractorid, 
+      (
+    SELECT 
+     rs.typedescription 
+    FROM routing r 
+    INNER JOIN routingstatustype rs ON rs.sequencenumber = r.routingstatustypeid AND rs.activeflag =1
+    WHERE r.objectid = irl.intakeservreqchildremovalid :: character varying AND r.activeflag =1 
+    ) AS approvalstatus,
+    ir.servicerequestnumber,          
+    (
+     SELECT json_agg(er) FROM
+     (
+      SELECT 
+       irr.intakeservreqchildremovalreasonid,
+       irr.intakeservreqchildremovalid,
+       irr.removalreasontypekey,
+       irr.activeflag,
+       rt.description
+      FROM Intakeservreqchildremovalreason irr
+      INNER JOIN removalreasontype rt ON irr.removalreasontypekey = rt.removalreasontypekey AND rt.activeflag =1
+      WHERE irr.intakeservreqchildremovalid = irl.intakeservreqchildremovalid 
+      AND irr.activeflag =1
+     )er
+    ) :: json AS removalreason 
+   FROM Intakeservreqchildremoval irl
+   INNER JOIN intakeservicerequest ir ON irl.intakeserviceid = ir.intakeserviceid AND ir.activeflag =1 
+   INNER JOIN intakeservicerequestactor isra ON isra.intakeserviceid = ir.intakeserviceid AND isra.intakeservicerequestactorid =irl.intakeservicerequestactorid  AND isra.activeflag =1
+   AND isra.personid = pr.personid
+   WHERE irl.activeflag =1 AND ir.servicecaseid =v_objectid
+  ) TT    
+ ) AS A,
+ pr.personid
+FROM Intakeservreqchildremoval irl1
+INNER JOIN intakeservicerequest ir1 ON irl1.intakeserviceid = ir1.intakeserviceid AND ir1.activeflag =1  
+INNER JOIN intakeservicerequestactor isra1 ON isra1.intakeserviceid = ir1.intakeserviceid AND isra1.intakeservicerequestactorid =irl1.intakeservicerequestactorid AND isra1.activeflag =1
+INNER JOIN person pr ON pr.personid = isra1.personid AND pr.activeflag =1 
+INNER JOIN gendertype gr ON pr.gendertypekey = gr.gendertypekey AND gr.activeflag =1
+WHERE irl1.activeflag =1 AND ir1.servicecaseid = v_objectid
+GROUP BY pr.personid, pr.cjamspid, pr.firstname || ' ' || pr.lastname,pr.dob,gr.typedescription,pr.firstname,pr.lastname,pr.middlename,pr.suffix
+LIMIT pagesize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

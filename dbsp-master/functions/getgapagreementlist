@@ -1,0 +1,43 @@
+CREATE OR REPLACE FUNCTION getgapagreementlist(v_gapid uuid, _page integer, _limit integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE                    
+_offset    integer;
+l_agreementdetails json ;
+
+BEGIN
+_offset  :=  (_page  -  1)  *  _limit;    
+
+ 
+SELECT json_agg(f)  INTO l_agreementdetails FROM(
+ SELECT  ga.gapagreementid ,ga.gapid,ga.iscomprehensivehomestudy,
+ ga.iscgawardedcustody,ga.isplacementenddate,ga.ischildreceivetca,
+ ga.tcaamount,ga.startdate,ga.enddate,ga.signaturedate,
+ ga.guardianonedate,ga.guardiantwodate,ga.ldssdate,
+ (SELECT rs.typedescription from routing r
+ INNER JOIN routingstatustype  rs ON r.routingstatustypeid = rs.sequencenumber
+ WHERE r.eventcode = 'GAAR' AND r.objectid  =  ga.gapagreementid :: character varying ) routingstatus,
+ (SELECT json_agg (e) FROM (       
+  SELECT (SELECT CASE WHEN count(*) >=1 THEN
+    'YES' ELSE 'NO' END 
+    from gapannualreview gr
+  where gr.gapagreementid = ga.gapagreementid 
+  and gr.reviewdate = grt.enddate and gr.activeflag =1) as annualreviewstatus,
+   grt.gapagreementrateid,
+  grt.gapagreementid, grt.provider_id,grt.startdate ratestartdate,grt.enddate rateenddate,
+  grt.paymentamout,grt.isoverride,grt.paymenttypekey,grt.notes 
+  FROM  gapagreementrate grt 
+  WHERE grt.activeflag = 1 AND grt.gapagreementid = ga.gapagreementid ) e
+ ) :: json as agreementrate
+FROM gapagreement ga WHERE ga.activeflag =1 AND ga.gapid = v_gapid
+LIMIT  _limit  OFFSET  _offset
+)f;
+
+Return l_agreementdetails;
+ 
+  END;
+
+$function$
+

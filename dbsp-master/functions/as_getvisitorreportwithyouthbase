@@ -1,0 +1,79 @@
+CREATE OR REPLACE FUNCTION as_getvisitorreportwithyouthbase(v_intakeserviceid uuid, v_startdate date, v_enddate date, v_facilityname json, v_facilitytype json, v_securityuserid character varying, v_page bigint, v_limit bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+    visitors json;
+ v_pageoffset int;
+ v_pagenumber int;
+
+BEGIN
+
+    v_pagenumber := v_page-1;
+    v_pageoffset = v_pagenumber * v_page;
+  
+SELECT json_agg(e) INTO visitors 
+FROM (
+  SELECT COUNT(1)OVER() as totalcount,pl.intakeservicerequestactorid,
+ pr.providername as facilityname,
+ py.firstname as youthfirstname ,
+ py.lastname as youthlastname,
+ p.cjamspid as visitorcjamspid,
+ p.firstname,
+  p.lastname,
+  p.suffix,
+   (SELECT r.description 
+   FROM  referencevalues r 
+   WHERE 
+    r.ref_key = p.suffix 
+   AND activeflag =1  LIMIT 1) suffixdesc,
+ /*json_build_object(
+  'personaddressid', pa.personaddressid, 
+  'address' , pa.address,
+  'address2' ,pa.address2,
+  'state',pa.state,
+  'city', pa.city, 
+  'zipcode',pa.zipcode,
+  'county',pa.county
+  ) as address,*/
+   p.ethnicgrouptypekey,
+  p.gendertypekey,
+  P.racetypekey,
+  p.dob,
+  p.userphoto,
+  cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = v_securityuserid) as character varying) as  officeworkername,
+  egt.typedescription as ethinicitytypedesc,
+  RAT.typedescription as racetypedesc,
+  vr.iscontact,
+  vr.relationship as relationshiptypekey,
+  vr.reasoncode ,
+  vr.visitorid,
+  (SELECT r.description 
+   FROM  referencevalues r 
+   WHERE 
+    r.ref_key = vr.relationship 
+   AND activeflag =1  LIMIT 1) relationshipdesc
+  FROM placement pl 
+  join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+  join visitor vr on pl.placementid = vr.placementid and vr.activeflag = 1
+  join intakeservicerequest irs ON vr.intakeserviceid = irs.intakeserviceid AND irs.activeflag =1
+  join person as p ON p.personid = vr.personid AND p.activeflag = 1
+  left join ethnicgrouptype egt ON egt.ethnicgrouptypekey = p.ethnicgrouptypekey and egt.activeflag = 1
+  left join racetype RAT ON RAT.racetypekey = P.racetypekey AND RAT.activeflag = 1
+  left join intakeservicerequestactor isry on isry.intakeservicerequestactorid = pl.intakeservicerequestactorid and isry.intakeservicerequestpersontypekey = 'Youth' and isry.activeflag =1
+  left join actor ay on ay.actorid = isry.actorid and ay.activeflag = 1
+  left join person py on py.personid = ay.personid and py.activeflag = 1
+  WHERE pl.activeflag =1 
+  and (case when v_intakeserviceid is not null then vr.intakeserviceid = v_intakeserviceid else true end)
+  and (case when v_startdate is not null and v_enddate is not null then date(pl.startdatetime) between date(v_startdate) and date(v_enddate) or date(pl.enddatetime) between date(v_startdate) and date(v_enddate)
+  when v_startdate is not null and v_enddate is null then date(pl.startdatetime) = date(v_startdate)
+  when v_startdate is null and v_enddate is not null then date(pl.enddatetime) = date(v_enddate) else true end )
+  and (case when json_array_length(v_facilityname) != 0 then pr.providerid in (select json_array_elements_text(d.inr_adr::json)::uuid  from (select json_array_elements_text(v_facilityname)::json->>'providerid' as inr_adr)d) else true end )
+  and (case when json_array_length(v_facilitytype) != 0 then pl.placementadmissiontypekey in (select json_array_elements_text(d.inr_type::json)  from (select json_array_elements_text(v_facilitytype)::json->>'facilitytype' as inr_type)d) else true end )
+  LIMIT v_limit OFFSET v_pageoffset
+  )e;
+RETURN visitors;
+END;
+
+$function$
+

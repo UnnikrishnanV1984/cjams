@@ -1,0 +1,167 @@
+CREATE OR REPLACE FUNCTION cjams.sp_ene_outbound_interface_gen_data_20(	vl_client_id integer, 
+																		vl_other_id bigint, 
+																		vs_transaction_type_cd character varying, 
+																		vl_transaction_sequence integer, 
+																		vd_transaction_ts timestamp without time zone, 
+																		OUT vs_message character varying, 
+																		OUT vl_output_sqlcode character varying
+																	  )
+RETURNS record
+LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created: 11/25/2020
+-- Description: To generate E&E Inbound data for Record Type 20
+
+-- Revision(s):
+-- 08/03/2021 Vineet Tirodkar - Modifications to send Client Person First/Last Names first 20 characters only 
+--								and Middle Name first 10 characters (CDM-15668)
+------------------------------------------------------------------------
+DECLARE VS_RECORD_TYPE VARCHAR(2);
+	VS_OUTPUT_STATE VARCHAR(5) DEFAULT '00000';
+	VL_RECORD_SEQUENCE INTEGER DEFAULT 000;
+	VS_TRANSACTION_SEQUENCE VARCHAR(5);
+	VS_RECORD_SEQUENCE VARCHAR(3);
+	-- Client Variables
+	VS_CIS_CLIENT_ID VARCHAR(10); -- ENE_OUT_COL6
+	ENE_OUT_LIQUID_ASSETS_COL1 CHAR(5);
+	ENE_OUT_LIQUID_ASSETS_COL2 VARCHAR(50);
+	ENE_OUT_LIQUID_ASSETS_COL3 DECIMAL(10,2);
+	ENE_OUT_LIQUID_ASSETS_COL3_CONV VARCHAR(15);
+	ENE_OUT_LIQUID_ASSETS_COL4 VARCHAR(20);
+	ENE_OUT_LIQUID_ASSETS_COL5 VARCHAR(50);
+
+DECLARE CURSOR_LIQASSETS  CURSOR FOR
+SELECT (CASE 
+		WHEN personasset.assettypekey = 'BOD' THEN '73'
+		WHEN personasset.assettypekey = 'CAH' THEN '74'
+		WHEN personasset.assettypekey = 'CA' THEN '76'
+		WHEN personasset.assettypekey = 'LSP' THEN '78'
+		WHEN personasset.assettypekey = 'MMA' THEN '79'
+		WHEN personasset.assettypekey = 'SA' THEN '83'
+		WHEN personasset.assettypekey = 'IF' THEN '84'
+		WHEN personasset.assettypekey = 'TRST' THEN '85'
+		WHEN personasset.assettypekey = 'OTH' THEN '10360'
+	END), 
+	substring(COALESCE(person.firstname || ' ','')  ||
+	COALESCE(substring(btrim(person.middlename), 1, 10) || ' ','') ||
+	COALESCE(person.lastname,''), 1, 50),
+	valueno,
+	accountno,
+	locationname
+FROM personasset, 
+	person
+WHERE person.cjamspid = VL_CLIENT_ID
+	AND personasset.personid =  person.personid
+	AND personasset.assettypekey NOT IN ('72','82','86','77','81','80', 'BOT', 'RT','VEH', 'LI','RES', 'NON')
+	AND personasset.activeflag = 1
+	AND personasset.caresassetno IS NULL
+	AND person.activeflag = 1;
+
+BEGIN    
+	VL_OUTPUT_SQLCODE:='00000';   
+	-- RAISE NOTICE 'GEN DATA 20 STARTS';
+	
+	-- SET transaction sequence
+	VS_TRANSACTION_SEQUENCE = LTRIM(RTRIM(VL_TRANSACTION_SEQUENCE::VARCHAR)) ;
+
+	-- Get CIS_CLIENT_ID
+	BEGIN
+		SELECT person.cisclientid
+			INTO VS_CIS_CLIENT_ID
+		FROM person  	
+		WHERE person.cjamspid = VL_CLIENT_ID
+			AND person.activeflag  = 1;  
+	
+		EXCEPTION WHEN OTHERS THEN 
+			VL_OUTPUT_SQLCODE :=  SQLSTATE;
+			VS_MESSAGE :=  '(E&E) SELECT cisclientid FAILED FOR person'  ;
+			RETURN;
+	END ;
+
+	-- Generate records for record type 20
+	VS_RECORD_TYPE := '20';
+	VL_RECORD_SEQUENCE := 000 ;
+	VS_RECORD_SEQUENCE := '';
+
+	IF  VS_RECORD_TYPE = '20' THEN
+
+		OPEN CURSOR_LIQASSETS;
+		<<CURS_LIQUID_ASSETS>>
+		WHILE VL_OUTPUT_SQLCODE = '00000'  LOOP
+			FETCH CURSOR_LIQASSETS INTO ENE_OUT_LIQUID_ASSETS_COL1, ENE_OUT_LIQUID_ASSETS_COL2,
+							ENE_OUT_LIQUID_ASSETS_COL3, ENE_OUT_LIQUID_ASSETS_COL4,
+							ENE_OUT_LIQUID_ASSETS_COL5 ;
+
+			EXIT CURS_LIQUID_ASSETS WHEN NOT FOUND;
+		   
+			VL_RECORD_SEQUENCE := VL_RECORD_SEQUENCE + 1 ;
+			VS_RECORD_SEQUENCE := LTRIM(RTRIM(VL_RECORD_SEQUENCE::VARCHAR));
+		
+			ENE_OUT_LIQUID_ASSETS_COL3_CONV := LTRIM(RTRIM(ENE_OUT_LIQUID_ASSETS_COL3::VARCHAR)) ;
+			ENE_OUT_LIQUID_ASSETS_COL3_CONV := SUBSTRING('00000000000',1,11 - LENGTH(ENE_OUT_LIQUID_ASSETS_COL3_CONV)) || ENE_OUT_LIQUID_ASSETS_COL3_CONV ;	
+
+			-- Set Interface Data
+			INSERT INTO eneoutboundinterface
+			(ENE_RECORD_ID,
+				STATUS_CD,
+				BATCH_SEQ_NO,
+				TRANSACTION_SEQ_NO,
+				TRANSACTION_TYPE_CD,
+				CIS_CLIENT_ID,
+				RECORD_TYPE_CD,
+				TRANSACTION_TS,
+				RECORD_SEQ_NO,
+				ENE_OUT_COL1,
+				ENE_OUT_COL2,
+				ENE_OUT_COL3,
+				ENE_OUT_COL4,
+				ENE_OUT_COL5
+			)	
+			SELECT
+				NEXTVAL('SQ_ENEOUTBOUNDINTERFACE'),
+				'000',
+				'',
+				(CASE WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 1 THEN '0000'||VS_TRANSACTION_SEQUENCE
+					 WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 2 THEN '000'||VS_TRANSACTION_SEQUENCE
+					 WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 3 THEN '00'||VS_TRANSACTION_SEQUENCE
+					 WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 4 THEN '0'||VS_TRANSACTION_SEQUENCE
+					 WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 5 THEN VS_TRANSACTION_SEQUENCE
+				END),
+				VS_TRANSACTION_TYPE_CD,
+				COALESCE(SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)),'000000000'),
+				'20',
+				VD_TRANSACTION_TS,
+				(CASE WHEN LENGTH(VS_RECORD_SEQUENCE) = 1 THEN '00'||VS_RECORD_SEQUENCE
+					 WHEN LENGTH(VS_RECORD_SEQUENCE) = 2 THEN '0'||VS_RECORD_SEQUENCE
+					 WHEN LENGTH(VS_RECORD_SEQUENCE) = 3 THEN VS_RECORD_SEQUENCE
+				END),
+				ENE_OUT_LIQUID_ASSETS_COL1,
+				ENE_OUT_LIQUID_ASSETS_COL2,
+				(CASE WHEN ENE_OUT_LIQUID_ASSETS_COL3_CONV = '' THEN '00000000.00'
+					 WHEN LENGTH(ENE_OUT_LIQUID_ASSETS_COL3_CONV) <= 0 THEN '00000000.00'
+					 ELSE COALESCE(ENE_OUT_LIQUID_ASSETS_COL3_CONV::VARCHAR,'00000000.00')
+				END),  		
+				ENE_OUT_LIQUID_ASSETS_COL4,
+				ENE_OUT_LIQUID_ASSETS_COL5
+			;
+		
+			-- RAISE NOTICE 'INSERT IN GEN DATA 20 SUCCESSFUL';
+
+		END LOOP;
+		CLOSE CURSOR_LIQASSETS;
+       
+    END IF;
+
+	RETURN ;
+	EXCEPTION WHEN OTHERS THEN 
+		VL_OUTPUT_SQLCODE  :=  SQLSTATE;
+		VS_MESSAGE := '(E&E) INSERT INTO eneoutboundinterface FAILED ' ||SQLERRM ;
+		RETURN;
+    
+END 
+;
+$function$
+;

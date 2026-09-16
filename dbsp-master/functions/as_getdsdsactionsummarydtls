@@ -1,0 +1,287 @@
+CREATE OR REPLACE FUNCTION as_getdsdsactionsummarydtls(servicereqnumber character varying, loginsecurityuserid character varying)
+ RETURNS getdsdsactionsummarydtls_type
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+result_record getdsdsactionsummarydtls_type;
+daStatusTypeId uuid;
+v_intakeserviceid uuid;
+v_intakeservreqinputtypeid uuid;
+v_intakeserreqstatustypeid uuid;
+v_intakeservicerequestclassid uuid;
+v_IntakeServReqTypeId uuid;
+v_DAType character varying;
+v_DASubtype character varying;
+v_FocusName character varying;
+v_FocusRole character varying;
+v_Identifier character varying;
+v_ldReceivedDate TIMESTAMP(3);
+v_Region VARCHAR(50);
+v_County VARCHAR(50);
+v_zip character varying;
+v_status  character varying;                                   
+v_disposition character varying;
+v_AssignedTo character varying;
+v_CompletedBy character varying;
+v_duedateoffset int;
+v_intakenumber character varying;
+v_maxReConDate TIMESTAMP(3);
+BEGIN
+
+ SELECT tm.loadnumber into result_record.da_loadnumber
+ FROM userprofile u 
+ INNER JOIN   as_teammemberassignment tma ON tma.SecurityUsersId =  u.SecurityUsersId AND tma.activeflag =1
+ INNER JOIN  teammember tm on tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+ WHERE u.activeflag =1   AND u.SecurityUsersId = loginsecurityuserid;
+
+ select 
+ servicerequestnumber,
+ ReportedDate,
+ narrativeUpdatedDate,
+ intakeservreqinputtypeid,
+ intakeservreqtypeid,
+ intakeservicerequestclassid,
+ intakeserviceid,
+ intakeserviceid,
+ IntakeServReqTypeId,
+ intakeserreqstatustypeid,
+ Insertedon,
+ intakenumber,
+ intakenumber,
+ countyid
+ into  
+ result_record.DA_Number,  
+ result_record.DA_ReceivedDate,
+ result_record.narrativeUpdatedDate,
+ result_record.DA_Communicationid,
+ result_record.da_typeid,
+ result_record.da_subtypeid,
+ v_intakeserviceid ,
+ result_record.intakeserviceid,
+ v_IntakeServReqTypeId,
+ daStatusTypeId,
+ result_record.DA_insertedon,
+ result_record.intakenumber,
+ v_intakenumber,
+ result_record.countyid
+ from  IntakeServiceRequest  where  ServiceRequestNumber::bigint  =  servicereqnumber::bigint AND teamtypekey = 'AS' AND activeflag = 1;  
+ 
+ select teamtypekey into result_record.Teamtypekey from  Intakeagencypurpose where intakeservreqtypeid = result_record.da_typeid
+    and activeflag =1; 
+
+ /*Commented for Demo
+ select split_part(entityroletypekey,'|',1),split_part(entityroletypekey,'|',2) into result_record.DA_Type,result_record.DA_Subtype from ServiceRequestTypeConfigRole where ServiceRequestTypeConfigId  in (
+ select ServiceRequestTypeConfigId from ServiceRequestTypeConfig where ActiveFlag =1 
+ and IntakeServReqTypeId = v_IntakeServReqTypeId and ServiceRequestSubTypeId = result_record.da_subtypeid
+ ) and EntityRoleType = 'DisplayValue';*/
+
+ select classkey into result_record.DA_Subtype from servicerequestsubtype where ServiceRequestSubTypeId = result_record.da_subtypeid;
+
+ select intakeservreqtypekey into result_record.DA_Type from intakeservicerequesttype where IntakeServReqTypeId = v_IntakeServReqTypeId;
+ 
+ select description into result_record.DA_Status from IntakeSerReqStatusType where IntakeSerReqStatusTypeId = daStatusTypeId;
+
+ select Description into result_record.DA_Disposition from ServiceRequestTypeConfigDispositionCode where ServiceRequestTypeConfigIdDispostionId in (
+ select ServiceRequestTypeConfigIdDispostionId from IntakeServiceRequestDispositionCode where IntakeServiceId = v_intakeserviceid and activeflag = 1 order by insertedon desc limit 1);
+
+ /*select typedescription into result_record.DA_Role from ActorType where actortype in (
+ select FocusRoletype from ServiceRequestTypeConfig where IntakeServReqTypeId = v_IntakeServReqTypeId 
+ and ServiceRequestSubTypeId = result_record.da_subtypeid and ActiveFlag =1);*/
+
+ select case when count(1) > 0  then 1 else 0 end into result_record.caseconnectsent  from routing where eventcode = 'SCCR' and servicerequestnumber::bigint = servicereqnumber::bigint and activeflag = 1 and fromroleid ILIKE 'AS%';
+
+ IF result_record.Teamtypekey = 'CW' then
+  
+  select INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+  CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename)
+                    ELSE '' END),P.userphoto,P.dob,P.old_id as assistpid,P.cjamspid ,--p.dateofdeath,
+                    p.personid
+                    into result_record.DA_Focus,result_record.da_focusProfilePhoto,
+     result_record.persondob,result_record.assistpid,result_record.cjamspid ,--result_record.persondod,
+     result_record.personid
+     from person as P where P.activeflag =1 and P.personid in (
+  select PersonId from actor a1 where a1.activeflag =1 and a1.objecttype like 'as%' and a1.ActorId in (
+  select Actorid  from IntakeServiceRequestActor isra where isra.activeflag = 1 and isra.intakeserviceid = v_intakeserviceid and 
+   isra.objecttype like 'as%' and
+  (case result_record.DA_Type
+    when 'APS' then case intakeservicerequestpersontypekey when 'AV' then true when 'RA' then true else false end
+    when 'Request for services' then case  intakeservicerequestpersontypekey when 'RA' then true when 'RC' then true else false end
+    when 'Provider' then case intakeservicerequestpersontypekey when 'PA' then true else false end
+    else false
+   end) limit 1));
+ 
+  Select coalesce(personidentifiervalue,null) into result_record.DA_Identifier  from PersonIdentifier where personid in (
+ select a2.PersonId from actor a2 where a2.objecttype like 'as%' and a2.activeflag = 1 and a2.ActorId in (
+ select isra2.Actorid  from IntakeServiceRequestActor isra2 where isra2.objecttype like 'as%' and isra2.intakeserviceid = v_intakeserviceid and isra2.activeflag = 1 and isra2.intakeservicerequestpersontypekey in ('LG') limit 1)) and personidentifiertypekey = 'DCN';
+
+ ELSE
+  select INITCAP(TRIM(P.lastname)||
+  case when P.suffix IS NOT NULL AND P.suffix != '' then ' ' || P.suffix ELSE '' end  
+  || ', '||TRIM(P.firstname) ||
+  CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ' ' || TRIM(P.middlename)
+                    ELSE '' END),P.userphoto,P.dob,P.old_id as assistpid,P.cjamspid ,--p.dateofdeath,
+                    p.personid
+                    into result_record.DA_Focus,result_record.da_focusProfilePhoto,
+     result_record.persondob,result_record.assistpid,result_record.cjamspid ,--result_record.persondod,
+     result_record.personid
+     from person as P where P.activeflag =1 and P.personid in (
+  select PersonId from actor a1 where a1.activeflag =1 and a1.objecttype like 'as%' and a1.ActorId in (
+  select Actorid  from IntakeServiceRequestActor isra where isra.activeflag = 1 and isra.intakeserviceid = v_intakeserviceid and 
+    isra.objecttype like 'as%' and
+   (case result_record.DA_Type
+    when 'APS' then case intakeservicerequestpersontypekey when 'AV' then true  when 'RA' then true else false end
+    when 'Request for services' then case  intakeservicerequestpersontypekey when 'RA' then true  when 'RC' then true  else false end
+    when 'Provider' then case intakeservicerequestpersontypekey when 'PA' then true else false end
+    else false
+   end) limit 1));
+ 
+  
+  Select coalesce(personidentifiervalue,null) into result_record.DA_Identifier  from PersonIdentifier where personid in (
+  select a2.PersonId from actor a2 where a2.objecttype like 'as%' and a2.activeflag = 1 and a2.ActorId in (
+  select isra2.Actorid  from IntakeServiceRequestActor isra2 where isra2.objecttype like 'as%' and isra2.intakeserviceid = v_intakeserviceid and isra2.activeflag = 1 and isra2.intakeservicerequestpersontypekey in ('RA','RC', 'Youth') limit 1)) and personidentifiertypekey = 'DCN';
+ 
+ 
+ END IF;
+
+ /*select  zipcode,county into result_record.DA_Zip,result_record.DA_County from PersonAddress where PersonAddressId in  (
+ select RoutingAddressId  from IntakeServiceRequestActor where intakeserviceid = v_intakeserviceid and RoutingAddressId IS NOT NULL);*/
+
+-- select string_agg(TRIM(lastname) ||', ' ||TRIM(firstname),'|') into result_record.da_assignedto from UserProfile where SecurityUsersId in (select SecurityUsersId from SecurityUsers where SecurityUsersId in (
+-- select SecurityUsersId from as_teammemberassignment where TeamMemberId  in(select  TeamMemberId from AreaTeamMemberServiceRequest 
+-- where IntakeServiceId = v_intakeserviceid) and ActiveFlag = 1));
+
+ IF result_record.DA_Status = 'Closed' THEN
+ select string_agg(TRIM(lastname) ||', ' ||TRIM(firstname),'|') into result_record.da_completedby from UserProfile where SecurityUsersId in (select SecurityUsersId from SecurityUsers where SecurityUsersId in (
+ select SecurityUsersId from as_teammemberassignment where TeamMemberId  in(select  TeamMemberId from AreaTeamMemberServiceRequest 
+ where IntakeServiceId = v_intakeserviceid) and ActiveFlag = 1));
+ END IF;
+
+ SELECT CAST(UP2.firstname || ' ' || UP2.lastname AS character varying), up2.securityusersid, email into result_record.da_assignedto, result_record.tosecurityusersid, result_record.da_email
+    FROM  userprofile UP2  
+    INNER JOIN caseassignment CA ON CA.activeflag = 1 AND CA.toworkeridno = up2.securityusersid 
+    WHERE CA.objectid = v_intakeserviceid ORDER BY CA.enddate DESC NULLS FIRST, CA.responsibilitytypekey DESC, CA.startdate LIMIT 1;
+   
+ SELECT CAST(UP2.firstname || ' ' || UP2.lastname AS character varying), up2.securityusersid into result_record.da_assignedby, result_record.fromsecurityusersid
+    FROM  userprofile UP2  
+    inner join routing r on r.fromsecurityusersid = up2.securityusersid and r.routingstatustypeid in (4,9) and r.activeflag = 1
+    WHERE UP2.activeflag =1 
+    and r.objectid = v_intakeserviceid::character varying LIMIT 1;
+ 
+ SELECT CAST(UP3.firstname || ' ' || UP3.lastname AS character varying) INTO result_record.da_supervisorname
+                 FROM userprofile UP3  
+                 JOIN userprofile UP4 ON UP4.assupervisorid = UP3.securityusersid AND  UP4.activeflag = 1
+                WHERE UP4.securityusersid = result_record.tosecurityusersid AND UP3.activeflag = 1
+                  LIMIT 1;
+
+ IF result_record.DA_Zip is not null THEN
+
+ select apsregion into result_record.da_region from county where zipcode::character varying =  TRIM(result_record.DA_Zip);
+
+ ELSEIF result_record.DA_Zip is null and result_record.DA_County != null THEN
+ select apsregion into result_record.da_region from county where countyname =  result_record.DA_County;
+ END IF;
+
+ select investigationid into result_record.da_investigationid from investigation where intakeserviceid = v_intakeserviceid;
+
+ select duedateoffset into v_duedateoffset from servicerequesttypeconfig where intakeservreqtypeid  = v_IntakeServReqTypeId and servicerequestsubtypeid = result_record.da_subtypeid and activeflag =1 and category= 'Intake' ORDER BY insertedon DESC limit 1;
+     --subtract a day to display on dashboard togo 
+  result_record.da_duedate:= date(result_record.DA_ReceivedDate) +v_duedateoffset;
+ 
+ if(result_record.DA_Subtype !='24 Hours' and result_record.DA_Subtype !='5 Days') THEN
+
+ IF (SELECT count(*)>0 FROM intakedastatus WHERE intakenumber = v_intakenumber AND status = 3) THEN 
+  IF (SELECT count(*)>0 FROM caseassignment WHERE objectid = v_intakeserviceid) THEN 
+   result_record.da_duedate:= (SELECT insertedon::date FROM caseassignment WHERE objectid = v_intakeserviceid ORDER BY insertedon LIMIT 1) +v_duedateoffset;
+  ELSE result_record.da_duedate:= NULL;
+  END IF;
+ END IF;
+
+ -- IF (SELECT count(*)>0 FROM reconsideration WHERE intakeserviceid = v_intakeserviceid AND recondatebychecklist is not NULL and activeflag=1) THEN 
+    -- result_record.da_duedate:= (SELECT recondatebychecklist :: date FROM reconsideration WHERE intakeserviceid = v_intakeserviceid AND recondatebychecklist is not NULL and activeflag=1) +(v_duedateoffset-1);
+ -- END IF;
+ 
+ 
+ select MAX(a.recon_due_dt) into v_maxReConDate  from asservicesoncase a  
+ join intakeserv i on  i.intakeservid = a.caseservicetypeid 
+ where a.ascaseid =v_intakeserviceid  and (result_record.DA_Subtype='APS Continuing' and a.caseservicesubtypekey in ('07M1','07M2') or (i.intakeservtypekey =result_record.DA_Subtype or (result_record.DA_Subtype='24 Hours' and i.intakeservtypekey='24H') or (result_record.DA_Subtype='5 Days' and i.intakeservtypekey='5D')))
+ and ((a.approvalstatus = 'closed' AND (SELECT count(*) =0 FROM asservicesoncase asoc2 WHERE asoc2.ascaseid=v_intakeserviceid
+  AND asoc2.caseservicetypeid = a.caseservicetypeid AND asoc2.approvalstatus IN ('draft','review','approved'))) OR
+ a.approvalstatus ='approved' or (a.approvalstatus in ('draft','review') and a.enddate is not null)) and a.recon_due_dt is not null;
+
+ IF (v_maxReConDate is not NULL) THEN 
+     result_record.da_duedate:= v_maxReConDate;
+ END IF;
+
+
+ IF (v_maxReConDate is NULL) THEN
+  select MAX(a.startdate) into v_maxReConDate  from asservicesoncase a  
+  join intakeserv i on  i.intakeservid = a.caseservicetypeid 
+  where a.ascaseid =v_intakeserviceid  and (result_record.DA_Subtype='APS Continuing' and a.caseservicesubtypekey ='07M1' or (i.intakeservtypekey =result_record.DA_Subtype or (result_record.DA_Subtype='24 Hours' and i.intakeservtypekey='24H') or (result_record.DA_Subtype='5 Days' and i.intakeservtypekey='5D')))
+  and (a.approvalstatus ='approved' or (a.approvalstatus in ('draft','review') and a.enddate is not null)) and a.startdate is not null;
+
+  IF (v_maxReConDate is not NULL) THEN 
+      result_record.da_duedate:= v_maxReConDate +v_duedateoffset;
+  END IF;
+ END IF;
+
+ END IF;
+ 
+ result_record.da_daystogo:= date(result_record.da_duedate) - current_date;
+
+ IF (result_record.da_daystogo < 0 OR result_record.da_daystogo IS NULL OR (result_record.DA_Type ='APS' and (result_record.DA_Subtype = '24 Hours' or result_record.DA_Subtype = '5 Days') and (result_record.DA_Disposition = 'Close Case' or result_record.DA_Disposition = 'APS Continuing') and result_record.DA_Status = 'Accepted')) THEN
+ result_record.da_daystogo = 0;
+ END IF;
+
+ 
+ -- Fetch Intake JSON
+ 
+ /*select jsondata into result_record.intake_jsondata from intakedastaging s join intakeservicerequest isr on s.intakenumber = isr.intakenumber
+  where isr.intakeserviceid = v_intakeserviceid and isr.activeflag = 1 and s.activeflag = 1 order by s.insertedon desc limit 1; */
+
+  --select null into result_record.intake_jsondata
+  
+        --For Fetching Communication
+ select intakeservreqinputtypekey into result_record.DA_Communication from intakeservicerequestinputtype where intakeservreqinputtypeid = result_record.DA_Communicationid;
+
+        --For Fetching Intake Worker
+ select (UP.lastname||', '||UP.firstname) into result_record.DA_IntakeWorker from routing as R
+ Join intakeservicerequest as ISR
+      On ISR.intakenumber = R.objectid and ISR.activeflag=1
+ Join userprofile as UP 
+      On UP.securityusersid = R.tosecurityusersid and UP.activeflag=1
+  Where R.toroleid like '%IW'  limit 1;
+  
+  --For Fetching Unsafe flag
+ select ischildsafe into result_record.da_unsafe from assessment where objectid ::uuid = v_intakeserviceid and activeflag=1;
+ select reporterlastname || ', ' ||reporterfirstname  as reportername into result_record.da_reportername from intakeservicerequest where intakeserviceid = v_intakeserviceid and activeflag=1;
+ 
+   
+  SELECT 1 INTO result_record.isenablekinship from intakeservicerequestservice ISS 
+  INNER JOIN intakeservicerequestsubservice ISST ON ISST.intakeservreqserviceid = ISS.intakeservreqserviceid AND ISST.activeflag =1 
+  AND ISST.intakeservsubtypekey ='KN'
+  WHERE ISS.activeflag =1 AND iss.intakeserviceid =v_intakeserviceid;
+  result_record.isenablekinship:= coalesce(result_record.isenablekinship,0);
+
+  
+ /*SELECT exitdate INTO result_record.case_closedate 
+ FROM intakeservicerequest 
+ WHERE intakeserviceid =v_intakeserviceid AND activeflag =1;*/
+
+ SELECT isrd.insertedon INTO result_record.case_closedate 
+ FROM intakeservicerequestdispositioncode ISRD
+INNER JOIN  intakeserreqstatustype ISTT 
+     on ISRD.intakeserreqstatustypeid=ISTT.intakeserreqstatustypeid and ISTT.activeflag=1 and ISRD.activeflag=1
+where ISRD.intakeserviceid=v_intakeserviceid and ISTT.intakeserreqstatustypekey='Closed';
+
+result_record.caseconnectsent:= COALESCE(result_record.caseconnectsent,0);
+
+ 
+    
+ RETURN result_record;
+
+ END;
+
+$function$
+

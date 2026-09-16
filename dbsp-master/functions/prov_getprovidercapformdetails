@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION prov_getprovidercapformdetails(v_cap_number character varying)
+ RETURNS TABLE(tb_provider_complaint_deficiencyid uuid, referencetype character varying, cap_number character varying, violationdetails json, comments text, findings character varying, cap_status character varying, reference_number character varying, provider_id character varying, cap_status_description character varying, isnotificationsent boolean, planofcorrection character varying, disputecomarcitation character varying, targetdate timestamp without time zone, prv_signimage text, prv_signdate timestamp without time zone, qa_signimage text, qa_signdate timestamp without time zone, pm_signimage text, pm_signdate timestamp without time zone, ed_signimage text, ed_signdate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                  
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+            
+
+ BEGIN                                                                                                                                                                                                                                         
+                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+RETURN QUERY                                                                                                                                                                                                                                                                                                     
+select prviolation.reference_id,prviolation.referencetype,prviolation.cap_number, 
+(select case (prviolation.referencetype)  
+      when 'Monitoring' then
+       (SELECT JSON_AGG(mon) from (
+       select count(1) OVER() totalcount, impact_deficiency as impactofdeficiency,scope_deficiency as scopeofdeficiency,
+       frequency_deficiency as frequencyofdeficiency,question as deficiency_violationname,pmrd.findings as findings
+       ,(select json_agg(st) from (select  concat(ps.first_nm , ' ',ps.last_nm) as program_admin_nm, ps.staff_phone_no ,ps.staff_email from providerstaff ps where ps.object_id=pv.provider_id limit 1)st) staff_info
+     ,(select json_agg(licinfo) from (select tpl.license_no,tpl.license_level,tpl.license_type,tpa.program_name,tpa.mailing_address,up.fullname,up.email,upn.phonenumber
+       from tb_provider_applicant tpa 
+       left join  tb_provider_licensing tpl on tpa.provider_id::int = tpl.provider_id
+        left join userprofile up on up.securityusersid = pv.notificationsecurityuserid
+        left join userprofilephonenumber upn on up.securityusersid = upn.securityusersid and  upn.userprofiletypekey = 'cell'
+        where  tpa.provider_id = pv.provider_id  and tpa.applicant_id=pv.applicant_id limit 1)licinfo) license_info
+      from prov_monitoring_record_data pmrd
+      left join prov_record_question prq on pmrd.record_question_id=prq.record_question_id
+      left join prov_violation pv on pv.reference_id=pmrd.monitoring_record_data_id  and pv.record_question_id=pmrd.record_question_id 
+      where pv.reference_value_id=prviolation.reference_value_id  and pv.delete_sw='N' and pv.violation_id=prviolation.violation_id
+      )mon) 
+      when 'Complaints' then 
+       (SELECT JSON_AGG(com) from (
+        select count(1) over() totalcount, tcd.tb_provider_complaint_deficiencyid,tcd.provider_complaintid,tcd.deficiency_violationname,                                                                                                                                                                 
+            tcd.citation,tcd.comments,tcd.frequencyofdeficiency as frequencyofdeficiency,tcd.impactofdeficiency as impactofdeficiency,tcd.scopeofdeficiency as scopeofdeficiency,tcd.findings,
+            tpc.investigationstartdate,tpc.investigationenddate, tcd.need_cap,tpc.complaint_number
+     ,(select json_agg(st) from (select  concat(ps.first_nm , ' ',ps.last_nm) as program_admin_nm, ps.staff_phone_no ,ps.staff_email from providerstaff ps where ps.object_id=pv.provider_id limit 1)st) staff_info
+     ,(select json_agg(licinfo) from (select tpl.license_no,tpl.license_level,tpl.license_type,tpa.program_name,tpa.mailing_address,up.fullname,up.email,upn.phonenumber
+       from tb_provider_applicant tpa 
+       left join  tb_provider_licensing tpl on tpa.provider_id::int = tpl.provider_id
+        left join userprofile up on up.securityusersid = pv.notificationsecurityuserid
+        left join userprofilephonenumber upn on up.securityusersid = upn.securityusersid and  upn.userprofiletypekey = 'cell'
+        where  tpa.provider_id = pv.provider_id limit 1)licinfo) license_info
+     from prov_violation pv
+     left join tb_provider_complaint_deficiency  tcd on pv.reference_id=tcd.tb_provider_complaint_deficiencyid
+     left join tb_provider_complaint tpc on tcd.provider_complaintid =tpc.provider_complaintid        
+     where tpc.complaint_number=prviolation.reference_value_id  and pv.violation_id=prviolation.violation_id
+      )com)
+   end  as violationdetails)   ,
+prviolation.comments,prviolation.cap_findings,prviolation.cap_status,prviolation.reference_value_id,prviolation.provider_id,prviolation.cap_status_description,
+prviolation.isnotificationsent, prviolation.planofcorrection, prviolation.disputecomarcitation, prviolation.targetdate,prviolation.prv_signimage, 
+prviolation.prv_signdate, prviolation.qa_signimage,
+prviolation.qa_signdate, prviolation.pm_signimage, prviolation.pm_signdate, prviolation.ed_signimage, prviolation.ed_signdate
+from prov_violation prviolation
+where  (v_cap_number is null or(prviolation.cap_number = v_cap_number)) and prviolation.delete_sw='N' ;
+                                                                                                                                                                                                                                                           
+                                                                                                                                                                                                                                                                                                                   
+ end;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+ $function$
+

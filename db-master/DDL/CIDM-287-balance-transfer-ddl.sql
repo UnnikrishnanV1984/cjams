@@ -1,0 +1,1 @@
+ALTER TABLE tb_client_account_balance_transfer DROP COLUMN IF EXISTS conserved_account_id;

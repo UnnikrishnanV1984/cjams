@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION cjams.getfinanceincomebycase(v_removalid numeric, v_toclientid integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+  v_case_id uuid;
+  v_case_number character varying;
+  v_result json;
+BEGIN
+
+----------------------------------
+-- Aurora Issue fixes
+-----------------------------------
+select  sc.servicecaseid,sc.servicecasenumber into v_case_id,v_case_number from 
+intakeservreqchildremoval
+inner join servicecase sc on sc.servicecaseid=intakeservreqchildremoval.servicecaseid
+where removalid=v_removalid;
+SELECT json_agg(pi) into v_result FROM 
+	(
+	select p.firstname,p.lastname,p.personid,v_case_id as servicecaseid,v_case_number as servicecasenumber,p.cjamspid,
+	(
+		select
+			json_agg(e) as roles
+		from
+			(
+			select
+				at.value_text as typedescription
+			from
+				intakeservicerequestactor ISRPN
+			--inner join actortype at on
+				--at.actortype = isrpn.intakeservicerequestpersontypekey
+			inner join referencevalues at on	
+			at.ref_key = isrpn.intakeservicerequestpersontypekey
+			where
+				isrpn.personid = p.personid
+				and (isrpn.servicecaseid = v_case_id    )
+				and isrpn.activeflag = 1
+     			and at.referencetypeid in (175,176) -- newly added by venky
+				
+			group by
+				isrpn.intakeservicerequestpersontypekey,
+				--at.typedescription 
+				at.value_text,
+				isrpn.intakeservicerequestactorid
+			) as e ) ::json,
+	getfinanceincome(p.personid),
+	getfinanceassets(p.personid::character varying),
+	(select to_json(sumary) from (
+      select 
+       *
+     from ivepersonincome  where ivepersonincome.involvedclientid=p.cjamspid and ivepersonincome.toclientid = v_toclientid and activeflag=1 order by ivepersonincome.insertedon desc limit 1
+    ) sumary) as "iveincomesumary"
+	from person p
+	where p.personid in (
+		select ia.personid from intakeservicerequestactor ia 
+		inner join actor on ia.actorid=actor.actorid
+		where 
+		 (ia.intakeserviceid=v_case_id
+		or ia.servicecaseid=v_case_id 
+	) and ia.activeflag=1 and actor.ishouseholdmember = 1
+   )
+  )pi;
+
+RETURN v_result;
+
+END;
+
+
+
+$function$
+;

@@ -1,0 +1,137 @@
+CREATE OR REPLACE FUNCTION routereferralda(appeventcode character varying, providerreferralid character varying, fromuserid character varying, v_assignedsecurityid character varying, isnotifyuser boolean DEFAULT true)
+ RETURNS routeda_temp_type
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+
+result routeda_temp_type;
+ 
+ 
+v_teamid uuid;
+v_investigationid uuid;
+v_providersecurityid character varying;
+v_usernotificationid uuid;
+v_createduser character varying;
+v_servicetype character varying;
+ 
+v_fromroletypekey  character varying;
+v_toroletypekey  character varying;
+v_team_member_id  uuid;
+
+v_fromrolesupervisor bool;
+v_torolesupervisor bool;
+v_status  int;
+v_routingid uuid;
+v_isavailable int ;
+v_providerrefnumber character varying;
+v_date timestamp without time zone;
+v_notifystatus character varying;
+v_metadata json;
+v_auditlog  character varying;
+v_auditlogassign character varying;
+v_datypeid  uuid;
+v_dasubtypeid  uuid;
+v_roletypecode character varying;
+s_Actmsg  character varying;
+v_teamtypekey character varying;
+v_appId character varying;
+BEGIN
+
+v_date:= now() ;
+
+v_status:= 4; /*Default routed status assigned*/
+RAISE NOTICE 'status:%', v_status;
+
+/*Get caseworker name for Notification*/
+SELECT cast( lastname ||',' || firstname as character varying) INTO result.caseworker_name 
+ FROM userprofile WHERE SecurityUsersId=v_assignedsecurityid and activeflag =1;
+
+/*provider referral service request raised user */
+SELECT cast( lastname ||',' || firstname as character varying)  INTO v_createduser 
+FROM userprofile 
+WHERE SecurityUsersId=fromuserid and activeflag =1;
+
+/*Assigned user team details*/
+SELECT  tm.teamid ,tm.loadnumber ,tm.roletypekey , 
+   t.teamname, tm.teammemberid ,coalesce(isupervisor,false) 
+        into  v_teamid ,result.loadnumber, v_toroletypekey,
+   result.teamname,v_team_member_id,v_torolesupervisor
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        inner join teammemberroletype tmrt on tmrt.roletypekey =tm.roletypekey 
+        WHERE  tma.SecurityUsersId = v_assignedsecurityid
+        AND   tma.activeflag =1;
+       
+ /*Assigned user roletypecode*/
+ Select rt.roletypecode  into v_roletypecode
+  from role R inner join roletype rt on  rt.shortname = r.name 
+  and rt.activeflag =1
+ where r.roletypekey = v_toroletypekey 
+  and r.activeflag =1 limit 1;
+ 
+/*Logged in user role details*/ 
+SELECT  tm.roletypekey  
+        into  v_fromroletypekey 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm 
+         ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = fromuserid
+        AND   tma.activeflag =1;
+       
+SELECT tpa.applicant_id 
+into v_appId from tb_provider_applicant tpa join tb_provider_referral tpr on tpr.applicant_id = tpa.applicant_id 
+where tpr.provider_referral_id = providerreferralid;
+        
+IF (coalesce(v_torolesupervisor,false) =true) THEN
+  RAISE NOTICE 'inside true:%', v_torolesupervisor; 
+     SELECT routingid ,1 into v_routingid,v_isavailable 
+        FROM routing r WHERE tosecurityusersid = fromuserid 
+        AND activeflag =1
+        AND r.objectid  = providerreferralid :: character varying
+        ORDER BY insertedon desc limit 1;
+          
+        if (coalesce(v_isavailable,0) =0 ) THEN /*if routing is not availble for sevice id */
+          select providerreferralid into v_providerrefnumber from tb_provider_referral   
+              where  providerreferralid=provider_referral_id;
+            
+                SELECT routingid ,1 into v_routingid,v_isavailable
+                FROM routing r WHERE tosecurityusersid = fromuserid 
+                AND activeflag =1
+                AND r.objectid  = v_providerrefnumber
+                ORDER BY insertedon desc limit 1;
+        
+        END IF;
+        select  coalesce(tmrt.isupervisor,false)  into v_fromrolesupervisor from routing r
+        inner join teammemberroletype tmrt on tmrt.roletypekey =r.fromroleid 
+        where r.routingid = v_routingid;
+  /*Mark previous data as inactive and mark as accepted*/
+        if (coalesce(v_fromrolesupervisor,false) =true AND coalesce(v_torolesupervisor,false) = true ) THEN
+            UPDATE routing SET routingstatustypeid =9,activeflag =0  ,
+                                 updatedon= v_date
+            WHERE routingid = v_routingid;
+  ELSE
+            UPDATE routing SET routingstatustypeid =2,activeflag =0  ,
+                                 updatedon= v_date
+            WHERE routingid = v_routingid;
+        END IF;
+        v_status:= 9; /*Routed to Supervisor status  */
+ END IF;
+
+/*Routing to  user*/
+  INSERT INTO routing(
+                    eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+                    fromroleid, toroleid,objectid , routingstatustypeid,
+                    insertedby,  updatedby  )
+
+values(appeventcode,fromuserid,v_assignedsecurityid,v_teamid,
+       v_fromroletypekey,v_toroletypekey,v_appId,v_status,
+       fromuserid,fromuserid);
+
+RETURN result;
+END;
+$function$
+

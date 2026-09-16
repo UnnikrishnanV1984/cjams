@@ -1,0 +1,570 @@
+CREATE OR REPLACE FUNCTION sp_ive_insert_rs_status()
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$\r
+----------------------------------------------------------------------------------------------\r
+-- Author          : Samir Patil\r
+-- Date            : 02/20/2012\r
+-- Description     : This procedure inserts/updates records into TB_RS_IVE_STATUS for each month\r
+--      based on Elgibility Events period begin date & period end date.\r
+--       These records will be utilized by the payment stamping process to restamp the\r
+--      IV-E eligibility of all related fund allocations for a given client.\r
+-- The 8 Component Types from TB_IVE_COMPONENT_STATUS for each event are as below :-\r
+-- 3242 Assets\r
+-- 3236 Demographics\r
+-- 3241 Income Summary\r
+-- 3237 Removal Type\r
+-- 3239 Removal Home\r
+-- 3240 Deprivation\r
+-- 3238 Court Order\r
+-- 3339 Placement\r
+-- If period begin date is more than 24 months in the past then period begin date will be set as 24 months in past.\r
+-- If period end date is more than 24 months in the past then skip that event.\r
+-- If period end date is null then set it as current date.\r
+-- Revision(s):\r
+-- 09-07-2012 Vineet Tirodkar - PRJ-02667 - MD CHESSIE Batch Process Redesign - To add Return 0 on success & -1 on error\r
+-- 05/14/2019 Vineet Tirodkar - To exclude IV-E Foster Care episodes of CJAMS Counties from the processing (B-39524)\r
+-- 10/05/2020 Vineet Tirodkar - Changes to use the new CJAMS Foster Care Eligibility tables (B-85031)\r
+-- 01/14/2022 Vineet Tirodkar - To capture the IV-E data max upto the Current month (CIDM-4168)\r
+----------------------------------------------------------------------------------------------\r
+DECLARE \r
+ SQLCODE     INT    DEFAULT 0;\r
+ SQLSTATE     CHAR(5)   DEFAULT '00000';\r
+ vs_message_text   VARCHAR(3000)  DEFAULT '';\r
+ vl_ret_status    INTEGER   DEFAULT 0;\r
+ vs_Procedure_nm   VARCHAR(100)  DEFAULT 'SP_IVE_INSERT_RS_STATUS';\r
+ vl_sqlcode     INT    DEFAULT 0;\r
+ vs_error     VARCHAR(3000);\r
+ vl_runtime_id    INTEGER   DEFAULT 0;\r
+ vs_user_id    VARCHAR(10)  DEFAULT 'IVE_CJAMS';\r
+\r
+ vl_return INTEGER DEFAULT 0;\r
+\r
+ vs_cursor_sql VARCHAR(12000) ;\r
+ vn_event_id INTEGER DEFAULT 0;\r
+ vn_eligibility_period_id INTEGER DEFAULT 0;\r
+ vd_period_start_date DATE;\r
+ vd_period_end_date DATE;\r
+ vd_calc_period_end_date DATE;\r
+ vd_calc_period_start_date DATE;\r
+ vn_client_id INTEGER DEFAULT 0;\r
+ vn_rs_ive_status_id INTEGER DEFAULT 0;\r
+ vn_calc_period_iter INTEGER;\r
+ vs_resulting_status_cd VARCHAR(5) DEFAULT '';\r
+ vs_reason_cd VARCHAR(25) DEFAULT '';\r
+ vs_resulting_status_cd2 VARCHAR(5) DEFAULT '';\r
+ vs_criteria_passed_cd VARCHAR(5) DEFAULT '3698'; -- CRITERIA_PASSED \r
+ vn_component_status_loop INTEGER DEFAULT 0;\r
+ vn_loop_iter INTEGER DEFAULT 0;\r
+ vs_component_type_cd VARCHAR(5) DEFAULT NULL;\r
+ vs_component_3242_asset_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3236_demographics_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3241_income_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3237_removal_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3239_removal_home_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3240_deprivation_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3238_court_order_sw VARCHAR(1) DEFAULT NULL;\r
+ vs_component_3339_placement_sw VARCHAR(1) DEFAULT NULL;\r
+ vd_iter_curr_2months_dt DATE;\r
+ vd_iter_month_start_dt DATE;\r
+ vd_iter_month_end_dt DATE;\r
+ vd_current_calc_period_start_date DATE;\r
+ vd_24months_date DATE;\r
+ vd_approval_dt DATE;\r
+\r
+ vs_identity_column VARCHAR(100);\r
+\r
+ -- Cursor to get the 8 Component Type Codes.\r
+ -- DECLARE IVE_COMP_STATUS cursor WITH HOLD FOR s1;\r
+ IVE_COMP_STATUS_refcur REFCURSOR;\r
+ IVE_RS_STATUS_CUR_refcur REFCURSOR;\r
+\r
+BEGIN\r
+ -- Exception Handler\r
+ BEGIN\r
+  EXCEPTION WHEN OTHERS THEN\r
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;\r
+\r
+  vl_return := -1;\r
+  vl_sqlcode := -1 ;\r
+  vs_error := COALESCE(vs_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;\r
+  vs_error := COALESCE(vs_error ,'') || '::' || COALESCE(vs_identity_column ,'IVE Event id') || ' :: ' || COALESCE(vs_identity_val ,'');\r
+  vs_error := vs_error || COALESCE(vs_message_text ,'');\r
+\r
+  select sp_batch_error_log \r
+   (  'SP_IVE_INSERT_RS_STATUS' ,\r
+    NULL::bigint,\r
+    NULL::bigint,\r
+    NULL::character varying,\r
+    NULL::INTEGER,\r
+    NULL::character varying,\r
+    SQLSTATE::character varying,\r
+    vs_error::character varying,\r
+    'finance'::character varying\r
+   ) into vl_ret_status;\r
+    \r
+  vs_error := '';\r
+  RETURN vl_return;\r
+ END; \r
+\r
+ -- Insert the starting log entry.\r
+ SELECT nextval('sq_batch_runtime_log') INTO vl_runtime_id;\r
+ \r
+ RAISE NOTICE 'Insert - vl_runtime_id >> %', vl_runtime_id;\r
+ \r
+ insert into tb_batch_runtime_log \r
+  ( runtime_log_id, \r
+   program_nm, \r
+   runtime_start_ts, \r
+   create_ts, \r
+   create_user_id, \r
+   update_ts, \r
+   update_user_id\r
+  )\r
+ values \r
+  ( vl_runtime_id, \r
+   vs_Procedure_nm, \r
+   current_timestamp, \r
+   current_timestamp, \r
+   vs_user_id, \r
+   current_timestamp, \r
+   vs_user_id\r
+  );\r
+\r
+ -- Get the 24 month date in the past\r
+ select (current_date - interval '24 months') into vd_24months_date;\r
+ raise notice 'vd_24months_date>> %',vd_24months_date;\r
+\r
+ -- Cursor to get Events for each client for current date.\r
+ -- 2931 (IV-E Foster Care)\r
+ -- 2923 (Initial Determination)\r
+ -- 2924 (Redetermination)\r
+\r
+ -- DECLARE IVE_RS_STATUS_CUR cursor WITH HOLD FOR\r
+ OPEN IVE_RS_STATUS_CUR_refcur FOR\r
+ -- LOOP\r
+  select *\r
+  from (\r
+   select 0 as event_id, \r
+       ep.start_dt::date as event_start_dt,\r
+       ep.end_dt::date as event_end_dt,\r
+       ce.client_id,\r
+       btrim(ep.status_cd) as resulting_status_cd,\r
+       (case when btrim(ep.status_cd) = '2913' then \r
+      'Eligible Reimbursable'\r
+     else\r
+      'Other'\r
+     end) as reason_cd,\r
+       ep.approvedon::date,\r
+       ep.eligibility_period_id\r
+    from tb_eligibility_period ep,\r
+     tb_client_eligibility ce\r
+   where ep.eligibility_id = ce.eligibility_id\r
+    and ep.delete_sw = 'N'\r
+    and ce.delete_sw = 'N'\r
+    and upper(ep.approvalstatus) = 'APPROVED'\r
+    and ep.approvedon::date \r
+     >= (select coalesce((MAX(runtime_start_ts)::date), current_date - interval '1 day')\r
+       from tb_batch_runtime_log\r
+      where program_nm = 'SP_IVE_INSERT_RS_STATUS' \r
+       and success_sw = 'Y'\r
+      )\r
+    and btrim(ep.status_cd) <> '2911'\r
+    and btrim(ce.eligibility_type_cd) = '2931'\r
+    and (select count(*)\r
+      from tb_eligibility_events ev\r
+      where ev.eligibility_period_id = ep.eligibility_period_id\r
+      and ev.delete_sw = 'N'\r
+     ) = 0  \r
+   union all\r
+   select ev.event_id, \r
+       ev.event_start_dt::date as event_start_dt,\r
+       ev.event_end_dt::date as event_end_dt,\r
+       ce.client_id,\r
+       btrim(ev.resulting_status_cd) as resulting_status_cd,\r
+       (case when btrim(ev.resulting_status_cd) = '2913' then \r
+      'Eligible Reimbursable'\r
+     else\r
+      'Other'\r
+     end) as reason_cd, \r
+       ep.approvedon::date,\r
+       ep.eligibility_period_id       \r
+    from tb_eligibility_period ep,\r
+     tb_client_eligibility ce,\r
+     tb_eligibility_events ev\r
+   where ep.eligibility_id = ce.eligibility_id\r
+    and ev.eligibility_period_id = ep.eligibility_period_id\r
+    and ep.delete_sw = 'N'\r
+    and ce.delete_sw = 'N'\r
+    and ev.delete_sw = 'N'\r
+    and upper(ep.approvalstatus) = 'APPROVED'\r
+    and ep.approvedon::date \r
+     >= (select coalesce((MAX(runtime_start_ts)::date), current_date - interval '1 day')\r
+       from tb_batch_runtime_log\r
+      where program_nm = 'SP_IVE_INSERT_RS_STATUS' \r
+       and success_sw = 'Y'\r
+      )\r
+    and btrim(ep.status_cd) <> '2911'\r
+    and btrim(ce.eligibility_type_cd) = '2931'\r
+    and btrim(ev.type_cd) in ('2923','2924')\r
+  ) \r
+  -- Unit Testing\r
+  -- where client_id = 1441159 -- 2001415  -- in ( 1010582, 4265747 )\r
+  order by client_id, approvedon::date, event_start_dt;  \r
+ LOOP\r
+  FETCH IVE_RS_STATUS_CUR_refcur\r
+   INTO vn_event_id, \r
+    vd_period_start_date, \r
+    vd_period_end_date, \r
+    vn_client_id, \r
+    vs_resulting_status_cd, \r
+    vs_reason_cd, \r
+    vd_approval_dt,\r
+    vn_eligibility_period_id;\r
+  exit when not found;\r
+\r
+  raise notice 'vn_event_id>> %',vn_event_id;\r
+  raise notice 'vn_eligibility_period_id>> %',vn_eligibility_period_id;\r
+  \r
+  vd_period_start_date := vd_period_start_date::date;\r
+  vd_period_end_date := vd_period_end_date::date;\r
+  --WHILE_LOOP:\r
+  --WHILE (SQLCODE = 0)\r
+  --DO\r
+  -- If period end date is more than 24 months in the past then skip the event.\r
+  -- If period start date is null then skip the event.\r
+  raise notice 'vd_period_start_date>> %',vd_period_start_date;\r
+  raise notice 'vd_period_end_date>> %',vd_period_end_date;\r
+  raise notice 'vs_resulting_status_cd>> %',vs_resulting_status_cd;\r
+  raise notice 'vs_reason_cd>> %',vs_reason_cd;\r
+    \r
+  IF (vd_period_end_date < vd_24months_date) OR (vd_period_start_date Is Null) THEN\r
+   -- Do nothing\r
+   raise notice 'Do nothing';\r
+  ELSE\r
+   -- If End Date is null then set as Current Date.\r
+   If vd_period_end_date Is Null OR vd_period_end_date > CURRENT_DATE THEN\r
+    vd_calc_period_end_date := CURRENT_DATE ;\r
+   ELSE       \r
+    vd_calc_period_end_date := vd_period_end_date ;\r
+   END IF;\r
+     \r
+   --IF start_dt more than 24 months in past THEN  24 months in the past, else the same start date.\r
+   IF  (vd_period_start_date < vd_24months_date) THEN\r
+    vd_calc_period_start_date :=  vd_24months_date;\r
+   ELSE\r
+    vd_calc_period_start_date := vd_period_start_date;\r
+   END IF; \r
+\r
+   -- calculate months between . get the number for loop counter. \r
+   select f_months_between( vd_calc_period_start_date::date, \r
+           vd_calc_period_end_date::date + interval '1 Month'\r
+           )\r
+   into vn_calc_period_iter;   \r
+\r
+   raise notice 'vn_calc_period_iter>> %',vn_calc_period_iter;\r
+   \r
+   vn_loop_ITER := vn_calc_period_iter ;\r
+     \r
+   -- If the even has any period to enter then, else skip.\r
+   IF vn_calc_period_iter > 0 THEN\r
+    vn_loop_ITER := 1;     \r
+    vd_current_calc_period_start_date := vd_calc_period_start_date;\r
+    -- WHILE_LOOP2:   \r
+    -- WHILE vn_loop_ITER <= vn_calc_period_iter DO\r
+    LOOP \r
+     raise notice 'vn_loop_ITER>> %',vn_loop_ITER;\r
+     raise notice 'vn_calc_period_iter>> %',vn_calc_period_iter;\r
+     raise notice 'vd_current_calc_period_start_date>> %',vd_current_calc_period_start_date;\r
+\r
+     EXIT WHEN vn_loop_ITER > vn_calc_period_iter ;\r
+     -- calculate the start month date & end month date for inserting RS_IVE_STATUS.\r
+     select f_daymonth(vd_current_calc_period_start_date,'F','C'),\r
+      f_daymonth(vd_current_calc_period_start_date,'L','C')\r
+     into vd_iter_month_start_dt,\r
+      vd_iter_month_end_dt;\r
+\r
+     vd_current_calc_period_start_date := vd_current_calc_period_start_date + interval '1 month';\r
+     vn_loop_ITER := vn_loop_ITER + 1;                                      \r
+      \r
+     -- Initialize all components to N. Set to Y only if component found.  \r
+     vn_component_status_loop := 0;      \r
+     vs_component_3242_asset_sw := 'N';\r
+     vs_component_3236_demographics_sw  := 'N';\r
+     vs_component_3241_income_sw  := 'N';\r
+     vs_component_3237_removal_sw  := 'N';\r
+     vs_component_3239_removal_home_sw  := 'N';\r
+     vs_component_3240_deprivation_sw  := 'N';\r
+     vs_component_3238_court_order_sw  := 'N';\r
+     vs_component_3339_placement_sw  := 'N';\r
+     \r
+     IF vn_event_id > 0 THEN \r
+      -- SQL for Cursor (IVE COMPONENT STATUS) - BEGIN\r
+      -- get the 8 component types mentioned in the comments section for the given event.\r
+      -- SET vs_cursor_sql = 'SELECT COMPONENT_TYPE_CD, IVE_EVENT_STATUS_CD FROM TB_IVE_COMPONENT_STATUS WHERE DELETE_SW = ''N'' '|| ' AND EVENT_ID = '|| char(vn_event_id) ;\r
+\r
+      -- dynamic sql to get component type & resulting status.\r
+      -- PREPARE s1 FROM vs_cursor_sql;\r
+      vl_sqlcode := 0;\r
+      OPEN IVE_COMP_STATUS_refcur FOR  \r
+       select btrim(component_type_cd), \r
+        btrim(ive_event_status_cd) \r
+       from tb_ive_component_status \r
+       where delete_sw = 'N' \r
+        and event_id = vn_event_id ;  \r
+\r
+       -- WHILE_LOOP3: \r
+       -- WHILE  (sqlcode <> 100) DO \r
+      LOOP   \r
+       FETCH IVE_COMP_STATUS_refcur INTO vs_component_type_cd, vs_resulting_status_cd2  ;  \r
+       exit when not found;\r
+\r
+       if vs_resulting_status_cd2 is null then\r
+        vs_resulting_status_cd2 := '3697'; --201_MISSING_INFO'\r
+       end if;\r
+       \r
+       -- If components found for that event then set it to Y else will remain as N.\r
+       -- vs_criteria_passed_cd - 3698 - CRITERIA_PASSED \r
+       IF vs_component_type_cd = '3242' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd  THEN\r
+        vs_component_3242_asset_sw := 'Y';\r
+       ELSEIF vs_component_type_cd = '3236' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3236_demographics_sw := 'Y';\r
+       ELSEIF vs_component_type_cd = '3241' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3241_income_sw  := 'Y';\r
+       ELSEIF vs_component_type_cd = '3237' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3237_removal_sw := 'Y';\r
+       ELSEIF vs_component_type_cd = '3239' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3239_removal_home_sw := 'Y';\r
+       ELSEIF vs_component_type_cd = '3240' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3240_deprivation_sw := 'Y';\r
+       ELSEIF vs_component_type_cd = '3238' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3238_court_order_sw := 'Y';\r
+       ELSEIF vs_component_type_cd = '3339' AND vs_resulting_status_cd2 <> vs_criteria_passed_cd THEN\r
+        vs_component_3339_placement_sw  := 'Y';\r
+       END IF;\r
+\r
+       -- vn_component_status_loop := vn_component_status_loop + 1;\r
+       -- FETCH IVE_COMP_STATUS INTO vs_component_type_cd,  vs_resulting_status_cd2;   \r
+       -- END WHILE ; -- Loop 3 End. \r
+      END LOOP; -- Loop 3 End.\r
+      CLOSE IVE_COMP_STATUS_refcur;\r
+     else -- vn_event_id = 0\r
+      -- New logic to set component values with NO Data in tb_eligibility_events & tb_ive_component_status tables\r
+      -- 3698 - CRITERIA_PASSED\r
+      select ( case when upper(btrim(deprivation)) <> 'CRITERIA_PASSED' \r
+          or deprivation is null THEN\r
+          'Y'\r
+         else\r
+          'N'\r
+         end\r
+        ) as deprivation, \r
+        ( case when upper(btrim(assets)) <> 'CRITERIA_PASSED' \r
+          or assets is null THEN\r
+          'Y'\r
+         else\r
+          'N'\r
+         end\r
+        ) as assets, \r
+        ( case when upper(btrim(income)) <> 'CRITERIA_PASSED' \r
+          or income is null THEN\r
+          'Y'\r
+         else\r
+          'N' \r
+         end\r
+        ) as income, \r
+        ( case when upper(btrim(courtstatus)) <> 'CRITERIA_PASSED' \r
+          or courtstatus is null THEN\r
+          'Y'\r
+         else\r
+          'N' \r
+         end\r
+        ) as courtstatus, \r
+        ( case when upper(btrim(removalhome)) <> 'CRITERIA_PASSED' \r
+          or removalhome is null THEN\r
+          'Y'\r
+         else\r
+          'N' \r
+         end\r
+        ) as removalhome, \r
+        ( case when upper(btrim(removaltype)) <> 'CRITERIA_PASSED' \r
+          or removaltype is null THEN\r
+          'Y'\r
+         else\r
+          'N'  \r
+         end\r
+        ) as removaltype, \r
+        ( case when upper(btrim(placement)) <> 'CRITERIA_PASSED' \r
+          or placement is null THEN\r
+          'Y'\r
+         else\r
+          'N' \r
+         end\r
+        ) as placement, \r
+        ( case when upper(btrim(demographic)) <> 'CRITERIA_PASSED' \r
+          or demographic is null THEN\r
+          'Y'\r
+         else\r
+          'N' \r
+         end\r
+        ) as demographic \r
+       into\r
+        vs_component_3240_deprivation_sw,\r
+        vs_component_3242_asset_sw,\r
+        vs_component_3241_income_sw,\r
+        vs_component_3238_court_order_sw,\r
+        vs_component_3239_removal_home_sw,\r
+        vs_component_3237_removal_sw,\r
+        vs_component_3339_placement_sw,\r
+        vs_component_3236_demographics_sw\r
+       from tb_ive_fostercare_audit \r
+      where eligibility_period_id = vn_eligibility_period_id\r
+      order by insertedon desc\r
+      limit 1  ;\r
+      \r
+     end if;\r
+     \r
+     raise notice 'vs_component_3240_deprivation_sw>> %',vs_component_3240_deprivation_sw;\r
+     raise notice 'vs_component_3242_asset_sw>> %',vs_component_3242_asset_sw;\r
+     raise notice 'vs_component_3241_income_sw>> %',vs_component_3241_income_sw;\r
+     raise notice 'vs_component_3238_court_order_sw>> %',vs_component_3238_court_order_sw;\r
+     raise notice 'vs_component_3239_removal_home_sw>> %',vs_component_3239_removal_home_sw;\r
+     raise notice 'vs_component_3237_removal_sw>> %',vs_component_3237_removal_sw;\r
+     raise notice 'vs_component_3339_placement_sw>> %',vs_component_3339_placement_sw;\r
+     raise notice 'vs_component_3236_demographics_sw>> %',vs_component_3236_demographics_sw;\r
+          \r
+     -- Get the key for RS_IVE_STATUS to check for insert/update.\r
+     -- if record already exists for given client & month then update.\r
+     vn_rs_ive_status_id := 0;     \r
+     \r
+     Select rs_ive_status_id\r
+      into vn_rs_ive_status_id\r
+     from tb_rs_ive_status\r
+     where client_id =  vn_client_id\r
+      and benefit_start_dt = vd_iter_month_start_dt\r
+      and delete_sw = 'N'\r
+     limit 1;        \r
+\r
+     vl_sqlcode := SQLCODE;\r
+\r
+     IF (vl_sqlcode <> 0) AND (vl_sqlcode <> 100) THEN\r
+      vs_error := 'Error in selecting IVE STATUS key--> BATCH_RS_IVE_STATUS PROGRAM ENDED'  ;\r
+      -- SIGNAL p_sp_error  ;\r
+     END IF ;       \r
+     \r
+     raise notice 'vn_rs_ive_status_id>> %',vn_rs_ive_status_id;\r
+     \r
+     IF (vl_sqlcode = 100) OR (vn_rs_ive_status_id is Null OR vn_rs_ive_status_id = 0 ) THEN\r
+      -- Event not found for that period so insert.\r
+      insert into tb_rs_ive_status \r
+       (  rs_ive_status_id, \r
+        event_id, \r
+        event_date, \r
+        client_id, \r
+        benefit_start_dt, \r
+        benefit_end_dt, \r
+        demographics_sw, \r
+        removal_type_sw, \r
+        removal_home_sw, \r
+        income_sw, \r
+        assets_sw, \r
+        court_sw, \r
+        deprivation_sw, \r
+        placement_sw, \r
+        resulting_status_cd, \r
+        reason_cd, \r
+        create_user_id, \r
+        create_ts, \r
+        update_user_id, \r
+        update_ts, \r
+        delete_sw, \r
+        eligibility_period_id\r
+       )\r
+      select nextval('SQ_RS_IVE_STATUS'), \r
+       vn_event_id, \r
+       current_date, \r
+       vn_client_id, \r
+       vd_iter_month_start_dt, \r
+       vd_iter_month_end_dt, \r
+       vs_component_3236_demographics_sw, \r
+       vs_component_3237_removal_sw, \r
+       vs_component_3239_removal_home_sw, \r
+       vs_component_3241_income_sw, \r
+       vs_component_3242_asset_sw, \r
+       vs_component_3238_court_order_sw, \r
+       vs_component_3240_deprivation_sw, \r
+       vs_component_3339_placement_sw, \r
+       vs_resulting_status_cd, \r
+       vs_reason_cd, \r
+       vs_user_id, \r
+       current_timestamp, \r
+       vs_user_id, \r
+       current_timestamp, \r
+       'N', \r
+       vn_eligibility_period_id;\r
+         \r
+      -- Logic to Insert Record in tb_rs_ive_status - END\r
+      vl_sqlcode := SQLCODE;\r
+      IF vl_sqlcode <> 0 THEN\r
+       vs_error := 'Error in inserting IVE STATUS --> BATCH_RS_IVE_STATUS PROGRAM ENDED'  ;\r
+       -- SIGNAL p_sp_error  ;\r
+      END IF ;\r
+     ELSE\r
+      -- Event found so update the component type all times.\r
+      Update tb_rs_ive_status\r
+         set demographics_sw = vs_component_3236_demographics_sw, \r
+        removal_type_sw = vs_component_3237_removal_sw, \r
+        removal_home_sw = vs_component_3239_removal_home_sw, \r
+        income_sw = vs_component_3241_income_sw, \r
+        assets_sw = vs_component_3242_asset_sw, \r
+        court_sw = vs_component_3238_court_order_sw, \r
+        deprivation_sw = vs_component_3240_deprivation_sw, \r
+        placement_sw = vs_component_3339_placement_sw, \r
+        resulting_status_cd = vs_resulting_status_cd, \r
+        reason_cd = vs_reason_cd, \r
+        update_user_id = vs_user_id, \r
+        update_ts = current_timestamp, \r
+        event_id = vn_event_id, \r
+        eligibility_period_id = vn_eligibility_period_id\r
+       where rs_ive_status_id = vn_rs_ive_status_id;\r
+      \r
+      vl_sqlcode := SQLCODE;\r
+      IF vl_sqlcode <> 0 THEN\r
+       vs_error := 'Error Updating IVE STATUS --> BATCH_IVE_STATUS PROGRAM ENDED'  ;\r
+       -- SIGNAL p_sp_error  ;\r
+      END IF ;     \r
+     END IF;     \r
+     -- END WHILE ;-- LOOP 2 End.\r
+    END LOOP; -- LOOP 2 End.\r
+   END IF;\r
+  END IF;  -- If Period start date is null or Period end date is more than 24 months in past then skip the event.\r
+   \r
+  vn_event_id := 0;\r
+  vn_client_id := 0;   \r
+  vn_eligibility_period_id := 0;\r
+\r
+  -- END WHILE ;         \r
+ END LOOP;\r
+\r
+ close IVE_RS_STATUS_CUR_refcur;\r
+\r
+ -- log entry program end.\r
+ RAISE NOTICE 'Update - vl_runtime_id >> %', vl_runtime_id;\r
+ update tb_batch_runtime_log\r
+    set runtime_end_ts = clock_timestamp\r
+      , update_ts = clock_timestamp\r
+   , update_user_id = vs_user_id\r
+   , success_sw = 'Y'\r
+  where runtime_log_id = vl_runtime_id;\r
+\r
+ vl_sqlcode := SQLCODE;\r
+ IF vl_sqlcode <> 0 THEN\r
+  vs_error := 'Error Updating BATCH RUNTIMES LOG --> BATCH_RS_IVE_STATUS PROGRAM ENDED'  ;\r
+  -- SIGNAL p_sp_error  ;\r
+ END IF ;\r
+    \r
+ -- COMMIT;\r
+ RETURN vl_return;\r
+END;\r
+\r
+$function$
+

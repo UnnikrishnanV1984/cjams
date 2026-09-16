@@ -1,0 +1,78 @@
+DROP FUNCTION IF EXISTS saverestitutionpaymentsubmit(json, character varying);
+
+CREATE OR REPLACE FUNCTION saverestitutionpaymentsubmit(jsondata json, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE	
+j_restitutionpaymentdetails json;
+i json;
+v_intakeserreqrestitutionpaymentid uuid;
+v_restitutionpaymentflatfilecontentid uuid;
+v_isallocated boolean;
+v_balanceamount numeric;
+v_eventcode character varying;
+l_status character varying;
+v_date timestamp without time zone;
+v_overpaymentacc character varying;
+v_allocatedamount numeric;
+v_restitutionid uuid;
+ 
+BEGIN
+        v_date:= now() at time zone 'utc';
+        j_restitutionpaymentdetails:= jsondata ->>'restitutionpaymentdetails';
+        v_restitutionpaymentflatfilecontentid:= jsondata ->>'restitutionpaymentflatfilecontentid';
+        v_isallocated:= jsondata ->>'isallocated';
+        v_balanceamount:= jsondata ->>'balanceamount';
+        v_eventcode:= jsondata ->>'appevent';
+        v_overpaymentacc:= jsondata ->>'overpaymentacctype';
+
+        --RAISE NOTICE 'j_restitutionpaymentdetails%',j_restitutionpaymentdetails;
+        RAISE NOTICE 'v_restitutionpaymentflatfilecontentid%',v_restitutionpaymentflatfilecontentid;
+        RAISE NOTICE 'v_isallocated%',v_isallocated;
+        RAISE NOTICE 'v_balanceamount%',v_balanceamount;
+        RAISE NOTICE 'v_eventcode%',v_eventcode;
+
+        FOR i IN SELECT * FROM json_array_elements(j_restitutionpaymentdetails)
+        LOOP
+              v_intakeserreqrestitutionpaymentid :=   gen_random_uuid();
+              v_allocatedamount :=  i ->> 'allocatedamount' as numeric;
+              v_restitutionid :=  i ->> 'intakeserreqrestitutionid' as uuid;
+              RAISE NOTICE 'v_allocatedamount%',v_allocatedamount;
+              RAISE NOTICE 'v_restitutionid%',v_restitutionid;
+             
+                               
+              Insert Into intakeserreqrestitutionpayment(intakeserreqrestitutionpaymentid, intakeserreqrestitutionid, paymentamount, paymentnumber, paymentdate, paymenttype,
+              checknumber, payerfirstname, payerlastname, payeraddress, payercity, payerstatekey, payerzipcode, depositnumber, accountarea, memofirstname, memolastname,
+              activeflag, insertedby, updatedby, insertedon, updatedon, youthpersonid, restitutionpaymentflatfilecontentid, victimpersonid, isallocated,overpaymentacctype,restitutionstatus,allocatedamount,restitutionno)
+
+              values(v_intakeserreqrestitutionpaymentid, cast(i ->> 'intakeserreqrestitutionid' as uuid), cast(i ->> 'paymentamount' as numeric), 
+              cast(i ->> 'paymentnumber' as character varying),cast(i ->> 'paymentdate' as timestamp without time zone), cast(i ->> 'paymenttype' as character varying),
+              cast(i ->> 'checknumber' as character varying), cast(i ->> 'payerfirstname' as character varying), cast(i ->> 'payerlastname' as character varying),
+              cast(i ->> 'payeraddress' as character varying), cast(i ->> 'payercity' as character varying), cast(i ->> 'payerstatekey' as character varying),
+              cast(i ->> 'payerzipcode' as character varying), cast(i ->> 'depositnumber' as character varying), cast(i ->> 'accountarea' as character varying),
+              cast(i ->> 'memofirstname' as character varying), cast(i ->> 'memolastname' as character varying), 1, v_securityuserid, v_securityuserid, v_date, v_date,
+              cast(i ->> 'youthpersonid' as uuid), v_restitutionpaymentflatfilecontentid, cast(i ->> 'victimpersonid' as uuid),v_isallocated,v_overpaymentacc,'Pending'::character varying,v_allocatedamount,
+              (select restitutionno from intakeserreqrestitution where intakeserreqrestitutionid = v_restitutionid limit 1));
+
+              select routingintake into l_status from routingintake (v_intakeserreqrestitutionpaymentid::character varying,v_securityuserid,v_eventcode,35,null);
+              update intakeserreqrestitution set allocatedamount = (coalesce(allocatedamount,0) + coalesce(v_allocatedamount,0)) where intakeserreqrestitutionid = v_restitutionid;
+             
+        END LOOP;
+        
+        IF(v_balanceamount is not null AND v_balanceamount!='0.00') THEN
+        Update restitutionpaymentflatfilecontent set balanceamount = coalesce(v_balanceamount,0),status='Pending',refundstatus='Refund Pending',updatedon = v_date where restitutionpaymentflatfilecontentid = v_restitutionpaymentflatfilecontentid;
+        ELSE
+        Update restitutionpaymentflatfilecontent set balanceamount = coalesce(v_balanceamount,0),status='Pending',updatedon = v_date where restitutionpaymentflatfilecontentid = v_restitutionpaymentflatfilecontentid;
+        END IF;
+        
+
+Return 'Success';
+	
+END;
+
+
+$function$
+;

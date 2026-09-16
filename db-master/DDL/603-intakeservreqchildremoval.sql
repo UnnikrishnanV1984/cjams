@@ -1,0 +1,1 @@
+ALTER TABLE cjams.intakeservreqchildremoval ADD column IF NOT EXISTS actualdata json;

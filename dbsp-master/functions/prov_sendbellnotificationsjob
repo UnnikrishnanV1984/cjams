@@ -1,0 +1,100 @@
+CREATE OR REPLACE FUNCTION prov_sendbellnotificationsjob(notificationtype character varying, v_duration integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_record_element json;
+vs_message character varying;
+vs_errmsg character varying;
+vs_sn_message character varying;
+v_record record;
+v_subject character varying;
+v_body text;
+v_json json;
+v_errmsgs json;
+v_providernm character varying;
+v_i int;
+begin
+ v_i :=0;
+vs_message := '';
+vs_errmsg :='';
+vs_sn_message:='';
+select case (notificationtype)
+     when ('Midlicense') then
+  (select json_agg(midresult)  from (select tosecurityusersid as tosecurityusersid,fromsecurityusersid as fromsecurityusersid,tpa.applicant_id as objectid,
+   coalesce((select provider_nm || ' ' from tb_provider pv where pv.provider_id=tpa.provider_id),'')  
+   ||'Mid-Licensure is due in ' || v_duration||' days ' as v_subject,
+   'Mid-License should be renewed for the License No ' ||lic.license_no|| ' - ' || program_name|| ' '||program_type ||' '||applicant_id ||' before '||v_duration||' days' as v_body
+  from tb_provider_applicant tpa 
+  left join tb_provider_licensing lic on lic.provider_id=tpa.provider_id and lic.site_id=tpa.site_id
+  inner join tb_provider_decision on objectid= tpa.applicant_id and (trim(toroleid) ='Program Manager' or trim(toroleid)= 'Quality Assurance')
+  where license_expiry_dt::date +interval '-1 year'- v_duration =now()::date  and tpa.delete_sw='N')midresult)  
+ when ('Relicense') then
+  (select json_agg(relicense)  from (select tosecurityusersid as tosecurityusersid,fromsecurityusersid as fromsecurityusersid,tpa.applicant_id as objectid,
+   coalesce((select provider_nm || ' ' from tb_provider pv where pv.provider_id=tpa.provider_id),'')  
+   ||'Mid-Licensure is due in ' || v_duration ||' days ' as v_subject,
+   'Re-Licensure should be renewed for the License No ' ||lic.license_no|| ' - ' || program_name|| ' '||program_type ||' '||applicant_id ||' before '||v_duration||' days' as v_body
+  from tb_provider_applicant tpa 
+  left join tb_provider_licensing lic on lic.provider_id=tpa.provider_id and lic.site_id=tpa.site_id
+  inner join tb_provider_decision on objectid= tpa.applicant_id and (trim(toroleid) ='Program Manager' or trim(toroleid)= 'Quality Assurance')
+  where license_expiry_dt::date - now()::date= v_duration and tpa.delete_sw='N')relicense)
+ when ('ContractCSARates') then
+   (select json_agg(csarates)  from ( select csar.updatedby as tosecurityusersid,csad.contract_id as objectid, csad.insertedby as fromsecurityusersid,
+         'CSA Rate - End date is approaching in '|| v_duration || ' days' as v_subject,
+         'The Child Specific Agreement Rate End-date is in '|| v_duration || '  days for : ' ||' Per Diem Rate - '||
+          csar.perdiemrate ||' Start Date - '||csar.startdate ||' Annual Rate - '||csar.annualrate
+       ||' Monthly Rate - '||csar.monthlyrate  ||' Contract ID - '||csad.contract_id as v_body
+   from childspecificagreementrates csar
+   inner join childspecificagreementdetails csad 
+    on csad.childspecificagreementid::uuid = csar.childspecificagreementid::uuid 
+    and csad.activeflag =1 
+   where csar.activeflag = 1 
+             and csar.csaratestatus = 'Active'
+    and csar.enddate::date -  now()::date =v_duration)csarates)
+ when ('CSAServiceenddate') then
+   (select json_agg(csaenddate)  from (select csa.contract_id as objectid,
+    'CSA Related Service - End date is approaching in '|| v_duration || ' days' as v_subject, csas.insertedby as fromsecurityusersid,
+    'The CSA Related Service end-date is in '|| v_duration || '  days for '||unitofservice||' ' || paidby ||' '|| classification||'  for Contract ID - '||csa.contract_id as v_body,
+    csas.updatedby as tosecurityusersid
+    from childspecificagreementservices csas
+    left join childspecificagreement csa on csas.childspecificagreementid=csa.childspecificagreementid
+    where enddate is not null and enddate::date-now()::date=v_duration and csas.activeflag=1
+    and csaservicestatus='Active')csaenddate)
+ end into v_json;
+
+for v_record_element in SELECT * FROM json_array_elements(v_json)
+loop 
+BEGIN
+  SELECT
+   prov_send_notification INTO
+    vs_sn_message 
+  FROM
+   prov_send_notification(
+   (v_record_element->>'tosecurityusersid'),
+   (v_record_element->>'fromsecurityusersid'), 
+   (v_record_element->>'tosecurityusersid'),
+   'System', 
+   'Normal', 
+   (v_record_element->>'v_subject'),
+   (v_record_element->>'v_body') , 
+   (v_record_element->>'objectid')::character varying);
+  
+   if vs_sn_message = 'success' 
+    then  v_i:=v_i+1;
+      vs_message:= vs_message || (v_record_element->>'objectid') || ' ' || notificationtype || ' Success'; 
+   else 
+    vs_errmsg:=vs_errmsg || 'Failed to sendnotification for the object ' || (v_record_element->>'objectid') ||' Error is ' ||vs_sn_message ||';';
+    --raise exception '%','Exception occurred when sending notification for the Provider'||v_record_element->>'.providername ||'- Provider id : '||v_record_element->>'.provider_id||' Applicant id: '||v_record_element->>'.applicant_id||' '||VS_ERR; 
+   end if;
+   
+ END;
+
+end loop;
+return (json_build_object(notificationtype,vs_message,
+       notificationtype||' errors',vs_errmsg));
+
+END;
+
+$function$
+

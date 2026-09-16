@@ -1,0 +1,27 @@
+DROP function if exists getcaseworkerlistbycaseid(character varying);
+CREATE OR REPLACE FUNCTION cjams.getcaseworkerlistbycaseid(v_entitytypeid character varying)
+ RETURNS TABLE(totalcount bigint, userid character varying, fullname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+begin
+	
+	return query
+
+	select count(1) over() ,x.* from (
+SELECT up.securityusersid AS userid, up.fullname AS fullname
+FROM PROGRESSNOTE pn JOIN userprofile up ON pn.insertedby = up.securityusersid
+WHERE pn.entitytypeid = v_entitytypeid
+
+UNION DISTINCT
+
+SELECT up.securityusersid AS userid, up.fullname AS fullname
+FROM PROGRESSNOTE pn JOIN userprofile up ON pn.updatedby = up.securityusersid
+WHERE pn.entitytypeid = v_entitytypeid 
+) x GROUP BY  x.userid,x.fullname
+;
+
+END;
+
+$function$
+;

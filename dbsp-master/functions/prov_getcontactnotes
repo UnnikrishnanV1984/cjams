@@ -1,0 +1,121 @@
+CREATE OR REPLACE FUNCTION prov_getcontactnotes(v_objectid character varying, v_objecttype character varying, v_ispublic boolean, v_pagenumber numeric, v_pagesize numeric, v_orderby character varying, v_sortorder character varying)
+ RETURNS TABLE(totalcount bigint, provider_contact_id character varying, object_id character varying, type_of_contact character varying, purpose_of_contact character varying, person_contacted_name character varying, title_of_person_contacted character varying, communication_date character varying, narrative text, communication_location character varying, phone_of_contact character varying, email_of_contact character varying, created_by_name character varying)
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_referral_id character varying;
+v_applicantid character varying;
+v_providerid character varying;
+v_appids json;
+v_pageoffset int;
+
+
+
+--v_isPublic boolean;
+v_rec json;
+begin
+ IF COALESCE(v_pagesize, 0) < 1 THEN                     
+ v_pagesize := 10;
+END IF;
+
+if (v_orderby ='') then
+ v_orderby='communication_date';
+end if;
+if (v_sortorder ='') then
+ v_sortorder='desc';
+end if;
+IF COALESCE(v_pagenumber, 0) < 1 
+THEN
+ v_pagenumber := 1; 
+end if;
+
+v_pagenumber := v_pagenumber - 1;
+v_pageoffset := v_pagenumber * v_pagesize;
+raise notice ' v_pagenumber=%' ,v_pagenumber;
+raise notice 'v_pageoffset=%' ,v_pageoffset;
+ raise notice 'starting v_objectid=%' ,v_objectid;
+ raise notice 'v_objecttype=%' ,v_objecttype;
+raise notice 'v_isPublic=%' ,v_isPublic;
+-- select referral_id,applicant_id,provider_id 
+-- from providerapprovalphaserecord 
+-- where case when v_objecttype='referral' then referral_id=v_objectid
+--     when v_objecttype='application' then applicant_id =v_objectid
+--   when v_objecttype='provider' then provider_id =v_objectid end into v_record;
+--  
+--  raise notice 'v_record=%' ,v_record;
+ if (v_isPublic=true) then
+   raise notice 'v_isPublic=%' ,v_isPublic;
+  
+   select referral_id,applicant_id,provider_id into v_referral_id,v_applicantid,v_providerid 
+   from providerapprovalphaserecord 
+   where active_flag='1' and
+   case  when v_objecttype='application' then applicant_id =v_objectid
+        when v_objecttype='provider' then provider_id =v_objectid end 
+       order by create_ts desc limit 1;  
+   if (v_objecttype='referral') then v_referral_id=v_objectid;
+   end if;
+ else
+     if (v_objecttype='application') then
+        select json_agg(x) from (select referral_id,v_objectid as applicant_id  from tb_prov_ref_program_type where applicant_id=v_objectid) as X  into v_appids ;
+      end if;
+      if (v_objecttype='provider') then
+           select json_agg(x) from (select tpa.applicant_id as applicant_id,tpa.provider_id as provider_id ,trp.referral_id  as referral_id
+        from tb_provider_applicant tpa
+        join tb_prov_ref_program_type trp on tpa.applicant_id=trp.applicant_id
+        where tpa.provider_id=v_objectid) as X  into v_appids;
+      end if;
+      if (v_objecttype='referral') then
+           v_referral_id=v_objectid;
+      end if;
+   
+  
+   for v_rec in select * from json_array_elements(v_appids)
+   loop
+   raise notice '%s',  v_rec;
+      v_applicantid := v_rec ->> 'applicant_id' ::character varying;
+      v_providerid := v_rec ->> 'provider_id';
+     v_referral_id := v_rec ->> 'referral_id';       
+    RETURN Query
+     SELECT  count(1)  over(),tpc.provider_contact_id::character varying,tpc.object_id, tpc.type_of_contact, tpc.purpose_of_contact, tpc.person_contacted_name, tpc.title_of_person_contacted, tpc.communication_date::character varying,
+     tpc.narrative, tpc.communication_location, tpc.phone_of_contact, tpc.email_of_contact ,(select displayname from userprofile where securityusersid = tpc.create_user_id) as created_by_name 
+     FROM tb_provider_contacts tpc
+     where delete_sw='N' and activeflag=1
+     and   tpc.object_id in (  v_applicantid );
+     
+   END LOOP;
+  v_applicantid=null;  
+ end if;
+  raise notice 'v_referral_id=%' ,v_referral_id;
+ raise notice 'v_applicantid=%' ,v_applicantid;
+ raise notice 'v_providerid=%' ,v_providerid;
+raise notice 'before running the query v_pagesize%' ,v_pagesize;
+ raise notice 'v_pageoffset=%' ,v_pageoffset;
+
+if ((v_referral_id is null) and (v_applicantid is null) and (v_providerid is null)) then
+ v_referral_id=v_objectid;
+end if;
+
+  RETURN Query
+  SELECT  count(1)  over(),tpc.provider_contact_id::character varying,tpc.object_id, tpc.type_of_contact, tpc.purpose_of_contact, tpc.person_contacted_name, tpc.title_of_person_contacted, tpc.communication_date::character varying,
+  tpc.narrative, tpc.communication_location, tpc.phone_of_contact, tpc.email_of_contact,
+    (select displayname from userprofile where securityusersid = tpc.create_user_id) as created_by_name 
+  FROM tb_provider_contacts tpc
+  where delete_sw='N' and activeflag=1
+  and   tpc.object_id in (v_referral_id,v_applicantid,v_providerid )  
+  order by (case v_sortorder when 'asc' then 
+         case v_orderby when 'communication_date' then cast(tpc.communication_date as character varying)              
+         else cast(tpc.communication_date as character varying) 
+         end
+    END) ASC NULLS LAST,
+    (case v_sortorder when 'desc' then 
+         case v_orderby when 'communication_date' then cast(tpc.communication_date as character varying)
+         else cast(tpc.communication_date as character varying) 
+         end
+    END) DESC NULLS LAST
+  
+  LIMIT  v_pagesize  OFFSET  v_pageoffset;
+    
+END;
+
+$function$
+

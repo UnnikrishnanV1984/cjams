@@ -1,0 +1,348 @@
+CREATE OR REPLACE FUNCTION as_routingintake(v_objectid character varying, securityuserid character varying, appeventcode character varying, status integer, commenttext text, assignsecurityuserid character varying DEFAULT ''::character varying, bmanualrouting boolean DEFAULT false, bclosecase boolean DEFAULT false, bfromintake boolean DEFAULT false, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying, v_intakeserviceid character varying DEFAULT ''::character varying, v_intakeserreqstatustypeid character varying DEFAULT ''::character varying, isservicecase integer DEFAULT 0, userrole character varying DEFAULT ''::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+ 
+ 
+DECLARE v_status text;
+ v_routing_rec RECORD;
+ v_roletypekey character varying;
+ v_securityuserid character varying;
+ v_routingstatus  character varying;
+ v_teamid uuid;
+ --v_countyid uuid;
+ v_teamtypekey character varying;
+ v_userrole character varying;
+ 
+ v_count int;
+ v_activityid uuid;
+ v_name  character varying;
+ v_description character varying;
+ v_helptext text;
+ v_amtaskid  uuid;
+ v_activitytasktypekey character varying;
+ v_casestatus character varying ;
+ v_casedisposition character varying;
+ v_statustypeid character varying;
+ v_reasoncd  character varying;
+ v_programarea record;
+v_investigationfindingtypekey character varying;
+BEGIN
+v_securityuserid:= securityuserid;
+
+v_userrole:= userrole;
+
+     IF (appeventcode = 'INVR' AND status = 15) THEN   
+  
+  select sd.IntakeSerReqStatusTypeid, sd.intakeserviceid, st.description , cc.description into v_statustypeid, v_intakeserviceid, v_casestatus, v_casedisposition from
+  IntakeServiceRequestDispositionCode sd  
+  inner join IntakeSerReqStatusType st on st.IntakeSerReqStatusTypeid = sd.IntakeSerReqStatusTypeid  and st.activeflag=1
+  inner join servicerequesttypeconfigdispositioncode cc on cc.ServiceRequestTypeConfigIdDispostionId = sd.ServiceRequestTypeConfigIdDispostionId and cc.activeflag=1   
+        where sd.intakeservicerequestdispositioncodeid :: character varying = v_objectid AND sd.activeflag=1 limit 1;
+  
+  IF (v_casestatus = 'Review') THEN 
+    
+   update  IntakeServiceRequestDispositionCode set activeflag =0, updatedby =v_securityuserid, updatedon=now()  where intakeserreqstatustypeid :: character varying = v_statustypeid
+   and intakeserviceid :: character varying =v_intakeserviceid and activeflag =1 and 
+   intakeservicerequestdispositioncodeid :: character varying !=v_objectid;
+
+   update routing set activeflag =0, updatedby =v_securityuserid, updatedon=now() where objectid:: character varying in (select intakeservicerequestdispositioncodeid:: character varying from
+   IntakeServiceRequestDispositionCode c
+   where c.intakeserviceid :: character varying =v_intakeserviceid and c.activeflag =0);
+  END IF;
+ END IF;
+
+    IF (appeventcode = 'INVR' AND status = 16) THEN   
+  
+  select sd.intakeserviceid, st.description , cc.description into v_intakeserviceid, v_casestatus, v_casedisposition from
+  IntakeServiceRequestDispositionCode sd  
+  inner join IntakeSerReqStatusType st on st.IntakeSerReqStatusTypeid = sd.IntakeSerReqStatusTypeid  and st.activeflag=1
+  inner join servicerequesttypeconfigdispositioncode cc on cc.ServiceRequestTypeConfigIdDispostionId = sd.ServiceRequestTypeConfigIdDispostionId and cc.activeflag=1   
+        where sd.intakeservicerequestdispositioncodeid :: character varying = v_objectid AND sd.activeflag=1 limit 1;
+  
+  IF (v_casestatus = 'Accepted' AND ( v_casedisposition = 'Close Case' or v_casedisposition = 'APS Continuing')) THEN  
+    
+    UPDATE caseassignment 
+    SET enddate = now(), updatedon = now(), updatedby = v_securityuserid
+    WHERE objectid :: character varying = v_intakeserviceid AND activeflag=1 AND enddate IS NULL;
+    
+    For v_programarea in (select caseservicesubtypekey, asservicesoncaseid , personprogramid from asservicesoncase where ascaseid :: character varying = v_intakeserviceid and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1') and enddate is null and activeflag = 1)
+
+    loop
+
+     select investigationfindingtypekey into v_investigationfindingtypekey from investigationfinding ig
+     inner join investigationallegation i on ig.investigationallegationid =i.investigationallegationid
+     inner join allegation a on a.allegationid =i.allegationid
+     inner join investigation iv on i.investigationid =iv.investigationid
+     where a.name =(CASE WHEN v_programarea.caseservicesubtypekey='07A3' THEN 'Financial Exploitation' 
+     WHEN v_programarea.caseservicesubtypekey='07A5' THEN 'Self-Neglect'
+     WHEN v_programarea.caseservicesubtypekey='07A1' THEN 'Physical Abuse'
+     WHEN v_programarea.caseservicesubtypekey='07A2' THEN 'Sexual Abuse/Exploitation'
+     WHEN v_programarea.caseservicesubtypekey='07A4' THEN 'Neglect by Others'
+     else '' end)  and a.activeflag =1
+     and i.activeflag =1 and ig.activeflag =1 and iv.intakeserviceid  :: character varying = v_intakeserviceid
+     order by ig.insertedon desc limit 1;
+   
+    if (v_programarea.caseservicesubtypekey = '07A5') then
+    
+     select investigationfindingtypekey into v_investigationfindingtypekey from investigationfinding ig
+     inner join investigationallegation ia on ia.investigationallegationid = ig.investigationallegationid 
+     inner join investigation iv on iv.investigationid = ia.investigationid 
+     where 
+     ia.allegationid ='00000000-0000-0000-0000-000000000000' and ia.activeflag =1 and ig.activeflag =1 and
+     iv.intakeserviceid  :: character varying = v_intakeserviceid limit 1;
+    end if;
+    
+     v_reasoncd='';
+     if (v_investigationfindingtypekey = 'UC')                                                                                                                                                                                                                                                                                                                                                                               
+     then                                                                                                                                                                                                                                                                                                                                                                                                  
+     v_reasoncd := '3419';                                                                                                                                                                                                                                                                                                                                                                                
+     end if;                                                                                                                                                                                                                                                                                                                                                                                               
+                                                                                                        
+     if (v_investigationfindingtypekey = 'ID')                                                                                                                                                                                                                                                                                                                                                                            
+     then                                                                                                                                                                                                                                                                                                                                                                                                  
+     v_reasoncd := '3420';                                                                                                                                                                                                                                                                                                                                                                                
+     end if;
+
+     if (v_investigationfindingtypekey = 'UD')                                                                                                                                                                                                                                                                                                                                                                            
+     then                                                                                                                                                                                                                                                                                                                                                                                                  
+     v_reasoncd := '3421';                                                                                                                                                                                                                                                                                                                                                                                
+     end if;
+     
+     if (v_investigationfindingtypekey = 'RO')                                                                                                                                                                                                                                                                                                                                                                            
+     then                                                                                                                                                                                                                                                                                                                                                                                                  
+     v_reasoncd := '3422';                                                                                                                                                                                                                                                                                                                                                                                
+     end if;
+
+       UPDATE asservicesoncase
+       SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, approvalstatus = 'closed', reason = v_reasoncd
+       WHERE asservicesoncaseid = v_programarea.asservicesoncaseid;
+
+       UPDATE personprogramarea
+       SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = v_reasoncd
+       WHERE personprogramid = v_programarea.personprogramid;
+
+     End loop;
+  
+    
+     UPDATE asservicesoncase 
+     SET enddate = now(), approvalstatus= 'closed', reason = 3414, updatedon = now(), updatedby = v_securityuserid
+     WHERE ascaseid :: character varying = v_intakeserviceid AND activeflag=1 AND enddate IS NULL;
+     
+     UPDATE personprogramarea 
+     SET enddate = now(), endreasonkey = 3414, updatedon = now(), updatedby = v_securityuserid
+     WHERE objectid :: character varying = v_intakeserviceid AND activeflag=1 AND enddate IS NULL; 
+     END IF;
+ 
+ END IF; 
+   
+
+ SELECT  routingstatustypekey INTO v_routingstatus FROM  routingstatustype 
+    WHERE sequencenumber  =status  LIMIT 1;
+  
+ SELECT tmrt.teamtypekey INTO v_teamtypekey
+ FROM as_teammemberassignment tma 
+ JOIN teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag = 1
+ JOIN teammemberroletype tmrt ON tmrt.roletypekey = tm.roletypekey AND tmrt.activeflag = 1
+ WHERE tma.securityusersid = v_securityuserid 
+   and tm.roletypekey = v_userrole
+AND tma.activeflag = 1;
+ 
+ IF COALESCE(v_teamtypekey, '') = '' THEN
+  v_teamtypekey := '';
+ END IF;
+    IF (appeventcode ='INTR' OR appeventcode ='ASSPAC') THEN
+  
+    SELECT as_userrouting  INTO v_status FROM as_userrouting(
+     v_objectid,
+     securityuserid,
+     appeventcode,
+     status,
+     commenttext,
+     assignsecurityuserid,
+     COALESCE(bmanualrouting,false),
+     COALESCE(bclosecase,false),
+     COALESCE(bfromintake,false),
+     v_notifymsg ::character varying,
+     v_routeddescription::character varying,
+     v_intakeserviceid ::character varying,
+     v_intakeserreqstatustypeid ::character varying,
+     COALESCE(isservicecase,0),
+     userrole :: character varying 
+    );
+  
+ ELSE
+/*  SELECT tm.teamid,  tm.roletypekey INTO 
+   v_teamid, v_roletypekey 
+   FROM    as_teammemberassignment tma 
+   INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+   WHERE  tma.SecurityUsersId = v_securityuserid AND   tma.activeflag =1
+    and case  when v_userrole is not null and v_userrole != '' then tm.roletypekey = v_userrole else true end ; */
+       
+  SELECT tm.teamid, r.roletypekey --, t.countyid
+   INTO v_teamid, v_roletypekey --, v_countyid
+   FROM muser m
+    INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS'
+    INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1
+    INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = m.SecurityUsersId AND   tma.activeflag =1
+    INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+    INNER JOIN  team t ON t.teamid = tm.teamid AND tm.activeflag =1
+   WHERE m.SecurityUsersId = v_securityuserid and m.activeflag = 1
+    and case  when v_userrole is not null and v_userrole != '' then r.roletypekey = v_userrole else true end ;
+           
+   
+     if(userrole != '') then
+            v_roletypekey = userrole;
+            end if;
+
+         
+  FOR v_routing_rec IN SELECT DISTINCT routingstatustypekey,sourcerolekey,targetrolekey,
+        ftmrt.teamtypekey frmteamtypekey, ttmrt.teamtypekey  toteamtypekey,
+                             CASE ftmrt.teamtypekey WHEN ttmrt.teamtypekey THEN 0 ELSE 1 END isotheragency
+                             FROM routingconfig  rc
+                       INNER JOIN teammemberroletype ftmrt   on  ftmrt.roletypekey  = rc.sourcerolekey AND ftmrt.activeflag =1
+                       INNER JOIN teammemberroletype ttmrt   on  ttmrt.roletypekey  = rc.targetrolekey AND ttmrt.activeflag =1
+         WHERE  eventcode = appeventcode AND 
+        sourcerolekey =v_roletypekey 
+                             AND rc.activeflag =1
+  
+
+ loop
+ 
+    IF (COALESCE(v_routing_rec.routingstatustypekey,'')='' AND COALESCE(v_routing_rec.isotheragency,0)  =0)  then
+     
+         SELECT as_userrouting  INTO v_status FROM as_userrouting(
+                v_objectid,
+                securityuserid,
+                appeventcode,
+                status,
+                commenttext,
+                assignsecurityuserid,
+                COALESCE(bmanualrouting,false),
+                COALESCE(bclosecase,false),
+                COALESCE(bfromintake,false),
+                v_notifymsg ::character varying,
+                v_routeddescription::character varying,
+                v_intakeserviceid ::character varying,
+                v_intakeserreqstatustypeid ::character varying,
+                COALESCE(isservicecase,0),
+  v_userrole :: character varying 
+                 
+         );
+  
+      
+ ELSE
+        IF ( LOWER(v_routingstatus)=LOWER(v_routing_rec.routingstatustypekey) AND COALESCE(v_routing_rec.isotheragency,0)  =1 ) THEN
+             SELECT as_otheragencyrouting  INTO v_status FROM as_otheragencyrouting(
+                    v_objectid,
+                    securityuserid,
+                    appeventcode,
+                    status,
+                    v_teamid,
+                    v_routing_rec.sourcerolekey,
+                    v_routing_rec.targetrolekey,
+                    commenttext, 
+                    v_notifymsg ::character varying,
+                    v_routeddescription::character varying,
+                    v_intakeserviceid ::character varying,
+                    v_intakeserreqstatustypeid ::character varying,
+                    COALESCE(isservicecase,0));
+                
+        END IF;
+ 
+ END IF;
+  END LOOP;
+    END IF;
+ 
+ IF (appeventcode = 'TSKR') THEN
+ 
+  SELECT  at.activityid,
+    at.name, 
+    at.description,
+    at.helptext,
+    at.amtaskid,
+    at.activitytasktypekey
+   INTO  v_activityid,
+     v_name,
+     v_description,
+     v_helptext,
+     v_amtaskid,
+     v_activitytasktypekey
+   FROM activitytask at
+   WHERE activitytaskid =  v_objectid::uuid
+    AND (at.name like '%Project Home - Level of Care Rating Instrument%' OR
+     at.name like '%Consent for Release of information%' OR
+     at.name like '%Update Client Information Sheet%' OR
+     at.name like '%Complete Service Plan%' OR
+     at.name like '%Case Manager, Client, Provider and optionally Supervisor signs Service Plan%' OR
+     at.name like '%Summary of Contacts%' OR
+     at.name like '%Resident Agreement%')
+   AND at.completeddate IS NOT NULL
+   AND at.activitytaskstatustypekey = 'InvClosed'
+   AND at.activeflag = 1;   
+  
+  v_count := 0;  
+  IF (v_activityid IS NOT NULL) THEN
+   SELECT COUNT(*) INTO v_count FROM activitytask at 
+    WHERE at.activityid = v_activityid 
+     AND at.name = v_name
+     AND at.activitytaskstatustypekey = 'InvOpen'
+     AND at.completeddate IS NULL
+     AND at.activeflag = 1; 
+  END IF;
+      
+  IF (v_activityid IS NOT NULL AND v_count = 0) THEN
+   INSERT INTO activitytask( activityid, 
+          duedate,
+          name,
+          description,
+          helptext,
+          amtaskid,
+          assignedto,
+          assignedon,
+          activitytaskstatustypekey,
+          activitytasktypekey,
+          activityprioritytypekey,
+          required,
+          iseditable,
+          activeflag, 
+          insertedby, 
+          insertedon)
+      VALUES  ( v_activityid,
+          CASE WHEN ( v_name like '%Project Home - Level of Care Rating Instrument%' OR
+             v_name like '%Update Client Information Sheet%' OR
+             v_name like '%Consent for Release of information%' OR
+             v_name like '%Resident Agreement%' OR
+             v_name like '%Summary of Contacts%' ) THEN now() + interval '1 years'  
+              ELSE now() + interval '6 months' 
+          END, 
+          v_name,
+          v_description,
+          v_helptext,
+          v_amtaskid,
+          v_securityuserid, 
+          now(),
+          'InvOpen',
+          v_activitytasktypekey,
+          'InvHigh',
+          true,
+          CASE WHEN ( v_name like '%Project Home - Level of Care Rating Instrument%' OR
+             v_name like '%Complete Service Plan (RN Service Plan)%' OR   
+             v_name like '%Update Client Information Sheet%' OR
+             v_name like '%Consent for Release of information%' OR     
+             v_name like '%Case Manager, Client, Provider and optionally Supervisor signs Service Plan%' OR
+             v_name like '%Resident Agreement%' OR
+             v_name like '%Summary of Contacts%') THEN true ELSE false end,
+          1,
+          v_securityuserid, 
+          now());
+  
+  END IF;
+ END IF;
+ 
+RETURN v_status;
+
+END;
+
+$function$
+

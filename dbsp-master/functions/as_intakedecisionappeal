@@ -1,0 +1,45 @@
+CREATE OR REPLACE FUNCTION as_intakedecisionappeal(i_evalutionid uuid, i_secid character varying)
+ RETURNS TABLE(currentdate character varying, youthname character varying, youthid character varying, agency character varying, policename character varying, policeaddress character varying, complaint_id character varying, complaintdate character varying, offensename character varying[], offensedate character varying, deadlinedate character varying, officername character varying, officerphone character varying, officeworkername character varying, youthnamewithsuffix character varying)
+ LANGUAGE plpgsql
+AS $function$
+   BEGIN    
+ RETURN QUERY    
+   (select CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+   cast(p.firstname ||' '|| p.lastname as character varying) as youthname,
+   cast (p.cjamspid as character varying)as youthid,
+   esa.description as agency,
+       CAST(es.firstname ||' '|| es.lastname as character varying) as policename ,
+       CAST(es.streetno||', '||es.street1||', '|| es.street2 as character varying) as policeaddress,
+       complaintid as complaint_id,
+       cast (to_char(complaintreceiveddate,'MM/DD/YYYY') as character varying) as complaintdate,
+       (select array_agg(AG.name)  from  allegation AG
+       join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+       where  ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as offensename,
+      cast (case 
+     when inve.unknownrange=0 then to_char(inve.offensedate,'MM/DD/YYYY') 
+      when inve.unknownrange=1 then to_char(inve.offensedate,'MM/DD/YYYY')
+       when inve.unknownrange=2 then to_char(inve.begindate,'MM/DD/YYYY')|| ' - ' || to_char(inve.enddate,'MM/DD/YYYY')
+       end as character varying) as offensedate,
+       CAST(to_char(now()+ interval '1 day','MonthDD,YYYY') as character varying) as deadlinedate,
+       (select distinct up.fullname from userprofile up where securityusersid = i_secid) as officername,
+            (select distinct phonenumber from userprofilephonenumber where securityusersid = i_secid) as officerphone,
+            (select distinct cast(concat(lastname,',',' ',firstname) as character varying) from userprofile up where securityusersid = i_secid) as officeworkername,
+            cast(concat(p.lastname,case when (p.suffix is null or p.suffix ='') then '' else concat(' ',p.suffix) end,', ',p.firstname) as 
+character varying) as youthnamewithsuffix
+       from intakeservicerequestevaluation inve
+       left join evaluationsource es on es.evaluationsourceid=inve.evaluationsourceid and es.activeflag=1
+       left join evaluationsourceagency esa on es.evaluationsourceagencykey=esa.evaluationsourceagencykey 
+       join intakeservicerequest ins on ins.intakenumber=inve.intakenumber 
+       left join intakeservicerequestdispositioncode itsdc on ins.intakeserviceid =itsdc.intakeserviceid and itsdc.activeflag=1
+       left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=ins.intakeserviceid and INSRA.activeflag=1
+  left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+  join person p on ACC.personid=p.personid and p.activeflag=1
+  left join personaddress pa on p.personid = pa.personid and pa.activeflag=1
+  left join personrelation pr on p.personid = pr.personid and pr.activeflag=1
+       join intakeservicerequestevaluationconfig ITSEC on ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1
+       join allegation AG on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+       where  inve.intakeservicerequestevaluationid = i_evalutionid) ; 
+     
+   end;
+  $function$
+

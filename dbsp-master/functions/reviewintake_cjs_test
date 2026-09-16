@@ -1,0 +1,204 @@
+CREATE OR REPLACE FUNCTION reviewintake_cjs_test(intakejson jsonb, reviewjson jsonb)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+l_IntakeNumber character varying;
+l_DateRecieved timestamp;
+l_Narrative character varying;
+l_RAName character varying;      
+l_EntityName character varying;          
+l_arrPerson json;
+l_Data character varying;
+l_Status text;
+i json;
+l_Firstname character varying;
+l_Lastname character varying;
+v_securityuserid character varying;
+l_draftCount bigint;
+l_stagCount bigint;
+l_versionNumber bigint;
+v_status int;
+v_dadispositioncode character varying;
+v_dadispositiontext character varying;
+v_dastatustext character varying;
+v_intakeuser character varying;
+v_date timestamp without time zone;
+l_receiveddelay  character varying;
+l_submissiondelay character varying;
+l_teamtypekey character varying;
+
+v_auditlog character varying;
+v_metadata  json;
+v_intakeworker character varying;
+v_msg character varying;
+v_username character varying;
+appeventcode character varying;
+status character varying;
+commenttext character varying;
+bpreintake boolean;
+bmanualrouting boolean;
+v_assignsecurityuserid character varying;
+
+arr_appointments json;
+v_notifystatus  character varying;
+v_intakeserviceid uuid;
+j_evaluation json;
+v_evaluationstatus  character varying;
+
+BEGIN
+
+v_date:= now() ;
+appeventcode =reviewjson ->> 'appevent';
+status =reviewjson ->> 'status';
+commenttext =reviewjson->> 'commenttext';
+bpreintake =reviewjson ->> 'ispreintake';
+bmanualrouting=reviewjson ->> 'ismanualrouting';
+
+v_assignsecurityuserid=reviewjson ->> 'assignsecurityuserid';
+l_IntakeNumber := intakejson -> 'General' ->> 'IntakeNumber';
+l_DateRecieved := intakejson -> 'General' ->> 'RecivedDate';
+l_Narrative := intakejson -> 'General' ->> 'Narrative';
+l_arrPerson := intakejson ->>'persons';
+-- v_securityuserid := COALESCE(intakejson->>'securityuserid','S-1-5-21-152097760-152508613-1969071786-555');
+v_securityuserid := intakejson->>'securityuserid';
+v_dadispositioncode:= intakejson-> 'disposition'->>'dispositioncode';
+
+v_dastatustext:= intakejson-> 'General'->>'statustext';
+l_DateRecieved:= l_DateRecieved::timestamp;
+l_receiveddelay := intakejson -> 'General' ->> 'receiveddelay';
+l_submissiondelay := intakejson -> 'General' ->> 'submissiondelay';
+l_teamtypekey := intakejson -> 'General' ->> 'Agency';
+
+v_intakeworker := intakejson -> 'General' ->> 'Author';
+
+arr_appointments := intakejson ->> 'appointments';
+
+v_intakeserviceid := intakejson -> 'evaluation' ->> 'objectid';
+j_evaluation := intakejson ->> 'evaluation';
+--return j_evaluation;
+
+RAISE NOTICE 'IntakeNumber:%', l_IntakeNumber;
+RAISE NOTICE 'DateRecieved:%', l_DateRecieved;
+RAISE NOTICE 'Narrative:%', l_Narrative;
+RAISE NOTICE 'arrPerson:%', l_arrPerson;
+RAISE NOTICE 'securityuser:%', v_securityuserid;
+RAISE NOTICE 'appeventcode:%', appeventcode;
+RAISE NOTICE 'v_dadispositiontext:%', v_dadispositiontext;
+RAISE NOTICE 'v_dastatustext:%', v_dastatustext;
+RAISE NOTICE 'IntakeNumber:%', intakejson;
+
+RAISE NOTICE 'status:%', status;
+RAISE NOTICE 'evaluation1:%', j_evaluation;
+
+select description into v_dadispositiontext  
+from dispositioncode  where dispositioncode = v_dadispositioncode; 
+
+ 
+IF (status ='supreview' and appeventcode = 'SITR') then
+ v_status = 11 ; 
+ELSIF (status ='supreview') then
+ v_status = 1 ;
+ELSIF (lower(status) ='reopen')     then
+ v_status = 7 ;
+ELSIF (lower(status) ='closed')     then
+ v_status =8 ;    
+END IF;
+
+RAISE NOTICE 'v_status:%', v_status;
+
+IF l_IntakeNumber IS NOT NULL AND LENGTH(l_IntakeNumber) > 0 THEN
+
+FOR i IN SELECT * FROM json_array_elements(l_arrPerson)
+  LOOP
+ IF i->>'Role' in ('RA', 'RC') THEN
+  l_Firstname :=i ->> 'Firstname';
+  l_Lastname :=i ->> 'Lastname';
+  l_RAName := l_Firstname || l_Lastname;
+ END IF;
+  END LOOP;
+
+SELECT COUNT(*) into l_draftCount FROM intakedastaging as i where i.intakenumber = l_IntakeNumber;
+
+IF l_draftCount > 0 THEN 
+
+    SELECT MAX(versionnumber),max(intakeuser)  into l_versionNumber,v_intakeuser FROM intakedastaging as i where i.intakenumber = l_IntakeNumber;
+    UPDATE intakedastaging set activeflag = 0 where intakenumber = l_IntakeNumber;
+END IF;
+INSERT INTO intakedastaging(
+            intakenumber, dateRecieved, narrative, raname, entityname,  intakeuser,
+            cruworkername, data, insertedon, insertedby, timerecieved, updatedon, 
+            updatedby, status,jsondata,versionnumber,dispositiondescription,statusdescription,ispreintake)
+    VALUES (l_IntakeNumber,  l_DateRecieved  , l_Narrative, l_RAName, null, coalesce(v_intakeuser,v_securityuserid),
+            v_securityuserid, null, v_date, v_securityuserid, l_DateRecieved,  v_date, 
+            null, 'pending',intakejson,coalesce(l_versionNumber,0)+1,
+            v_dadispositiontext,v_dastatustext,bpreintake);
+
+SELECT COUNT(*) into l_stagCount FROM intakedastatus   where  intakenumber = l_IntakeNumber;
+ 
+if (l_stagCount=0) THEN
+       insert into IntakeDAStatus(intakenumber,status,JSONDATA,insertedby,updatedby,submitteddate,ispreintake,receiveddelayreason,submissiondelayreason,teamtypekey)  
+     values(l_IntakeNumber,v_status,intakejson,v_securityuserid,v_securityuserid,v_date,bpreintake,l_receiveddelay,l_submissiondelay,l_teamtypekey);
+ELSE
+ UPDATE intakedastatus SET status = v_status,submitteddate = v_date WHERE intakenumber = l_IntakeNumber;
+ END IF;
+  RAISE NOTICE 'SITR:%', appeventcode;
+/*DA Routing to Supervisor */
+IF ( appeventcode  in('INTR' ,'SITR'))  THEN
+ RAISE NOTICE 'SITR:%', appeventcode;
+ select routingintake into l_status from routingintake
+    (l_IntakeNumber,v_securityuserid,appeventcode,v_status,commenttext,v_assignsecurityuserid,bmanualrouting);
+ 
+ select json_agg(e) from (select l_DateRecieved  datereceived,status  status, v_intakeworker intakeworker, v_dadispositioncode disposition, l_IntakeNumber intakenumber,l_RAName raname)e INTO v_metadata;
+     
+    SELECT coalesce(lastname,'')||', '|| coalesce(firstname,'')into v_username
+    FROM userprofile WHERE securityusersid = v_securityuserid;
+    
+      IF (status ='supreview' and appeventcode = 'SITR') then
+               v_msg:=   'Pre Intake ('|| l_IntakeNumber ||') Routed  by ';
+            ELSIF (status ='supreview') then
+               v_msg:=   'Intake ('|| l_IntakeNumber ||') Submitted for Review by '; 
+            ELSIF (lower(status) ='reopen')     then
+               v_msg:=  'Intake ('|| l_IntakeNumber||') Reopened by ';
+            ELSIF (lower(status) ='closed')     then
+                v_msg:=  'Intake ('|| l_IntakeNumber||') Closed by ';  
+            END IF;
+        
+ select auditlog into v_auditlog from auditlog
+    ('IR', v_msg||v_username,null,l_IntakeNumber,null,
+     v_securityuserid,
+     v_metadata,
+     null,
+     true,false,false);
+  
+ If appeventcode = 'INTR' THEN
+  select send_appointment_notification into v_notifystatus from send_appointment_notification('RV', status, l_IntakeNumber, v_securityuserid, v_assignsecurityuserid);
+ End If;
+ 
+ 
+END IF;
+
+ IF (v_intakeserviceid is null) THEN
+                v_intakeserviceid:= '00000000-0000-0000-0000-000000000000';
+ END IF;
+
+ IF (j_evaluation is not null) THEN
+   select saveevaluation into v_evaluationstatus from saveevaluation(v_intakeserviceid, l_IntakeNumber, j_evaluation, v_securityuserid);    
+ END IF;
+ 
+                         
+l_Status := 'SUCCESS';
+
+ELSE
+
+l_Status := 'FAILED-NOINTAKENUMBER';
+
+END IF;
+
+RETURN l_Status;
+
+END;
+
+$function$
+

@@ -1,0 +1,81 @@
+ CREATE OR REPLACE FUNCTION public.sp_interfaceafspaymentoutbound()                                                         
+  RETURNS void                                                                                                              
+  LANGUAGE plpgsql                                                                                                          
+ AS $function$                                                                                                              
+ BEGIN                                                                                                                      
+ Raise notice '1';                                                                                                          
+ -- Insertion into the   interfaceafspaymentoutbound based on requirement                                                   
+    INSERT INTO interfaceafspaymentoutbound                                                                                 
+      (                                                                                                                     
+            "1099Amount"                                                                                                    
+                   ,"1099Code"                                                                                              
+                   ,"AccountType"                                                                                           
+                   ,"AddressCode"                                                                                           
+                   ,"Approved"                                                                                              
+                   ,"ApprovedBy"                                                                                            
+                   ,"Credit"                                                                                                
+                   ,"Currency"                                                                                              
+                   ,"Date"                                                                                                  
+                   ,"Document"                                                                                              
+           ,"DueDate"                                                                                                       
+           ,"Invoice"                                                                                                       
+                   ,"InvoiceDate"                                                                                           
+                   ,"InvoiceDescription"                                                                                    
+                   ,"JournalDescription"                                                                                    
+                   ,"PayorCompany"                                                                                          
+                   ,"MethodOfPayment"                                                                                       
+                   ,"OffsetAccount"                                                                                         
+                   ,"OffsetAccountType"                                                                                     
+                   ,"PostingProfile"                                                                                        
+                   ,"TermsOfPayment"                                                                                        
+                   ,"VendorAccount"                                                                                         
+                   ,"Voucher"                                                                                               
+                 )                                                                                                          
+                                                                                                                            
+    SELECT                                                                                                                  
+           CASE WHEN TBPD.type_1099_cd IS NOT NULL THEN TBPD.type_1099_cd ELSE  '     '   END AS "1099amount"               
+                  ,CASE WHEN TBPD.type_1099_cd = 'MISC-01' THEN 'Rents'                                                     
+                        WHEN TBPD.type_1099_cd = 'MISC-03' THEN 'Other Income'                                              
+                            WHEN TBPD.type_1099_cd = 'MISC-06' THEN 'Health care payments'                                  
+                            WHEN TBPD.type_1099_cd = 'MISC-07' THEN 'nonemployee compensation'                              
+                          END AS "1099code"                                                                                 
+                  ,'Vendor' AS "Accounttype"                                                                                
+                  ,TBPA.adr_type_cd AS "AddressCode"                                                                        
+                  ,'Yes' AS "Approved"                                                                                      
+              ,100 AS "ApprovedBy"                                                                                          
+                  ,TBPD.final_amount_no AS "Credit"                                                                         
+                  ,'USD' AS "Currency"                                                                                      
+              ,TBPD.final_service_end_dt AS "Date"                                                                          
+                  ,CONCAT(TPER.firstname,TPER.lastname) AS "Document"                                                       
+                  ,TBPD.final_service_end_dt AS "DueDate"                                                                   
+          ,'        ' AS "Invoice"  --hardcoded as per previous code                                                        
+                  ,TBPD.final_service_end_dt AS "InvoiceDate"                                                               
+          ,'        ' AS "InvoiceDescription"  --default                                                                    
+                  ,'MD CHESSIE + DATE/TIME of file' AS "JournalDescription"  --default                                      
+                  ,TBPA.adr_county_cd AS "PayorCompany"                                                                     
+          ,TBPH.PAYMENT_METHOD_CD AS "MethodOfPayment"                                                                      
+                  , CONCAT('5200-',TBPH.PAYMENT_METHOD_CD,'-1201')  AS "OffsetAccount"                                      
+          ,'Ledger'   AS "OffsetAccountType"  --Default                                                                     
+          ,'APSTD'    AS "PostingProfile"     --Default                                                                     
+          ,'N00'      AS "TermsOfPayment"     --Default                                                                     
+                  ,TBPH.Provider_id AS "VendorAccount"                                                                      
+          ,TBPH.Payment_id  AS "Voucher"                                                                                    
+                                                                                                                            
+         FROM    TB_PAYMENT_HEADER as TBPH                                                                                  
+             inner join  TB_PAYMENT_DETAIL AS TBPD on TBPH.Payment_id::INTEGER = TBPD.Payment_id::INTEGER                   
+             inner join TB_PAYMENT_STATUS as TBPS  on TBPH.Payment_id::INTEGER = TBPS.Payment_id::INTEGER                   
+                         inner join TB_PROVIDER_ADDRESSES AS TBPA on TBPH.Provider_id::INTEGER = TBPA.parent_key_id::INTEGER
+                 inner join PERSON AS TPER    on TPER.cjamspid::INTEGER = TBPD.client_id::INTEGER                           
+         WHERE   TBPH.Payment_id = TBPD.Payment_id                                                                          
+                         AND TBPH.Delete_sw = 'N'                                                                           
+                         AND (TBPS.PAYMENT_STATUS_CD = '1634' )                                                             
+                         AND TBPH.Delete_sw = 'N'                                                                           
+                         AND TBPD.Delete_sw = 'N'                                                                           
+                         AND TBPS.Delete_sw = 'N'                                                                           
+                         AND TBPH.Payment_id = TBPS.Payment_id                                                              
+                         AND TBPH.PAYMENT_TYPE_CD  NOT IN ('6','5689','7');                                                 
+                         --AND TBPD.FINAL_SERVICE_END_DT IS NOT NULL;                                                       
+ Raise notice '82';                                                                                                         
+ end;                                                                                                                       
+ $function$                                                                                                                 
+

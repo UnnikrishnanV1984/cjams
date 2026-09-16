@@ -1,0 +1,88 @@
+CREATE OR REPLACE FUNCTION prov_listexitconfdjs(v_reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+v_provider_id character varying;
+v_object_id character varying;
+v_object_type character varying;
+v_exit_conf_number character varying;
+
+v_jsondata json;
+begin 
+
+
+v_provider_id := v_reqobj->>'provider_id';
+v_object_id := v_reqobj->>'object_id';
+v_object_type := v_reqobj->>'object_type';
+v_exit_conf_number := v_reqobj->>'exit_conf_number';
+
+
+select json_agg(x) into v_jsondata from (
+
+select mcf.*,tp.provider_nm,(select * from prov_get_formatted_addresses(tp.provider_id)) as site_address,tp.provider_id as site_id,
+                  
+                  json_agg(pecom.object_id) as object_ids,
+                  json_agg(pecom.object_type) as object_types,
+
+(select jsonb_agg(a) from (
+select distinct ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, ps.employee_type,
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no,ps.provider_staff_id,ps.staff_email
+from providerstaff ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.provider_staff_id::character varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N')a) as staffdetails,
+
+(select jsonb_agg(a) from (
+select distinct ps.monitoring_adhoc_staff_id, ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, 
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no , ps.staff_email 
+from prov_monitoring_adhoc_staff ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.monitoring_adhoc_staff_id::character varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N' and mcfs.objecttype = 'adhocstaff' )a) as adhocstaffdetails,
+
+(select jsonb_agg(a) from (
+select distinct ps.monitoring_adhoc_worker_id, ps.first_nm as first_nm,ps.last_nm as last_nm,
+ ps.job_title, ps.worker_phone_no , ps.worker_email 
+from prov_monitoring_adhoc_worker ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.monitoring_adhoc_worker_id::character varying =
+ mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N' and mcfs.objecttype = 'adhocworker' )a) as adhocworkerdetails,
+
+
+
+(select jsonb_agg(a) from (select distinct up.firstname || ' ' || up.lastname  as username,
+mu.email ,r.name as userrole ,r2.teamtypekey as agencykey,mu.securityusersid as userid, 
+p.address, p.city, p.state, p.zipcode,
+' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4)  as staffcell
+from muser mu
+inner join userprofile up on up.securityusersid = mu.securityusersid and up.activeflag = 1
+left join userprofilephonenumber u  on u.securityusersid = mu.securityusersid
+left join userprofileaddress p on p.securityusersid = mu.securityusersid
+join rolemapping r2 on r2.principalid = mu.id and r2.activeflag = '1'
+             and r2.teamtypekey in ('OLM', 'OLMDJS', 'RESDJS', 'OLMSSA')
+join role r on r.id = r2.roleid
+join prov_monitoring_exit_conf_staff mcfs on  mu.securityusersid = mcfs.objectid  and mcfs.delete_sw = 'N'
+where mcf.exit_conf_id = mcfs.exit_conf_id )a) as workerdetail
+
+
+from prov_monitoring_exit_conf mcf 
+left join prov_exit_conf_object_mapping pecom on pecom.exit_conf_number = mcf.exit_conf_number and pecom.delete_sw = 'N'
+left join tb_provider tp                      on tp.provider_id = mcf.site_id and tp.delete_sw = 'N'
+
+where 
+mcf.delete_sw = 'N' and 
+(case when v_provider_id is not null then mcf.provider_id = v_provider_id else true end ) and 
+(case when v_object_id is not null then pecom.object_id = v_object_id else true end ) and 
+(case when v_object_type is not null then pecom.object_type = v_object_type else true end ) and 
+(case when v_exit_conf_number is not null then mcf.exit_conf_number = v_exit_conf_number else true end )
+
+group by mcf.exit_conf_id, tp.provider_id
+
+) x;         
+
+return v_jsondata;
+END;
+$function$
+

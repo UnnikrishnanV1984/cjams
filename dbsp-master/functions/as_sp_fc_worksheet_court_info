@@ -1,0 +1,174 @@
+CREATE OR REPLACE FUNCTION as_sp_fc_worksheet_court_info(al_client_id bigint, al_removal_id bigint, al_courtorder_id uuid)
+ RETURNS TABLE(client_id bigint, removal_id integer, typeofcourthearing character varying, dateofcourthearing timestamp without time zone, ctwdecision character varying, dateoffindingctwdecision timestamp without time zone, courtorderdelayremoval character varying, courtorderdelaytimedays integer, reasonableeffortsmade character varying, reasonableeffortsnotnecessaryduetoemergentcircumstances character varying, dateofreasonableeffortscourthearing timestamp without time zone, fostercarepermanencyplan character varying, isiveagencyresponsibleforplacementandcare character varying, magistrateorjudgename character varying, dateofnexthearing timestamp without time zone, dateofnexthearingresnbleff timestamp without time zone, issignedbyjudge character varying, dateagencylostlegalresponsibility timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  vs_Procedure_nm         VARCHAR(100) DEFAULT 'sp_fc_worksheet_court_info';
+  vn_rmvl_id          INTEGER;
+  vs_crt_hrng_typ         VARCHAR(50);
+  vd_crt_hrng_dt         TIMESTAMP;
+  vs_ctw_dcsn          VARCHAR(50);
+  vd_ctw_dt          TIMESTAMP;
+  vs_crt_ord_dly_rmvl        VARCHAR(50);
+  vn_crt_ord_dly_tm_dys       INTEGER;
+  vs_re_mde          VARCHAR(50);
+  vs_re_emrgnt_crcmst        VARCHAR(50);
+  vd_rsnbl_efrts_crt_hrng       TIMESTAMP;
+  vs_fc_prmncy_pln        VARCHAR(50);
+  vs_ive_agcy_rspbl_pl_cre      VARCHAR(50);
+  vs_mgs_jdg_nm         VARCHAR(50);
+  vd_nxt_hrng_dt         TIMESTAMP;
+  vd_nxt_hrng_res_eff_dt       TIMESTAMP;
+  vs_jdg_sgn          VARCHAR(50);
+  vd_agnct_lst_lgl_cstdy_dt      TIMESTAMP;
+  v_phyremovaldt          TIMESTAMP;
+    
+ 
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_court_info ( 
+  client_id              BIGINT,
+  removal_id             INTEGER,
+  typeOfcourthearing           VARCHAR(50),
+  dateofcourthearing           TIMESTAMP,
+  ctwdecision             VARCHAR(50),
+  dateoffindingctwdecision         TIMESTAMP,
+  courtorderdelayremoval          VARCHAR(50),
+  courtorderdelaytimedays          INTEGER,
+  reasonableeffortsmade          VARCHAR(50),
+  reasonableEffortsnotnecessaryduetoemergentcircumstances  VARCHAR(50),
+  dateofreasonableeffortscourthearing       TIMESTAMP,
+  fostercarepermanencyplan         VARCHAR(50),
+  isiveagencyresponsibleforplacementandcare     VARCHAR(50),
+  magistrateorjudgename          VARCHAR(50),
+  dateofnexthearing           TIMESTAMP,
+  dateofnexthearingresnbleff          TIMESTAMP,
+  issignedbyjudge            VARCHAR(50),
+  dateagencylostlegalresponsibility       TIMESTAMP
+ );
+ 
+ vn_rmvl_id := al_removal_id::int;
+
+select removaldate into v_phyremovaldt from intakeservreqchildremoval where removalid = vn_rmvl_id;
+
+select DISTINCT isrco.courtorderdate as ctwdate ,
+ (case 
+  when (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = '838f07f5-0c94-4f13-b5c0-658c4b9ad5bc' and iscod.isselected = 1) then 'Y'
+  when (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = '5b24619f-cf6f-40d1-bba9-a49a83dc7747' and iscod.isselected = 1) then 'N'
+  end) AS ctwdecision,
+ (CASE when (isrco.courtorderdelayremoval) then'Yes' else 'No' end), 
+ isrco.courtorderdelaytimeframe
+ into vd_ctw_dt , vs_ctw_dcsn, vs_crt_ord_dly_rmvl, vn_crt_ord_dly_tm_dys
+ from intakeservreqcourtorder isrco,
+ intakeservreqcourtorderdetails iscod , person per , intakeservicerequestcourthearing isrch
+ where isrco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ and isrco.intakeservreqcourtorderid = al_courtorder_id
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid IN ('838f07f5-0c94-4f13-b5c0-658c4b9ad5bc', '5b24619f-cf6f-40d1-bba9-a49a83dc7747') and iscod.isselected = 1) -- Contrary to Welfare
+ AND  per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1
+ and isrch.intakeservicerequestpetitionid = isrco.intakeservicerequestpetitionid
+ group by isrco.intakeservreqcourtorderid, iscod.checklisttypekey, iscod.checklistid, iscod.isselected, per.firstname, per.lastname, per.cjamspid;
+
+select isrch.judgename ,isrch.nexthearingdate, isrch.hearingdatetime , ht.description   
+ into vs_mgs_jdg_nm , vd_nxt_hrng_dt, vd_crt_hrng_dt, vs_crt_hrng_typ
+ from intakeservreqcourtorder isrco, intakeservicerequestcourthearing isrch, hearingtype ht, intakeservreqcourtorderdetails iscod 
+ where isrco.intakeservreqcourtorderid = al_courtorder_id and isrch.hearingstatustypekey = 'CONCULD'
+ and isrco.intakeservicerequesthearingid = isrch.intakeservicerequestcourthearingid
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = '838f07f5-0c94-4f13-b5c0-658c4b9ad5bc' and iscod.isselected = 1) -- Contrary to Welfare
+ and TRIM(ht.hearingtypekey) = TRIM(isrch.hearingtypekey) AND ht.activeflag = 1
+ and isrch.intakeservicerequestpetitionid = isrco.intakeservicerequestpetitionid order by isrch.hearingdatetime desc  limit 1;
+ 
+select isrch.nexthearingdate into vd_nxt_hrng_res_eff_dt   
+ from intakeservreqcourtorder isrco, intakeservicerequestcourthearing isrch, 
+ hearingtype ht, intakeservreqcourtorderdetails iscod 
+ where isrco.intakeservreqcourtorderid = al_courtorder_id and isrch.hearingstatustypekey = 'CONCULD'
+ and isrco.intakeservicerequesthearingid = isrch.intakeservicerequestcourthearingid
+ AND (iscod.checklisttypekey = 'COLANG' 
+ AND iscod.checklistid = '34993888-d849-4774-a5c0-6aa25a2b9a42' and iscod.isselected = 1) -- Contrary to Welfare
+ and TRIM(ht.hearingtypekey) = TRIM(isrch.hearingtypekey) AND ht.activeflag = 1
+ and isrch.intakeservicerequestpetitionid = isrco.intakeservicerequestpetitionid order by isrch.hearingdatetime desc  limit 1;
+ 
+
+  
+select (case when (iscod.checklisttypekey = 'COPP' AND iscod.checklistid = '041def29-b981-4fd2-9c9c-5baafb37e253' and iscod.isselected = 1) then 'No' else 'Yes' end) AS judgesignflag
+ into vs_jdg_sgn
+ from intakeservreqcourtorder isrco, intakeservreqcourtorderdetails iscod
+ where isrco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ and isrco.intakeservreqcourtorderid = al_courtorder_id
+ AND (iscod.checklisttypekey = 'COPP' AND iscod.checklistid = '041def29-b981-4fd2-9c9c-5baafb37e253'); -- judge signed flag
+  
+SELECT 
+(CASE 
+    WHEN (iscod.checklisttypekey = 'COLANG' AND iscod.isselected = 1 AND iscod.checklistid = 'f4365b4c-e0ad-422c-b76e-e6a05ec3320f') 
+        THEN 'Y'
+    WHEN (iscod.checklisttypekey = 'COLANG' AND iscod.isselected = 1 AND iscod.checklistid = 'b1a93fdf-f282-43c3-af6f-dbb96d428b39') 
+        THEN 'N'
+    WHEN (iscod.checklisttypekey = 'COLANG' AND iscod.isselected = 1 AND iscod.checklistid = 'e4c3f3a6-6756-4123-82a4-f676399e80ce') 
+        THEN 'Y'
+END) AS reasonableeffortsmade,
+ isrco.courtorderdate AS dateofreasonableeffortscourthearing
+ INTO vs_re_mde , vd_rsnbl_efrts_crt_hrng
+FROM intakeservreqcourtorder isrco, intakeservreqcourtorderdetails iscod
+WHERE isrco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ AND isrco.intakeservreqcourtorderid = al_courtorder_id
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid IN ('f4365b4c-e0ad-422c-b76e-e6a05ec3320f', 'b1a93fdf-f282-43c3-af6f-dbb96d428b39', 'e4c3f3a6-6756-4123-82a4-f676399e80ce') AND iscod.isselected = 1); -- Reasonable efforts were made
+  
+select (case when (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = 'e4c3f3a6-6756-4123-82a4-f676399e80ce' and iscod.isselected = 1) then 'Y' end) AS reasonableeffortsnotnecessaryduetoemergentcircumstances 
+ INTO vs_re_emrgnt_crcmst
+ from intakeservreqcourtorder isrco, intakeservreqcourtorderdetails iscod
+ where isrco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ and isrco.intakeservreqcourtorderid = al_courtorder_id
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = 'e4c3f3a6-6756-4123-82a4-f676399e80ce' and iscod.isselected = 1); -- emergent situation
+ 
+select case when isrho.hearingoutcometypekey in ('COSSDDA', 'CDSSDHMH', 'CDSSDDADHMH', 'COMAGE', 'CONCOCOM', 'CONCOM', 'CONGUA', 'SHEGRA') then 'YES' else 'NO' end
+ INTO vs_ive_agcy_rspbl_pl_cre
+ from intakeservreqcourtorder isrco, intakeservreqcohearingoutcome isrho
+ where isrho.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid
+ and isrco.intakeservreqcourtorderid = al_courtorder_id
+ --AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = '838f07f5-0c94-4f13-b5c0-658c4b9ad5bc' and iscod.isselected = 1); -- ive agent responsible for care  
+ limit 1;
+
+select case when isrho.hearingoutcometypekey in ('ALLR') then vd_ctw_dt else null end
+ INTO vd_agnct_lst_lgl_cstdy_dt
+ from intakeservreqcourtorder isrco, intakeservreqcourtorderdetails iscod, intakeservreqcohearingoutcome isrho
+ where isrco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ and isrho.intakeservreqcourtorderid = isrco.intakeservreqcourtorderid and isrho.hearingoutcometypekey in ('ALLR')
+ and isrco.intakeservreqcourtorderid = al_courtorder_id
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.isselected = 1); -- Date agency lost legal responsibility 
+
+-- FC Permanency plan
+select (select rv.description from referencevalues rv where trim(rv.ref_key) = isrco.childpermanencyplankey and rv.referencetypeid=137 and rv.activeflag=1) into vs_fc_prmncy_pln
+from intakeservreqcourtorder isrco, intakeservreqcourtorderdetails iscod
+ where isrco.intakeservreqcourtorderid = iscod.intakeservreqcourtorderid 
+ and isrco.intakeservreqcourtorderid = al_courtorder_id
+ AND (iscod.checklisttypekey = 'COLANG' AND iscod.checklistid = '34993888-d849-4774-a5c0-6aa25a2b9a42' and iscod.isselected = 1);
+
+INSERT INTO Temp_worksheet_court_info
+SELECT 
+  al_client_id,
+  vn_rmvl_id,
+  vs_crt_hrng_typ,
+  vd_crt_hrng_dt,
+  vs_ctw_dcsn,
+  vd_ctw_dt,
+  vs_crt_ord_dly_rmvl,
+  vn_crt_ord_dly_tm_dys,
+  (select case when vs_re_mde is null then 'N' else vs_re_mde end),
+  (select case when vs_re_emrgnt_crcmst is null then 'N' else vs_re_emrgnt_crcmst end),
+  vd_rsnbl_efrts_crt_hrng,
+  vs_fc_prmncy_pln,
+  vs_ive_agcy_rspbl_pl_cre,
+  vs_mgs_jdg_nm,
+  vd_nxt_hrng_dt,
+  vd_nxt_hrng_res_eff_dt,
+  vs_jdg_sgn,
+  vd_agnct_lst_lgl_cstdy_dt;
+    
+RETURN QUERY SELECT *
+               FROM Temp_worksheet_court_info;
+              
+DROP TABLE Temp_worksheet_court_info;
+
+   END
+    $function$
+

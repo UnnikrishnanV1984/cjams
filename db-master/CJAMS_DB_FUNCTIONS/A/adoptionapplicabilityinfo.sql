@@ -1,0 +1,420 @@
+create or replace function cjams.adoptionapplicabilityinfo(inserobj json) 
+returns text 
+language plpgsql as 
+$function$ 
+
+Declare 
+
+v_removalid bigint;
+v_clientid bigint;
+v_num integer;
+v_siblingStatus json;
+v_minorparentDetails json;
+v_securityuserid varchar;
+v_adoptionapplicabilityid varchar;
+v_ivestatus varchar;
+v_notifystatus character varying;    
+v_ivecomments character varying;   
+v_currenttime timestamp; 
+v_insertedby character varying;
+v_username character varying;
+v_msg character varying;
+v_supervisorslist record;
+vn_srv_req_id varchar;
+
+---------------------------------------------------------------------
+
+-- CDM-28054 - Adoption ACA Return back to worker issue fix Veera - 01-17-2023
+---------------------------------------------------------------------
+
+BEGIN
+
+v_removalid := inserobj ->> 'removalid';
+v_clientid := inserobj ->> 'clientId';
+v_securityuserid := inserobj ->> 'securityusersid';
+v_ivestatus := inserobj ->> 'ivestatus';
+v_ivecomments := inserobj ->> 'ivecomment';
+v_currenttime := now();
+
+select count(*) into v_num
+	from adoptionapplicabilityinfo
+	where clientId = v_clientid	and removalid = v_removalid;
+
+IF (v_num) >= 1 then 
+
+	select adoptionapplicabilityid, insertedby into v_adoptionapplicabilityid, v_insertedby
+	from adoptionapplicabilityinfo
+	where clientId = v_clientid	and removalid = v_removalid limit 1;
+
+	update adoptionapplicabilityinfo 
+		set
+		physicaladdressofchild = inserobj ->> 'physicaladdressofchild' ,
+		childAgeTable218 = (inserobj ->> 'childAgeTable218')::boolean ,
+		BAvoluntaryplacementagreement = inserobj ->> 'BAvoluntaryplacementagreement' ,
+		childAgeTable018 = (inserobj ->> 'childAgeTable018') :: boolean,
+		voluntaryRelinquishment = inserobj ->> 'voluntaryRelinquishment' ,
+		dateoffirstcourtorderwithCtw = (inserobj ->> 'dateoffirstcourtorderwithCtw')::timestamp ,
+		childAgeTable1618 = (inserobj ->> 'childAgeTable1618')::boolean ,
+		removalid = (inserobj ->> 'removalid')::integer ,
+		childAgeTable1018 = (inserobj ->> 'childAgeTable1018') :: boolean ,
+		fosterparentemotionalbondingdescription = inserobj ->> 'fosterparentemotionalbondingdescription' ,
+		raceEthnicityofchild = (inserobj ->> 'raceEthnicityofchild')::boolean,
+		childspreviouslyadopted = inserobj ->> 'childspreviouslyadopted' ,
+		unsuccessfulreasonableeffortsstatusrecords = inserobj ->> 'unsuccessfulreasonableeffortsstatusrecords' ,
+		childhasemotionaldisturbance = inserobj ->> 'childhasemotionaldisturbance' ,
+		descriptionofreturnhome = inserobj ->> 'descriptionofreturnhome' ,
+		columns2Save = (inserobj ->> 'columns2Save')::boolean ,
+		canchildreturntohome = inserobj ->> 'canchildreturntohome' ,
+		childscurrentIvEfostercareeligibilitystatus = inserobj ->> 'childscurrentIvEfostercareeligibilitystatus' ,
+		childsIvEstatusofpreviousadoption = inserobj ->> 'childsIvEstatusofpreviousadoption' ,
+		childMeetAllMedicalDisabilityRequirementsforSsi = inserobj ->> 'childMeetAllMedicalDisabilityRequirementsforSsi' ,
+		childAgeTable618 = (inserobj ->> 'childAgeTable618') :: boolean ,
+		startdateofreceivingSsi = (inserobj ->> 'startdateofreceivingSsi')::timestamp ,
+		childAgeTable1418 = (inserobj ->> 'childAgeTable1418')::boolean ,
+		childRemovalDate = (inserobj ->> 'childRemovalDate')::timestamp ,
+		childAgeTable1218 = (inserobj ->> 'childAgeTable1218') :: boolean ,
+		childAgeTableChildagenoneoftheagesapply = (inserobj ->> 'childAgeTableChildagenoneoftheagesapply' ) :: boolean,
+		childsSsIeligibilitystatus = inserobj ->> 'childsSsIeligibilitystatus' ,
+		unsuccessfulreasonableeffortsstatusrecordsdescription = inserobj ->> 'unsuccessfulreasonableeffortsstatusrecordsdescription' ,
+		emotionalDisturbance = (inserobj ->> 'emotionalDisturbance') :: boolean ,
+		previousAdoptiveParentsTpr = (inserobj ->> 'previousAdoptiveParentsTpr')::timestamp ,
+		physicalMentalEmotionalDisability = (inserobj ->> 'physicalMentalEmotionalDisability')::boolean ,
+		clientId = v_clientid ,
+		dtof1stcowithbiorctwfindingifconvtocina = (inserobj ->> 'dtof1stcowithbiorctwfindingifconvtocina')::timestamp ,
+		siblingInformationCheck = (inserobj ->> 'siblingInformationCheck')::boolean ,
+		childAgeTable018dublicate = (inserobj ->> 'childAgeTable018dublicate')::boolean ,
+		recognizedhighriskofphysicaldisability = (inserobj ->> 'recognizedhighriskofphysicaldisability')::boolean ,
+		fosterparentemotionalbonding = inserobj ->> 'fosterparentemotionalbonding' ,
+		dateofRelinquishment = (inserobj ->> 'dateofRelinquishment')::timestamp ,
+		aCourtOrder = inserobj ->> 'aCourtOrder' ,
+		issiblingtochildwhoqualifiesasapplchildbyage = inserobj ->> 'issiblingtochildwhoqualifiesasapplchildbyage' ,
+		adoptiveParentsTprDate = (inserobj ->> 'adoptiveParentsTprDate')::timestamp ,
+		childmeetsSsImedicaldisabledeligliblerequirements = inserobj ->> 'childmeetsSsImedicaldisabledeligliblerequirements' ,
+		childBirthDate = (inserobj ->> 'childBirthDate')::timestamp,
+		childAgeTable418 = (inserobj ->> 'childAgeTable418')::boolean ,
+		hasthechildbeenincare60Monthsormore = inserobj ->> 'hasthechildbeenincare60Monthsormore' ,
+		childreceivingSsIatremoval = inserobj ->> 'childreceivingSsIatremoval' ,
+		childAgeTable818 = (inserobj ->> 'childAgeTable818')::boolean ,
+		child617Yearsofage = (inserobj ->> 'child617Yearsofage')::boolean ,
+		removalCourtorderdate = (inserobj ->> 'removalCourtorderdate')::timestamp ,
+		expectedAdoptionDate = (inserobj ->> 'expectedAdoptionDate')::timestamp ,
+		isthechildresidinginafosterfamilyhome = inserobj ->> 'isthechildresidinginafosterfamilyhome' ,
+		childAgeTable218dublicate = (inserobj ->> 'childAgeTable218dublicate') :: boolean,
+		caseworkerName = inserobj ->> 'caseworkerName' ,
+		submissionDate = (inserobj ->> 'submissionDate')::timestamp ,
+		caseworkerSignature = inserobj ->> 'caseworkerSignature' ,
+		resubmissionCaseworkerName = inserobj ->> 'resubmissionCaseworkerName' ,
+		resubmissionDate = (inserobj ->> 'resubmissionDate')::timestamp ,
+		resubmissionCaseworkerSignature = inserobj ->> 'resubmissionCaseworkerSignature' ,
+		resubmissionCount = (inserobj ->> 'resubmissionCount')::integer ,
+		ivestatus = (inserobj ->> 'ivestatus'),
+		ivecomment = (inserobj ->> 'ivecomment'),
+		raceorethnicitywithoneofthesabove = inserobj ->> 'raceorethnicitywithoneofthesabove',
+		adoptionapplicabilitystartdt = (inserobj ->> 'adoptionapplicabilitystartdt')::timestamp,
+		eligiblesiblingsinfo = (inserobj ->> 'eligiblesiblingsinfo')::json,
+		childagetable = inserobj ->> 'childagetable',
+		updatedby = v_securityuserid,
+		updatedon = v_currenttime
+	where clientid = v_clientid	and removalid = v_removalid;
+-- Updating Sibling info
+ for v_siblingStatus in select * from json_array_elements((inserobj ->>'siblingStatus')::json) 
+ loop 
+ 	raise notice 'Parsing Item % ',
+	v_siblingStatus->>'nameofsiblingchild';
+	update adoptionapplicabilitysiblinginfo 
+	set
+		adoptionapplicabilityid = v_adoptionapplicabilityid :: uuid,
+		nameofsiblingchild = v_siblingStatus->>'nameofsiblingchild',
+		nameofsiblingchildsadoptiveplacement = v_siblingStatus->>'nameofsiblingchildsadoptiveplacement',
+		dateofsiblingsadoptiondecree = (v_siblingStatus->>'dateofsiblingsadoptiondecree')::timestamp,
+		dateofsiblingsapplicablechildassessment = (v_siblingStatus->>'dateofsiblingsapplicablechildassessment')::timestamp,
+		childssiblingsapplicabilitystatus = v_siblingStatus->>'childssiblingsapplicabilitystatus',
+		expectedchildadoptiveplacement = v_siblingStatus->>'expectedchildadoptiveplacement',
+		siblingsrelationshipwithchild = v_siblingStatus->>'siblingsrelationshipwithchild'
+	where
+		siblingid :: character varying = v_siblingStatus->>'siblingid';
+end loop;
+
+-- updating minor parent info
+ for v_minorparentDetails in select * from json_array_elements((inserobj ->>'minorParentInformation')::json) 
+ loop 
+	update adoptionapplicabilityminorparentinfo 
+	set
+		adoptionapplicabilityid = v_adoptionapplicabilityid :: uuid,
+		minorparentname = v_minorparentDetails->>'minorparentname',
+		birthdateofparent =(v_minorparentDetails->>'birthdateofparent')::timestamp,
+		removaltypeofminorparent = v_minorparentDetails->>'removaltypeofminorparent',
+		removalcourtorderdateofminorparent =   (v_minorparentDetails->>'removalcourtorderdateofminorparent')::timestamp,
+		removaldateofminorparent = (v_minorparentDetails->>'removaldateofminorparent')::timestamp,
+		minorparentscurrentplacementtype = v_minorparentDetails->>'minorparentscurrentplacementtype',
+		childscurrentplacementtype = v_minorparentDetails->>'childscurrentplacementtype',
+		physicaladdressofminorparent = v_minorparentDetails->>'physicaladdressofminorparent',
+		physicaladdressofchild = v_minorparentDetails->>'physicaladdressofchild',
+		minorparentclientid = (v_minorparentDetails->>'minorparentclientid')::bigint,
+		istheminorparentreceivingivefc = v_minorparentDetails->>'istheminorparentreceivingivefc',
+		minorparentivefostercarestatus = v_minorparentDetails->>'minorparentivefostercarestatus',
+		minorparentivefostercarestartdate = (v_minorparentDetails->>'minorparentivefostercarestartdate')::timestamp,
+		dateoflatestpaymentofminorparentivefostercare = (v_minorparentDetails->>'dateoflatestpaymentofminorparentivefostercare')::timestamp
+	where
+		minorparentid :: character varying = v_minorparentDetails->>'minorparentid';
+end loop;
+
+else v_adoptionapplicabilityid = gen_random_uuid();
+
+insert
+	into
+		adoptionapplicabilityinfo (adoptionapplicabilityid,
+		physicaladdressofchild,
+		childAgeTable218,
+		BAvoluntaryplacementagreement,
+		childAgeTable018,
+		voluntaryRelinquishment,
+		dateoffirstcourtorderwithCtw,
+		childAgeTable1618,
+		removalid,
+		childAgeTable1018,
+		fosterparentemotionalbondingdescription,
+		raceEthnicityofchild,
+		childspreviouslyadopted,
+		unsuccessfulreasonableeffortsstatusrecords,
+		childhasemotionaldisturbance,
+		descriptionofreturnhome,
+		columns2Save,
+		canchildreturntohome,
+		childscurrentIvEfostercareeligibilitystatus,
+		childsIvEstatusofpreviousadoption,
+		childMeetAllMedicalDisabilityRequirementsforSsi,
+		childAgeTable618,
+		startdateofreceivingSsi,
+		childAgeTable1418,
+		childRemovalDate,
+		childAgeTable1218,
+		childAgeTableChildagenoneoftheagesapply,
+		childsSsIeligibilitystatus,
+		unsuccessfulreasonableeffortsstatusrecordsdescription,
+		emotionalDisturbance,
+		previousAdoptiveParentsTpr,
+		physicalMentalEmotionalDisability,
+		clientId,
+		dtof1stcowithbiorctwfindingifconvtocina,
+		siblingInformationCheck,
+		childAgeTable018dublicate,
+		recognizedhighriskofphysicaldisability,
+		fosterparentemotionalbonding,
+		dateofRelinquishment,
+		aCourtOrder,
+		issiblingtochildwhoqualifiesasapplchildbyage,
+		adoptiveParentsTprDate,
+		childmeetsSsImedicaldisabledeligliblerequirements,
+		childBirthDate,
+		childAgeTable418,
+		hasthechildbeenincare60Monthsormore,
+		childreceivingSsIatremoval,
+		childAgeTable818,
+		child617Yearsofage,
+		removalCourtorderdate,
+		expectedAdoptionDate,
+		isthechildresidinginafosterfamilyhome,
+		childAgeTable218dublicate,
+		caseworkerName,
+		submissionDate,
+		caseworkerSignature,
+		resubmissionCaseworkerName,
+		resubmissionDate,
+		resubmissionCaseworkerSignature,
+		resubmissionCount,
+		ivestatus,
+		ivecomment,
+		raceorethnicitywithoneofthesabove,
+		adoptionapplicabilitystartdt,
+		eligiblesiblingsinfo,
+		childagetable,
+		insertedby,
+		insertedon,
+		updatedby,
+		updatedon,
+		activeflag)
+	values(v_adoptionapplicabilityid::uuid,
+	inserobj ->> 'physicaladdressofchild',
+	(inserobj ->> 'childAgeTable218') :: boolean,
+	inserobj ->> 'BAvoluntaryplacementagreement',
+	(inserobj ->> 'childAgeTable018') :: boolean,
+	inserobj ->> 'voluntaryRelinquishment',
+	(inserobj ->> 'dateoffirstcourtorderwithCtw')::timestamp,
+	(inserobj ->> 'childAgeTable1618') :: boolean,
+	(inserobj ->> 'removalid')::integer,
+	(inserobj ->> 'childAgeTable1018') :: boolean,
+	inserobj ->> 'fosterparentemotionalbondingdescription',
+	(inserobj ->> 'raceEthnicityofchild')::boolean,
+	inserobj ->> 'childspreviouslyadopted',
+	inserobj ->> 'unsuccessfulreasonableeffortsstatusrecords',
+	inserobj ->> 'childhasemotionaldisturbance',
+	inserobj ->> 'descriptionofreturnhome',
+	(inserobj ->> 'columns2Save')::boolean,
+	inserobj ->> 'canchildreturntohome',
+	inserobj ->> 'childscurrentIvEfostercareeligibilitystatus',
+	inserobj ->> 'childsIvEstatusofpreviousadoption',
+	inserobj ->> 'childMeetAllMedicalDisabilityRequirementsforSsi',
+	(inserobj ->> 'childAgeTable618') :: boolean,
+	(inserobj ->> 'startdateofreceivingSsi')::timestamp,
+	(inserobj ->> 'childAgeTable1418')::boolean,
+	(inserobj ->> 'childRemovalDate')::timestamp,
+	(inserobj ->> 'childAgeTable1218') :: boolean,
+	(inserobj ->> 'childAgeTableChildagenoneoftheagesapply') :: boolean,
+	inserobj ->> 'childsSsIeligibilitystatus',
+	inserobj ->> 'unsuccessfulreasonableeffortsstatusrecordsdescription',
+	(inserobj ->> 'emotionalDisturbance'):: boolean,
+	(inserobj ->> 'previousAdoptiveParentsTpr')::timestamp,
+	(inserobj ->> 'physicalMentalEmotionalDisability')::boolean,
+	v_clientid,
+	(inserobj ->> 'dtof1stcowithbiorctwfindingifconvtocina')::timestamp,
+	(inserobj ->> 'siblingInformationCheck')::boolean,
+	(inserobj ->> 'childAgeTable018dublicate'):: boolean,
+	(inserobj ->> 'recognizedhighriskofphysicaldisability')::boolean,
+	inserobj ->> 'fosterparentemotionalbonding',
+	(inserobj ->> 'dateofRelinquishment')::timestamp,
+	inserobj ->> 'aCourtOrder',
+	inserobj ->> 'issiblingtochildwhoqualifiesasapplchildbyage',
+	(inserobj ->> 'adoptiveParentsTprDate')::timestamp,
+	inserobj ->> 'childmeetsSsImedicaldisabledeligliblerequirements',
+	(inserobj ->> 'childBirthDate')::timestamp,
+	(inserobj ->> 'childAgeTable418')::boolean,
+	inserobj ->> 'hasthechildbeenincare60Monthsormore',
+	inserobj ->> 'childreceivingSsIatremoval',
+	(inserobj ->> 'childAgeTable818') :: boolean,
+	(inserobj ->> 'child617Yearsofage'):: boolean,
+	(inserobj ->> 'removalCourtorderdate')::timestamp,
+	(inserobj ->> 'expectedAdoptionDate')::timestamp,
+	inserobj ->> 'isthechildresidinginafosterfamilyhome',
+	(inserobj ->> 'childAgeTable218dublicate') :: boolean,
+	 inserobj ->> 'caseworkerName',
+	 (inserobj ->> 'submissionDate')::timestamp,
+	 inserobj ->> 'caseworkerSignature',
+	 inserobj ->> 'resubmissionCaseworkerName',
+	 (inserobj ->> 'resubmissionDate')::timestamp,
+	 inserobj ->> 'resubmissionCaseworkerSignature',
+	 (inserobj ->> 'resubmissionCount')::integer,
+	 inserobj ->> 'ivestatus',
+	inserobj ->> 'ivecomment',
+	inserobj ->> 'raceorethnicitywithoneofthesabove',	
+	(inserobj ->> 'adoptionapplicabilitystartdt')::timestamp,
+	(inserobj ->> 'eligiblesiblingsinfo')::json,
+	inserobj ->> 'childagetable',
+	v_securityuserid,
+	v_currenttime,
+	v_securityuserid,
+	v_currenttime,
+	1);
+
+for v_siblingStatus in select * from json_array_elements((inserobj ->>'siblingStatus')::json)
+	loop 
+	raise notice 'Parsing siblingStatus % ',
+	v_siblingStatus->>'nameofsiblingchild';
+
+	insert
+		into
+			cjams.adoptionapplicabilitysiblinginfo (siblingid,
+			adoptionapplicabilityid,
+			nameofsiblingchild,
+			nameofsiblingchildsadoptiveplacement,
+			dateofsiblingsadoptiondecree,
+			dateofsiblingsapplicablechildassessment,
+			childssiblingsapplicabilitystatus,
+			expectedchildadoptiveplacement,
+			siblingsrelationshipwithchild)
+		values(gen_random_uuid(),
+		v_adoptionapplicabilityid::uuid,
+		v_siblingStatus->>'nameofsiblingchild',
+		v_siblingStatus->>'nameofsiblingchildsadoptiveplacement',
+		(v_siblingStatus->>'dateofsiblingsadoptiondecree')::timestamp,
+		(v_siblingStatus->>'dateofsiblingsapplicablechildassessment')::timestamp,
+		v_siblingStatus->>'childssiblingsapplicabilitystatus',
+		v_siblingStatus->>'expectedchildadoptiveplacement',
+		v_siblingStatus->>'siblingsrelationshipwithchild');
+end loop;
+
+for v_minorparentDetails in select * from json_array_elements((inserobj ->>'minorParentInformation')::json) 
+loop 
+	raise notice 'Parsing v_minorparentDetails % ',
+	v_minorparentDetails->>'MinorParentName';
+
+	insert
+		into
+			adoptionapplicabilityminorparentinfo (minorparentid,
+			adoptionapplicabilityid,
+			minorparentname,
+			birthdateofparent,
+			removaltypeofminorparent,
+			removalcourtorderdateofminorparent,
+			removaldateofminorparent,
+			minorparentscurrentplacementtype,
+			childscurrentplacementtype,
+			physicaladdressofminorparent,
+			minorparentclientid,
+	        istheminorparentreceivingivefc,
+			minorparentivefostercarestatus,
+			minorparentivefostercarestartdate,
+			dateoflatestpaymentofminorparentivefostercare,
+			physicaladdressofchild)
+		values(gen_random_uuid(),
+		v_adoptionapplicabilityid :: uuid,
+		v_minorparentDetails->>'minorparentname',
+		(v_minorparentDetails->>'birthdateofparent')::timestamp,
+		v_minorparentDetails->>'removaltypeofminorparent',
+		(v_minorparentDetails->>'removalcourtorderdateofminorparent')::timestamp,
+		(v_minorparentDetails->>'removaldateofminorparent')::timestamp,
+		v_minorparentDetails->>'minorparentscurrentplacementtype',
+		v_minorparentDetails->>'childscurrentplacementtype',
+		v_minorparentDetails->>'physicaladdressofminorparent',
+		(v_minorparentDetails->>'minorparentclientid')::bigint,
+		v_minorparentDetails->>'istheminorparentreceivingivefc',
+		v_minorparentDetails->>'minorparentivefostercarestatus',
+		(v_minorparentDetails->>'minorparentivefostercarestartdate')::timestamp,
+		(v_minorparentDetails->>'dateoflatestpaymentofminorparentivefostercare')::timestamp,
+		v_minorparentDetails->>'physicaladdressofchild');
+end loop;
+end if;
+
+SELECT sc.servicecaseid
+	INTO vn_srv_req_id
+	FROM servicecase sc
+	inner join intakeservicerequestactor isra on isra.servicecaseid = sc.servicecaseid
+	inner join person per on per.personid = isra.personid
+WHERE per.cjamspid::BIGINT =  v_clientid and per.activeflag = 1 order by sc.updatedon limit 1;
+
+IF v_ivestatus = 'RETURNED' then
+
+select up.fullname into v_username from userprofile up where up.securityusersid = v_securityuserid;
+
+v_msg:= concat('Applicable Child Assessment for client id ', v_clientid::text , ' is returned by ', COALESCE( v_username,''));
+ 
+ SELECT send_notification INTO v_notIFystatus FROM send_notification(v_insertedby,v_securityuserid, v_insertedby,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+                                 'System', 'High', v_msg,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                  v_msg , vn_srv_req_id);   
+UPDATE routing 
+	set activeflag = 0 
+where objectid:: character varying = v_adoptionapplicabilityid::varchar and eventcode='ADAP' and routingstatustypeid = 67;       
+
+END IF;
+
+IF (v_ivestatus = 'REVIEW') then
+
+   update adoptionapplicabilityinfo 
+   	set insertedby = v_securityuserid
+   where adoptionapplicabilityid = v_adoptionapplicabilityid::uuid;-- To cover existing aca data in prod
+
+   select up.fullname into v_username from userprofile up where up.securityusersid = v_securityuserid;
+
+   v_msg:= concat('Applicable Child Assessment for client id ', v_clientid::text , ' is assigned by ', COALESCE( v_username,''));
+
+   for v_supervisorslist in select up.securityusersid from userprofile up inner join teammemberassignment tma on tma.securityusersid = up.securityusersid
+   inner join teammember tm on tm.teammemberid = tma.teammemberid where up.teamtypekey = 'CW' and tm.roletypekey = 'IVESV'
+   loop
+	SELECT send_notification INTO v_notIFystatus FROM send_notification(v_supervisorslist.securityusersid, v_securityuserid, v_supervisorslist.securityusersid,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+		'System', 'High', v_msg, v_msg , vn_srv_req_id);   
+   end loop;
+
+END IF; 
+
+return 'success';
+end $function$

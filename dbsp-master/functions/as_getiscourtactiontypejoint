@@ -1,0 +1,102 @@
+CREATE OR REPLACE FUNCTION as_getiscourtactiontypejoint(v_intakeserviceid uuid, v_intakeserreqrestitutionid uuid)
+ RETURNS TABLE(personid uuid, firstname character varying, lastname character varying, middlename character varying, suffix character varying, cjamspid bigint, restitutionnumber integer, payment numeric, ismatched character varying, offensedata json)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+ 
+v_offensedate date;
+v_personid uuid;
+
+
+BEGIN
+  select isre.offensedate::date into v_offensedate 
+  from intakeservicerequest isr 
+  join  intakeservicerequestcourtaction isrca on isr.intakenumber = isrca.intakenumber and isr.activeflag = 1 and isrca.activeflag = 1
+  join intakeservreqpetitionhearingconfig isrphc on isrphc.intakeservicerequestcourthearingid = isrca.intakeservicerequestcourthearingid and isrphc.activeflag = 1
+  join intakeservreqevalpetitionconfig isrepc on isrepc.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid and isrepc.activeflag = 1
+  join intakeservicerequestevaluation isre on isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid
+  join intakeservicerequestcourtactiontype isrcat on isrcat.intakeservicerequestcourtactionid = isrca.intakeservicerequestcourtactionid and isrcat.activeflag = 1
+  where isrcat.courtactiontypekey = 'RestiOJS'  and isr.intakeserviceid = v_intakeserviceid and isre.activeflag = 1 limit 1;
+
+  
+  select ISRR.victimpersonid into v_personid 
+  from intakeserreqrestitution ISRR
+  where ISRR.intakeserreqrestitutionid = v_intakeserreqrestitutionid and ISRR.activeflag = 1 and approvestatus = 'RSTAPR' limit 1;
+  
+  raise notice 'v_personid%',v_personid;
+ raise notice 'v_offensedate%',v_offensedate;
+RETURN QUERY
+
+select a.personid,a.firstname,a.lastname,a.middlename,a.suffix ,a.cjamspid,a.restitutionno,a.payment,'Yes'::character varying as ismatched,
+(select json_agg(data) from (select offe.intakeservicerequestevaluationid, offe.offensedate, (select json_agg(allegat) from(
+ select distinct a.allegationid,a.name from intakeservicerequestevaluationconfig isrec 
+ join allegation a on a.allegationid = isrec.allegationid
+ where isrec.intakeservicerequestevaluationid = offe.intakeservicerequestevaluationid ) as allegat
+ ) as allegatedetail  from (select distinct isre.offensedate , isre.intakeservicerequestevaluationid
+ from intakeservicerequest isr 
+ join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid
+ join intakeservicerequestcourtaction ISREQ on ISREQ.intakenumber = isr.intakenumber and ISREQ.activeflag = 1
+ join intakeservicerequestcourtactiontype isrcat on isrcat.intakeservicerequestcourtactionid = ISREQ.intakeservicerequestcourtactionid and isrcat.activeflag = 1
+ join intakeservreqpetitionhearingconfig isrphc on isrphc.intakeservicerequestcourthearingid = ISREQ.intakeservicerequestcourthearingid and isrphc.activeflag = 1
+ join intakeservreqevalpetitionconfig isrepc on isrepc.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid and isrepc.activeflag = 1
+ join intakeservicerequestevaluation isre on isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid 
+ where isrcat.courtactiontypekey = 'RestiOJS' and isra.personid = a.personid and isra.intakeservicerequestpersontypekey = 'Youth') offe) data)::json as offensedata
+ from (
+ select distinct isrrq.restitutionno,ISRA.personid,p.firstname,p.lastname,p.middlename,p.cjamspid,p.suffix,isrrq.payment 
+ from intakeservicerequestactor ISRA
+ join person p on p.personid = ISRA.personid and p.activeflag = 1 
+ join intakeservicerequest ISR on ISRA.intakeserviceid = ISR.intakeserviceid and ISR.activeflag = 1
+ join intakeservicerequestcourtaction ISREQ on ISREQ.intakenumber = ISR.intakenumber and ISREQ.activeflag = 1
+ join intakeservreqpetitionhearingconfig isrphc on isrphc.intakeservicerequestcourthearingid = ISREQ.intakeservicerequestcourthearingid 
+ and isrphc.activeflag = 1
+ join intakeservreqevalpetitionconfig isrepc on isrepc.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid and isrepc.activeflag = 1
+ join intakeservicerequestevaluation isre on isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid 
+ join intakeservicerequestcourtactiontype isrcat on isrcat.intakeservicerequestcourtactionid = ISREQ.intakeservicerequestcourtactionid and isrcat.activeflag = 1
+ join intakeserreqrestitution isrrq on isrrq.intakeserviceid = isr.intakeserviceid and isrrq.intakeserreqrestitutionid != v_intakeserreqrestitutionid
+  and isrrq.victimpersonid = v_personid 
+  and isrrq.activeflag = 1 and isrrq.approvestatus = 'RSTAPR'
+ where isrcat.courtactiontypekey = 'RestiOJS' and ISRA.activeflag = 1 and isre.activeflag = 1 and ISRA.intakeservicerequestpersontypekey = 'Youth' 
+ --and ISRA.personid != v_personid 
+ and isre.offensedate::date = v_offensedate
+ ) a 
+ --join person p on p.personid = a.personid and p.activeflag = 1)
+ UNION ALL
+select a.personid,a.firstname,a.lastname,a.middlename,a.suffix ,a.cjamspid,a.restitutionno,a.payment,'No'::character varying as ismatched,
+(select json_agg(data) from (select offe.intakeservicerequestevaluationid, offe.offensedate, (select json_agg(allegat) from(
+ select distinct a.allegationid,a.name from intakeservicerequestevaluationconfig isrec 
+ join allegation a on a.allegationid = isrec.allegationid
+ where isrec.intakeservicerequestevaluationid = offe.intakeservicerequestevaluationid ) as allegat
+ ) as allegatedetail  from (select distinct isre.offensedate , isre.intakeservicerequestevaluationid
+ from intakeservicerequest isr 
+ join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid
+ join intakeservicerequestcourtaction ISREQ on ISREQ.intakenumber = isr.intakenumber and ISREQ.activeflag = 1
+ join intakeservicerequestcourtactiontype isrcat on isrcat.intakeservicerequestcourtactionid = ISREQ.intakeservicerequestcourtactionid and isrcat.activeflag = 1
+ join intakeservreqpetitionhearingconfig isrphc on isrphc.intakeservicerequestcourthearingid = ISREQ.intakeservicerequestcourthearingid and isrphc.activeflag = 1
+ join intakeservreqevalpetitionconfig isrepc on isrepc.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid and isrepc.activeflag = 1
+ join intakeservicerequestevaluation isre on isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid 
+ where isrcat.courtactiontypekey = 'RestiOJS' and isra.personid = a.personid and isra.intakeservicerequestpersontypekey = 'Youth') offe) data)::json as offensedata
+ from (
+ select distinct isrrq.restitutionno,ISRA.personid,p.firstname,p.lastname,p.middlename,p.cjamspid,p.suffix,isrrq.payment 
+ from intakeservicerequestactor ISRA
+ join person p on p.personid = ISRA.personid and p.activeflag = 1 
+ join intakeservicerequest ISR on ISRA.intakeserviceid = ISR.intakeserviceid and ISR.activeflag = 1
+ join intakeservicerequestcourtaction ISREQ on ISREQ.intakenumber = ISR.intakenumber and ISREQ.activeflag = 1
+ join intakeservreqpetitionhearingconfig isrphc on isrphc.intakeservicerequestcourthearingid = ISREQ.intakeservicerequestcourthearingid 
+ and isrphc.activeflag = 1
+ join intakeservreqevalpetitionconfig isrepc on isrepc.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid and isrepc.activeflag = 1
+ join intakeservicerequestevaluation isre on isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid 
+ join intakeservicerequestcourtactiontype isrcat on isrcat.intakeservicerequestcourtactionid = ISREQ.intakeservicerequestcourtactionid and isrcat.activeflag = 1
+ join intakeserreqrestitution isrrq on isrrq.intakeserviceid = isr.intakeserviceid and isrrq.intakeserreqrestitutionid != v_intakeserreqrestitutionid
+  and isrrq.victimpersonid = v_personid 
+  and isrrq.activeflag = 1 and isrrq.approvestatus = 'RSTAPR'
+ where isrcat.courtactiontypekey = 'RestiOJS' and ISRA.activeflag = 1 and isre.activeflag = 1 and ISRA.intakeservicerequestpersontypekey = 'Youth' 
+ --and ISRA.personid != v_personid 
+ and isre.offensedate::date != v_offensedate
+ ) a ;
+ --join person p on p.personid = a.personid and p.activeflag = 1);
+
+end;
+
+$function$
+

@@ -1,0 +1,124 @@
+CREATE OR REPLACE FUNCTION as_createacttaskandactgoal(activityid uuid, mappingid uuid, securityuserid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+                                                       
+
+DECLARE
+_activityid uuid; 
+duedate timestamp;
+loadnumber character varying;
+rec record;
+records record;
+taskstatustypekey character varying;
+goalstatustypekey character varying;
+_danumber character varying;
+_servreqid uuid;
+ _taskid uuid;
+_insertedon timestamp;
+_insertedby character varying;
+_activitytypekey  character varying;
+BEGIN      
+
+_activityid = activityid;
+duedate:=now();
+_insertedon:=now();
+ SELECT tm.loadnumber into loadnumber
+ FROM userprofile u 
+ INNER JOIN   as_teammemberassignment tma 
+  ON tma.SecurityUsersId =  u.SecurityUsersId AND tma.activeflag =1
+ INNER JOIN  teammember tm 
+  on tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+ WHERE u.activeflag =1   AND u.SecurityUsersId = securityuserid;
+
+select inv.intakeserviceid, isr.servicerequestnumber,a.activitytypekey into _servreqid, _danumber,_activitytypekey from activity a inner join investigation inv on inv.investigationid = a.objectid 
+inner join intakeservicerequest isr on isr.intakeserviceid = inv.intakeserviceid
+where a.activityid = _activityid;
+
+select email into _insertedby  from muser  where securityusersid = securityuserid;
+
+FOR rec IN
+
+ select 
+ ta.name as name,
+ ta.description as description,
+ am.helptext as helptext,
+ ta.amtaskid as amtaskid,
+ amt.activitytasktypekey as activitytasktypekey,
+ amt.activityprioritytypekey as activityprioritytypekey
+from ammappingtask as amt inner join amtask as ta on amt.amtaskid = ta.amtaskid inner join ammapping as am on
+amt.ammappingid = am.ammappingid 
+where am.ammappingid=mappingid and amt.required='t'
+
+LOOP
+ 
+select Case when activitytypekey='Allegation' Then 'AllegOpen' ELSE 'InvOpen' END into taskstatustypekey from activity as a where a.activityid=_activityid;
+RAISE NOTICE '%','1111111111';
+ INSERT INTO  activitytask
+           ( 
+     activityid,name,description
+           ,helptext,amtaskid,assignedto
+           ,assignedon ,activitytaskstatustypekey 
+           ,activitytasktypekey,activityprioritytypekey,duedate
+            ,required,activeflag
+           ,updatedby,insertedby,EffectiveDate,insertedon,updatedon
+          ) values  (_activityid,rec.name,rec.description,rec.helptext,rec.amtaskid,
+          loadnumber,now(),taskstatustypekey,rec.activitytasktypekey,rec.activityprioritytypekey,
+          null,true,1,securityuserid,securityuserid,now(),_insertedon,_insertedon) RETURNING activitytaskid into _taskid;
+  
+insert into auditlog(logtypekey,intakeserviceid, servicerequestnumber, referenceid, description, isnew,insertedby,metadata,insertedon,updatedon,updatedby )
+select 'IPT',_servreqid,_danumber,_taskid, _activitytypekey || ' task (' ||rec.description|| ') added to DA#',true, securityuserid,
+ (select cast( concat('{"data":',  row_to_json(s),'}') as json)  from (select _activitytypekey as activitytype,rec.description as task,
+ rec.activityprioritytypekey as priority,rec.activitytasktypekey as tasktype, 
+_danumber danumber,_insertedon createdon,
+ _insertedby createdby ) as s),now(),now(), securityuserid;
+RAISE NOTICE '%tasd',_taskid;
+
+END LOOP;
+
+FOR records IN
+
+ select 
+ ag.name as name ,
+ ag.description as description,
+ am.helptext as helptext,
+ ag.amgoalid as amgoalid,
+ amg.activitygoaltypekey as activitygoaltypekey,
+ amg.activityprioritytypekey as activityprioritytypekey
+from ammappinggoal as amg inner join amgoal as ag on amg.amgoalid = ag.amgoalid inner join ammapping as am on
+amg.ammappingid = am.ammappingid 
+where am.ammappingid=mappingid and amg.required='t'
+
+LOOP
+  
+select Case when activitytypekey='Allegation' Then 'AllegUnmet' ELSE 'InvUnmet' END into goalstatustypekey from activity as a where a.activityid=_activityid;
+RAISE NOTICE '%','3333333';
+ INSERT INTO  activitygoal
+      (activityid,name,description
+      ,helptext,amgoalid,assignedto
+      ,activitygoalstatustypekey ,activitygoaltypekey
+      ,activityprioritytypekey,duedate, required,activeflag
+      ,updatedby,insertedby,effectivedate,insertedon,updatedon
+          ) values  (_activityid,records.name,records.description,records.helptext,records.amgoalid,
+          loadnumber,goalstatustypekey,records.activitygoaltypekey,records.activityprioritytypekey,
+          null,true,1,securityuserid,securityuserid,now(),_insertedon,_insertedon)RETURNING activitygoalid into _taskid;
+  
+  
+insert into auditlog(logtypekey,intakeserviceid, servicerequestnumber, referenceid, description, isnew,insertedby,metadata,insertedon,updatedon,updatedby )
+select 'IPG',_servreqid,_danumber,_taskid, _activitytypekey || ' goal (' ||records.name|| ') added to DA#',true, securityuserid,
+ (select cast( concat('{"data":',  row_to_json(s),'}') as json)  from (select _activitytypekey as activitytype,records.name as goal,
+ records.activityprioritytypekey as priority,records.activitygoaltypekey as goaltype, 
+_danumber danumber,_insertedon createdon,
+ _insertedby createdby ) as s),now(),now(), securityuserid;
+ 
+RAISE NOTICE '%','44444444';
+
+END LOOP;
+
+RETURN
+  'Success';
+END;
+
+$function$
+

@@ -1,0 +1,29 @@
+-- CDM-14137 - Expungment
+/*
+-- Issue Description: 
+	User request to update the Finding as 'Unsubstantiated' and expunge the CPS-IR CW2172065 (Converted Indicated)
+	   
+-- Category/ Module: Intake/Investigation (Expungement)
+-- Root cause: For Converted Investigations there is no option to change the Finding.
+-- 		CPS-IR with NO Maltreatment/Allegation & Findings (migrated data).
+-- Pull request# N/A 
+-- Reason why no related code fix: N/A
+-- Status of the code fix if already submitted and expected prod fix date: N/A
+*/
+
+-- Change the Finding to Ruled Out (old value was Indicated)	
+select referral_id, maltreatment_type_cd, investigation_finding_cd 
+	from tb_conv_inv_finding 
+where referral_id  = 'CW2172065' ;
+
+update tb_conv_inv_finding 
+	set investigation_finding_cd = 'Unsubstantiated'
+where referral_id  = 'CW2172065' ;
+
+-- CPS-IR - CW2172065 - 74b0febe-d747-4b75-bb7b-f961a580f71f - Converted Indicated
+select vl_sqlcode, vs_err_message
+from cjams.expungcaserequest
+	(	'IR'::character varying,
+		'CW2172065'::character varying,
+		null::date
+	) ;

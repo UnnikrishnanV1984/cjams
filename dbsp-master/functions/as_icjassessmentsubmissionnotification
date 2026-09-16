@@ -1,0 +1,69 @@
+CREATE OR REPLACE FUNCTION as_icjassessmentsubmissionnotification(v_assessmentid uuid, v_securityusersid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+v_status character varying;
+v_msg character varying;
+v_tosecurityusersid uuid;
+v_intakeserviceid uuid;
+v_servicerequestnumber character varying;
+v_username character varying;
+v_assessmentstatustypekey character varying;
+P_firstname character varying;
+P_lastname character varying;
+p_cjamsid bigint;
+v_voluntrytype character varying;
+v_name text;
+BEGIN 
+select ASMT.name into v_name from assessment AST
+
+join assessmenttemplate ASMT on ASMT.assessmenttemplateid=AST.assessmenttemplateid 
+and AST.activeflag=1
+
+where assessmentid=v_assessmentid; 
+
+IF (v_name='icjFormIiRequisitionForEscapeeAbsconderOrAccusedDelinquent' or v_name='formIRequisitionForARunawayJuvenile')THEN
+
+SELECT COALESCE(lastname,'')||', '|| COALESCE(firstname,'') INTO v_username
+  FROM userprofile WHERE securityusersid = v_securityusersid;
+  
+select fromsecurityusersid into v_tosecurityusersid from routing where routingstatustypeid=11 and fromroleid='JSUW' limit 1;
+
+
+select  AST.assessmentstatustypekey,ISIT.voluntrytype,ISR.intakeserviceid, ISR.servicerequestnumber,P.lastname,P.firstname ,P.cjamspid  
+INTO v_assessmentstatustypekey ,v_voluntrytype,v_intakeserviceid, v_servicerequestnumber,P_lastname,P_firstname,p_cjamsid 
+FROM assessment AST 
+JOIN intakeservicerequest ISR on ISR.intakeserviceid=AST.objectid and ISR.activeflag=1
+JOIN intakeservicerequestactor as ISRA
+           ON ISR.intakeserviceid  = ISRA.intakeserviceid  and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+      JOIN actor as A
+           ON A.actorid  = ISRA.actorid  and A.activeflag = 1  
+      JOIN Person as P
+           ON P.personid  = A.personid  and P.activeflag = 1 
+JOIN intakeserreqinterstate ISIT on ISIT.intakeserviceid=ISR.intakeserviceid and ISIT.activeflag=1
+
+JOIN referencevalues RV on RV.ref_key=ISIT.voluntrytype and RV.activeflag=1
+
+JOIN referencetype RT on RT.referencetypeid=RV.referencetypeid and RT.tablename='voluntrytype'
+
+where AST.assessmentid=v_assessmentid; 
+
+IF(v_assessmentstatustypekey='Submitted' and v_voluntrytype='NVRF') THEN
+ 
+v_msg:=   'ICJ Requisition Packet for the Youth '||P_lastname||','||P_firstname||' ('|| p_cjamsid ||') is submitted by '||v_username||'';
+
+SELECT send_notification INTO v_status FROM as_send_notification(v_tosecurityusersid::character varying, v_securityusersid, v_tosecurityusersid::character varying,
+'System', 'High', v_msg, v_msg , v_intakeserviceid::character varying);
+
+END IF;
+END IF;
+
+RETURN'Success';
+
+END;
+
+
+$function$
+

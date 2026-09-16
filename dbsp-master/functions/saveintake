@@ -1,0 +1,90 @@
+CREATE OR REPLACE FUNCTION saveintake(intakejson jsonb)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE 
+l_IntakeNumber character varying;
+l_DateRecieved date;
+l_Narrative character varying;
+l_RAName character varying;      
+l_EntityName character varying;          
+l_arrPerson json;
+l_Data character varying;
+l_Status text;
+i json;
+l_Firstname character varying;
+l_Lastname character varying;
+v_securityuserid character varying;
+l_draftCount bigint;
+l_versionNumber bigint;
+BEGIN
+
+l_IntakeNumber := intakejson -> 'general' ->> 'IntakeNumber';
+l_DateRecieved := intakejson -> 'general' ->> 'RecivedDate';
+l_Narrative := intakejson -> 'general' ->> 'Narrative';
+l_arrPerson := intakejson ->>'persons';
+v_securityuserid := COALESCE(intakejson->>'securityuserid','S-1-5-21-152097760-152508613-1969071786-555');
+
+
+RAISE NOTICE 'IntakeNumber:%', l_IntakeNumber;
+RAISE NOTICE 'DateRecieved:%', l_DateRecieved;
+RAISE NOTICE 'Narrative:%', l_Narrative;
+RAISE NOTICE 'arrPerson:%', l_arrPerson;
+
+IF l_IntakeNumber IS NOT NULL AND LENGTH(l_IntakeNumber) > 0 THEN
+
+
+FOR i IN SELECT * FROM json_array_elements(l_arrPerson)
+  LOOP
+ IF i->>'Role' in ('RA', 'RC') THEN
+  l_Firstname :=i ->> 'Firstname';
+  l_Lastname :=i ->> 'Lastname';
+  l_RAName := l_Firstname || l_Lastname;
+ END IF;
+  END LOOP;
+
+
+SELECT COUNT(*) into l_draftCount FROM intakedastaging as i where i.intakenumber = l_IntakeNumber;
+
+IF l_draftCount > 0 THEN
+
+SELECT MAX(versionnumber) into l_versionNumber FROM intakedastaging as i where i.intakenumber = l_IntakeNumber;
+UPDATE intakedastaging set activeflag = 0 where intakenumber = l_IntakeNumber;
+
+INSERT INTO intakedastaging(
+            intakenumber, dateRecieved, narrative, raname, entityname, 
+            cruworkername, data, insertedon, insertedby, timerecieved, updatedon, 
+            updatedby, status,jsondata,versionnumber)
+    VALUES (l_IntakeNumber,  l_DateRecieved, l_Narrative, l_RAName, null, 
+            v_securityuserid, null, now(), v_securityuserid, now(), null, 
+            null, 'pending',intakejson,l_versionNumber+1);
+
+ELSE
+
+INSERT INTO intakedastaging(
+            intakenumber, dateRecieved, narrative, raname, entityname, 
+            cruworkername, data, insertedon, insertedby, timerecieved, updatedon, 
+            updatedby, status,jsondata,versionnumber)
+    VALUES (l_IntakeNumber,  l_DateRecieved, l_Narrative, l_RAName, null, 
+            v_securityuserid, null, now(), v_securityuserid, now(), null, 
+            null, 'pending',intakejson,1);
+END IF;
+
+l_Status := 'SUCCESS';
+
+ELSE
+
+l_Status := 'FAILED-NOINTAKENUMBER';
+
+END IF;
+
+
+RETURN l_Status;
+
+
+
+END;
+
+$function$
+

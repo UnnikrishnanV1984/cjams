@@ -1,0 +1,2 @@
+ALTER TABLE cjams.Physicianspecialtytype add column if not exists teamtypekey varchar(50) NULL;
+COMMENT ON COLUMN cjams.Physicianspecialtytype.teamtypekey IS 'Team where this speciality type will be listed on';

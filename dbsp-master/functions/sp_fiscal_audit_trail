@@ -1,0 +1,731 @@
+CREATE OR REPLACE FUNCTION sp_fiscal_audit_trail(as_called_from character varying, as_event_type_cd character varying, al_event_id bigint, as_entity_type_cd character varying, al_entity_id bigint, OUT as_error character varying, OUT al_sqlcode integer)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+----------------------------------------------------------------------------------------------
+-- Author          : Vineet Tirodkar
+-- Date            : 05/21/2015
+-- Description     : Stored Procedure to insert data into FISCAL AUDIT TRAIL tables
+
+-- Request #       : PRJ-04753 - Phase I of the 2014 MD CHESSIE Fiscal-Related Enhancements (BDSD Req # 36)
+-- Argument(s):
+-- 1) IN as_called_from (To identify the source from this SP is called.)
+--       SP_OVER_PAYMENT for Receivables
+--       SP_PAYMENT_DETAIL_INSERT for Payment Adjustments
+--       SP_PLACEMENT_VALIDATION_UPDATE for Placement Validations
+-- 2) IN as_event_type_cd (Fiscal Audit Trail Event cd - Picklist Type ID 10041 with CATEGORY_TX as EVENT)
+-- 3) IN al_event_id (either ID of the associated Event Type or PK of other transaction to identify Eveent ID)
+-- 4) IN as_entity_type_cd (Fiscal Audit Trail Entity cd - Picklist Type ID 10041 with CATEGORY_TX as ENTITY)
+-- 5) IN al_entity_id (ID of the associated Entity Type)
+-- 6) OUT as_error (Error Text)
+-- 7) OUT al_sqlcode (SQL code for error handling)
+
+-- Revision:
+-- 09/21/2015 Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+-- Modifications to capture Audit Trail events of Adoption Subsidy & GAP under/over process (BDSD Req # 87)
+-- 02/22/2016 Vineet Tirodkar - PRJ-05945 GAP Calculation - Warranty Project
+-- Modifications to get the correct fiscal audit trail EVENT_ID for Provider Contract Rate Changes
+-- 02/24/2016 Vineet Tirodkar - PRJ-05947 (IDEA-09155) Modify GAP Over Under Process
+-- Modification to capture Event ID  for the System Generated GAP Suspension
+-- 06/23/2020 Vineet Tirodkar - To fix the Query column names under Adoption Subsidy Rate Changes (1013) section
+----------------------------------------------------------------------------------------------
+DECLARE
+ SQLCODE                 INTEGER     DEFAULT 0;
+ SQLSTATE                CHAR(5) DEFAULT '00000';
+ -- p_sp_error CONDITION    FOR     SQLSTATE '99999';
+ vs_message_text         VARCHAR(3000) DEFAULT '';
+ vl_ret_status           INTEGER DEFAULT 0;
+ vs_Procedure_nm         VARCHAR(100) DEFAULT 'SP_FISCAL_AUDIT_TRAIL';
+
+ vs_fiscal_audit_trail_sq VARCHAR(50) DEFAULT 'sq_fiscal_audit_trail_sq';
+ vs_fiscal_audit_trail_entity_link_sq VARCHAR(50) DEFAULT 'sq_fiscal_audit_trail_entity_link_sq';
+ vs_event_desc_tx    VARCHAR(2000);
+ vs_entity_desc_tx    VARCHAR(2000);
+ vs_user_id      VARCHAR(10) DEFAULT 'finance'; 
+ vs_rate_type_cd    VARCHAR(5);
+
+ vl_payment_detail_id   BIGINT;
+ vl_placement_id    BIGINT;
+ vl_program_id    BIGINT;
+ vl_provider_id    BIGINT;
+ vl_rate_structure_id  BIGINT;
+ vl_client_id    BIGINT;
+ vl_rate_id     BIGINT;
+ vl_placement_validation_id  BIGINT;
+ vl_subsidy_id    BIGINT;
+
+ vl_fiscal_audit_trail_id BIGINT;
+ vl_fiscal_audit_trail_entity_link_id BIGINT;
+
+ vl_child_age    INTEGER;
+
+ vd_final_srv_start_dt  DATE;
+ vd_final_srv_end_dt   DATE;
+ vd_final_srv_month_last_dt DATE;
+
+
+BEGIN
+ raise notice 'sp_fiscal_audit_trail>>>>>>as_called_from %',as_called_from;
+ raise notice 'sp_fiscal_audit_trail>>>>>>as_event_type_cd %',as_event_type_cd;
+ raise notice 'sp_fiscal_audit_trail>>>>>>al_event_id %',al_event_id;
+
+ raise notice 'sp_fiscal_audit_trail>>>>>>as_entity_type_cd %',as_entity_type_cd;
+
+ raise notice 'sp_fiscal_audit_trail>>>>>>al_event_id %',al_event_id;
+
+ IF as_called_from = 'SP_OVER_PAYMENT' OR as_called_from = 'SP_PAYMENT_DETAIL_INSERT' THEN
+  vl_payment_detail_id = al_event_id;
+
+  SELECT PLACEMENT_ID,
+   SUBSIDY_AGREEMENT_ID,
+   FINAL_SERVICE_START_DT,
+   FINAL_SERVICE_END_DT,
+   f_daymonth(FINAL_SERVICE_START_DT,'L','C') AS FINAL_SRV_MON_LAST_DAY,
+   FINAL_SERVICE_ID,
+   FINAL_RATE_TYPE_CD,
+   CLIENT_ID
+  INTO vl_placement_id,
+   vl_subsidy_id,
+   vd_final_srv_start_dt,
+   vd_final_srv_end_dt,
+   vd_final_srv_month_last_dt,
+   vl_rate_structure_id,
+   vs_rate_type_cd,
+   vl_client_id
+  FROM tb_PAYMENT_DETAIL
+  WHERE PAYMENT_DETAIL_ID = vl_payment_detail_id
+   AND DELETE_SW = 'N';
+
+  al_sqlcode = SQLCODE;
+  IF al_sqlcode < 0 THEN
+   as_error = 'Error in getting Details for PAYMENT_DETAIL_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_payment_detail_id,'999999999')));
+   --SIGNAL p_sp_error;
+  END IF ;
+
+ ELSEIF as_called_from = 'SP_PLACEMENT_VALIDATION_UPDATE' THEN
+  vl_placement_validation_id = al_entity_id;
+
+  SELECT PLACEMENT_ID
+   INTO vl_placement_id
+  FROM tb_PLACEMENT_VALIDATION
+  WHERE PLACEMENT_VALIDATION_ID = vl_placement_validation_id
+   AND DELETE_SW = 'N'; 
+
+  al_sqlcode = SQLCODE;
+  IF al_sqlcode < 0 THEN
+   as_error = 'Error in getting Details for PLACEMENT_VALIDATION_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_placement_validation_id,'999999999')));
+   -- SIGNAL p_sp_error;
+  END IF ;
+
+ ELSEIF as_called_from = '' THEN
+  -- do Nothing
+ END IF;
+
+ IF vl_placement_id is NOT NULL AND vl_placement_id > 0 THEN
+  -- 1001 - Placement Changes
+  IF as_event_type_cd = '1001' THEN
+   /*SELECT MAX(PLACEMENT_REVISION_ID)
+    INTO al_event_id
+   FROM tb_PLACEMENT_REVISION
+   WHERE PLACEMENT_ID = vl_placement_id
+    AND APPROVAL_STATUS_CD = '3047' -- Need to verify the value will be '3047' for SP_PLACEMENT_VALIDATION_UPDATE cal????
+    AND DELETE_SW = 'N'
+    AND COALESCE(ORIGINAL_SW, '') <> 'Y';--*/
+   SELECT MAX(pp.alternateid)
+    INTO al_event_id
+   FROM placementrevision plr
+    join placement pp on pp.placementid = plr.placementid
+   WHERE plr.placementid = (select placementid from placement where alternateid = vl_placement_id)
+    AND plr.approvalstatustypkey = '3047' -- Need to verify the value will be '3047' for SP_PLACEMENT_VALIDATION_UPDATE cal????
+    AND plr.activeflag = 1
+    AND COALESCE(plr.isoriginal, '') <> 'Y';
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting PLACEMENT_REVISION_ID for PLACEMENT_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_placement_id,'999999999')));
+    -- SIGNAL p_sp_error;
+   END IF ;
+
+   -- vs_event_desc_tx = 'Placement Changes';
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   --FROM SYSIBM.SYSDUMMY1;
+
+   -- 1007 Receivable
+   IF as_entity_type_cd = '1007' THEN
+    vs_entity_desc_tx = 'System generated Account Receivable due to Placement Changes.';
+   ELSEIF as_entity_type_cd = '1008' THEN -- 1008 Payment Adjustment
+    vs_entity_desc_tx = 'System generated Adjustment Payment due to Placement Changes.';
+   ELSEIF as_entity_type_cd = '1006' THEN -- 1006 Placement Validation
+    vs_entity_desc_tx = 'Impacted Placement Validation record due to Placement Changes.'; 
+   END IF; 
+
+  -- 1004 - Placement Void
+  ELSEIF as_event_type_cd = '1004' THEN
+   SELECT MAX(VOID_CHECKLIST_ID)
+    INTO al_event_id
+   FROM tb_PLACEMENT_VOID_CHECKLIST
+   WHERE PLACEMENT_ID = vl_placement_id
+    AND DELETE_SW = 'N';
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting VOID_CHECKLIST_ID for PLACEMENT_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_placement_id,'999999999')));
+    --SIGNAL p_sp_error;
+   END IF ; 
+
+   --  vs_event_desc_tx = 'Placement Void';
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   --FROM SYSIBM.SYSDUMMY1;
+
+   vs_entity_desc_tx = 'System generated Account Receivable due to Placement Void.';
+
+  -- 1002 Foster Care Rate Changes
+  ELSEIF as_event_type_cd = '1002' THEN
+   SELECT (CASE WHEN f_age(dob::DATE, vd_final_srv_month_last_dt) = 21 THEN
+      20
+     ELSE
+      f_age(dob::DATE, vd_final_srv_month_last_dt )
+     END ) AS CHILD_AGE
+    INTO vl_child_age
+   FROM person
+   WHERE cjamspid = vl_client_id
+    AND activeflag = 1 ;
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in calculating Clients age as of Service Month last day for CLIENT_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_client_id,'999999999')));
+    --SIGNAL p_sp_error;
+   END IF ; 
+
+   IF vl_child_age IS NOT NULL THEN
+    SELECT RATE_ID
+     INTO vl_rate_id
+    FROM tb_FOSTER_CARE_RATE
+    WHERE SERVICE_ID = vl_rate_structure_id
+     AND DELETE_SW = 'N'
+     AND RATE_TYPE_CD = vs_rate_type_cd
+     AND START_DT <= vd_final_srv_start_dt
+     AND (END_DT >= vd_final_srv_end_dt OR END_DT IS NULL)
+     AND vl_child_age BETWEEN MIN_AGE_NO AND MAX_AGE_NO ;
+
+    al_sqlcode = SQLCODE;
+    IF al_sqlcode < 0 THEN
+     as_error = 'Error in getting RATE_ID for SERVICE_ID/RATE_TYPE_CD/START_DT/END_DT/AGE_NO : ' ||
+         LTRIM(RTRIM(TO_CHAR(vl_rate_structure_id,'999999999')));
+     as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(vs_rate_type_cd)) ;
+     -- as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_start_dt)));
+     -- as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_end_dt)));
+     -- as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vl_child_age)));
+     -- SIGNAL p_sp_error;
+    END IF ; 
+
+    IF vl_rate_id IS NOT NULL AND vl_rate_id > 0 THEN
+     SELECT MAX(FOSTER_CARE_RATE_REVISION_ID)
+      INTO al_event_id
+     FROM tb_FOSTER_CARE_RATE_REVISION
+     WHERE RATE_ID = vl_rate_id
+      AND APPROVAL_STATUS_CD = '3047'
+      AND DELETE_SW = 'N'
+      AND COALESCE(ORIGINAL_SW, '') <> 'Y';
+
+     al_sqlcode = SQLCODE;
+     IF al_sqlcode < 0 THEN
+      as_error = 'Error in getting FOSTER_CARE_RATE_REVISION_ID for RATE_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_rate_id,'999999999')));
+      -- SIGNAL p_sp_error;
+     END IF ;
+
+     --  vs_event_desc_tx = 'Foster Care Rate Changes';
+     SELECT f_pdesc(as_event_type_cd, 10041 )
+      INTO vs_event_desc_tx;
+     --FROM SYSIBM.SYSDUMMY1;
+
+     -- 1007 Receivable
+     IF as_entity_type_cd = '1007' THEN
+      vs_entity_desc_tx = 'System generated Account Receivable due to Foster Care Rate Changes.';
+     ELSE -- 1008 Payment Adjustment
+      vs_entity_desc_tx = 'System generated Adjustment Payment due to Foster Care Rate Changes.';
+     END IF; 
+    END IF; 
+   END IF;
+
+  -- 1009 Contract Rate Changes
+  ELSEIF as_event_type_cd = '1009' THEN
+   SELECT CONTRACT_PROGRAM_ID
+    INTO vl_program_id
+   FROM tb_PLACEMENT
+   WHERE PLACEMENT_ID = vl_placement_id
+    AND DELETE_SW = 'N';  
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting CONTRACT_PROGRAM_ID for PLACEMENT_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_placement_id,'999999999')));
+    --SIGNAL p_sp_error;
+   END IF ;   
+
+   IF vl_program_id is NOT NULL AND vl_program_id > 0 THEN
+    SELECT PROGRAM_RATE_ID
+     INTO al_event_id
+    FROM tb_PROV_PROGRAM_RATES
+    WHERE PROGRAM_ID = vl_program_id
+     AND DELETE_SW = 'N'
+     AND START_DT <= vd_final_srv_end_dt
+     AND END_DT >= vd_final_srv_start_dt
+    ORDER BY START_DT DESC
+    Limit 1;
+
+    al_sqlcode = SQLCODE;
+    IF al_sqlcode < 0 THEN
+     as_error = 'Error in getting PROGRAM_RATE_ID for PROGRAM_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_program_id,'999999999')));
+     -- SIGNAL p_sp_error;
+    END IF ;
+
+    --  vs_event_desc_tx = 'Contract Rate Changes';
+    SELECT f_pdesc(as_event_type_cd, 10041 )
+     INTO vs_event_desc_tx;
+    -- FROM SYSIBM.SYSDUMMY1;
+
+    -- 1007 Receivable
+    IF as_entity_type_cd = '1007' THEN
+     vs_entity_desc_tx = 'System generated Account Receivable due to Contract Rate Changes.';  
+    ELSE -- 1008 Payment Adjustment
+     vs_entity_desc_tx = 'System generated Adjustment Payment due to Contract Rate Changes.';  
+    END IF; 
+
+   END IF;
+
+  -- 1010 County Specific Changes
+  ELSEIF as_event_type_cd = '1010' THEN
+   SELECT PROVIDER_ID
+    INTO vl_provider_id
+   FROM tb_PLACEMENT
+   WHERE PLACEMENT_ID = vl_placement_id
+    AND DELETE_SW = 'N';  
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting PROVIDER_ID for PLACEMENT_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_placement_id,'999999999')));
+    -- SIGNAL p_sp_error;
+   END IF ;   
+
+   IF vl_provider_id is NOT NULL AND vl_provider_id > 0 THEN
+    SELECT COUNTY_SPECIFIC_UNOV_ID
+     INTO al_event_id
+    FROM tb_COUNTY_SPECIFIC_UNOV
+    WHERE PROVIDER_ID = vl_provider_id
+     AND DELETE_SW = 'N';
+
+    al_sqlcode = SQLCODE;
+    IF al_sqlcode < 0 THEN
+     as_error = 'Error in getting COUNTY_SPECIFIC_UNOV_ID for PROVIDER_ID : ' || LTRIM(RTRIM(TO_CHAR(vl_provider_id,'999999999')));
+     -- SIGNAL p_sp_error;
+    END IF ;
+
+    --  vs_event_desc_tx = 'County Specific Changes';
+    SELECT f_pdesc(as_event_type_cd, 10041 )
+     INTO vs_event_desc_tx;
+    -- FROM SYSIBM.SYSDUMMY1;
+
+    -- 1007 Receivable
+    IF as_entity_type_cd = '1007' THEN
+     vs_entity_desc_tx = 'System generated Account Receivable due to County Specific Changes.';  
+    ELSE -- 1008 Payment Adjustment
+     vs_entity_desc_tx = 'System generated Adjustment Payment due to County Specific Changes.';  
+    END IF;  
+   END IF;
+  ELSE
+   as_error = 'Invalid as_event_type_cd.';
+   -- SIGNAL p_sp_error;
+  END IF;
+
+ -- PRJ-05327 - Audit Trail events of Adoption Subsidy & GAP under/over process
+ ELSEIF vl_subsidy_id is NOT NULL AND vl_subsidy_id > 0 then
+  raise notice 'sp_fiscal_audit_trail>>>>>>>>>inside else if>>>>>as_event_type_cd %',as_event_type_cd;
+  -- 1011 - GAP Rate Changes
+  IF as_event_type_cd = '1011' THEN
+   /*SELECT GAP_RATES_REVISION_ID
+    INTO al_event_id
+    FROM tb_GAP_RATES_REVISION
+   WHERE GUARDIAN_SUBSIDY_ID = vl_subsidy_id
+    AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+    AND RATE_START_DT <= vd_final_srv_end_dt
+    AND RATE_END_DT >= vd_final_srv_start_dt
+    AND DELETE_SW = 'N'
+    AND COALESCE(ORIGINAL_SW, '') <> 'Y'
+   ORDER BY GAP_RATES_REVISION_ID DESC
+   FETCH FIRST ROW ONLY; */
+   raise notice '>>>sp_fiscal_audit_trail> gap rate>>vl_subsidy_id %',vl_subsidy_id;
+   raise notice '>>>sp_fiscal_audit_trail>>gap rate>vd_final_srv_end_dt %',vd_final_srv_end_dt;
+   raise notice '>>>sp_fiscal_audit_trail>>gap rate>vd_final_srv_start_dt %',vd_final_srv_start_dt;
+
+   /*SELECT gar.alternateid INTO al_event_id
+    FROM gapratesrevision gr
+    join gapagreementrate gar on
+   WHERE guardiansubsidyid = (select gapid from guardianship where alternateid = vl_subsidy_id)
+    AND COALESCE(approvalstatustypekey,'') = '3047'
+    AND ratestartdate <= vd_final_srv_end_dt
+    AND rateenddate >= vd_final_srv_start_dt
+    AND activeflag = 1
+    --AND COALESCE(isoriginal, null) <> true
+   ORDER BY alternateid desc*/
+   SELECT gar.alternateid INTO al_event_id
+    FROM gapratesrevision gr
+     join gapagreementrate gar on   gr.gaprateid=gar.gapagreementrateid
+   WHERE guardiansubsidyid in (select gapid from guardianship where alternateid = vl_subsidy_id)
+    AND COALESCE(approvalstatustypekey,'') = '3047'
+    AND ratestartdate <= vd_final_srv_end_dt
+    AND rateenddate >= vd_final_srv_start_dt
+    AND gr.activeflag = 1
+    --AND COALESCE(isoriginal, null) <> true
+   ORDER BY gr.alternateid DESC
+   Limit 1; 
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting GAP_RATES_REVISION_ID for GUARDIAN_SUBSIDY_ID: ' || LTRIM(RTRIM(TO_CHAR(vl_subsidy_id,'999999999')));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(TO_CHAR(vd_final_srv_start_dt,'999999999')));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(TO_CHAR(vd_final_srv_end_dt,'999999999')));
+    -- SIGNAL p_sp_error;
+   END IF ; 
+
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   --FROM SYSIBM.SYSDUMMY1;
+
+   -- 1007 Receivable
+   IF as_entity_type_cd = '1007' THEN
+    vs_entity_desc_tx = 'System generated Account Receivable due to GAP Rate Changes.';  
+   ELSE -- 1008 Payment Adjustment
+    vs_entity_desc_tx = 'System generated Adjustment Payment due to GAP Rate Changes.';  
+   END IF; 
+
+  -- 1012 - GAP Suspension Changes
+  ELSEIF as_event_type_cd = '1012' THEN
+   /*SELECT GAP_SUSPENSION_REVISION_ID
+    INTO al_event_id
+   FROM tb_GAP_SUSPENSION_REVISION
+   WHERE GUARDIAN_SUBSIDY_ID = vl_subsidy_id
+    AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+    AND START_DT <= vd_final_srv_end_dt
+    AND (END_DT IS NULL OR END_DT >= vd_final_srv_start_dt)
+    AND DELETE_SW = 'N'
+    AND COALESCE(ORIGINAL_SW, '') <> 'Y'
+   ORDER BY GAP_SUSPENSION_REVISION_ID DESC
+   FETCH FIRST ROW ONLY;*/
+
+   raise notice '>>>sp_fiscal_audit_trail> gap suspensioin>>vl_subsidy_id %',vl_subsidy_id;
+   raise notice '>>>sp_fiscal_audit_trail>> gap suspensioin>vd_final_srv_end_dt %',vd_final_srv_end_dt;
+   raise notice '>>>sp_fiscal_audit_trail>> gap suspensioin>vd_final_srv_start_dt %',vd_final_srv_start_dt;
+
+   SELECT gapsu.alternateid as GAP_SUSPENSION_REVISION_ID
+    INTO al_event_id
+   FROM GAPSUSPENSIONREVISION GS
+    join gapsuspension gapsu on   gapsu.gapsuspensionid=gs.suspensionid
+   WHERE (select alternateid from guardianship where gapid=GS.guardiansubsidyid) = vl_subsidy_id
+    AND COALESCE(GS.approvalstatustypekey,'') = '3047'
+    AND GS.STARTDATE <= vd_final_srv_end_dt
+    AND (GS.ENDDATE IS NULL OR GS.ENDDATE >= vd_final_srv_start_dt)
+    AND GS.activeflag = 1
+    --AND COALESCE(GS.ISORIGINAL, false) <> true
+   ORDER BY GS.alternateid DESC
+   Limit 1;
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting GAP_SUSPENSION_REVISION_ID for GUARDIAN_SUBSIDY_ID: ' || LTRIM(RTRIM(TO_CHAR(vl_subsidy_id,'999999999')));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(TO_CHAR(vd_final_srv_start_dt,'999999999')));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(TO_CHAR(vd_final_srv_end_dt,'999999999')));
+    -- SIGNAL p_sp_error;
+   END IF ; 
+
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   -- FROM SYSIBM.SYSDUMMY1;
+
+   -- 1007 Receivable
+   IF as_entity_type_cd = '1007' THEN
+    vs_entity_desc_tx = 'System generated Account Receivable due to GAP Suspension Changes.';  
+   ELSE -- 1008 Payment Adjustment
+    vs_entity_desc_tx = 'System generated Adjustment Payment due to GAP Suspension Changes.';  
+   END IF; 
+
+  -- 1015 - GAP System Generated Suspension Changes
+  ELSEIF as_event_type_cd = '1015' THEN
+   -- 33424 - Child entered Out of Home Placement (system generated)
+   -- 33427 - Death of child (case to be closed immediately)
+   /* SELECT SUSPENSION_ID
+    INTO al_event_id
+   FROM tb_GUARDIAN_SUBSIDY_SUSPENSION
+   WHERE GUARDIAN_SUBSIDY_ID = vl_subsidy_id
+    AND REASON_CD IN ('33427','33424')
+    AND START_DT <= vd_final_srv_end_dt
+    AND (END_DT IS NULL OR END_DT >= vd_final_srv_start_dt)
+    AND DELETE_SW = 'N'
+   ORDER BY SUSPENSION_ID DESC
+   FETCH FIRST ROW ONLY;*/
+   SELECT gs.alternateid as SUSPENSION_ID
+    INTO al_event_id
+   FROM GAPSUSPENSION GS
+   -- join gapsuspension gapsu on   gapsu.gapsuspensionid=gs.suspensionid
+   WHERE (select alternateid from guardianship where gapid=GS.gapid) = vl_subsidy_id
+    AND GS.suspensionreasontypekey IN ('COHP','DCHD','33427','33424')
+    AND GS.STARTDATE <= vd_final_srv_end_dt
+    AND (GS.ENDDATE IS NULL OR GS.ENDDATE >= vd_final_srv_start_dt)
+    AND GS.activeflag = 1
+   ORDER BY GS.alternateid DESC
+   Limit 1;
+
+   al_sqlcode = SQLCODE;
+   /* IF al_sqlcode < 0 THEN
+     as_error = 'Error in getting SUSPENSION_ID for GUARDIAN_SUBSIDY_ID: ' || LTRIM(RTRIM(CHAR(vl_subsidy_id)));
+     as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_start_dt)));
+     as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_end_dt)));
+    SIGNAL p_sp_error;
+   END IF ;*/ 
+
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   --FROM SYSIBM.SYSDUMMY1;
+
+   -- 1007 Receivable
+   IF as_entity_type_cd = '1007' THEN
+    vs_entity_desc_tx = 'System generated Account Receivable due to GAP System Generated Suspension Changes.';  
+   ELSE -- 1008 Payment Adjustment
+    vs_entity_desc_tx = 'System generated Adjustment Payment due to GAP System Generated Suspension Changes.';  
+   END IF; 
+
+  -- 1013 - Adoption Subsidy Rate Changes
+  ELSEIF as_event_type_cd = '1013' THEN
+   /* SELECT ADOPTION_REVISION_ID
+    INTO al_event_id
+    FROM tb_ADOPTION_REVISION
+    WHERE ADOPTION_ID = vl_subsidy_id
+    AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+    AND AGREEMENT_START_DT <= vd_final_srv_end_dt
+    AND AGREEMENT_END_DT >= vd_final_srv_start_dt
+    AND DELETE_SW = 'N'
+    AND COALESCE(ORIGINAL_SW, '') <> 'Y'
+   ORDER BY ADOPTION_REVISION_ID DESC
+   FETCH FIRST ROW ONLY; */
+   /*SELECT alternateid
+    INTO al_event_id
+    FROM ADOPTIONREVISION
+    WHERE adoptionid = (select adoptionplanningid from adoptionplanning where alternateid = vl_subsidy_id)
+    AND COALESCE(approvalstatustypekey,'') = '3047'
+    AND AGREEMENTSTARTDATE <= vd_final_srv_end_dt
+    AND AGREEMENTENDDATE >= vd_final_srv_start_dt
+    AND activeflag = 1
+    AND COALESCE(isoriginal, null) <> true
+   ORDER BY alternateid DESC
+   FETCH FIRST ROW ONLY; */
+   raise notice '>>>sp_fiscal_audit_trail> adoption rate>>vl_subsidy_id %',vl_subsidy_id;
+   raise notice '>>>sp_fiscal_audit_trail>>adoption rate>vd_final_srv_end_dt %',vd_final_srv_end_dt;
+   raise notice '>>>sp_fiscal_audit_trail>>adoption rate rate>vd_final_srv_start_dt %',vd_final_srv_start_dt;
+
+   SELECT acr.alternateid
+    INTO al_event_id
+   FROM adoptioncaserevision acr
+    join adoptioncaseagreementrate acgr on acgr.adoptionagreementrateid = acr.adoptionagreementrateid
+   WHERE acr.adoptionagreementid = (select aca.adoptionagreementid from adoptioncase ac
+           inner join adoptioncaseagreement aca on ac.adoptioncaseid=aca.adoptioncaseid
+           where ac.alternateid= vl_subsidy_id
+            and aca.activeflag=1
+           and ac.activeflag=1
+           order by aca.startdate desc limit 1)
+    AND COALESCE(acr.approvalstatustypekey,'') = '3047'
+    AND acr.startdate <= vd_final_srv_end_dt
+    AND acr.enddate >= vd_final_srv_start_dt
+    AND acr.activeflag = 1
+    -- AND COALESCE(isoriginal, null) <> true
+   ORDER BY acr.alternateid DESC
+   Limit 1; 
+
+   al_sqlcode = SQLCODE;
+   /* IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting ADOPTION_REVISION_ID for ADOPTION_ID: ' || LTRIM(RTRIM(CHAR(vl_subsidy_id)));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_start_dt)));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_end_dt)));
+    SIGNAL p_sp_error;
+   END IF ; */
+
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   -- FROM SYSIBM.SYSDUMMY1;
+
+   -- 1007 Receivable
+   IF as_entity_type_cd = '1007' THEN
+    vs_entity_desc_tx = 'System generated Account Receivable due to Adoption Subsidy Rate Changes.';  
+   ELSE -- 1008 Payment Adjustment
+    vs_entity_desc_tx = 'System generated Adjustment Payment due to Adoption Subsidy Rate Changes.';  
+   END IF;   
+
+  -- 1014 - Adoption Subsidy Suspension Changes
+  ELSEIF as_event_type_cd = '1014' then
+   raise notice '>>>sp_fiscal_audit_trail> adoption suspension>>1014 %',as_event_type_cd;
+
+   /*SELECT ADOPTION_SUSPENSION_REVISION_ID
+    INTO al_event_id
+   FROM tb_ADOPTION_SUSPENSION_REVISION
+   WHERE ADOPTION_ID = vl_subsidy_id
+    AND COALESCE(APPROVAL_STATUS_CD,'') = '3047'
+    AND SUSPENSION_BEGIN_DT <= vd_final_srv_end_dt
+    AND (SUSPENSION_END_DATE IS NULL OR SUSPENSION_END_DATE >= vd_final_srv_start_dt)
+    AND DELETE_SW = 'N'
+    AND COALESCE(ORIGINAL_SW, '') <> 'Y'
+   ORDER BY ADOPTION_SUSPENSION_REVISION_ID DESC
+   FETCH FIRST ROW ONLY;*/
+
+   /*SELECT asr.alternateid
+    INTO al_event_id
+   FROM adoptionsuspensionrevision asr
+   WHERE (select alternateid from adoptionplanning where adoptionplanningid=asr.adoptionplanningid and asr.activeflag=1 limit 1) = vl_subsidy_id
+    AND COALESCE(asr.APPROVALSTATUSTYPEKEY,'') = '3047'
+    AND asr.SUSPENSIONBEGINDATE <= vd_final_srv_end_dt
+    AND (asr.SUSPENSIONENDDATE IS NULL OR SUSPENSIONENDDATE >= vd_final_srv_start_dt)
+    AND asr.activeflag = 1
+    AND COALESCE(asr.ISORIGINAL, '') <> 'Y'
+   ORDER BY asr.alternateid DESC
+   FETCH FIRST ROW ONLY;*/
+   raise notice '>>>sp_fiscal_audit_trail> adoption suspension>>vl_subsidy_id %',vl_subsidy_id;
+   raise notice '>>>sp_fiscal_audit_trail>>adoption suspension>vd_final_srv_end_dt %',vd_final_srv_end_dt;
+   raise notice '>>>sp_fiscal_audit_trail>>adoption rate suspension>vd_final_srv_start_dt %',vd_final_srv_start_dt;
+  
+   SELECT acs.alternateid
+    INTO al_event_id
+   FROM adoptioncasesuspensionrevision asr
+    join adoptioncasesuspension acs on acs.adoptionsuspensionid=asr.adoptionsuspensionid
+   WHERE asr.adoptionsuspensionid = (select acs.adoptionsuspensionid from adoptioncase  ac
+            inner join adoptioncasesuspension  acs on ac.adoptioncaseid=acs.adoptioncaseid
+            where ac.alternateid=vl_subsidy_id
+            and ac.activeflag=1
+            and acs.activeflag=1
+            order by acs.insertedon desc limit 1)
+    AND COALESCE(asr.approvalstatustypekey,'') = '3047'
+    AND asr.SUSPENSIONBEGINDATE <= vd_final_srv_end_dt
+    AND (asr.SUSPENSIONENDDATE IS NULL OR asr.SUSPENSIONENDDATE >= vd_final_srv_start_dt)
+    AND asr.activeflag = 1
+    -- AND COALESCE(asr.isoriginal, 'N') <> 'Y'
+   ORDER BY asr.alternateid DESC
+   Limit 1; 
+   
+   raise notice '>>>sp_fiscal_audit_trail>>adoption rate suspension>al_event_id %',al_event_id;
+
+   al_sqlcode = SQLCODE;
+   /*IF al_sqlcode < 0 THEN
+    as_error = 'Error in getting ADOPTION_SUSPENSION_REVISION_ID for ADOPTION_ID: ' || LTRIM(RTRIM(CHAR(vl_subsidy_id)));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_start_dt)));
+    as_error = COALESCE(as_error ,'') || ' / ' || LTRIM(RTRIM(CHAR(vd_final_srv_end_dt)));
+    SIGNAL p_sp_error;
+   END IF ;*/ 
+
+   SELECT f_pdesc(as_event_type_cd, 10041 )
+    INTO vs_event_desc_tx;
+   --FROM SYSIBM.SYSDUMMY1;
+
+   -- 1007 Receivable
+   IF as_entity_type_cd = '1007' THEN
+    vs_entity_desc_tx = 'System generated Account Receivable due to Adoption Subsidy Suspension Changes.';  
+   ELSE -- 1008 Payment Adjustment
+    vs_entity_desc_tx = 'System generated Adjustment Payment due to Adoption Subsidy Suspension Changes.';  
+   END IF;     
+  ELSE
+   as_error = 'Invalid as_event_type_cd.';
+   --SIGNAL p_sp_error;
+  END IF;
+ ELSE
+  as_error = 'PLACEMENT_ID AND SUBSIDY_AGREEMENT_ID both are NULL for PAYMENT_DETAIL ID : ' || LTRIM(RTRIM(TO_CHAR(vl_payment_detail_id,'999999999')));
+  -- SIGNAL p_sp_error;
+ END IF; 
+
+ -- Insert FISCAL AUDIT TRAIL Event
+ IF al_event_id is NOT NULL AND al_event_id > 0 THEN
+  SELECT FISCAL_AUDIT_TRAIL_ID
+   INTO vl_fiscal_audit_trail_id
+  FROM tb_FISCAL_AUDIT_TRAIL
+  WHERE EVENT_TYPE_CD = LTRIM(RTRIM(as_event_type_cd))
+   AND EVENT_ID = al_event_id
+   AND DELETE_SW = 'N' ; 
+
+  al_sqlcode = SQLCODE;
+  IF al_sqlcode < 0 THEN
+   as_error = 'Error in verifying duplicate fiscal audit trail event for EVENT_TYPE_CD/EVENT_ID : ' || LTRIM(RTRIM(TO_CHAR(al_event_id,'999999999')));
+   --SIGNAL p_sp_error;
+  END IF ; 
+
+  IF vl_fiscal_audit_trail_id is NULL OR vl_fiscal_audit_trail_id = 0 THEN
+   --CALL SP_NEXTID ( vs_fiscal_audit_trail_sq, vl_fiscal_audit_trail_id);
+   SELECT SP_nextid(vs_fiscal_audit_trail_sq::character varying) into vl_fiscal_audit_trail_id;
+   INSERT INTO tb_FISCAL_AUDIT_TRAIL
+    (  FISCAL_AUDIT_TRAIL_ID,
+     EVENT_TYPE_CD,
+     EVENT_ID,
+     DESCRIPTION_TX,
+     CREATE_TS,
+     CREATE_USER_ID,
+     UPDATE_TS,
+     UPDATE_USER_ID,
+     DELETE_SW 
+    )
+   VALUES 
+    ( vl_fiscal_audit_trail_id,
+     LTRIM(RTRIM(as_event_type_cd)),
+     al_event_id,
+     vs_event_desc_tx,
+     CURRENT_TIMESTAMP,
+     vs_user_id,
+     CURRENT_TIMESTAMP,
+     vs_user_id,
+     'N' 
+    )  ;
+
+   al_sqlcode = SQLCODE;
+   IF al_sqlcode < 0 THEN
+    as_error = 'Error in inserting FISCAL AUDIT TRAIL Event.';
+    -- SIGNAL p_sp_error;
+   END IF ; 
+  END IF;
+
+
+  -- Insert FISCAL AUDIT TRAIL Entity
+  -- CALL SP_NEXTID ( vs_fiscal_audit_trail_entity_link_sq, vl_fiscal_audit_trail_entity_link_id);
+  SELECT SP_nextid(vs_fiscal_audit_trail_entity_link_sq::character varying) into vl_fiscal_audit_trail_entity_link_id;
+  INSERT INTO tb_FISCAL_AUDIT_TRAIL_ENTITY_LINK
+   ( FISCAL_AUDIT_TRAIL_ENTITY_LINK_ID,
+    FISCAL_AUDIT_TRAIL_ID,
+    ENTITY_TYPE_CD,
+    ENTITY_ID,
+    DESCRIPTION_TX,
+    CREATE_TS,
+    CREATE_USER_ID,
+    UPDATE_TS,
+    UPDATE_USER_ID,
+    DELETE_SW 
+   )
+  VALUES 
+   ( vl_fiscal_audit_trail_entity_link_id,
+    vl_fiscal_audit_trail_id,
+    LTRIM(RTRIM(as_entity_type_cd)),
+    al_entity_id,
+    vs_entity_desc_tx,
+    CURRENT_TIMESTAMP,
+    vs_user_id,
+    CURRENT_TIMESTAMP,
+    vs_user_id,
+    'N'  
+   )  ;
+
+  al_sqlcode = SQLCODE;
+  IF al_sqlcode < 0 THEN
+   as_error = 'Error in inserting FISCAL AUDIT TRAIL Entity.';
+   --SIGNAL p_sp_error;
+  END IF ;     
+ ELSE
+  as_error = 'Error in getting Event ID.';
+  --SIGNAL p_sp_error;
+ END IF;
+END;
+
+$function$
+

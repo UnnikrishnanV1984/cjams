@@ -1,0 +1,45 @@
+CREATE OR REPLACE FUNCTION prov_getlicenseinfo(appid character varying, v_providerid character varying, v_req_no character varying DEFAULT NULL::character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+declare
+
+v_applicantprofileid uuid;
+v_licenseinfo json;
+
+
+begin
+select json_agg(t)
+from (
+SELECT count(1) over() as total_count,y.* from (
+SELECT x.* from ((select  tpd.*, tpv1.value_tx as license_agency, 
+(select tp.status from tb_provider_decision tp where tp.objectid = tpd.request_no and tp.activeflag =  1 and tp.eventcode = 'LIC'  order by tp.insertedon::timestamp desc nulls last limit 1) as status,
+ prvdec.remarks as remarks ,
+tp.provider_nm as program_name,tpv.value_tx as program_type, TBPLV.description_tx as gender_desc
+
+
+from Providerportalrequest tpd 
+left join tb_picklist_values as TBPLV on trim(TBPLV.picklist_value_cd) = tpd.gender and TBPLV.active_sw = 'Y' and TBPLV.delete_sw = 'N'
+left join tb_provider_licensing tpl on tpd.site_id = tpl.site_id::character varying and tpl.active_sw='Y' and tpl.delete_sw = 'N'
+left join tb_picklist_values tpv on tpv.picklist_type_id = 284 and trim(tpv.picklist_value_cd) = trim(tpl.license_type_cd) and tpv.delete_sw = 'N'
+left join tb_provider_decision prvdec on prvdec.objectid = tpd.request_no and prvdec.status in ('Rejected','Approved','Denied')
+inner join tb_provider tp on tp.provider_id = tpd.site_id
+join tb_picklist_values tpv1 on trim(tpl.licensing_agency_cd) = trim(tpv1.picklist_value_cd) and tpv1.picklist_type_id = 111
+where 
+(case when v_providerid is not null then tpd.provider_id = v_providerid else true end)
+and
+ (case when v_req_no is not null then tpd.request_no = v_req_no else true end)
+and
+ (case when appid is not null then tpd.site_id = appid else true end)
+
+
+)) x
+order by x.update_ts::timestamp desc nulls last
+) y
+) t into v_licenseinfo;
+
+return v_licenseinfo;
+ 
+end;
+$function$
+

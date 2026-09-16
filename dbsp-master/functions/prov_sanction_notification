@@ -1,0 +1,100 @@
+CREATE OR REPLACE FUNCTION prov_sanction_notification(v_securityuserid character varying, v_provider_id integer, lic_type character varying, isacknowledged boolean)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+ v_tousers_id varchar ;
+ v_sanction_no varchar;
+ v_sanction_type varchar;
+ v_username varchar;
+ v_bodymsg varchar ;
+ v_msg varchar;
+v_notifystatus varchar;
+v_site_id varchar;
+v_providername character varying;
+currentRow record;
+v_success character VARYING;
+v_tousers json;
+BEGIN  
+currentRow := null;
+
+
+select tprs.provider_id::character VARYING , sanction_no , license_sanction_type, site_id
+into v_tousers_id , v_sanction_no , v_sanction_type, v_site_id
+from tb_provider_userconfig tpu 
+join tb_provider_sanctions tprs on tpu.provider_id = tprs.provider_id 
+where tprs.provider_id = v_provider_id;
+
+-- Subject and Body for Email
+select provider_nm into v_providername from tb_provider tp where tp.provider_id = v_provider_id limit 1;
+
+ 
+SELECT coalesce(lastname,'') ||', '|| coalesce(firstname,'') into v_username                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+     FROM userprofile WHERE securityusersid = v_securityuserid;
+
+if (isacknowledged)then
+     v_msg :=     'An Appeal for ' ||v_sanction_no ||' has been submitted by ' || v_providername || '-' || v_provider_id ;
+     v_bodymsg := 'An Appeal for ' ||v_sanction_no ||' has been submitted by ' || v_providername || '-' || v_provider_id ;
+
+     for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                            from muser mu 
+                                                            join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                            join role r on r.id = rm.roleid and r.activeflag = 1
+                                                            where (r.name = 'Program Manager' or  r.name ='Executive' or
+                                                            r.name = 'QA Coordinator' or  r.name ='Secretary') 
+                                                            and rm.teamtypekey = 'OLMDJS'
+                                                            and mu.activeflag =1
+     loop
+          BEGIN
+                    SELECT prov_send_notification into v_success
+                    FROM  prov_send_notification( currentRow.toworkeridno, v_securityuserid, currentRow.toworkeridno, 'System', 'High',  v_msg, v_bodymsg, v_sanction_no,  false, false, 'sitesanction');
+               END;
+          end loop;
+
+          select json_agg(a) into v_tousers from ( 
+          SELECT distinct mu.securityusersid as toworkeridno 
+          , mu.email 
+               from muser mu 
+               join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+               join role r on r.id = rm.roleid and r.activeflag = 1
+               where r.name in  ('Program Manager','Executive', 'QA Coordinator', 'Secretary') 
+               and mu.activeflag =1
+               and rm.teamtypekey='OLMDJS'
+          )a;
+else
+     v_msg := 'A Sanction has been submitted for your approval for provider '  || v_providername || '-' || v_provider_id;
+     v_bodymsg := 'A Sanction has been submitted for your approval for provider '  || v_providername || '-' || v_provider_id;
+
+     for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                            from muser mu 
+                                                            join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                            join role r on r.id = rm.roleid and r.activeflag = 1
+                                                            where (r.name = 'Program Manager' or  r.name ='Executive') 
+                                                            and rm.teamtypekey = 'OLMDJS'
+                                                            and mu.activeflag =1
+     loop
+          BEGIN
+               SELECT prov_send_notification into v_success
+               FROM  prov_send_notification( currentRow.toworkeridno, v_securityuserid, currentRow.toworkeridno, 'System', 'High',  v_msg, v_bodymsg, v_sanction_no,  false, false, 'sitesanction');
+          END;
+     end loop;
+          select json_agg(a) into v_tousers from ( 
+          SELECT distinct mu.securityusersid as toworkeridno 
+          , mu.email 
+               from muser mu 
+               join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+               join role r on r.id = rm.roleid and r.activeflag = 1
+               where r.name in  ('Program Manager', 
+                              'Executive') 
+               and mu.activeflag =1
+               and rm.teamtypekey='OLMDJS'
+          )a;
+end if;
+
+     RETURN json_build_object('Decision',v_success, 'ROLE_WORKERS', v_tousers,
+     'subject', v_msg, 
+     'body', v_msg);
+END;
+$function$
+

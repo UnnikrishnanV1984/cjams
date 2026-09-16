@@ -1,0 +1,31 @@
+
+/*
+   Issue Description: CDM-21765
+   Category/ Module  : Prod data fix for adding person and updating Removal Information
+   Root cause: user requeseted to remove it
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+*/
+
+
+INSERT INTO cjams.actor
+(actorid, activeflag, personid, actortype, dangerlevel, dangerreason, insertedby, insertedon, updatedby, updatedon, expirationdate, "timestamp", primarylanguageid, secondarylanguageid, employeetypeid, employeetypename, medicaideligibility, blockgranteligibility, recipientstatus, livingarrangementtypekey, interpreterrequired, guardianname, guardianinfo, ramentalhealth, ramentalretarted, ramentalretartedtype, manualupdateflag, intakeserviceid, iscollateralcontact, old_id, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, ishouseholdmember, isdangertoworker, dangertoworkerreason, sphouseholdmemberflag, spchildflag, spreporteranonymousflag, spreporternoletterflag, spexpungementflag, fetalalcoholspctrmdisordflag, drugexposednewbornflag, probationsearchconductedflag, sexoffenderregisteredflag, otherdrugs, unknownreporterflag, spproviderid, servicecaseid, fk_id, fk_c_id, personroletypeid, drugexposedkey, intakenumber, etl_userid, etl_load_date, objectid, objecttype)
+VALUES('2e98dfbc-03be-431e-9973-88de5c04ee46', 1, '05235e6e-d352-4ac8-a57d-37e002c4c196'::uuid, 'RA', NULL, NULL, 'CDM-21765',NOW(), 'CDM-21765', NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'N', NULL, 0, '3251565', 0, NULL, 0, NULL, 1, 0, ' ', 1, 0, 0, 0, 0, 0, 0, 0, 0, NULL, 0, 0, '462e6b3d-58a4-4904-8fac-92204f9f6109'::uuid, '1602310', '3279893', NULL, NULL, '3279893', 'Data Migration', '2020-06-20', NULL, NULL) on conflict do nothing;
+
+
+INSERT INTO cjams.intakeservicerequestactor
+(intakeservicerequestactorid, actorid, intakeservicerequestpersontypekey, rapersontypekey, insertedby, insertedon, updatedby, updatedon, expirationdate, "timestamp", intakeserviceid, routingaddressid, employeetypeid, employeetypename, medicaideligibility, blockgranteligibility, livingarrangementtypekey, guardianname, guardianinfo, ramentalhealth, ramentalretarted, ramentalretartedtype, refusessn, refusedob, activeflag, reported, isprimary, personid, old_id, ismaltreator, rcprimaryroletypekey, ncpspriorhistoryflag, householdnumber, ssnverifytypekey, rchandicapflag, rchomelessflag, lvgarrangementtypekey, livingprefixtypekey, lvgfirstname, lvgmiddlename, lvglastname, lvgsuffixtypekey, lvgrelationshiptypekey, lvgcomments, rchouseholdflag, rcchildflag, nonparticipatingflag, householdheadflag, rcinsertedon, rcinsertedby, rcupdatedon, rcupdatedby, rcactiveflag, livingwith, rcreporteranonymousflag, rcreporternoletterflag, clientflag, rcexpungementflag, rcdatavalidflag, rcclientmergeid, arclientid, arsummaryid, altrespclientid, participatingchildflag, aractiveflag, screeningpersonid, prexpungementflag, prdatavalidflag, prinsertedby, prupdatedby, practiveflag, referralclientid, caseclientid, crexpungementflag, crdatavalidflag, crinsertedby, crupdatedby, sphouseholdmemberflag, spchildflag, spreporteranonymousflag, spreporternoletterflag, spexpungementflag, fetalalcoholspctrmdisordflag, drugexposednewbornflag, probationsearchconductedflag, sexoffenderregisteredflag, otherdrugs, unknownreporterflag, spproviderid, fk_id, isvictim, servicecaseid, fk_cl_id, intakenumber, isheadofhousehold, etl_userid, etl_load_date, objectid, objecttype)
+VALUES('5176f74f-58d5-4ea8-ad1b-534d62492c61'::uuid, '2e98dfbc-03be-431e-9973-88de5c04ee46'::uuid, 'RELATIVE', NULL, 'CDM-21765', '2017-08-29 10:30:08.000', 'CDM-21765', '2017-08-29 10:30:08.000', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, false, 1, true, true, '05235e6e-d352-4ac8-a57d-37e002c4c196'::uuid, '3279893', NULL, NULL, 0, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 1, 0, 0, NULL, NULL, NULL, NULL, 1, NULL, 0, 0, 1, 0, 0, NULL, NULL, NULL, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, 1, 958575, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '3473347', NULL, '462e6b3d-58a4-4904-8fac-92204f9f6109'::uuid, NULL, NULL, false, 'Data Migration', '2020-06-20', NULL, NULL) on conflict do nothing;
+
+
+INSERT INTO cjams.actorrelationship
+(actorrelationshipid, relationshiptypekey, insertedby, insertedon, updatedby, updatedon, "timestamp", effectivedate, expirationdate, activeflag, intakeservicerequestactorid, old_id, client1id, client2id, caregiverflag, paternityestdflag, paternityestddate, paternitycourtorderflag, maternityestdflag, maternityestddate, maternitycourtorderflag, "comments", startdate, enddate, sysgenflag, origclientid, caseid, referralid, expungementflag, datavalidflag, clientmergeid, fk1_id, fk2_id, fk3_id, person1id, person2id, servicecaseid, intakeserviceid, intakenumber, etl_userid, etl_load_date)
+VALUES('dfd35afd-c907-4011-87ad-c5d38b8322b1'::uuid, 'MATRNLGPRNT', 'CDM-21765', NOW(), 'CDM-21765', NOW(), NULL, NOW(), NULL, 1, '5176f74f-58d5-4ea8-ad1b-534d62492c61'::uuid, '13923419', '05235e6e-d352-4ac8-a57d-37e002c4c196'::uuid, 'a8ac1c44-ae20-413d-a7a7-89470d1e0291'::uuid, 1, 0, NULL, 0, 0, NULL, 0, NULL, '2020-04-17 00:00:00.000', NULL, 0, NULL, '462e6b3d-58a4-4904-8fac-92204f9f6109'::uuid, NULL, 0, 0, NULL, NULL, '3279893', NULL, '05235e6e-d352-4ac8-a57d-37e002c4c196'::uuid, 'a8ac1c44-ae20-413d-a7a7-89470d1e0291'::uuid, '462e6b3d-58a4-4904-8fac-92204f9f6109'::uuid, NULL, NULL, null, null)on conflict do nothing;
+
+--3251565	
+-- null null null
+update intakeservreqchildremoval set primarycaregiverid = '200451382',
+primarycaregiveractorid = '05235e6e-d352-4ac8-a57d-37e002c4c196',primarycaregiveradd = '4901 TRUESDALE AVE, BALTIMORE, MD',
+removaladd1 = '4901 TRUESDALE AVE, BALTIMORE, MD', updatedby = 'CDM-21765', updatedon = now() 
+where intakeservreqchildremovalid = '55e9ecf2-1b71-480f-a525-5a3216042958';

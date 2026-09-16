@@ -1,0 +1,125 @@
+DROP FUNCTION IF EXISTS cjams.sp_ive_eligibility_worksheet_ssi_ssa_info(reqobj json);
+CREATE OR REPLACE FUNCTION cjams.sp_ive_eligibility_worksheet_ssi_ssa_info(reqobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+------------------------------------------------------------------
+-- B-97901 CIDM-8153 11-13 CJAMS-CW-IV-E - SILA youth and placement updates _ Veera Nadimpalli
+-----------------------------------------------------------------
+
+DECLARE
+	v_clientid  BIGINT;
+	returnStatus text;
+	v_num INT;	
+    v_childreceivingssiorssa INT;
+    v_suspendssipaymentflag INT;
+    v_agencyrepresentativeflag INT;
+    v_representativepayee varchar(500);
+    v_notefornotsuspendingssi varchar(750);
+    v_noteforagencynotaspayee varchar(500);
+   	v_removalid int;
+   	v_dateofmedicaldetermination TIMESTAMP;
+	v_doesagencyhasmedicaldocstostateincapabilityofchild INT;
+	v_hasagencyapplytobecomerepresentativepayee INT;
+	v_dateofapplicationtobecomerepresentativepayee TIMESTAMP; 
+	v_dateofrequesttosuspendthessipaymentandclaimive TIMESTAMP;
+	v_typeofbenefit varchar(3);
+	v_amountofbenefit INT;
+	v_ischildageabove18 INT;
+    v_detperiodtype varchar(10);
+    v_infoaboutincomenresources varchar(15);
+    v_incomeresourcesverification varchar(250);
+    v_citizenshipverification varchar(250);
+    v_ageverification varchar(250);
+    v_assetinfoverification varchar(250);
+    v_ssissainfoverification varchar(250);
+	v_homeassessmentverification varchar(250);
+    v_vpasprverification varchar(250);
+    v_issillaagreementvalid varchar(10);
+	v_issilayouth varchar(10);
+    v_silaagreementdate TIMESTAMP;
+   
+BEGIN
+
+	v_clientid := reqObj ->> 'clientId';
+	v_ischildageabove18 := reqObj ->> 'ischildageabove18';
+	v_childreceivingssiorssa := reqObj ->> 'childReceivingSsiOrSsa';
+	v_suspendssipaymentflag := reqObj ->> 'suspendSsiPaymentFlag';
+	v_agencyrepresentativeflag := reqObj ->> 'agencyRepresentativeFlag';
+	v_representativepayee := reqObj ->> 'representativePayee';
+	v_notefornotsuspendingssi := reqObj ->> 'noteForNotSuspendingSsi';
+	v_noteforagencynotaspayee := reqObj ->> 'noteForAgencyNotAsPayee';
+	v_dateofmedicaldetermination := reqObj ->> 'dateofmedicaldetermination';
+	v_doesagencyhasmedicaldocstostateincapabilityofchild := reqObj ->> 'doesagencyhasmedicaldocstostateincapabilityofchild';
+	v_hasagencyapplytobecomerepresentativepayee := reqObj ->> 'hasagencyapplytobecomerepresentativepayee';
+	v_dateofapplicationtobecomerepresentativepayee := reqObj ->> 'dateofapplicationtobecomerepresentativepayee';
+	v_dateofrequesttosuspendthessipaymentandclaimive := reqObj ->> 'dateofrequesttosuspendthessipaymentandclaimive';
+	v_typeofbenefit := reqObj ->> 'typeofbenefit';
+	v_amountofbenefit := reqObj ->> 'amountofbenefit';
+    v_detperiodtype := reqObj ->> 'detperiodtype';
+    v_infoaboutincomenresources := reqObj ->> 'infoaboutincomenresources';
+    v_incomeresourcesverification := reqObj ->> 'incomeresourcesverification';
+    v_citizenshipverification := reqObj ->> 'citizenshipverification';
+    v_ageverification := reqObj ->> 'ageverification';
+    v_assetinfoverification := reqObj ->> 'assetinfoverification';
+    v_ssissainfoverification := reqObj ->> 'ssissainfoverification';
+	v_homeassessmentverification := reqobj ->> 'homeassessmentverification';
+    v_vpasprverification := reqObj ->> 'vpasprverification';
+    v_issillaagreementvalid := reqObj ->> 'issillaagreementvalid';
+	v_issilayouth := reqObj ->> 'issilayouth';
+    v_silaagreementdate := reqObj ->> 'silaagreementdate';
+	v_removalid := reqObj ->> 'removalid';
+	returnStatus := 'Success';
+	
+	SELECT count(*) into v_num FROM ivessissadata WHERE clientid = v_clientid and removalid = v_removalid and detperiodtype = v_detperiodtype;
+
+	IF (v_num) >= 1
+	THEN
+	 	UPDATE ivessissadata	
+	SET 				
+        childreceivingssiorssa = v_childreceivingssiorssa,
+    	suspendssipaymentflag = v_suspendssipaymentflag,
+    	agencyrepresentativeflag = v_agencyrepresentativeflag,
+    	representativepayee = v_representativepayee,
+    	notefornotsuspendingssi = v_notefornotsuspendingssi,
+    	noteforagencynotaspayee = v_noteforagencynotaspayee,
+    	dateofmedicaldetermination = v_dateofmedicaldetermination,
+		doesagencyhasmedicaldocstostateincapabilityofchild = v_doesagencyhasmedicaldocstostateincapabilityofchild,
+		hasagencyapplytobecomerepresentativepayee = v_hasagencyapplytobecomerepresentativepayee,
+		dateofapplicationtobecomerepresentativepayee = v_dateofapplicationtobecomerepresentativepayee,
+		dateofrequesttosuspendthessipaymentandclaimive = v_dateofrequesttosuspendthessipaymentandclaimive,
+		typeofbenefit = v_typeofbenefit,
+		amountofbenefit = v_amountofbenefit,
+		ischildageabove18 = v_ischildageabove18,
+        detperiodtype = v_detperiodtype,
+        infoaboutincomenresources = v_infoaboutincomenresources,
+        incomeresourcesverification = v_incomeresourcesverification,
+        issillaagreementvalid = v_issillaagreementvalid,
+		issilayouth = v_issilayouth,
+        silaagreementdate = v_silaagreementdate,
+        citizenshipverification = v_citizenshipverification,
+        ageverification = v_ageverification,
+        assetinfoverification = v_assetinfoverification,
+        ssissainfoverification = v_ssissainfoverification,
+		homeassessmentverification = v_homeassessmentverification,
+        vpasprverification = v_vpasprverification
+
+
+	WHERE clientid = v_clientid and removalid = v_removalid and detperiodtype = v_detperiodtype ;
+	
+	else
+	 
+		Insert into ivessissadata(ivessissadataid, clientid, activeflag, childreceivingssiorssa, suspendssipaymentflag, agencyrepresentativeflag, representativepayee, notefornotsuspendingssi, noteforagencynotaspayee, removalid,
+			dateofmedicaldetermination, doesagencyhasmedicaldocstostateincapabilityofchild, hasagencyapplytobecomerepresentativepayee, dateofapplicationtobecomerepresentativepayee, dateofrequesttosuspendthessipaymentandclaimive, typeofbenefit, amountofbenefit, ischildageabove18, detperiodtype, infoaboutincomenresources, incomeresourcesverification, issillaagreementvalid,issilayouth, silaagreementdate, citizenshipverification, ageverification, assetinfoverification,  ssissainfoverification, vpasprverification, homeassessmentverification) 
+        VALUES(gen_random_uuid() , v_clientid, 1, v_childreceivingssiorssa, v_suspendssipaymentflag, v_agencyrepresentativeflag, v_representativepayee, v_notefornotsuspendingssi, v_noteforagencynotaspayee, v_removalid,
+       		v_dateofmedicaldetermination, v_doesagencyhasmedicaldocstostateincapabilityofchild, v_hasagencyapplytobecomerepresentativepayee, v_dateofapplicationtobecomerepresentativepayee, v_dateofrequesttosuspendthessipaymentandclaimive, v_typeofbenefit, v_amountofbenefit, v_ischildageabove18, v_detperiodtype, v_infoaboutincomenresources, v_incomeresourcesverification, v_issillaagreementvalid, v_issilayouth,v_silaagreementdate, v_citizenshipverification, v_ageverification, v_assetinfoverification, v_ssissainfoverification, v_vpasprverification, v_homeassessmentverification);
+           
+           
+	end if;
+
+RETURN format('%s', returnStatus);
+
+end;
+	
+$function$

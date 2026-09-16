@@ -1,0 +1,1 @@
+update routing set routingstatustypeid=39, remarks='Forwarded to Case Supervisor',routeddescription='Purchase Authorization Forwarded to Case Supervisor' where objectid=1734192 and routingid='d3683e9a-dbf9-4b27-bad7-c3efd0fbccf8';

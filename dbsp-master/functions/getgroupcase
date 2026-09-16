@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION getgroupcase(userid character varying, isassigned boolean, groupsid uuid)
+ RETURNS TABLE(casedetail json)
+ LANGUAGE plpgsql
+AS $function$
+
+begin
+return query 
+select  json_agg(ss) as users from   ( SELECT   
+             
+            ISR.intakeserviceid, cast(ISR.servicerequestnumber ||
+          case coalesce(isr.actiontype,'') when '' then '' else ' ('|| coalesce(isr.actiontype,'') || ')' end 
+    as character varying)   as  servicerequestnumber,
+             cast(case ISR.iscps
+                  when true then 'CPS' 
+                  when false then 'Non CPS'
+                  else '' end  as character varying) cpsresponse,
+                                  
+            (SELECT itsrt.intakeservreqtypekey 
+             FROM intakeservicerequesttype as itsrt
+            WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid
+              AND itsrt.activeflag =1
+            limit 1),
+            (SELECT srst.classkey FROM servicerequestsubtype as srst
+            WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+             AND srst.activeflag =1  limit 1),
+            ISR.reporteddate,
+            cast( (TRIM(PN.lastname)|| ', ' ||TRIM(PN.firstname)) as  character varying) clientname ,
+            intakeserreqstatustypekey,
+            ISR.routedon as routeddate,
+            cast(up.lastname ||', '||up.firstname as character varying) assingeduser,
+            ISR.isrouted,
+            R.Assignedon,
+            cast ( coalesce(isr.offenselocation,'') as character varying) incidentlocation
+            
+    FROM intakeservicerequest as ISR 
+      JOIN (select   ISRA.intakeserviceid , (max(AR.personid::character varying ))::uuid personid
+          from intakeservicerequestactor as ISRA  
+            JOIN actor as AR
+        ON AR.actorid=ISRA.actorid 
+          where ISRA.intakeservicerequestpersontypekey in ('RA', 'RC','CLI') group by ISRA.intakeserviceid) ISRA
+         ON ISRA.intakeserviceid=ISR.intakeserviceid  
+    JOIN person as PN 
+        ON PN.personid=ISRA.personid    
+      JOIN (SELECT DISTINCT objectid ,cast(r.insertedon as date) assignedon FROM ROUTING R 
+                 WHERE R.tosecurityusersid = userid AND routingstatustypeid =2
+             AND R.activeflag =1
+                ) R ON
+      r.objectid = ISR.intakenumber  
+ INNER JOIN  IntakeServiceRequestGroupDetails ISGD ON ISGD.intakeserviceid  = ISR.intakeserviceid
+     AND ISGD.activeflag =1   and ISGD.groupid = groupsid                           
+    LEFT JOIN userprofile up on up.securityusersid = ISR.routedusersid and up.activeflag =1 
+    inner JOIN intakeserreqstatustype irst on irst.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid
+    and irst.activeflag =1
+     and lower(irst.Intakeserreqstatustypekey) Not in ('closed')
+      )
+         as ss;
+ 
+
+end;
+
+$function$
+

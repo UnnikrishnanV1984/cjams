@@ -1,0 +1,60 @@
+DROP FUNCTION IF EXISTS cjams.getpersonsexualinfo_filter(filters json, v_lipagenumber bigint, v_lipagesize bigint); --clean up _ ones in all envs
+DROP FUNCTION IF EXISTS cjams.getpersonsexualinfofilter(filters json, v_lipagenumber bigint, v_lipagesize bigint);
+CREATE OR REPLACE FUNCTION cjams.getpersonsexualinfofilter(filters json, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, updatedby_fullname character varying, personsexualinfoid uuid, personid uuid, infoprovidedbypersonid uuid, infoprovidedbycollateralid uuid, infoclientkey character varying, sexualactiveflag character varying, sexualorientationkey character varying, sexualorientationdesc character varying, pregnancyno integer, childrenno integer, birthcontrol character varying, birthcontroldesc character varying, sicomments character varying, insertedon timestamp without time zone, insertedby character varying, updatedon timestamp without time zone, updatedby character varying, activeflag integer, sextransdis character varying, sextransdisdesc character varying, infoprovidedby character varying, infoprovidedbyrelationkey character varying, expungementflag integer, datavalidflag integer, clientmergeid uuid, fk_id character varying, old_id character varying, uploadpath json, ispregnant boolean, std_treatment_startdate date, std_treatment_enddate date, stdspecify character varying, bcspecify character varying, genderidentity character varying, genderidentity_desc character varying, genderidentityspecify character varying, birthcontroldate date, sexualorientationcomments character varying, specify character varying, pregnancyduedate timestamp without time zone, ispregnancyduedateunknown boolean, currentlyparenting boolean, notparentingreason character varying, isfatheredachild boolean, isgivenbirth boolean, currentlyparentingother boolean, notparentingotherreason text, gendertypekey character varying, othergendertypekey integer)
+ LANGUAGE plpgsql
+AS $function$
+-- 06/18/2023 Anil Dharni -- CIDM-8991 changes to bring updatedby and updatedon
+-- 06/21/2023 Manasa Kasula -- CIDM-7337 Changes to show the person updated by and updated on correctly-- 07/08/2024 Kapila Mandhadi -- CIDM-8666 - Additional reproductive health question required for federal reporting
+-- 07/08/2024 Kapila Mandhadi -- CIDM-8666 - Additional reproductive health question required for federal reporting
+-- 03/16/2025 Simar Singh -- CIDM-10103 add filter values for searching along with person id
+
+DECLARE
+	v_pageoffset int;
+	v_pagenumber int;
+DECLARE 
+	totalcount integer;
+	v_personid uuid;
+	startDate timestamp;
+	endDate   timestamp;
+BEGIN
+    startDate := (filters ->> 'startDate')::timestamp;
+    endDate := (filters ->> 'endDate')::timestamp;
+    v_personid := (filters ->> 'personid')::uuid;
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+  
+RETURN query
+
+select count(1) over() as totalcount, u.fullname AS updatedby_fullname ,psx.personsexualinfoid, psx.personid, psx.infoprovidedbypersonid, psx.infoprovidedbycollateralid, psx.infoclientkey, 
+psx.sexualactiveflag, psx.sexualorientationkey,(select value_text from referencevalues where referencetypeid='332' and ref_key=( psx.sexualorientationkey) limit 1) as sexualorientationdesc, psx.pregnancyno, psx.childrenno, psx.birthcontrol,(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trim(psx.birthcontrol) and picklist_type_id=23 limit 1) as birthcontroldesc, psx.sicomments, psx.insertedon, psx.insertedby, 
+psx.updatedon, psx.updatedby, psx.activeflag, psx.sextransdis,(select value_tx from tb_picklist_values where trim(picklist_value_cd)=trim(psx.sextransdis) and picklist_type_id=344 limit 1) as sextransdisdesc, psx.infoprovidedby, psx.infoprovidedbyrelationkey, psx.expungementflag, psx.datavalidflag, psx.clientmergeid, psx.fk_id, psx.old_id, 
+(SELECT json_agg(docs) FROM  (
+	SELECT dp.documentpropertiesid, dp.objecttypekey, dp.title, dp.actualdocumentdate, dp.documenttypekey, dp.insertedon, dp.updatedon,
+	(select up.fullname as insertedby from userprofile up where up.securityusersid = dp.insertedby), 
+	dp.updatedby, dp.documentdate, dp.mime, dp.s3bucketpathname, dp.description, dp.other,dp.filename,dp.numberofbytes, dp.originalfilename,
+	(SELECT row_to_json(x) AS documentattachment FROM(                                                                               
+	SELECT dat.documentpropertiesid, dat.attachmenttypekey, dat.attachmentclassificationtypekey,dat.attachmentclassificationsubtypekey, dat.assessmenttemplateid,
+	(select up.fullname as updatedby from userprofile up where up.securityusersid = dat.updatedby) from documentattachment dat                                                                                   
+	WHERE dat.documentpropertiesid = dp.documentpropertiesid                                                  
+	) x),dp.uploadstatus,dp.finalstatus,dp.ecmsdocumentid
+from documentproperties dp where dp.additionalobjectid = psx.personsexualinfoid::varchar and dp.additionalobjecttype = 'personsexualinfo' and dp.activeflag in (1,3,4,5)
+)docs) as uploadpath,
+psx.ispregnant, psx.std_treatment_startdate, psx.std_treatment_enddate, psx.stdspecify, psx.bcspecify, 
+psx.genderidentity, 
+(SELECT description FROM referencevalues r WHERE ref_key = psx.genderidentity AND referencetypeid = 333 AND teamtypekey = 'CW' ORDER BY r.updatedon LIMIT 1) AS genderidentity_desc,
+psx.genderidentityspecify, psx.birthcontroldate, psx.sexualorientationcomments, psx.specify,
+psx.pregnancyduedate, psx.ispregnancyduedateunknown, psx.currentlyparenting, psx.notparentingreason, psx.isfatheredachild, psx.isgivenbirth, psx.currentlyparentingother, psx.notparentingotherreason,
+p.gendertypekey , p.othergendertypekey 
+from personsexualinfo psx 
+LEFT JOIN userprofile u ON psx.updatedby = u.securityusersid
+left join person p on psx.personid = p.personid and p.activeflag = 1
+where psx.personid=v_personid and psx.activeflag =1
+and case when startDate is not null then Date(psx.insertedon) >= Date(startDate) else true end
+and case when endDate is not null then Date(psx.insertedon) <= Date(endDate) else true end
+ORDER BY psx.insertedon NULLS FIRST
+LIMIT pagesize OFFSET v_pageoffset;
+END;
+
+$function$
+;

@@ -1,0 +1,135 @@
+CREATE OR REPLACE FUNCTION sp_fc_worksheet_placement(al_client_id bigint, al_removal_id bigint, al_period_start_dt date, al_period_end_dt date DEFAULT NULL::date, al_period_type character varying)
+ RETURNS TABLE(placement json, islapsesinplacement character varying, typeoflapses character varying, kindoflapses character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- Vineet Tirodkar - 05/03/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+------------------------------------------------------------------------------------------------
+declare
+plc   record;
+--la    record;
+v_isplacementreimbursible character varying;
+v_prov_category VARCHAR(10);
+vs_home_app  VARCHAR(10);
+vs_app_status_cd VARCHAR(10);
+vs_lic_status    VARCHAR(10);
+lcount bigint;
+v_removaldate timestamp;
+v_islapsesinplacement VARCHAR;
+v_typeoflapses VARCHAR;
+v_kindoflapses VARCHAR;
+vs_ha_revoke_approval_dt date;
+
+begin
+ CREATE TEMP TABLE IF NOT EXISTS
+ Temp_worksheet_placements_info ( 
+  placementid       uuid, 
+  start_dt        TIMESTAMP without time zone, 
+  end_dt         TIMESTAMP without time zone, 
+  placement_type       VARCHAR(50),  
+  provider_nm                         VARCHAR(250),
+  provider_address                    VARCHAR(500),
+  isplacementreimbursible             VARCHAR(10),
+  livingarrangementtype               VARCHAR(10),
+  placement_status_cd              VARCHAR(10) 
+  );
+ 
+ select removaldate into v_removaldate from intakeservreqchildremoval where removalid::bigint= al_removal_id;
+
+ select tfcp.typeoflapses , tfcp.islapsesinplacement, tfcp.kindoflapses into v_typeoflapses, v_islapsesinplacement, v_kindoflapses from tb_foster_care_placement tfcp where tfcp.clientid = al_client_id and tfcp.removalid = al_removal_id and tfcp.periodtype = al_period_type ;
+ 
+ for plc in
+ (select 
+  placementid, startdatetime::timestamp , enddatetime::timestamp , tbs.service_nm , 
+  (
+  case when length(coalesce(nullif(tbp.provider_nm,''),'')) > 0 then concat(tbp.provider_id, '-' , tbp.provider_nm) 
+  else concat(tbp.provider_id, '-', tbp.provider_first_nm , ' ' , tbp.provider_last_nm) 
+  end 
+  )::character varying as provider_name ,
+  tp.service_id as placement_structure_id, tp.altproviderid as provider_id,
+  concat(TRIM(tpa.adr_street_tx), ' ' , tpa.adr_street_nm, ' ' , INITCAP(tpa.adr_street_suffix_cd), ',' , tpa.adr_city_nm, ',' , tpa.adr_state_cd, '-' ,tpa.adr_zip5_no)::character varying as provider_address,
+  'PLTR' as livingarrangementtype
+ from placement tp 
+ join tb_services tbs on tbs.service_id = tp.service_id 
+ join tb_provider tbp on tbp.provider_id = tp.altproviderid
+ join tb_provider_addresses  tpa on tpa.parent_key_id = tbp.provider_id::character varying and tpa.adr_type_cd in ('3357', '3358') and tpa.delete_sw = 'N' AND tpa.adr_default_sw = 'Y'
+ join intakeservreqchildremoval isrcr on isrcr.intakeservreqchildremovalid = tp.intakeservreqchildremovalid and isrcr.activeflag = 1
+ where 
+  tp.placementtypekey = 'PRPL' AND
+  isrcr.removalid::bigint= al_removal_id AND 
+  tp.activeflag = 1 AND ( tp.isvoided = 0 OR tp.isvoided IS NULL )
+  AND ((tp.startdatetime between al_period_start_dt::date  and al_period_end_dt::date  ) or (tp.startdatetime < al_period_start_dt::date and (tp.enddatetime is null or tp.enddatetime > al_period_end_dt::date)) or (tp.enddatetime between al_period_start_dt::date  and al_period_end_dt::date) or (al_period_end_dt is null and tp.startdatetime >= al_period_start_dt::date))
+  AND tp.startdatetime::date >= isrcr.removaldate::date
+ union all
+
+ select 
+  lva.livingid, lva.livingstartdate as startdatetime, lva.livingenddate as enddatetime,
+  (select rvs.value_text from referencevalues rvs where trim(rvs.ref_key) = lva.livingarrangementtypekey and rvs.referencetypeid = 76 and rvs.activeflag = 1 ) as service_nm,  
+  concat(lva.livingfirstname , lva.livinglastname)::character varying as provider_name, null, null,
+  concat(TRIM(lva.streettext), ' ' , lva.streetname, ' ' , INITCAP(lva.streetsuffixtypekey), ',' , lva.cityname, ',' , lva.statetypekey, '-' ,lva.zip5no)::character varying as provider_address,
+  'LA' as livingarrangementtype
+ from livingarrangement lva join person per on per.personid = lva.personid
+ where per.cjamspid::bigint = al_client_id and lva.livingarrangementtypekey not in ('32944', 'Placement', 'PLMT') and lva.activeflag = 1
+  AND ((lva.livingstartdate::date between al_period_start_dt::date  and al_period_end_dt::date ) or (lva.livingstartdate::date <= al_period_start_dt::date and (lva.livingenddate is null or lva.livingenddate > al_period_end_dt::date)) or (lva.livingenddate::date between al_period_start_dt::date  and al_period_end_dt::date) or (al_period_end_dt is null and lva.livingstartdate::date >= al_period_start_dt::date))
+  AND ((v_removaldate::date between lva.livingstartdate::date  and lva.livingenddate::date) or  lva.livingstartdate::date >= v_removaldate::date or (lva.livingenddate is null and lva.livingstartdate :: date <= v_removaldate:: date) )) 
+ order by 2 asc
+ loop
+  IF plc.livingarrangementtype = 'PLTR'
+  THEN 
+   if plc.placement_structure_id in (8, 76)
+    then v_isplacementreimbursible = 'N';
+   else  
+    select picklist_value_cd 
+     into v_prov_category 
+    from tb_provider_picklist 
+    where provider_id = plc.provider_id 
+     and delete_sw = 'N' 
+     and picklist_value_cd in ('1782', '1783', '1785', '3049', '3274', '3302', '3794');
+
+    if v_prov_category = '1783'
+    then
+    select approval_type_cd, approval_status_cd, ha_revoke_approval_dt into vs_home_app, vs_app_status_cd, vs_ha_revoke_approval_dt from tb_provider_approval where provider_approval_id = (select max(provider_approval_id) from tb_provider_approval where provider_id = plc.provider_id and ha_approval_status_cd = '3047' and approval_status_cd in ('3579','3585', '3584') and delete_sw = 'N');
+    
+     if ((vs_home_app in ('3591', '3592' , '4989' , '4991') or vs_app_status_cd in ('3585', '3584')) and plc.startdatetime > vs_ha_revoke_approval_dt) 
+     then v_isplacementreimbursible = 'N';
+     else v_isplacementreimbursible = 'Y';
+     end if;
+    else 
+    select license_status_cd into vs_lic_status from tb_provider_licensing where site_id = plc.provider_id and plc.startdatetime between license_issue_dt and license_expiry_dt;
+     
+     if vs_lic_status in ('3263', '3266', '3260', '5503')
+     then v_isplacementreimbursible = 'Y';
+     else v_isplacementreimbursible = 'N';
+     end if;
+     
+    end if;  
+   end if;
+  ELSIF plc.livingarrangementtype = 'LA'
+  then
+   v_isplacementreimbursible = 'N';
+  end if; 
+  INSERT INTO Temp_worksheet_placements_info ( placementid, start_dt, end_dt, placement_type  , provider_nm , provider_address, isplacementreimbursible, livingarrangementtype)
+  VALUES ( plc.placementid, plc.startdatetime, plc.enddatetime, plc.service_nm , plc.provider_name, plc.provider_address, v_isplacementreimbursible, plc.livingarrangementtype);  
+ END LOOP;
+
+return query select
+ ( 
+  SELECT 
+   Json_agg(e) AS "placement_info" 
+  FROM 
+  ( 
+   select * from Temp_worksheet_placements_info
+  ) AS e
+ ) ::json,
+ v_islapsesinplacement,
+ v_typeoflapses,
+ v_kindoflapses 
+ from intakeservreqchildremoval isrcr where isrcr.removalid::bigint = al_removal_id;
+
+ truncate table Temp_worksheet_placements_info;
+ 
+end;
+
+ $function$
+

@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION getsupervisorapprovaldetails(intakenumber character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE
+    
+    v_intakenumber character varying;
+    v_result json;
+    v_result1 json;
+         
+BEGIN
+    
+    v_intakenumber := intakenumber;
+ 
+    SELECT json_agg(a) into v_result1 FROM 
+    (
+        SELECT servicerequestnumber from intakeservicerequest isr where isr.intakenumber = v_intakenumber and activeflag = 1
+    ) a ;
+
+ SELECT json_agg(pe) into v_result FROM 
+  (
+     select 
+           (select rs.typedescription from routingstatustype rs where rs.sequencenumber = r.routingstatustypeid ) as status,
+           (select fullname from userprofile u where u.securityusersid = r.fromsecurityusersid) as fromname,
+      (select fullname from userprofile u where u.securityusersid = (case when r.routingstatustypeid = 1 then r.tosecurityusersid else r.updatedby end)) as name,
+           upa.county,
+           upa.address,
+           concat(coalesce(upa.city,''), (case when upa.city is not null then ', ' else '' end) ,coalesce(upa.state,''), (case when upa.state is not null then ', ' else '' end) ,coalesce(upa.zipcode,'')) as address2,
+           (case when r.toroleid = 'CWSP' then 'Supervisor' when r.toroleid = 'CWCW' then 'Case Worker' end) as role,
+           r.objectid as intakenumber,
+           r.insertedon as date,
+           r.eventcode,
+           r.updatedon as dateupdated,
+           case when rst.sequencenumber != 2 then rst.typedescription else (select jsondata->'DAType'->'DATypeDetail'->0->>'DAStatus' from intakedastaging intk where intk.intakenumber = v_intakenumber and activeflag =1 limit 1) :: text end  as typedescription
+           from routing r 
+           left outer join userprofileaddress upa on r.tosecurityusersid = upa.securityusersid
+           inner join routingstatustype rst on rst.sequencenumber = r.routingstatustypeid
+           where r.objectid =  v_intakenumber  order by r.insertedon
+
+   
+  ) pe; 
+ if (v_result is null) then
+        v_result = v_result1;
+    end if;  
+ 
+    return v_result;
+
+END;
+
+ 
+$function$
+

@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION getpersonalertlistda(v_personalertid uuid, pagenumber bigint, pagesize bigint)
+ RETURNS TABLE(notes text, informalagreementdate timestamp without time zone, complaintid character varying, duedate timestamp without time zone, countyname character varying, victimfullname text, victimpersonid uuid, courtaction text, courtorderdatetime timestamp without time zone, restitutiontype character varying, restitutioncreateddate timestamp without time zone, petitionid character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+--------restitution and other details based on person alert view-------------------------
+
+DECLARE
+ v_pageoffset int;
+ v_pagenumber int;
+DECLARE 
+ totalcount integer;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+  
+RETURN query
+select  pa.notes,intsr.insertedon as informalagreementdate,ire.complaintid,pa.duedate,ct.countyname,CONCAT(p.firstname,' ',p.lastname) as victimfullname,p.personid as victimpersonid,
+string_agg(CAT.description,',') as courtaction,inca.courtorderdatetime,
+irs.restitutiontype,irs.effectivedate as restitutioncreateddate,inp.petitionid from 
+personalert pa 
+join intakeserreqrestitution irs on irs.youthpersonid = pa.personid and irs.intakeserviceid = pa.intakeserviceid and irs.personalertid=pa.personalertid
+join intakeservicerequest INTSR on intsr.intakeserviceid = irs.intakeserviceid
+join intakeservicerequestevaluation ire on ire.intakenumber = irs.intakenumber
+join county ct on ct.countyid = irs.countyid
+inner join person p on p.personid =irs.victimpersonid
+left join intakeservicerequestcourtaction inca on inca.intakenumber = irs.intakenumber
+left join intakeservicerequestcourthearing inch on inch.intakeservicerequestcourthearingid=inca.intakeservicerequestcourthearingid and inch.activeflag=1 
+    and inch.hearingtypekey='Resti'
+left join intakeservicerequestpetition inp on inp.intakenumber= irs.intakenumber
+join intakeservicerequestcourtactiontype intsrct on intsrct.intakeservicerequestcourtactionid = inca.intakeservicerequestcourtactionid
+join courtactiontype CAT on CAT.courtactiontypekey=intsrct.courtactiontypekey and intsrct.activeflag=1
+where pa.personalertid=v_personalertid
+group by pa.notes, intsr.insertedon,ire.complaintid,pa.duedate,ct.countyname,p.firstname,p.lastname,p.personid,inca.courtorderdatetime,
+irs.restitutiontype,irs.effectivedate,inp.petitionid
+LIMIT pagesize OFFSET v_pageoffset;
+END;
+
+$function$
+

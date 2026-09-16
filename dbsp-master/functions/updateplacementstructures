@@ -1,0 +1,227 @@
+CREATE OR REPLACE FUNCTION updateplacementstructures(v_applicantid character varying, v_prgram character varying, v_prgramtype character varying, v_securityusersid character varying, v_approvedplacementcapacity numeric)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+
+   v_serviceid numeric;
+  v_returnstatus character varying;
+  v_structurerecord record;
+  v_providerapprovalid uuid;
+ v_referralid character varying;
+v_personrecord record;
+v_ssnno character varying;
+v_approvalStatusCd text;
+v_recommendCd text;
+v_nextrecondate timestamp without time zone;
+v_haApprovalStatusCd text;
+v_approvalReasonCd text;
+v_providerid character varying;
+v_provisionally timestamp;
+
+v_persontypecode character varying; 
+v_personcd character varying; 
+v_gendercd character varying; 
+v_religioncd character varying; 
+v_maritalstatuscd character varying; 
+
+l_provider_approvalid integer;
+
+v_petflag character varying;
+v_reason character varying;
+v_recon boolean;
+v_servicescnt int4;
+begin
+ 
+v_approvalStatusCd := '3579'; 
+v_recommendCd := '3661'; 
+v_haApprovalStatusCd := '3047';
+v_approvalReasonCd := '4995'; 
+
+
+v_providerid := null;
+v_referralid :=  null;
+if (v_prgram='ICPC') then 
+ v_approvalStatusCd='4993';
+end if;
+
+raise notice '____________________________________________________________________________________________________';
+raise notice 'updateplacementstructures v_prgram%',v_prgram;
+raise notice 'updateplacementstructures v_prgramtype%',v_prgramtype;
+raise notice 'updateplacementstructures v_securityusersid%',v_securityusersid;
+raise notice 'updateplacementstructures v_applicantid%',v_applicantid;
+raise notice 'updateplacementstructures v_approvedplacementcapacity%',v_approvedplacementcapacity;
+
+select provider_id,referral_id  into v_providerid,v_referralid from providerapprovalphaserecord where applicant_id=v_applicantid and delete_sw='N' order by create_ts desc limit 1;
+raise notice ' updateplacementstructures v_providerid%',v_providerid;
+if (v_providerid is null) then 
+select providerid,referralid into v_providerid,v_referralid from providerapprovetypeconfig where applicantid=v_applicantid;--program type change request table
+end if;
+
+--SELECT CURRENT_DATE + INTERVAL '365 day' INTO v_nextrecondate;
+select case when lower(application_typecode) ='initial' then false else true end into v_recon from tb_public_provider_applicant tppa where applicant_id=v_applicantId;
+raise notice 'updateplacementstructures v_recon%',v_recon;
+
+select case when hasnopets=true then 'Y' else 'N' end  into v_petflag from publicproviderpetinfo where object_id=v_applicantid;
+select reason into v_reason  from tb_public_provider_applicant where applicant_id=v_applicantid;
+--IF provisionally approved, inserting provisionally approved approvaltype
+select provisionstrtdate into v_provisionally from tb_public_provider_applicant where provisionstrtdate is not null and application_status like '%Provisionally%' and applicant_id=v_applicantid;
+--raise notice 'v_provisionally%',v_provisionally;
+--if (v_provisionally is not null)then 
+-- raise notice 'inside provisionally%','inside provisionally';
+----for reconsideration update 
+-- update tb_provider_approval set active_sw='N' where provider_id=v_providerid and active_sw='Y';
+-- INSERT INTO tb_provider_approval
+--  ( provider_id, approval_type_cd, approval_status_cd, recommend_cd, approved_beds_no, approval_dt,
+--    effective_dt, next_recon_dt, ha_approval_status_cd, ha_approval_dt, approval_reason_cd,
+--    create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_sw, providerapprovalid,no_pets_sw ,approval_comments_tx)
+-- VALUES
+--  ( (v_providerid)::int, '4991', v_approvalStatusCd, v_recommendCd, v_approvedPlacementCapacity, now()::date,
+--    now()::date, v_nextrecondate, v_haApprovalStatusCd, now()::date, v_approvalReasonCd,
+--    now(), v_securityusersid, now(), v_securityusersid, 'N'::bpchar,'Y'::bpchar, gen_random_uuid() ,v_petflag,v_reason)  RETURNING provider_approval_id into l_provider_approvalid ;
+--
+--end if;
+v_serviceid := null;
+  IF (v_providerid is not null) then
+    if (v_prgramtype = 'Formal') then 
+      v_serviceid := 8;
+    end if;
+    if (v_prgramtype = 'Regular Resource Home') then 
+      v_serviceid := 10;
+    end if;
+     if (v_prgramtype = 'Restricted Home') then 
+      v_serviceid := 9;
+    end if;
+     if (v_prgramtype = 'Treatment Resource Home') then 
+      v_serviceid := 12;
+    end if;
+      if (v_prgram='ICPC') then
+      v_serviceid:=600;
+   end if;
+   if (v_serviceid is not null) then 
+  select count(*) into v_servicescnt from tb_provider_services tps    
+  where tps.provider_id=v_providerid::bigint and tps.delete_sw='N';
+  if (v_servicescnt=0) then
+   raise notice 'updateplacementstructures v_servicescnt%',v_servicescnt;
+      insert into tb_provider_services (provider_id, service_id,start_dt, service_status, create_ts,create_user_id)
+   values
+   (v_providerid::bigint,v_serviceid,now()::date , 'Active',now(),v_securityusersid);
+  end if;
+ end if;
+ update tb_provider_approval set active_sw='N' where provider_id=v_providerid and active_sw='Y';
+--   if (v_serviceid is not null) then 
+--     insert into tb_provider_services (provider_id, service_id,start_dt, service_status, create_ts,create_user_id)
+--  values
+--  (v_providerid::bigint,v_serviceid,now()::date , 'Active',now(),v_securityusersid);
+-- end if;
+ update tb_provider_approval set active_sw='N' where provider_id=v_providerid and active_sw='Y';
+ for v_structurerecord in 
+   select distinct(tsc.approvaltypecd) from tb_provider_services tps 
+   inner join providerapprovalserviceconfig tsc on tsc.serviceid::integer=tps.service_id
+   where tps.provider_id=v_providerid::bigint and tps.delete_sw='N'
+ loop 
+  v_providerapprovalid := gen_random_uuid();
+ --calculate the next reconsideration date 
+ --default next recon date is 1 year
+ SELECT (date_trunc('MONTH',CURRENT_DATE) + INTERVAL '1 MONTH - 1 day')::DATE + INTERVAL '1 YEAR'  INTO v_nextrecondate;
+  if ( v_structurerecord.approvaltypecd=3591 or v_structurerecord.approvaltypecd=3592)then
+       --  Next Recon date = Home Approval Date + 120 days
+   SELECT (CURRENT_DATE +  INTERVAL '120 day') INTO v_nextrecondate;
+  raise notice '3591 v_nextrecondate%',v_nextrecondate;
+
+  else 
+   if ( v_structurerecord.approvaltypecd=4991)then
+       --  Next Recon date = Home Approval Date + 180 days
+   SELECT (CURRENT_DATE +  INTERVAL '180 day') INTO v_nextrecondate;
+   raise notice '4991 v_nextrecondate%',v_nextrecondate;
+      else      
+        if ( v_structurerecord.approvaltypecd=4992)then
+          --    Next Recon date = Null (Not applicable)
+       v_nextrecondate=null;
+      raise notice '4992 v_nextrecondate%',v_nextrecondate;
+     else
+     if ( v_structurerecord.approvaltypecd=4999 or v_structurerecord.approvaltypecd=4998)then
+     --For 1st Home Approval -> Next Recon date = Home Approval Date + 12 months
+     --2nd onwards -> Next Recon date = Last Recon date + 12 months
+      raise notice '4999 or 4998 v_nextrecondate%',v_nextrecondate;
+      if (v_recon=true) then       
+       select (date_trunc('MONTH',next_recon_dt) + INTERVAL '1 MONTH - 1 day')::DATE + INTERVAL '1 YEAR' INTO v_nextrecondate
+       from tb_provider_approval tpa where provider_id=v_providerid and delete_sw='N' order by update_ts desc limit 1;
+       raise notice '4999 or 4998 insiderecon%',v_nextrecondate;
+      else
+       SELECT (date_trunc('MONTH',CURRENT_DATE) + INTERVAL '1 MONTH - 1 day')::DATE + INTERVAL '1 YEAR' INTO v_nextrecondate;
+        raise notice '4999 or 4998 insidereconelse%',v_nextrecondate;
+      end if;
+     else
+      
+      --  For all the remaining Home Approval Types
+      if (v_recon=true) then       
+       select (date_trunc('MONTH',next_recon_dt) + INTERVAL '1 MONTH - 1 day')::DATE + INTERVAL '1 YEAR' INTO v_nextrecondate
+       from tb_provider_approval tpa where provider_id=v_providerid and delete_sw='N' order by update_ts desc limit 1;
+       raise notice ' remaining Home Approval Types%',v_nextrecondate;
+      else
+       SELECT (date_trunc('MONTH',CURRENT_DATE) + INTERVAL '1 MONTH - 1 day')::DATE + INTERVAL '1 YEAR' INTO v_nextrecondate;
+        raise notice ' remaining Home Approval Types%',v_nextrecondate;
+      end if;
+     
+      raise notice 'For all the remaining Home Approval Types %',v_nextrecondate;
+      
+     end if;
+    end if;
+   end if;
+  end if;    
+ -- end of calculate the next reconsideration date   
+  raise notice 'updateplacementstructures v_nextrecondate%',v_nextrecondate;
+ --for reconsideration update 
+ --if (v_provisionally is  null)then   
+  INSERT INTO tb_provider_approval
+   ( provider_id, approval_type_cd, approval_status_cd, recommend_cd, approved_beds_no, approval_dt,
+     effective_dt, next_recon_dt, ha_approval_status_cd, ha_approval_dt, approval_reason_cd,
+     create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_sw, providerapprovalid,no_pets_sw ,approval_comments_tx )
+  VALUES
+   ( (v_providerid)::int, v_structurerecord.approvaltypecd, v_approvalStatusCd, v_recommendCd, v_approvedPlacementCapacity, now()::date,
+     now()::date, v_nextrecondate, v_haApprovalStatusCd, now()::date, v_approvalReasonCd,
+     now(), v_securityusersid, now(), v_securityusersid, 'N'::bpchar,'Y'::bpchar, v_providerApprovalId,v_petflag,v_reason ) RETURNING provider_approval_id into l_provider_approvalid ;
+ --end if;
+--select referral_id into v_referralid  from providerapprovalphaserecord where provider_id=v_providerid;
+--if (provider_approval_id is not null) then
+  for v_personrecord in 
+  select ia.personid,p.firstname,p.lastname,ia.intakeservicerequestpersontypekey,p.prefx,p.suffix,p.dob,p.gendertypekey,
+  p.ssnno,p.religiontypekey,p.maritalstatustypekey from intakeservicerequestactor ia
+  inner join person p on p.personid= ia.personid
+  where ia.objectid=v_applicantid and ia.activeflag=1 and p.activeflag=1
+  loop
+  v_ssnno := null;
+   if (v_personrecord.ssnno ~ '^[0-9\\.]+$') then 
+    v_ssnno := v_personrecord.ssnno;
+   end if; 
+
+   
+   select picklist_value_cd into v_personcd from prov_picklist_reference_mapping where ref_key = v_personrecord.intakeservicerequestpersontypekey;
+   select picklist_value_cd into v_gendercd from prov_picklist_reference_mapping where ref_key = v_personrecord.gendertypekey;
+   select picklist_value_cd into v_religioncd from prov_picklist_reference_mapping where ref_key = v_personrecord.religiontypekey;
+   select picklist_value_cd into v_maritalstatuscd from prov_picklist_reference_mapping where ref_key = v_personrecord.maritalstatustypekey;
+
+
+   insert into tb_prov_approval_person(provider_approval_id,person_type_cd,first_nm,last_nm,prefix_cd,
+   suffix_cd,dob_dt,gender_cd,ssn_no,religion_cd,marital_status_cd,create_ts,update_ts, create_user_id,update_user_id)
+   values(l_provider_approvalid,v_personcd,v_personrecord.firstname
+   ,v_personrecord.lastname,v_personrecord.prefx,v_personrecord.suffix,v_personrecord.dob,v_gendercd,
+   v_ssnno::numeric,v_religioncd,v_maritalstatuscd,now(),now(), v_securityusersid, v_securityusersid);
+  end loop;
+ --end if;
+ end loop;
+raise notice '********************************************************************************************************************';
+   v_returnstatus := 'structure updated';
+ else 
+   v_returnstatus := 'Failure';
+END IF;
+
+
+RETURN v_returnstatus;
+                                                      
+END;
+
+$function$
+

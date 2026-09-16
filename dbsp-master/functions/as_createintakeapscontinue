@@ -1,0 +1,2073 @@
+CREATE OR REPLACE FUNCTION as_createintakeapscontinue(savedtlsobj json, roletypekeyobj character varying, teamtypekeyobj character varying)
+ RETURNS TABLE(toworkerid character varying, responseservicereqnum character varying, responseintakeserviceid uuid, message character varying, intakeservicerequestactorid character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_temptemp text[];
+v_xmlText text;
+v_DataTypeID INT;                                                            
+v_ServiceRequestNumber VARCHAR(50);                 
+v_DATypeKey  uuid;                                                        
+v_DASubTypeKey uuid;                                                        
+v_AccessLevel boolean;                                                        
+v_personId VARCHAR(200);                                                     
+v_DueDateOffSet INT;             
+v_delimiter   VARCHAR(10);
+v_ReporterActorID CHAR(36);                                                  
+v_ReporterPersonID CHAR(36);
+v_IntakeGroupId uuid;                                                        
+v_GroupNumber VARCHAR(50);                                                          
+v_IntakeServiceId uuid;      
+v_newintakeserviceid uuid;
+v_oldintakeserviceid uuid;
+v_servicerequesttypeconfigiddispostionid uuid;
+v_message VARCHAR(512);                                
+v_InatkeNumber VARCHAR(50);                             
+v_DAStatus VARCHAR(50);                             
+v_GroupServiceRequestNumber VARCHAR(50);         
+v_IntakeServiceRequestActorId   CHAR(36);       
+v_GroupComment TEXT;      
+v_GroupReasonType VARCHAR(50);
+v_IllegalActivityKey VARCHAR(256);
+v_DAServiceRequestNumber VARCHAR(50);
+v_Generaljsondata json;
+v_Personjsondata json;
+v_DATypejsondata json;
+v_DATypeDeailsjsondata json;
+v_Recordingjsondata json;
+v_recordingdetailsjsondata json;
+v_Allegationsjsondata json;
+v_AliasDtls json;
+v_AgencyDtls json;
+v_CrossRefDtls json;
+i json; 
+j json;
+recordingsloop json;
+allegationloop json;
+agencyloop json;
+crossRefloop json;
+v_GroupCount INT;   
+v_ErrorMessage VARCHAR(4000);                                                  
+v_ErrorSeverity INT;                                                  
+v_ErrorState INT;                                                 
+v_FailureID INT;    
+v_DAType_rec RECORD;
+v_GroupDA_rec RECORD;
+v_classkey character varying;
+v_fromsecurityusersid character varying;
+v_tosecurityusersid character varying;
+v_fromteamid uuid;
+v_toteamid uuid;
+v_servicetype character varying;
+
+my_delet_temp  varchar;
+my_Temp_Var int;
+my_Temp_Varuuid uuid;
+final_intakeServiceId uuid;
+investigation_rec record;
+v_securityuserid character varying;
+
+v_activity record;
+v_createddanumberrec record;
+v_programarea record;
+v_personprogramid uuid;
+v_av_personid uuid;
+
+personidnullCasting uuid;
+
+v_finalServiceReqNumber uuid;
+v_finalIntakeServiceID uuid;
+l_newInvestigationId uuid;
+l_newProgressnoteId uuid;
+s_Actmsg  character varying;
+l_Addressid uuid;
+l_tempAddressid uuid;
+
+l_generatedPersonId uuid;
+
+v_targetId uuid;
+v_intakeNumber character varying;
+v_phoneRecCount int;
+v_PersonRole character varying;
+v_Dasubtypeid uuid;
+v_createcasetranferassessmentadd character varying;
+v_createcasetranferassessment character varying;
+v_tojurisdictionid uuid;
+v_createduplicateserviceplan character varying;
+v_createcasetranferplacementadd character varying;
+v_createduplicateadultscreentool character varying;
+v_contactnotesadd character varying;
+v_createcasetranferdocumentadd character varying;
+v_createduplicatemonthlyreport character varying;
+v_as_createduplicatecollaterals character varying;
+v_createduplicatemaltreatmentallegation character varying;
+v_createduplicatedocumentproperties character varying;
+v_intakeservicerequestclassid character varying;
+v_sourceIntakeserviceId uuid;
+v_newcase boolean;
+v_intakeservid uuid;
+v_asservicecount int;
+v_addassignments boolean;
+
+v_intakeServReqTypeId uuid;
+v_servicerequestclassid uuid;
+v_isApsContinue boolean;
+v_team_member_id  uuid;
+v_reasoncd  character varying;
+v_investigationfindingtypekey character varying;
+BEGIN        
+
+RAISE NOTICE 'Inside as_createintakeapscontinue';
+v_delimiter :=',';
+v_Generaljsondata := saveDtlsObj->>'General';
+v_Personjsondata := saveDtlsObj->>'Person';
+v_DATypejsondata := saveDtlsObj->>'DAType';
+v_DATypeDeailsjsondata := v_DATypejsondata->>'DATypeDetail';
+v_securityuserid := COALESCE(saveDtlsObj->>'securityuserid','S-1-5-21-152097760-152508613-1969071786-500');
+v_AgencyDtls := saveDtlsObj->>'Agency';
+v_CrossRefDtls := saveDtlsObj->>'CrossReferences';
+v_newcase := saveDtlsObj->>'isNewCase';
+v_intakeservid := saveDtlsObj->>'intakeservid';
+v_addassignments := saveDtlsObj->>'addassignments';
+
+v_isApsContinue := saveDtlsObj->>'isApsContinue';
+v_Recordingjsondata := saveDtlsObj->>'Recording';
+v_RecordingDetailsjsondata :=v_Recordingjsondata ->> 'Recordings';
+v_Allegationsjsondata := saveDtlsObj->>'Allegations';
+
+v_intakeNumber := v_Generaljsondata->> 'IntakeNumber';
+v_sourceIntakeserviceId := v_Generaljsondata->> 'SourceIntakeserviceId';
+v_IntakeServiceId :=   gen_random_uuid();
+v_newintakeserviceid=v_IntakeServiceId;
+FOR crossRefloop IN SELECT * FROM json_array_elements(v_CrossRefDtls)
+LOOP
+  v_oldintakeserviceid :=crossRefloop ->> 'CrossRefDAID';
+END LOOP;
+
+select intakeservicerequestclassid into v_intakeservicerequestclassid from intakeservicerequest where intakeserviceid = v_oldintakeserviceid;
+
+SELECT personid INTO v_av_personid FROM intakeservicerequestactor isra WHERE isra.intakeserviceid = v_oldintakeserviceid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey in ('AV','RA') ORDER BY isra.insertedon DESC LIMIT 1;
+    
+If(v_intakeservicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238' and NOT v_newcase) then 
+    update intakeservicerequest 
+    set ReportedDate = now(), updatedby = v_securityuserid, updatedon = now()
+    where intakeserviceid = v_oldintakeserviceid;
+
+    v_personprogramid = gen_random_uuid();
+    INSERT INTO personprogramarea
+    (personprogramid, personid, startdate, enddate, insertedon, insertedby, updatedon, updatedby, activeflag, datavalidflag, clientmergeid, endreasonkey, ifpsatriskflag, old_id, programkey, subprogramkey, objecttypekey, objectid, entityid, alternateid, datatransferflag, datasentdate, etl_userid, etl_load_date, sourcetype)
+    VALUES(v_personprogramid, v_av_personid, now(), NULL, now(), v_securityuserid, now(), v_securityuserid, 1, NULL, NULL, NULL, 0, NULL, '07M1', '', 'servicerequest', v_newintakeserviceid, null, null, 'C', now(), NULL, NULL, 'AS');
+    
+
+
+/*
+  select count(*) into v_asservicecount from asservicesoncase a 
+  join intakeservicerequest i on i.intakeserviceid = a.ascaseid 
+  where 
+  a.caseserviceid = i.intakeservreqtypeid 
+  and a.ascaseid =v_oldintakeserviceid
+  and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1')
+  and a.enddate is null and a.activeflag = 1;
+
+  if(v_asservicecount = 0) then
+  
+  INSERT INTO asservicesoncase
+    (asservicesoncaseid, personprogramid, ascaseid, approvalstatus, reason, enddate, activeflag, caseserviceid, caseservicetypeid, insertedon, insertedby, updatedon, updatedby, routingid, personid, caseservicesubtypekey, startdate, recon_due_dt, recon_done_dt)
+    select gen_random_uuid(), v_personprogramid, v_newintakeserviceid, 'approved', NULL, NULL, 1, asoc1.caseserviceid, asoc1.caseservicetypeid, now(), v_securityuserid, now(), v_securityuserid, NULL, v_av_personid, '07M1', now(), NULL, NULL
+    from asservicesoncase asoc1 WHERE ascaseid = v_oldintakeserviceid and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1')  and activeflag = 1 order by asoc1.insertedon desc limit 1;
+
+  end if;*/
+
+
+
+    INSERT INTO asservicesoncase
+    (asservicesoncaseid, personprogramid, ascaseid, approvalstatus, reason, enddate, activeflag, caseserviceid, caseservicetypeid, insertedon, insertedby, updatedon, updatedby, routingid, personid, caseservicesubtypekey, startdate, recon_due_dt, recon_done_dt)
+    select gen_random_uuid(), v_personprogramid, v_newintakeserviceid, 'approved', NULL, NULL, 1, asoc1.caseserviceid, asoc1.caseservicetypeid, now(), v_securityuserid, now(), v_securityuserid, NULL, v_av_personid, '07M1', now(), NULL, NULL
+    from asservicesoncase asoc1 WHERE ascaseid = v_oldintakeserviceid and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1') and enddate is null and activeflag = 1 limit 1;
+
+    For v_programarea in (select asservicesoncaseid , personprogramid from asservicesoncase where ascaseid = v_oldintakeserviceid and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1') and enddate is null and activeflag = 1) 
+
+    loop
+
+      UPDATE asservicesoncase
+      SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, approvalstatus = 'closed', reason = '3414'
+      WHERE asservicesoncaseid = v_programarea.asservicesoncaseid;
+
+      UPDATE personprogramarea
+      SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = '3414'
+      WHERE personprogramid = v_programarea.personprogramid; 
+
+    End loop;
+
+RETURN QUERY 
+  SELECT DAT.ServiceRequestNumber as ResponseServiceReqNum,
+        DAT.IntakeServiceId as ResponseIntakeServiceId 
+        ,CAST('SUCCESS' as character varying) AS Message ,                            
+            COALESCE((SELECT CAST(INSRA.IntakeServiceRequestActorId AS VARCHAR(50))                            
+            FROM IntakeServiceRequestActor INSRA                            
+                  JOIN Actor AC  ON INSRA.ActorId = AC.ActorId                             
+            WHERE  INSRA.IntakeServiceId = DAT.IntakeServiceId AND AC.ActorType in ('RA','RC') limit 1                           
+            ),NULL) AS IntakeServiceRequestActorId                               
+    FROM intakeservicerequest DAT where DAT.intakeserviceid = v_oldintakeserviceid;  
+
+Else
+
+For i in Select * from json_array_elements((saveDtlsObj->>'Person')::json)
+LOOP
+ v_PersonRole:=  i->>'Role';
+END LOOP;
+
+select (servicerequestsubtypeid) into v_Dasubtypeid  from servicerequestsubtype where classkey='APS Continuing' and activeflag=1 limit 1;
+
+IF v_newcase IS TRUE THEN 
+
+if(v_isApsContinue != true) then
+  SELECT servicerequestsubtypeid, classkey into v_Dasubtypeid, v_classkey FROM intakeserv ins
+  INNER JOIN servicerequestsubtype srst ON intakeservreqtypeid = 'd207bdd4-f281-4ec8-949c-8fd9657227f9' AND srst.classkey = ins.intakeservtypekey
+  WHERE intakeservid = v_intakeservid;
+end if;
+  INSERT INTO servicerequesttypeconfigdispositioncode (servicerequesttypeconfigid,dispositioncode,description,intakeserreqstatustypeid) 
+  SELECT  srtcdc.servicerequesttypeconfigid,'Scrnin','Screen In',srtcdc.intakeserreqstatustypeid
+  FROM servicerequesttypeconfigdispositioncode srtcdc
+  JOIN intakeservicerequestdispositioncode isrdc ON isrdc.servicerequesttypeconfigiddispostionid = srtcdc.servicerequesttypeconfigiddispostionid 
+  WHERE isrdc.intakeserviceid = v_oldintakeserviceid
+  ORDER BY isrdc.insertedon ASC LIMIT 1
+  RETURNING servicerequesttypeconfigiddispostionid INTO v_servicerequesttypeconfigiddispostionid;
+END IF;
+RAISE NOTICE 'Creating Temp tables';
+CREATE TEMP TABLE sp_CreateIntake_Temp_DAGeneral                               
+        ( CreatedDate TIMESTAMP(3),                                                        
+          Source uuid,
+          InputSource uuid,                                                    
+          Author VARCHAR(50),                                                        
+          RecivedDate TIMESTAMP,                                                        
+          Time TIMESTAMP,                                                        
+          Narrative Text,                                                        
+          Line varchar(50),                                                        
+          GroupReason VARCHAR(50) ,                                                        
+          GroupSummary VARCHAR(256)  ,                                                  
+          AnanymousReporter VARCHAR(10)  ,                                
+          MisssingPersons boolean,                                
+          SuspiciousDeath boolean,                                 
+                                      
+          SignificantEvent VARCHAR(50),                              
+          SignificantEventKey VARCHAR(50) ,                              
+          IntakeNumber  VARCHAR(50) ,              
+          MONumber   VARCHAR(50),
+        IsAnonymousReporter boolean,
+        Purpose uuid
+    
+          );                                   
+                                   
+                                                           
+ -- CREATE SEQUENCE sp_CreateIntake_Temp_DAType_seq;
+
+  CREATE TEMP TABLE sp_CreateIntake_Temp_DAType   (                                                            
+          DataTypeID SERIAL,
+          DATypeKey uuid,                                                        
+          DASubTypeKey uuid,                                                        
+          ServiceRequestNumber VARCHAR(50),                                
+          Investigatable boolean,                              
+          Actionable boolean,                                                      
+          AccessLevel boolean,     -- ?? did we remove?                              
+          IntakeServiceId uuid ,                                                       
+          PersonId varchar(1000) ,                              
+          DAStatus  VARCHAR(256),                              
+          DADisposition  VARCHAR(256),                              
+          CancelReason  VARCHAR(256),                                 
+          CancelDescription VARCHAR(512),                              
+          Summary  VARCHAR(512),  
+          GroupNumber  VARCHAR(50),  
+          GroupReasonType  VARCHAR(50),   
+          GroupComment  TEXT ,
+          CrossRef boolean      
+                                          
+       );                      
+                                          
+  CREATE TEMP TABLE sp_CreateIntake_Temp_PersonAlias                                
+      (                             
+        id INT,                             
+        PersonId VARCHAR(50),                    
+        AliasFirstName VARCHAR(50),                              
+        AliasLastName VARCHAR(50),    
+        AliasId uuid,    
+        AliasExpired VARCHAR(10)                              
+       );                                                 
+  CREATE TEMP TABLE sp_CreateIntake_Temp_DAPerson(
+    id INT,                                                        
+          PersonId uuid,                                 
+          Firstname   VARCHAR(100),                                                        
+          Lastname VARCHAR(100),                                              
+          Middlename  VARCHAR(50),                                                        
+          Dob TIMESTAMP(3),                                         
+          Gender VARCHAR(50),                                                         
+          --Race VARCHAR(50),                            
+          AddressId uuid,                                                        
+          Address VARCHAR(256),                                                        
+          Address2 VARCHAR(256),                                                        
+          City VARCHAR(100),                                                        
+          State VARCHAR(100),                                                      
+          Zip VARCHAR(100),    
+          Changed VARCHAR(50),                                                          
+          County VARCHAR(100),                              
+          Country VARCHAR(100),                                                     
+          SSN VARCHAR(50),                                                         
+          Dcn VARCHAR(50),                                  
+          livingArrangements VARCHAR(50),                              
+          RelationshiptoRA VARCHAR(50),                              
+          Dangerous VARCHAR(10),                                
+         -- DangerousLevel VARCHAR(50),                              
+          Mentealillness VARCHAR(50),                              
+          MentealillnessDetail VARCHAR(512),                              
+          Mentealimpair VARCHAR(50),                              
+          MentealimpairDetail VARCHAR(512),                              
+          Ethicity VARCHAR(128),                              
+          PrimaryLanguage  uuid,                              
+          SOR VARCHAR(20),                              
+          EDL VARCHAR(20),             
+          DMH VARCHAR(20),                             
+          TemparoryAddress VARCHAR(128),                              
+          TemparoryAddress2 VARCHAR(128),                              
+          TemparoryCity VARCHAR(128),                              
+          TemparoryState VARCHAR(128),                              
+          TemparoryZip VARCHAR(50),                              
+          TemparoryCounty VARCHAR(128),                              
+          TemparoryCountry VARCHAR(128),                              
+          RoutingAddress int,                              
+          TemporaryRoutingAddress int,      
+          ActorRoleType VARCHAR(50)  ,                                                        
+          NewPerson INT,                                                        
+          ActorID uuid ,                                                  
+          PrimaryPhoneNumber VARCHAR(200),                  
+          PrimaryPhoneNumberExt VARCHAR(100),                                                
+          TemporaryPhoneNumber VARCHAR(200),                                                  
+          TemporaryPhoneNumberExt VARCHAR(100) ,                            
+          TemparoryAddressId  uuid,                            
+          DangerousAddress VARCHAR(10),                            
+          DangerousWorkerReason VARCHAR(4000),                            
+          DangerousAddressReason VARCHAR(4000),            
+          DmhConsumerId   CHAR(36)  ,        
+          IntakeServiceRequestActorID uuid                                      
+          );                               
+                                  
+              
+                                                                    
+  CREATE TEMP TABLE sp_CreateIntake_Temp_DAPersonTemp  (PersonID uuid);                       
+           
+RAISE NOTICE 'Temp tables created';                                                             
+--BEGIN TRY                                  
+     /* BEGIN TRANSACTION */                                                                                                   
+  
+
+  INSERT INTO sp_CreateIntake_Temp_DAGeneral(
+       CreatedDate,                                                        
+          Source, 
+          InputSource,                                                       
+          Author,                                                        
+          RecivedDate,                                                        
+          Time,                                                        
+          Narrative,                                                        
+          Line,                                                        
+          GroupReason,                                                        
+          GroupSummary,                                                  
+          AnanymousReporter,                                
+          MisssingPersons,                                
+          SuspiciousDeath,                                 
+                                         
+          SignificantEvent,                              
+          SignificantEventKey,                              
+          IntakeNumber,              
+          MONumber,
+        IsAnonymousReporter,
+        Purpose
+          ) values
+((v_Generaljsondata->> 'CreatedDate')::date,
+(v_Generaljsondata->> 'Source')::uuid,
+(v_Generaljsondata->> 'InputSource')::uuid,
+v_Generaljsondata->> 'Author',
+(v_Generaljsondata->> 'RecivedDate')::timestamp,
+(v_Generaljsondata->> 'Time')::timestamp,
+v_Generaljsondata->> 'Narrative',
+v_Generaljsondata->> 'Line',
+v_Generaljsondata->> 'GroupReason',
+v_Generaljsondata->> 'GroupSummary',
+v_Generaljsondata->> 'AnanymousReporter',
+(v_Generaljsondata->> 'MisssingPersons')::boolean,
+(v_Generaljsondata->> 'SuspiciousDeath')::boolean,
+
+v_Generaljsondata->> 'SignificantEvent',
+v_Generaljsondata->> 'SignificantEventKey',
+v_Generaljsondata->> 'IntakeNumber',
+v_Generaljsondata->> 'MoNumber',
+(v_Generaljsondata->> 'IsAnonymousReporter')::boolean,
+(v_Generaljsondata->> 'Purpose')::uuid);
+
+FOR j IN SELECT * FROM json_array_elements(v_DATypeDeailsjsondata)
+LOOP
+ INSERT INTO  sp_CreateIntake_Temp_DAType (                                            
+      DATypeKey,                                                        
+      DASubTypeKey,                                                        
+      PersonId,                                
+      ServiceRequestNumber ,                            
+      DAStatus ,                            
+      DADisposition,                            
+      Summary,                            
+      CancelDescription ,                            
+      CancelReason,  
+      GroupNumber ,  
+      GroupReasonType ,   
+      GroupComment                                         
+      ) values (
+  (j->> 'DaTypeKey')::uuid,
+  (v_Dasubtypeid)::uuid,
+  j->> 'personid',
+  j->> 'ServiceRequestNumber',
+  j->> 'DAStatus',
+  j->> 'DADisposition',
+  j->> 'Summary',
+  j->> 'CancelDescription',
+  j->> 'CancelReason',
+  j->> 'GroupNumber',
+  j->> 'GroupReasonType',
+  j->> 'GroupComment'
+  ); 
+END LOOP;  
+            
+FOR i IN SELECT * FROM json_array_elements(v_Personjsondata)
+ LOOP
+ 
+   IF i ->> 'AddressId' = '' THEN 
+     l_Addressid := '00000000-0000-0000-0000-000000000000';
+    ELSE
+     l_Addressid := (i ->> 'AddressId')::uuid;
+    END IF;
+    IF i ->> 'TemparoryAddressId' = '' THEN 
+     l_tempAddressid := '00000000-0000-0000-0000-000000000000';
+    ELSE 
+     l_tempAddressid := (i->>'TemparoryAddressId')::uuid; 
+   END IF;
+
+   v_AliasDtls = i ->> 'Alias';  
+   if length(i ->> 'Pid') < 1
+    THEN personidnullCasting = null;
+   ELSE 
+   personidnullCasting = (i ->> 'Pid') :: uuid ;
+    END IF;
+   
+   INSERT INTO  sp_CreateIntake_Temp_PersonAlias (                                                        
+    id ,                            
+    PersonId,                            
+    AliasFirstName ,                            
+    AliasLastName,    
+    AliasId,    
+    AliasExpired) values (
+    CAST(i ->> 'id' as int),
+    personidnullCasting,
+    v_AliasDtls ->> 'AliasFirstName',
+    v_AliasDtls ->> 'AliasLastName',
+    (v_AliasDtls ->> 'AliasId')::uuid,
+    v_AliasDtls ->> 'AliasExpired'
+    );
+    
+   
+  
+IF length(i ->> 'Pid') > 1 THEN
+INSERT INTO  sp_CreateIntake_Temp_DAPerson                              
+       (                             
+       id,             
+       PersonId ,                                                        
+       Firstname  ,                                                        
+       Lastname ,                                                        
+       Middlename,                                                        
+       Dob ,                                                        
+       Gender ,                                                        
+       --Race ,                                                        
+       AddressId ,                                                        
+       Address ,                                                        
+       Address2 ,                                                        
+       City ,                                                        
+       State ,                                                        
+       Zip ,    
+       Changed,                                                        
+       County ,                                                        
+       SSN ,                                                        
+       Dcn ,
+    livingArrangements,                            
+       RelationshiptoRA,                            
+       Dangerous ,                              
+      -- DangerousLevel ,                            
+       Mentealillness ,                            
+       MentealillnessDetail,                            
+       Mentealimpair,                            
+       MentealimpairDetail,                            
+       Ethicity,                            
+       PrimaryLanguage,                            
+       SOR,                            
+       EDL,             
+       DMH,                           
+       TemparoryAddress,                            
+       TemparoryAddress2,                          
+       TemparoryCity,                            
+       TemparoryState,                            
+       TemparoryZip,                            
+       TemparoryCounty,                            
+       TemparoryCountry,                            
+       RoutingAddress,                            
+       TemporaryRoutingAddress,                          
+       ActorRoleType,                                                  
+       PrimaryPhoneNumber,                                                  
+       TemporaryPhoneNumber ,                                      
+       PrimaryPhoneNumberExt ,                                      
+       TemporaryPhoneNumberExt  ,
+  TemparoryAddressId,
+        DangerousAddress ,                            
+          DangerousWorkerReason,                            
+          DangerousAddressReason,            
+          DmhConsumerId                          
+                                                             
+        ) values (
+  CAST(i ->> 'id' as int),
+  (i->>'Pid')::uuid,
+  i ->> 'Firstname',
+  i ->> 'Lastname',
+  i ->> 'Middlename',
+  (i ->> 'Dob')::timestamp,
+  i ->> 'Gender',
+  --i ->> 'Race',
+  l_Addressid,
+  i ->> 'Address',
+  i ->> 'Address2',
+  i ->> 'City',
+  i ->> 'State',
+  i ->> 'Zip',
+  i ->> 'Changed',
+  i ->> 'County',
+  i ->> 'SSN',
+  i ->> 'Dcn',
+  i ->> 'livingArrangements',
+  i ->> 'RelationshiptoRA',
+  i ->> 'Dangerous',
+  i ->> 'Mentealillness',
+  i ->> 'MentealillnessDetail',
+  i ->> 'Mentealimpair',
+  i ->> 'MentealimpairDetail',
+  i ->> 'Ethicity',
+  (i ->> 'PrimaryLanguage')::uuid,
+  i ->> 'SOR',
+  i ->> 'EDL',
+  i ->> 'DMH',
+  i ->> 'TemparoryAddress',
+  i ->> 'TemparoryAddress2',
+  i ->> 'TemparoryCity',
+  i ->> 'TemparoryState',
+  i ->> 'TemparoryZip',
+  i ->> 'TemparoryCounty',
+  i ->> 'TemparoryCountry',
+  (i ->> 'RoutingAddress'):: int,
+  (i ->> 'TemporaryRoutingAddress')::int,
+  i ->> 'Role',
+  i ->> 'PrimaryPhoneNumber',
+  i ->> 'TemporaryPhoneNumber',
+  i ->> 'PrimaryPhoneNumberExt',
+  i ->> 'TemporaryPhoneNumberExt',
+  l_tempAddressid,
+  i ->> 'DangerousAddress',
+  i ->> 'DangerousWorkerReason',
+  i ->> 'DangerousAddressReason',
+  i ->> 'DmhConsumerId'
+  ); 
+  
+  
+RAISE NOTICE 'Updating Person';
+   UPDATE Person SET 
+    DangerLevel =  CASE lower(i ->> 'Dangerous') WHEN 'yes' THEN 1  WHEN  'no' THEN 0 ELSE null END,                            
+    DangerReason = i ->> 'DangerousWorkerReason',                            
+    EthnicGroupTypeKey = i ->> 'Ethicity',                            
+    PrimaryLanguageId = (i ->> 'PrimaryLanguage')::uuid
+    --,dob = (i ->> 'Dob')::timestamp
+     WHERE personid = (i ->> 'Pid')::uuid;
+     
+
+RAISE NOTICE 'Updating Person Address';                                 
+--For Updating Person Address Details
+  IF(i ->> 'AddressId' != '') THEN
+   UPDATE PersonAddress SET activeflag=0 where personid = (i ->> 'Pid')::uuid AND personaddresstypekey = 'C';
+   UPDATE PersonAddress SET address = i ->> 'Address' ,                                                        
+         address2 = i ->> 'Address2',                                                        
+         state = i ->> 'State' ,                                                        
+         city = COALESCE(i ->> 'City',''),                               
+         County = i ->> 'County' ,                                                        
+         zipcode  = i ->> 'Zip',                            
+         Danger = CASE lower(i ->> 'DangerousAddress')
+           WHEN  'yes' THEN true                            
+           WHEN   'no' THEN false                            
+           else NULL END,                            
+         DangerReason = i ->> 'DangerousAddressReason',
+         activeflag=1,
+         updatedby = v_securityuserid,
+         updatedon = now()
+       WHERE PersonAddressId = l_Addressid;
+  ELSE
+   IF LENGTH(i ->> 'Address') > 0 AND LENGTH(i ->> 'City') > 0 AND LENGTH(i ->> 'State') > 0  THEN 
+   INSERT INTO personaddress(
+     personid, activeflag, personaddresstypekey, 
+     address, zipcode, city, state, county,
+     insertedby, insertedon, effectivedate, address2, danger, dangerreason)
+   VALUES ((i ->> 'Pid')::uuid,1,'C',i ->> 'Address',i ->> 'Zip',i ->> 'City',i ->> 'State',i ->> 'County',
+     v_securityuserid,now(),now(),i ->> 'Address2',CASE lower(i ->> 'DangerousAddress') WHEN  'yes' THEN true WHEN 'no' THEN false else null END,i->>'DangerousAddressReason');  
+   END IF;  
+      END IF;    
+    IF(i ->> 'TemparoryAddressId' != '' ) THEN
+     UPDATE PersonAddress SET activeflag=0 where personid = (i ->> 'Pid')::uuid AND personaddresstypekey = 'L';
+     UPDATE PersonAddress SET address = i ->> 'TemparoryAddress' ,                                                        
+       address2 = i ->> 'TemparoryAddress2',                                                        
+       state = i ->> 'TemparoryState' ,                                                        
+       city = COALESCE(i ->> 'TemparoryCity',''),                               
+       County = i ->> 'TemparoryCounty' ,                                                        
+       zipcode  = i ->> 'TemparoryZip',
+       activeflag=1,
+       updatedby = v_securityuserid,
+       updatedon = now()
+      WHERE PersonAddressId = l_tempAddressid;
+
+  ELSE 
+    IF LENGTH(i ->> 'TemparoryAddress') > 0 AND LENGTH(i ->> 'TemparoryCity') > 0 AND LENGTH(i ->> 'TemparoryState') > 0  THEN 
+     INSERT INTO personaddress(
+       personid, activeflag, personaddresstypekey, 
+       address, zipcode, city, state,county,
+       insertedby, insertedon, effectivedate, address2, danger, dangerreason)
+     VALUES ((i ->> 'Pid')::uuid,1,'L',i ->> 'TemparoryAddress',i ->> 'TemparoryZip',i ->> 'City',i ->> 'State',i ->> 'TemparoryCounty',
+       v_securityuserid,now(),now(),i ->> 'TemparoryAddress2',false,null);  
+    END IF;
+    END IF;
+    
+--Updating Phone Number
+
+RAISE NOTICE 'Updating Phone Number';
+  SELECT COUNT(*) into v_phoneRecCount from personphonenumber where personid = (i ->> 'Pid')::uuid AND  personphonetypekey = 'P';
+  IF(i ->> 'PrimaryPhoneNumber' != '') THEN
+   IF v_phoneRecCount > 0 THEN
+    UPDATE personphonenumber SET activeflag=0 where personid = (i ->> 'Pid')::uuid AND  personphonetypekey = 'P';
+    UPDATE personphonenumber
+       SET activeflag=1,
+        phonenumber=i ->> 'PrimaryPhoneNumber', phoneextension=i ->> 'PrimaryPhoneNumberext',updatedby=v_securityuserid, 
+        updatedon=now()
+     WHERE personid = (i ->> 'Pid')::uuid AND  personphonetypekey = 'P';
+   ElSE 
+    INSERT INTO personphonenumber(
+    personid, activeflag, personphonetypekey, 
+    phonenumber,insertedby, insertedon, effectivedate)
+    VALUES ((i ->> 'Pid')::uuid,1,'P',i ->> 'PrimaryPhoneNumber',v_securityuserid,now(),now());
+   END IF;
+  END IF;
+
+  SELECT COUNT(*) into v_phoneRecCount from personphonenumber where personid = (i ->> 'Pid')::uuid AND  personphonetypekey = 'A'; 
+  IF(i ->> 'TemporaryPhoneNumber' != '' ) THEN
+   IF v_phoneRecCount > 0 THEN
+    UPDATE personphonenumber SET activeflag=0 where personid = (i ->> 'Pid')::uuid AND  personphonetypekey = 'A';
+     UPDATE personphonenumber
+       SET activeflag=1,
+        phonenumber=i ->> 'TemporaryPhoneNumber', phoneextension=i ->> 'TemporaryPhoneNumberext',updatedby=v_securityuserid, 
+        updatedon=now()
+     WHERE personid = (i ->> 'Pid')::uuid AND  personphonetypekey = 'C';
+   ElSE 
+    INSERT INTO personphonenumber(
+    personid, activeflag, personphonetypekey, 
+    phonenumber,insertedby, insertedon, effectivedate)
+    VALUES ((i ->> 'Pid')::uuid,1,'A',i ->> 'TemporaryPhoneNumber',v_securityuserid,now(),now());
+   END IF;
+  END IF;    
+ELSE
+ l_generatedPersonId := gen_random_uuid();
+ INSERT INTO  sp_CreateIntake_Temp_DAPerson                              
+     (                             
+     id,             
+     PersonId ,                                                        
+     Firstname  ,                                                        
+     Lastname ,                                                        
+     Middlename,                                                        
+     Dob ,                                                        
+     Gender ,                                                        
+     --Race ,                                                        
+     AddressId ,                                                        
+     Address ,                                                        
+     Address2 ,                                                        
+     City ,                                                        
+     State ,                                                        
+     Zip ,    
+     Changed,                                                        
+     County ,                                                        
+     SSN ,                                                        
+     Dcn ,
+     livingArrangements,                            
+     RelationshiptoRA,                            
+     Dangerous ,                              
+    -- DangerousLevel ,                            
+     Mentealillness ,                            
+     MentealillnessDetail,                            
+     Mentealimpair,                            
+     MentealimpairDetail,                            
+     Ethicity,                            
+     PrimaryLanguage,                            
+     SOR,                            
+     EDL,             
+     DMH,                           
+     TemparoryAddress,                            
+     TemparoryAddress2,                          
+     TemparoryCity,                            
+     TemparoryState,                            
+     TemparoryZip,                            
+     TemparoryCounty,                            
+     TemparoryCountry,                            
+     RoutingAddress,                            
+     TemporaryRoutingAddress,                          
+     ActorRoleType,                                                  
+     PrimaryPhoneNumber,                                                  
+     TemporaryPhoneNumber ,                                      
+     PrimaryPhoneNumberExt ,                                      
+     TemporaryPhoneNumberExt  ,                            
+   DangerousAddress ,                            
+     DangerousWorkerReason,                            
+     DangerousAddressReason,            
+     DmhConsumerId                          
+                 
+   ) values (
+   CAST(i ->> 'id' as int),
+   l_generatedPersonId,
+   i ->> 'Firstname',
+   i ->> 'Lastname',
+   i ->> 'Middlename',
+   (i ->> 'Dob')::timestamp,
+   i ->> 'Gender',
+   --i ->> 'Race',
+   l_Addressid,
+   i ->> 'Address',
+   i ->> 'Address2',
+   i ->> 'City',
+   i ->> 'State',
+   i ->> 'Zip',
+   i ->> 'Changed',
+   i ->> 'County',
+   i ->> 'SSN',
+   i ->> 'Dcn',
+   i ->> 'livingArrangements',
+   i ->> 'RelationshiptoRA',
+   i ->> 'Dangerous',
+   i ->> 'Mentealillness',
+   i ->> 'MentealillnessDetail',
+   i ->> 'Mentealimpair',
+   i ->> 'MentealimpairDetail',
+   i ->> 'Ethicity',
+   (i ->> 'PrimaryLanguage')::uuid,
+   i ->> 'SOR',
+   i ->> 'EDL',
+   i ->> 'DMH',
+   i ->> 'TemparoryAddress',
+   i ->> 'TemparoryAddress2',
+   i ->> 'TemparoryCity',
+   i ->> 'TemparoryState',
+   i ->> 'TemparoryZip',
+   i ->> 'TemparoryCounty',
+   i ->> 'TemparoryCountry',
+   (i ->> 'RoutingAddress'):: int,
+   (i ->> 'TemporaryRoutingAddress')::int,
+   i ->> 'Role',
+   i ->> 'PrimaryPhoneNumber',
+   i ->> 'TemporaryPhoneNumber',
+   i ->> 'PrimaryPhoneNumberExt',
+   i ->> 'TemporaryPhoneNumberExt',
+   i ->> 'DangerousAddress',
+   i ->> 'DangerousWorkerReason',
+   i ->> 'DangerousAddressReason',
+   i ->> 'DmhConsumerId'
+   ); 
+
+RAISE NOTICE 'Inserting into Person';     
+  INSERT INTO Person(
+    ActiveFlag,PersonId,FirstName,LastName,MiddleName,
+    DangerLevel,DangerReason,insertedby,insertedon,EffectiveDate,DOB,GenderTypeKey,RaceTypeKey,
+     PrimaryLanguageId,EthnicGroupTypeKey
+    , stateid, personphysicalattributetypeid, dangertoself, dangertoselfreason, maidenname
+    , socialmediasource, deceased, dateofdeath, suffix, prefx, occupation,fein, complaintnumber, cjisnumber, petitionid
+    ) 
+     VALUES 
+    (1,l_generatedPersonId,i ->> 'Firstname',i ->> 'Lastname',i ->> 'Middlename',CASE lower(i ->> 'Dangerous') WHEN 'yes' THEN 1  WHEN  'no' THEN 0 ELSE null END,i ->> 'DangerousWorkerReason',v_securityuserid,now(),now(),(i ->> 'Dob')::timestamp,i->>'Gender',i ->> 'Race',(i ->> 'PrimaryLanguage')::uuid,i ->> 'Ethicity'
+    , i ->> 'stateid', (i ->> 'personphysicalattributetypeid')::uuid, (i ->> 'dangertoself')::int, i ->> 'dangertoselfreason', i ->> 'maidenname'
+    , i ->> 'socialmediasource', (i ->> 'deceased')::bit, (i ->> 'dateofdeath')::timestamp, i ->> 'suffix', i ->> 'prefx', i ->> 'occupation',i ->> 'Fein',i ->> 'Complaintnumber',i ->> 'Cjisnumber',i ->> 'Petitionid'
+    );
+    
+    IF v_AliasDtls IS NOT NULL THEN
+  INSERT INTO alias(
+    activeflag, personid, firstname, lastname, middlename, 
+    insertedby, insertedon, effectivedate, 
+    dcn, ssn)
+  VALUES (1,l_generatedPersonId,v_AliasDtls ->> 'AliasFirstName',
+     v_AliasDtls ->> 'AliasLastName',v_AliasDtls ->> 'AliasMiddleName',v_securityuserid,now(),now(),i ->> 'Dcn',i ->> 'SSN');
+    END IF;
+RAISE NOTICE 'Inserting into PersonAddress';     
+    IF LENGTH(i ->> 'Address') > 0 AND LENGTH(i ->> 'City') > 0 AND LENGTH(i ->> 'State') > 0  THEN 
+   INSERT INTO personaddress(
+     personid, activeflag, personaddresstypekey, 
+     address, zipcode, city, state, county,
+     insertedby, insertedon, effectivedate, address2, danger, dangerreason)
+   VALUES (l_generatedPersonId,1,'C',i ->> 'Address',i ->> 'Zip',i ->> 'City',i ->> 'State',i ->> 'County',
+           v_securityuserid,now(),now(),i ->> 'Address2',CASE lower(i ->> 'DangerousAddress') WHEN  'yes' THEN true WHEN   'no' THEN false else null END,i->>'DangerousAddressReason');  
+     END IF;
+  
+  IF LENGTH(i ->> 'TemparoryAddress') > 0 AND LENGTH(i ->> 'TemparoryCity') > 0 AND LENGTH(i ->> 'TemparoryState') > 0  THEN 
+   INSERT INTO personaddress(
+     personid, activeflag, personaddresstypekey, 
+     address, zipcode, city, state,county,
+     insertedby, insertedon, effectivedate, address2, danger, dangerreason)
+   VALUES (l_generatedPersonId,1,'L',i ->> 'TemparoryAddress',i ->> 'TemparoryZip',i ->> 'City',i ->> 'State',i ->> 'TemparoryCounty',
+           v_securityuserid,now(),now(),i ->> 'TemparoryAddress2',false,null);  
+     END IF;
+RAISE NOTICE 'Inserting into Phone number';  
+  IF LENGTH(i ->> 'PrimaryPhoneNumber') > 0 THEN
+   INSERT INTO personphonenumber(
+    personid, activeflag, personphonetypekey, 
+    phonenumber,insertedby, insertedon, effectivedate)
+   VALUES (l_generatedPersonId,1,'P',i ->> 'PrimaryPhoneNumber',v_securityuserid,now(),now());
+  END IF;
+  
+  IF LENGTH(i ->> 'TemporaryPhoneNumber') > 0 THEN
+   INSERT INTO personphonenumber(
+    personid, activeflag, personphonetypekey, 
+    phonenumber,insertedby, insertedon, effectivedate)
+   VALUES (l_generatedPersonId,1,'A',i ->> 'TemporaryPhoneNumber',v_securityuserid,now(),now());
+  END IF;
+  
+  IF LENGTH(i->>'SSN') > 0 THEN 
+   INSERT INTO personidentifier(
+    personid, personidentifiertypekey, personidentifiervalue, 
+    insertedby, insertedon, activeflag, effectivedate)
+   VALUES (l_generatedPersonId,'SSN',i->>'SSN',v_securityuserid,now(),1,now());
+  END IF;
+  
+  IF LENGTH(i->>'Dcn') > 0 THEN 
+   INSERT INTO personidentifier(
+    personid, personidentifiertypekey, personidentifiervalue, 
+    insertedby, insertedon, activeflag, effectivedate)
+   VALUES (l_generatedPersonId,'DCN',i->>'Dcn',v_securityuserid,now(),1,now());
+  END IF;
+  
+ 
+    
+END IF;   
+    
+
+    
+END LOOP;  
+                                 
+                               
+                                                         
+                            
+                                   
+    SELECT DAG.IntakeNumber INTO v_InatkeNumber                               
+    FROM sp_CreateIntake_Temp_DAGeneral DAG;                              
+
+    IF v_InatkeNumber NOT ILIKE 'I%' THEN 
+      SELECT intakenumber INTO v_InatkeNumber FROM intakeservicerequest WHERE intakeserviceid = v_oldintakeserviceid;
+      IF v_InatkeNumber NOT ILIKE 'I%' THEN     
+        SELECT isr1.intakenumber INTO v_InatkeNumber FROM intakeservicerequest isr1 
+        INNER JOIN intakeservicerequestcrossreference isrcr1 ON isrcr1.fromintakeservicerequestid = isr1.intakeserviceid 
+        WHERE isrcr1.withintakeservicerequestid = v_oldintakeserviceid ORDER BY isrcr1.insertedon DESC LIMIT 1;
+      END IF;
+      if (v_InatkeNumber is null)  then
+        SELECT intakenumber INTO v_InatkeNumber FROM intakeservicerequest WHERE intakeserviceid = v_oldintakeserviceid;
+      end if;
+    END IF;
+     
+    UPDATE sp_CreateIntake_Temp_DAPerson  SET PersonId = gen_random_uuid(), NewPerson = 1                                     
+ WHERE  (PersonId IS NULL);                                        
+                                           
+     UPDATE sp_CreateIntake_Temp_DAPerson SET  NewPerson = 1                                                        
+     FROM   sp_CreateIntake_Temp_DAPerson d                                         
+     LEFT OUTER JOIN Person p ON p.PersonId = d.PersonId                                         
+     WHERE  d.PersonId IS NULL;                                      
+ 
+
+select PersonId into my_Temp_Varuuid  from  sp_CreateIntake_Temp_DAPerson where  NewPerson = 1;  
+
+                                           
+                            
+     UPDATE sp_CreateIntake_Temp_DAPerson SET PrimaryPhoneNumber = REPLACE (PrimaryPhoneNumber,'-','')             
+     --FROM sp_CreateIntake_Temp_DAPerson  DAP                                        
+     WHERE PrimaryPhoneNumber IS NOT NULL;                                        
+           
+                                                   
+     UPDATE sp_CreateIntake_Temp_DAPerson SET TemporaryPhoneNumber = REPLACE (TemporaryPhoneNumber,'-','')                    
+     WHERE TemporaryPhoneNumber IS NOT NULL;                                               
+                 
+ 
+  
+    
+   UPDATE Alias  SET FirstName = PL.AliasFirstName,    
+  LastName = PL.AliasLastName,    
+  updatedby = (SELECT Author FROM sp_CreateIntake_Temp_DAGeneral),    
+  updatedon = NOW()    
+   FROM sp_CreateIntake_Temp_PersonAlias PL    
+   JOIN Alias AL ON PL.AliasId = AL.AliasId    
+   WHERE (PL.AliasLastName <> AL.LastName or PL.AliasFirstName <> AL.FirstName)    
+   AND PL.AliasExpired = 'false';    
+   UPDATE Alias    
+   SET updatedby = (SELECT DAG.Author FROM sp_CreateIntake_Temp_DAGeneral DAG),    
+  updatedon = NOW(),    
+  ExpirationDate = NOW()    
+   FROM sp_CreateIntake_Temp_PersonAlias PL    
+   JOIN Alias AL ON PL.AliasId = AL.AliasId    
+   WHERE PL.AliasExpired = 'true';     
+       
+       
+           
+                                       
+
+          
+                                            
+                                               
+     UPDATE sp_CreateIntake_Temp_DAPerson SET AddressId = PA.PersonAddressId                                             
+     FROM PersonAddress PA                                                        
+       JOIN sp_CreateIntake_Temp_DAPerson DAP  ON DAP.PersonId = PA.PersonId                                                         
+     WHERE (DAP.AddressId IS NULL)                                                        
+            AND (PA.PersonAddressTypeKey  = 'C')                                            
+            AND DAP.Address IS NOT NULL                                            
+   AND DAP.Changed = 'false';     
+                                      
+                
+ 
+                                    
+                                               
+                                                    
+    UPDATE sp_CreateIntake_Temp_DAPerson SET AddressId = PA.PersonAddressId                                           
+     FROM PersonAddress PA                                                        
+       JOIN sp_CreateIntake_Temp_DAPerson DAP  ON DAP.PersonId = PA.PersonId                                                         
+     WHERE ((DAP.AddressId IS NULL)                                        
+            AND (PA.PersonAddressTypeKey  = 'C') AND DAP.Address IS NOT NULL    
+            AND DAP.Changed = 'false')           OR     
+           (DAP.AddressId  IS NULL                                     
+           AND     
+           DAP.Address IS NOT NULL                                      
+           AND LENGTH(DAP.Address) > 0    
+           AND DAP.Changed = 'true'    
+           AND PA.PersonAddressId = (SELECT PersonAddressId     
+          FROM PersonAddress pa    
+          WHERE pa.PersonId = DAP.PersonId     
+          AND pa.PersonAddressTypeKey = 'C'     
+          ORDER BY pa.insertedon desc limit 1)); 
+ 
+ /*
+  UPDATE sp_CreateIntake_Temp_DAPerson as b 
+ set IntakeServiceRequestActorID = gen_random_uuid(),
+ ActorId = cast((select max(cast(ac.actorid as character varying)) ActorId from
+ Actor AC where AC.personid = b.personid
+ AND AC.actortype = b.actorroletype) as uuid);
+  */
+ 
+ UPDATE sp_CreateIntake_Temp_DAPerson as b 
+ set IntakeServiceRequestActorID = gen_random_uuid(),
+ ActorId = gen_random_uuid() where ActorId is null;
+
+                                                                 
+    INSERT INTO Actor                                                      
+       (                                                        
+       ActorId,
+       ActiveFlag,                               
+       PersonId,                                                        
+       ActorType,                                                        
+       DangerLevel,                                                        
+       insertedby,                                                        
+       insertedon,                 
+       updatedby,                                                        
+       updatedon,
+       intakenumber,
+       objecttype,
+       objectid,
+       intakeserviceid                                                    
+       )                                                        
+     SELECT DAP.ActorID ,
+     1,                                                        
+      DAP.PersonId,                                                        
+      coalesce(DAP.ActorRoleType,'Rep'),                                                        
+      CASE lower(DAP.Dangerous) WHEN 'yes' THEN 1 ELSE 0 END,                                                 
+      v_securityuserid,                                                        
+      NOW(),                                      
+      v_securityuserid,        
+      NOW(),
+      v_InatkeNumber,
+      'as_servicecase',intakenumber, v_IntakeServiceId                                                    
+     FROM sp_CreateIntake_Temp_DAPerson  DAP                                                       
+       LEFT OUTER JOIN Actor AC ON AC.ActorId = DAP.ActorID                                                         
+     WHERE   AC.ActorId IS NULL;
+
+  
+     IF (SELECT COUNT(1) FROM sp_CreateIntake_Temp_DAGeneral DAG WHERE DAG.AnanymousReporter LIKE '%true%') = 1                                                  
+     THEN                                                  
+          v_ReporterPersonID := gen_random_uuid();                                                  
+
+       
+RAISE NOTICE 'Inserting into Person 880';
+   INSERT INTO Person(                                                        
+     PersonId,                                                        
+     FirstName,                                                        
+     LastName,                                                        
+     DangerLevel,                                                        
+     updatedby,                                                        
+     updatedon,                                                        
+     insertedby,                         
+  insertedon,                                                        
+     EffectiveDate                                                       
+     )                                                        
+     SELECT v_ReporterPersonID,                                                  
+      'Anonymous',                                                  
+      'Anonymous',                                                  
+     0,                         
+     v_securityuserid,                                                        
+      NOW(),                                                        
+      v_securityuserid,                                                        
+      NOW(),                                                
+      NOW();                                
+                                                       
+    v_ReporterActorID = gen_random_uuid() ;                                                  
+RAISE NOTICE 'Inserting into Actor';
+     INSERT INTO Actor                                                        
+       (                                                        
+       ActorId,
+       ActiveFlag,                                                        
+       PersonId,                                                        
+       ActorType,                                                      
+       DangerLevel,                                                        
+       insertedby,                                                        
+       insertedon,                                                        
+       updatedby,                                                        
+       updatedon,
+       intakenumber,
+       objecttype,
+       objectid                                                       
+       )                                                        
+     SELECT v_ReporterActorID,
+     1,                                                  
+      v_ReporterPersonID,                                                  
+      'Rep',                                                  
+    0,                                
+      v_securityuserid,                                                        
+      NOW(),                                                        
+      v_securityuserid,                                                        
+      NOW(),
+      v_InatkeNumber,
+      'as_servicecase',
+      v_InatkeNumber ;                                                  
+                                                     
+                                                            
+     END IF;                                                  
+                                                                  
+           
+
+ SELECT assessmenttemplatetargetid into v_targetId  from assessmenttemplatetarget  where lower(target )='intake' and activeflag =1;
+ 
+ FOR v_DAType_rec IN SELECT DataTypeID,DATypeKey,DASubTypeKey ,PersonId,ServiceRequestNumber,DAStatus FROM sp_CreateIntake_Temp_DAType
+  
+ LOOP
+  v_DataTypeID := v_DAType_rec.DataTypeID;
+  v_DATypeKey := v_DAType_rec.DATypeKey;
+  v_DASubTypeKey := v_Dasubtypeid;
+  v_personId := v_DAType_rec.PersonId;
+  v_DAServiceRequestNumber := v_DAType_rec.ServiceRequestNumber;--201800106994
+  v_DAStatus := v_DAType_rec.DAStatus;
+
+ RAISE NOTICE 'v_DataTypeID %',v_DataTypeID;
+ RAISE NOTICE 'v_DATypeKey %',v_DATypeKey;
+ RAISE NOTICE 'v_DASubTypeKey %',v_DASubTypeKey;
+ RAISE NOTICE 'v_personId %',v_personId;
+ RAISE NOTICE 'v_DAServiceRequestNumber %',v_DAServiceRequestNumber;
+ RAISE NOTICE ' v_DAStatus %',v_DAStatus;  
+
+ 
+ 
+   
+     SELECT  SRTC.InternalFile,SRTC.DueDateOffset INTO v_AccessLevel, v_DueDateOffSet
+  FROM ServiceRequestTypeConfig SRTC                          
+     WHERE  SRTC.IntakeServReqTypeId = v_DATypeKey                                                        
+      AND   SRTC.ServiceRequestSubTypeId = v_Dasubtypeid
+   AND SRTC.activeflag = 1
+   AND LOWER(SRTC.category) = 'intake'
+   AND SRTC.expirationdate::date > now()::date;
+
+                                                                 
+    
+  
+  /*For Assesment Update*/  
+  IF v_targetId IS NOT NULL THEN 
+  UPDATE assessment SET objectid = v_IntakeServiceId WHERE assessmentid in (
+  SELECT ass.assessmentid FROM assessment ass INNER JOIN assessmenttemplatecategoryfiltermap acfp ON 
+    acfp.assessmenttemplateid = ass.assessmenttemplateid 
+    AND assessmenttemplatetargetid  = v_targetId  
+    AND acfp.intakeservicerequesttypeid = v_DATypeKey
+    AND acfp.intakeservicerequestsubtypeid = v_Dasubtypeid
+    AND ass.intakenumber = v_intakeNumber);
+ END IF;
+  /*End*/
+
+     UPDATE sp_CreateIntake_Temp_DAType 
+  SET AccessLevel = v_AccessLevel,IntakeServiceId = v_IntakeServiceId                                             
+     --FROM sp_CreateIntake_Temp_DAType DAT                              
+     WHERE  ServiceRequestNumber =  v_DAServiceRequestNumber;
+  
+      
+   
+  
+  IF LENGTH(v_personId) > 0 THEN
+  INSERT INTO sp_CreateIntake_Temp_DAPersonTemp                                                        
+  SELECT regexp_split_to_table(v_personId,',')::uuid as value;
+  END IF;
+
+  select count(*) into my_Temp_Var from sp_CreateIntake_Temp_DAPersonTemp;
+
+     INSERT INTO IntakeServiceRequest (                                                          
+        IntakeServiceId,
+        ActiveFlag,                                                        
+        ServiceRequestNumber,                                                        
+        Narrative,                                                        
+        ReportedDate,                                                 
+        ReportedTime,                                                        
+        IntakeServReqInputTypeId,                                                        
+        IntakeServReqTypeId,                                                        
+        IntakeSerReqStatusTypeId,                                                        
+        IntakeServiceRequestClassId,                                                        
+        updatedby,                                                        
+        updatedon,                                                        
+        insertedby,                                                        
+        insertedon,                                                        
+        EffectiveDate ,                                                    
+        TargetCompleteDate  ,                            
+        SuspiciousDeath,                            
+        MissingPersons  ,   
+  MONumber,
+     IntakeServReqInputSourceId,
+     IsAnonymousReporter,
+  Intakeservreqpurposeid,
+  intakenumber,
+  teamtypekey,
+    countyid,
+    isunknownreporter,
+    reporterfirstname,
+    reporterlastname,
+    reporterphonenumber,
+    reportertitle,
+    reporterorganization, isrouted)
+   SELECT (SELECT DA.IntakeServiceId FROM sp_CreateIntake_Temp_DAType DA                                                         
+     WHERE DA.ServiceRequestNumber  = v_DAServiceRequestNumber) ,
+          1,                                                        
+       v_DAServiceRequestNumber,                                                        
+          (SELECT Narrative  FROM sp_CreateIntake_Temp_DAGeneral DAG),                                      
+        (SELECT DAG.RecivedDate  FROM sp_CreateIntake_Temp_DAGeneral DAG),                                                        
+         --(SELECT CAST ( TO_CHAR (NOW(),110) || ' ' || DAG.Time AS TIMESTAMP(3)) FROM sp_CreateIntake_Temp_DAGeneral DAG),
+         (SELECT DAG.Time FROM sp_CreateIntake_Temp_DAGeneral DAG),                                                        
+     (SELECT DAG.Source   FROM sp_CreateIntake_Temp_DAGeneral DAG),                                                       
+      (SELECT DA.DATypeKey FROM sp_CreateIntake_Temp_DAType DA                                                         
+     WHERE DA.ServiceRequestNumber  = v_DAServiceRequestNumber) ,                                                        
+     CASE WHEN (v_DAStatus is null OR  v_DAStatus ='')   THEN '6F45B314-10DD-4388-B89B-3590D2850577'                            
+          ELSE v_DAStatus::uuid END ,                                                      
+    v_Dasubtypeid,                                                        
+     --(SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),
+  v_securityuserid,
+     NOW(),                                                        
+     --(SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),       
+  v_securityuserid,
+     NOW(),                                                        
+     NOW(),                                                    
+     NOW()::date + v_DueDateOffSet , 
+     --null,                           
+     (SELECT DAG.SuspiciousDeath    FROM sp_CreateIntake_Temp_DAGeneral DAG)  ,                            
+     (SELECT DAG.MisssingPersons     FROM sp_CreateIntake_Temp_DAGeneral DAG)  ,                            
+                                 
+                 
+     (SELECT DAG.MONumber    FROM sp_CreateIntake_Temp_DAGeneral DAG),
+     (SELECT DAG.InputSource   FROM sp_CreateIntake_Temp_DAGeneral DAG),
+  (SELECT DAG.IsAnonymousReporter   FROM sp_CreateIntake_Temp_DAGeneral DAG),
+ (SELECT DAG.Purpose   FROM sp_CreateIntake_Temp_DAGeneral DAG) ,
+    v_InatkeNumber,
+    'AS',
+    ISR.countyid, ISR.isunknownreporter, ISR.reporterfirstname,
+    ISR.reporterlastname,ISR.reporterphonenumber,ISR.reportertitle,ISR.reporterorganization, 
+    CASE WHEN v_newcase THEN false ELSE isrouted END
+    FROM intakeservicerequest ISR
+    WHERE isr.IntakeServiceId = v_oldintakeserviceid;  
+
+
+
+   
+    insert into ascaseaddress (entitytype, 
+    entitytypeid,
+    startdate,
+    enddate,
+    activeflag,
+    personaddresstypekey,
+    address,
+    address2,
+    zipcode,
+    city,
+    state,
+    country,
+    county,
+    insertedby,
+    insertedon,                            
+    updatedby,                            
+    updatedon)
+    select a.entitytype, 
+    (v_newintakeserviceid) as entitytypeid,
+    a.startdate,
+    a.enddate,
+    a.activeflag,
+    a.personaddresstypekey,
+    a.address,
+    a.address2,
+    a.zipcode,
+    a.city,
+    a.state,
+    a.country,
+    a.county, 
+    v_securityuserid as insertedby,
+    NOW() as insertedon,                                                        
+    v_securityuserid as updatedby,                                                        
+    NOW() as updatedon from ascaseaddress a where a.activeflag=1 and  a.entitytypeid = v_sourceIntakeserviceId;
+
+--For Inserting ALlegation Records 
+ RAISE NOTICE 'Inserting into Investigation';
+ INSERT INTO investigation(activeflag,intakeserviceid,insertedby,effectivedate)
+ VALUES (1,v_IntakeServiceId,v_securityuserid,now()) RETURNING "investigationid" INTO l_newInvestigationId;
+ 
+ /* DSDS ACTION TASK GOAL DETAILS */
+   
+  select as_createinvestigation INTO s_Actmsg from as_createinvestigation(
+   v_DAType_rec.DATypeKey,
+   v_Dasubtypeid ,
+   l_newInvestigationId,
+    v_securityuserid,roletypekeyobj, teamtypekeyobj); 
+    
+  FOR allegationloop IN SELECT * FROM json_array_elements(v_Allegationsjsondata)
+  LOOP     
+   IF(allegationloop->>'DaNumber' = v_DAServiceRequestNumber)
+   THEN
+    INSERT INTO investigationallegation(
+            investigationid, allegationid, name, 
+            reported, indicators, activeflag,insertedby, 
+            effectivedate)
+    VALUES (l_newInvestigationId, (allegationloop->>'AllegationId')::uuid, allegationloop->>'AllegationName', 1::boolean, 
+            allegationloop->>'Indicators', 1, v_securityuserid, now());
+   END IF;
+  END LOOP;  
+--For Inserting Agency Details
+FOR agencyloop IN SELECT * FROM json_array_elements(v_AgencyDtls)
+LOOP
+INSERT INTO intakeservicerequestagency(
+            intakeserviceid, agencyid, description, 
+            insertedby, insertedon, agencyroletypekey, 
+            routingaddressid,activeflag)
+    VALUES (v_IntakeServiceId, (agencyloop->>'AgencyId')::uuid, agencyloop->>'description' , v_securityuserid, 
+            now(), agencyloop->>'agencyroletypekey', (agencyloop->>'routingaddressid')::uuid, 1);
+END LOOP;
+
+--For Inserting CrossReference Details
+FOR crossRefloop IN SELECT * FROM json_array_elements(v_CrossRefDtls)
+LOOP
+  v_oldintakeserviceid :=crossRefloop ->> 'CrossRefDAID';
+ IF(crossRefloop->>'CrossRefwith' = v_DAServiceRequestNumber)
+ THEN 
+ INSERT INTO intakeservicerequestcrossreference(
+            fromintakeservicerequestid, withintakeservicerequestid, insertedby, 
+            insertedon, intakeservicerequestcrossreferencereasontypekey, 
+            coreferred, ogcreferred, 
+            activeflag)
+    VALUES ((crossRefloop->>'CrossRefDAID')::uuid,v_IntakeServiceId,v_securityuserid,now(),crossRefloop->>'ReasonsofCrossref',(crossRefloop->>'coreferred')::boolean,(crossRefloop->>'ogcreferred')::boolean,1);
+   
+   INSERT INTO intakeservicerequestcrossreference(
+            fromintakeservicerequestid, withintakeservicerequestid, insertedby, 
+            insertedon, intakeservicerequestcrossreferencereasontypekey, 
+            coreferred, ogcreferred, 
+            activeflag)
+    VALUES (v_IntakeServiceId,(crossRefloop->>'CrossRefDAID')::uuid,v_securityuserid,now(),crossRefloop->>'ReasonsofCrossref',(crossRefloop->>'coreferred')::boolean,(crossRefloop->>'ogcreferred')::boolean,1);
+ END IF;
+END LOOP;
+
+--For Inserting Recording Details
+FOR recordingsloop IN SELECT * FROM json_array_elements(v_RecordingDetailsjsondata)
+LOOP
+ IF(recordingsloop->>'RecordingDA' = v_DAServiceRequestNumber)
+ THEN 
+ INSERT INTO progressnote(
+            progressnotetypeid, title, description, entitytype, 
+            entitytypeid, pagetitle, pageurl, islatest,insertedby, 
+            insertedon, 
+            savemode, progressnotesubtypeid, contactdate, contactname, progressnotetypekey, 
+            contactroletypekey, contactphone, contactemail, attemptindicator, 
+            activeflag)            
+    VALUES ((recordingsloop->>'RecordingType')::uuid,SUBSTRING(recordingsloop->>'Detail',1,50),recordingsloop->>'Detail','intakeservicerequest',v_IntakeServiceId,
+    recordingsloop->>'Pagetitle',recordingsloop->>'Pageurl',(recordingsloop->>'Islatest')::int,v_securityuserid,now(),1::boolean,(recordingsloop->>'RecordingsubType')::uuid,
+    (recordingsloop->>'ContactDate')::timestamp,recordingsloop->>'ContactName',recordingsloop->>'progressnotetypekey',recordingsloop->>'Contactrole',recordingsloop->>'ContactPhoneno',
+    recordingsloop->>'contactEmail',(recordingsloop->>'Attemptindicator')::boolean,1) RETURNING "progressnoteid" INTO l_newProgressnoteId;
+ 
+ INSERT INTO progressnotedetail(
+            progressnoteid, description, activeflag, 
+            effectivedate, insertedby, insertedon)
+    VALUES (l_newProgressnoteId,recordingsloop->>'Detail',1,now(),v_securityuserid,now());
+
+ END IF;
+END LOOP;
+
+IF v_newcase IS FALSE THEN 
+INSERT INTO servicerequesttypeconfigdispositioncode (servicerequesttypeconfigid,dispositioncode,description,intakeserreqstatustypeid) 
+SELECT  srtcdc.servicerequesttypeconfigid,srtcdc.dispositioncode,srtcdc.description,srtcdc.intakeserreqstatustypeid
+FROM servicerequesttypeconfigdispositioncode srtcdc
+JOIN intakeservicerequestdispositioncode isrdc ON isrdc.servicerequesttypeconfigiddispostionid = srtcdc.servicerequesttypeconfigiddispostionid 
+WHERE isrdc.intakeserviceid = v_oldintakeserviceid
+ORDER BY isrdc.insertedon DESC LIMIT 1
+RETURNING servicerequesttypeconfigiddispostionid INTO v_servicerequesttypeconfigiddispostionid;
+END IF;                       
+                                          
+RAISE NOTICE 'Insert into IntakeServiceRequestDispositionCode';                                 
+     INSERT INTO IntakeServiceRequestDispositionCode                              
+     (
+     ActiveFlag,
+     IntakeServiceRequestDispositionCodeId,                            
+   IntakeServiceId,                            
+   insertedby,                            
+   insertedon,                            
+   updatedby,                            
+   updatedon,                            
+   StatusDate,                            
+   Description,                            
+   EffectiveDate,                            
+   IntakeSerReqStatusTypeId,                            
+   ServiceRequestTypeConfigIdDispostionId                            
+   )                            
+                                  
+      SELECT 1,
+      gen_random_uuid(),                            
+             DA.IntakeServiceId ,                            
+             v_securityuserid,                                                        
+       NOW(),                                                        
+    v_securityuserid,                                                        
+       NOW(),                            
+       NOW(),                            
+       DA.Summary,                            
+       NOW(),                
+       CASE WHEN (v_DAStatus is null OR  v_DAStatus ='')   then '6F45B314-10DD-4388-B89B-3590D2850577'                            
+             ELSE v_DAStatus::uuid END ,
+             v_servicerequesttypeconfigiddispostionid
+   /*
+      CASE WHEN (DADisposition is null OR  DADisposition ='')   THEN NULL                            
+          ELSE                        
+              (                             
+                 SELECT  SRCD.ServiceRequestTypeConfigIdDispostionId                             
+                 FROM IntakeSerReqStatusType ISRT                              
+                      JOIN ServiceRequestTypeConfigDispositionCode SRCD ON SRCD.IntakeSerReqStatusTypeId = ISRT.IntakeSerReqStatusTypeId                             
+                                                                             AND SRCD.ActiveFlag = 1                            
+                      JOIN ServiceRequestTypeConfig SRC ON SRC.IntakeServReqTypeId  = DA.DATypeKey                             
+                                                            AND SRC.ServiceRequestSubTypeId =v_Dasubtypeid                             
+                                                            AND SRC.ServiceRequestTypeConfigId = SRCD.ServiceRequestTypeConfigId                             
+                                          AND SRC.ActiveFlag = 1                            
+                 WHERE ISRT.intakeserreqstatustypeid = v_DAStatus::uuid AND SRCD.ServiceRequestTypeConfigIdDispostionId = replace(replace(replace (DA.DADisposition,'[',''),']',''),'"','') ::uuid                             
+               ) END   
+     ELSE  DADisposition::uuid END   */     
+      FROM sp_CreateIntake_Temp_DAType DA                                                         
+      WHERE DA.ServiceRequestNumber  = v_DAServiceRequestNumber;                               
+
+                                 
+      v_IntakeServiceRequestActorId := gen_random_uuid();          
+                           
+    INSERT INTO IntakeServiceRequestActor                                                         
+    (                                                        
+     IntakeServiceRequestActorId,                                                   
+     ActorId,                                                        
+     IntakeServiceRequestPersonTypeKey,                                                        
+     insertedby,                                                        
+     insertedon,                                                        
+     updatedby,                                                        
+     updatedon,                                                        
+     IntakeServiceId ,                                                                                           
+     RAMentalHealth ,                            
+     RAMentalRetarted ,                            
+  reported,
+  isprimary,
+   intakenumber,
+   objecttype,
+   objectid,
+   personid 
+     )                            
+     SELECT DAP.IntakeServiceRequestActorID ,                                                        
+       DAP.ActorID,                                                        
+       DAP.ActorRoleType,                                                        
+      v_securityuserid,                                                        
+        NOW(),                                                        
+        v_securityuserid,                                                        
+        NOW(),                                                        
+        v_IntakeServiceId  , 
+     /*CASE WHEN DAP.ActorRoleType in ('RA','RC') AND DAP.RoutingAddress =1  THEN 
+    CASE WHEN DAP.AddressId = '00000000-0000-0000-0000-000000000000'  THEN null ELSE DAP.AddressId END
+           WHEN DAP.ActorRoleType in ('RA','RC') AND DAP.RoutingAddress =2  THEN
+    CASE WHEN DAP.TemparoryAddressId = '00000000-0000-0000-0000-000000000000'  THEN null ELSE DAP.TemparoryAddressId END
+             ELSE  NULL END ,
+            
+                                           
+      CASE WHEN ((DAP.AddressId IS NOT NULL) AND  (DAP.TemparoryAddressId IS NOT NULL)) THEN CAST(DAP.AddressId AS VARCHAR(50)) ||'/' || CAST (DAP.TemparoryAddressId AS VARCHAR(50))                      
+             WHEN ((DAP.AddressId IS NOT NULL) AND (DAP.TemparoryAddressId IS  NULL)) THEN  CAST(DAP.AddressId  AS VARCHAR(50))                    
+             WHEN ((DAP.TemparoryAddressId IS NOT NULL) AND (DAP.AddressId IS  NULL))  THEN CAST(DAP.TemparoryAddressId AS VARCHAR(50)) END*/
+            -- NULL,
+                                         
+      CASE WHEN DAP.Mentealillness = 'Yes' THEN true                            
+           WHEN DAP.Mentealillness = 'No' THEN false                              
+           WHEN DAP.Mentealillness = 'Unknown' THEN NULL  END,
+                                       
+      CASE WHEN DAP.Mentealimpair = 'Yes' THEN true                            
+           WHEN DAP.Mentealimpair = 'No' THEN false                              
+           WHEN DAP.Mentealimpair = 'Unknown' THEN NULL  END,                                 
+      --DAP.livingArrangements,
+      1::boolean,
+   
+      CASE WHEN v_PersonRole in('RA','RC')  THEN true                          
+       -- CASE WHEN DAP.ActorRoleType in('RA','RC')  THEN true                                
+             ELSE true END,v_InatkeNumber,
+             'as_intakeserviceid',v_IntakeServiceId, DAP.PersonId
+      FROM sp_CreateIntake_Temp_DAPerson DAP ;  
+   
+      --JOIN sp_CreateIntake_Temp_DAPersonTemp DAPT ON DAP.PersonId = DAPT.PersonId;              
+select count(*) into my_Temp_Var from sp_CreateIntake_Temp_DAPerson;   
+          
+      INSERT INTO ActorRelationship                             
+       (                             
+        ActorRelationshipId,                            
+  RelationshipTypeKey,                            
+  insertedby,                            
+  insertedon,                            
+  updatedby,                            
+  updatedon,                            
+  EffectiveDate,                            
+  IntakeServiceRequestActorId                            
+  )                            
+                              
+  SELECT gen_random_uuid(),                            
+         DAP.RelationshiptoRA,                            
+         v_securityuserid,                              
+         NOW(),                            
+         v_securityuserid,                              
+         NOW(),                            
+         NOW(),                            
+         INSR.IntakeServiceRequestActorId                             
+  FROM IntakeServiceRequestActor INSR                            
+      JOIN Actor AC ON INSR.ActorId = AC.ActorId                            
+      JOIN sp_CreateIntake_Temp_DAPerson DAP ON DAP.PersonId = AC.PersonId AND DAP.ActorRoleType = AC.ActorType                             
+  WHERE  INSR.IntakeServiceId = v_IntakeServiceId AND DAP.RelationshiptoRA IS NOT NULL;                            
+                              
+  /*    INSERT INTO IntakeServiceRequestClearingData                            
+      (  IntakeServiceRequestClearingId,                      
+   IntakeServiceId,
+   ActiveFlag,                            
+   EntityType,                            
+   EntityTypeId,                            
+   ClearingType,                            
+   Result,                            
+   updatedby,                            
+   updatedon,                            
+   insertedby,                            
+   insertedon,                               
+   EffectiveDate,                            
+   FromEntityTypeId,                            
+   ClearingData                             
+  )                            
+ SELECT gen_random_uuid(),                            
+        v_IntakeServiceId ,
+        1,                            
+        'person',                            
+        DAP.PersonId ,                            
+        'SOR',                            
+        CASE WHEN DAP.SOR = 'Yes' THEN 'match'                             
+             WHEN DAP.SOR = 'No' THEN 'no match'                             
+             ELSE 'no match' END,                            
+        v_securityuserid,                              
+        NOW(),                            
+        v_securityuserid,                              
+        NOW(),                        
+        NOW(),                            
+         DAP.IntakeServiceRequestActorID ,                            
+        NULL                                
+ FROM sp_CreateIntake_Temp_DAPerson DAP                            
+ WHERE DAP.SOR IS NOT NULL                             
+ UNION                                   
+ SELECT gen_random_uuid(),                            
+        v_IntakeServiceId,
+        1,                            
+        'EDLI',                            
+        DAP.PersonId ,                            
+        'EDLI',                            
+        CASE WHEN DAP.EDL  = 'Yes' THEN 'match'                             
+             WHEN DAP.EDL = 'No' THEN 'no match'                             
+             ELSE 'undetermined' END,                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),       
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),            
+        NOW(),                            
+        NOW(),                            
+        --DAP.PersonId ,          
+        DAP.IntakeServiceRequestActorID  ,                          
+        NULL                                
+ FROM sp_CreateIntake_Temp_DAPerson DAP                            
+ WHERE DAP.EDL  IS NOT NULL                             
+ UNION                                   
+ SELECT gen_random_uuid(),                            
+        v_IntakeServiceId, 
+        1,                           
+        'person',                            
+        DAP.PersonId ,                            
+        'MID',                            
+        'match',                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),                            
+        NOW(),                            
+        DAP.IntakeServiceRequestActorID   ,                            
+        DAP.MentealillnessDetail                                
+ FROM sp_CreateIntake_Temp_DAPerson DAP                            
+ WHERE DAP.MentealillnessDetail   IS NOT NULL                                
+ UNION                                   
+ SELECT gen_random_uuid(),                            
+        v_IntakeServiceId,
+        1,                            
+        'person',                            
+        DAP.PersonId ,                            
+        'MRD',                            
+        'match',                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),                            
+        NOW(),                            
+        DAP.IntakeServiceRequestActorID ,                            
+        DAP.MentealimpairDetail                                  
+ FROM sp_CreateIntake_Temp_DAPerson DAP                            
+ WHERE DAP.MentealimpairDetail    IS NOT NULL               
+ UNION            
+ SELECT gen_random_uuid(),                 
+        v_IntakeServiceId,
+        1,                            
+        'DMHConsumer',                            
+          DAP.DmhConsumerId :: uuid ,                            
+        'DMHC',                            
+        CASE WHEN DAP.DMH = 'yes' THEN 'match - DCN'           
+             WHEN DAP.DMH = 'no' THEN 'no match - DCN'          
+             ELSE 'undetermined - DCN' END,                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),                            
+        (SELECT DAG.Author   FROM sp_CreateIntake_Temp_DAGeneral DAG),                              
+        NOW(),                            
+        NOW(),                            
+       DAP.IntakeServiceRequestActorID  ,                          
+       NULL       
+ FROM sp_CreateIntake_Temp_DAPerson DAP            
+ WHERE  DAP.DMH  IS NOT NULL;     */         
+              
+ --WHERE DAP.DmhConsumerId  IS NOT NULL AND DAP.DmhConsumerId <> '00000000-0000-0000-0000-000000000000'                                 
+                                
+      IF (SELECT COUNT(1) FROM sp_CreateIntake_Temp_DAGeneral DAG WHERE DAG.AnanymousReporter LIKE '%true%') = 1                                                  
+      THEN                                           
+                                                                
+        INSERT INTO IntakeServiceRequestActor                                                         
+             (                                                        
+           IntakeServiceRequestActorId,                                                        
+           ActorId,                                                       
+           IntakeServiceRequestPersonTypeKey,                                                        
+      insertedby,                                                        
+           insertedon,                                                        
+           updatedby,                                                        
+           updatedon,                                                        
+           IntakeServiceId,
+     reported,
+       intakenumber,
+       PersonId 
+           )                                                  
+                                                                   
+       SELECT                                                   
+              gen_random_uuid(),                                                        
+           v_ReporterActorID,                                                  
+           'Rep',                                                        
+ v_securityuserid,                                                        
+           NOW(),                                                        
+           v_securityuserid,                                                        
+           NOW(),                                                        
+           v_IntakeServiceId,
+        1::boolean, v_InatkeNumber,v_ReporterPersonID;                                                    
+     END IF; 
+   /*  INSERT INTO IntakeServiceRequestUserAccess                                                         
+       (
+       ActiveFlag,                                                      
+      IntakeServiceRequestUserAccessId,                                                        
+      SecurityUsersId,                                                        
+      IntakeServiceId,                                                        
+      insertedby,                                                        
+      insertedon,                                                        
+      updatedby,                                                        
+      updatedon,                                                        
+      EffectiveDate,                                                        
+      LoadNumber                                                        
+      )                                                        
+     SELECT 1,
+      gen_random_uuid(),                                                        
+      coalesce(TMA.SecurityUsersId,''), 
+      v_IntakeServiceId,                                                        
+      v_securityuserid,                                 
+      NOW(),                                                        
+      v_securityuserid,                                                        
+      NOW(),                                                        
+        NOW(),                                                        
+        TM.LoadNumber                                                         
+     FROM AccessList   AC                                                        
+     JOIN ServiceRequestTypeConfig   CNFG ON CNFG.ServiceRequestTypeConfigId = AC.ServiceRequestTypeConfigId
+  JOIN TeamMember TM ON TM.LoadNumber = AC.LoadNumber                                                         
+     Left Outer JOIN as_teammemberassignment TMA ON TMA.TeamMemberId = TM.TeamMemberId  AND TMA.ActiveFlag = 1
+  WHERE CNFG.IntakeServReqTypeId = v_DATypeKey                                                        
+        AND CNFG.ServiceRequestSubTypeId =  v_Dasubtypeid                                                   
+        AND CNFG.ActiveFlag = 1; 
+*/
+  
+        if (v_message is null)                                              
+        then                                              
+           v_message :=   v_DAServiceRequestNumber;                                              
+        else                                              
+           v_message :=   v_message || ' ' || v_DAServiceRequestNumber;                                                
+        end if;                                                 
+                                                              
+       UPDATE sp_CreateIntake_Temp_DAPerson SET IntakeServiceRequestActorID = gen_random_uuid();      
+       --FROM sp_CreateIntake_Temp_DAPerson ;        
+                                                               
+       DELETE FROM sp_CreateIntake_Temp_DAPersonTemp;   
+       
+    
+                                           
+     --FETCH NEXT FROM DAType_cursor INTO v_DataTypeID,v_DATypeKey,v_DASubTypeKey,v_personId ,v_DAServiceRequestNumber ,v_DAStatus                                                                                      
+     END LOOP;                                     
+     --CLOSE DAType_cursor;                                                        
+     --DEALLOCATE DAType_cursor;   
+      
+    SELECT COUNT(GroupNumber) INTO v_GroupCount  
+                         FROM sp_CreateIntake_Temp_DAType;  
+       RAISE NOTICE 'v_GroupCount--->%' , v_GroupCount;
+ IF v_GroupCount > 0  
+  THEN      
+
+      FOR v_GroupDA_rec IN SELECT DISTINCT GroupNumber,GroupComment,GroupReasonType FROM sp_CreateIntake_Temp_DAType WHERE GroupNumber IS NOT NULL
+  LOOP         
+  v_GroupNumber := v_GroupDA_rec.GroupNumber;
+  v_GroupComment := v_GroupDA_rec.GroupComment;
+  v_GroupReasonType := v_GroupDA_rec.GroupReasonType;
+
+                     
+      v_IntakeGroupId := gen_random_uuid(); 
+
+         
+INSERT INTO IntakeServiceRequestGroup                                    
+    (                                                        
+      GroupId,                                                        
+      GroupNumber,                                                        
+      GroupSummary,                                                        
+      insertedby,                                                
+      insertedon,                                                        
+      updatedby,            
+      updatedon,                                                        
+      EffectiveDate,                                                        
+      GroupReasonTypeKey                                                        
+                                                            
+    )                                                        
+     SELECT                                                         
+      v_IntakeGroupId,                                                        
+      v_GroupNumber,                                                        
+      v_GroupComment,                                                               
+      v_securityuserid,                                                        
+      NOW(),                                                        
+      v_securityuserid,                                                        
+      NOW(),                                                        
+      NOW(),                                                        
+      v_GroupReasonType;    
+        
+        INSERT INTO IntakeServiceRequestGroupDetails                                                         
+        ( GroupDetlId,                                                        
+       GroupId,                                                        
+       IntakeServiceId,                                                        
+       insertedby,                                                        
+       insertedon,                            
+       updatedby,                                                        
+       updatedon,                                                        
+       EffectiveDate                                                        
+        )                                                        
+      SELECT    gen_random_uuid(),                                                        
+       v_IntakeGroupId,                                                        
+       DAT.IntakeServiceId ,                                                        
+       v_securityuserid,                                                        
+       NOW(),                   
+       v_securityuserid,                                         
+       NOW(),                                                        
+       NOW()                                                        
+      FROM     sp_CreateIntake_Temp_DAType DAT   
+      WHERE DAT.GroupNumber = v_GroupNumber;                                                        
+        
+           
+      --FETCH NEXT FROM; GroupDA_cursor INTO v_GroupNumber,v_GroupComment,v_GroupReasonType                                                                                      
+      END LOOP;                                     
+     --CLOSE GroupDA_cursor;                                                        
+     --DEALLOCATE GroupDA_cursor;  
+    END IF;                                           
+                      
+                                
+                   
+                             
+                 
+   UPDATE IntakeDAStaging SET Status = 'Complete'                              
+   WHERE IntakeNumber  = v_InatkeNumber;                              
+                                 
+    
+/*FOR investigation_rec IN
+SELECT DAT.IntakeServiceId as new_intakeserviceid
+FROM sp_CreateIntake_Temp_DAType DAT
+LOOP
+INSERT INTO investigation(activeflag,intakeserviceid,insertedby)values(1,investigation_rec.new_intakeserviceid,v_securityuserid);
+END LOOP;*/
+
+FOR v_activity IN
+select   description, amactivityid, ammappingid, objectid, sourcedescription, activitytypekey, helptext, 1, updatedby, now(), 
+insertedby, now(), now(), null, null, groupsequence 
+from activity where objectid ='59665694-ba37-4bd5-9820-91de6c32d775' and  lower(description) not  like lower('%TRIAL%')
+LOOP
+ FOR v_createddanumberrec IN
+ SELECT DAT.IntakeServiceId as new_intakeserviceid
+ FROM sp_CreateIntake_Temp_DAType DAT
+ LOOP
+ INSERT INTO activity(
+      description, amactivityid, ammappingid, objectid, sourcedescription, activitytypekey, helptext, 
+      activeflag, insertedby, insertedon, effectivedate, groupsequence)values(
+      v_activity.description, v_activity.amactivityid, v_activity.ammappingid, v_createddanumberrec.new_intakeserviceid, v_activity.sourcedescription, v_activity.activitytypekey, v_activity.helptext, 1,v_activity.insertedby, now(), now(), v_activity.groupsequence);
+ END LOOP;
+END LOOP;
+IF v_newcase IS NOT TRUE THEN 
+RAISE NOTICE 'Calling as_createcasetranferassessmentadd';
+ SELECT as_createcasetranferassessmentadd INTO  v_createcasetranferassessmentadd
+ FROM as_createcasetranferassessmentadd(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+RAISE NOTICE 'Calling as_createduplicateserviceplan';    
+ SELECT as_createduplicateserviceplan INTO  v_createduplicateserviceplan
+ FROM as_createduplicateserviceplan(v_oldintakeserviceid,v_newintakeserviceid);
+RAISE NOTICE 'Calling as_createcasetranferplacementadd';
+SELECT as_createcasetranferplacementadd INTO  v_createcasetranferplacementadd
+ FROM as_createcasetranferplacementadd(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+RAISE NOTICE 'Calling as_createduplicateadultscreentool';
+SELECT as_createduplicateadultscreentool INTO  v_createduplicateadultscreentool
+ FROM as_createduplicateadultscreentool(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+RAISE NOTICE 'Calling as_contactnotesadd';
+SELECT as_contactnotesadd INTO  v_contactnotesadd
+ FROM as_contactnotesadd(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+RAISE NOTICE 'Calling as_createcasetranferdocumentadd'; 
+SELECT as_createcasetranferdocumentadd INTO  v_createcasetranferdocumentadd
+ FROM as_createcasetranferdocumentadd(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+      
+RAISE NOTICE 'Calling as_createduplicatemonthlyreport';
+SELECT as_createduplicatemonthlyreport INTO  v_createduplicatemonthlyreport
+ FROM as_createduplicatemonthlyreport(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+
+ 
+
+end if;
+
+RAISE NOTICE 'Calling as_createduplicatecollaterals';
+SELECT as_createduplicatecollaterals INTO  v_as_createduplicatecollaterals
+ FROM as_createduplicatecollaterals(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+ 
+
+IF v_newcase IS TRUE then
+
+RAISE NOTICE 'Calling as_createcasetranferassessmentadd';
+ SELECT as_createcasetranferassessment INTO  v_createcasetranferassessment
+ FROM as_createcasetranferassessment(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+
+select IntakeServReqTypeId, intakeservicerequestclassid into v_intakeServReqTypeId, v_servicerequestclassid from intakeservicerequest where intakeserviceid =v_newintakeserviceid;
+/*
+if(v_intakeServReqTypeId = 'd207bdd4-f281-4ec8-949c-8fd9657227f9' and v_servicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238') then
+  v_intakeServReqTypeId = '475bdb44-c347-41bc-91d1-af15979e0e27';
+  v_servicerequestclassid = 'e43e0291-4e5a-4d2f-899b-128521c8b37f';
+end if;*/
+
+
+select as_createinvestigation INTO s_Actmsg from as_createinvestigation(
+   v_intakeServReqTypeId,
+   v_servicerequestclassid ,
+   l_newInvestigationId,
+    v_securityuserid,'CW', 'AS'); 
+   
+end if;
+/*
+RAISE NOTICE 'Calling as_createduplicatedocumentproperties';
+SELECT as_createduplicatedocumentproperties INTO  v_createduplicatedocumentproperties
+ FROM as_createduplicatedocumentproperties(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+*/
+
+IF v_newcase IS TRUE THEN
+  INSERT INTO routing(eventcode, fromsecurityusersid, tosecurityusersid, FROMroleid, toroleid, objectid, routingstatustypeid,
+  activeflag, insertedby, updatedby, insertedon, updatedon, servicerequestnumber)
+  VALUES ('INVT', v_securityuserid, v_securityuserid, 'ASSP', 'ASSP', v_newintakeserviceid, 2, 1, v_securityuserid, 
+  v_securityuserid, now(), now(), v_DAServiceRequestNumber);
+
+  INSERT INTO personrole(activeflag,personid,ishouseholdmember,iscollateralcontact,drugexposednewbornflag,drugexposedtypekey,
+  otherdrugs,safehavenbabyflag,probationsearchconductedflag,sexoffenderregisteredflag,islivingalone,dangertoself,dangertoselfreason,isdangertoworker,
+  dangertoworkerreason,ismentalillness,mentalillnessdetail,ismentalimpair,mentalimpairdetail,insertedby,insertedon,updatedby,updatedon,intakeserviceid)
+  SELECT activeflag,personid,ishouseholdmember,iscollateralcontact,drugexposednewbornflag,drugexposedtypekey,otherdrugs,
+  safehavenbabyflag,probationsearchconductedflag,sexoffenderregisteredflag,islivingalone,dangertoself,dangertoselfreason,isdangertoworker,
+  dangertoworkerreason,ismentalillness,mentalillnessdetail,ismentalimpair,mentalimpairdetail,v_securityuserid,now(),v_securityuserid,now(),
+  v_newintakeserviceid FROM personrole WHERE intakeserviceid = v_oldintakeserviceid AND activeflag = 1;
+
+if(v_isApsContinue = true) then
+INSERT INTO asservicesoncase(asservicesoncaseid, ascaseid, approvalstatus, reason, enddate, activeflag, caseserviceid, caseservicetypeid, caseservicesubtypekey,insertedon, insertedby, updatedon, 
+   updatedby, routingid, personid, startdate, recon_due_dt, recon_done_dt)
+  SELECT gen_random_uuid(), v_newintakeserviceid, 'approved', NULL, NULL, 1, isr.intakeservreqtypeid, '1b622819-6149-4fc3-bf75-df3dddbc67ae'::uuid -- APS Continuing ,
+  ,'07M2'-- APS Continuing
+  , now(), v_securityuserid, now(), v_securityuserid, NULL, v_av_personid, now(), NULL, NULL
+  from intakeservicerequest isr WHERE intakeserviceid = v_newintakeserviceid and activeflag = 1;
+
+else
+
+  INSERT INTO asservicesoncase(asservicesoncaseid, ascaseid, approvalstatus, reason, enddate, activeflag, caseserviceid, caseservicetypeid, insertedon, insertedby, updatedon, 
+   updatedby, routingid, personid, startdate, recon_due_dt, recon_done_dt)
+  SELECT gen_random_uuid(), v_newintakeserviceid, 'approved', NULL, NULL, 1, isr.intakeservreqtypeid, (
+   CASE isr.intakeservicerequestclassid
+     ------- servicerequestsubtype                 intakeserv
+        WHEN 'b32016e0-97a4-430a-a9e0-43aea651a44d' THEN '87ef359f-96b7-4303-82ed-2001e424220e'     -- PH
+        WHEN '1f26128c-3758-4bdf-aa00-6769f0d7cb09' THEN '6d99d88a-3ce1-4ed8-a11e-a49978d120da'  -- Adult Guardianship
+        WHEN '38253f34-ab82-4941-95db-1dd90e943d01' THEN '11bc5e1f-01ae-4526-b041-32a2672422f6'  -- SSTA
+        WHEN '4ff00291-ac73-4bc2-9b9e-327bf27dbc7f' THEN '25e9fbf7-15c9-4b5e-abce-98b5244b4433'  -- AFC
+        WHEN '624c6ecd-c6ea-47c0-8d5d-bfdf87ef4e3f' THEN 'c564a9d0-1227-40ef-8539-ded1970e35ee'  -- IHAS
+        WHEN '29640685-40d0-46aa-a066-84bd893b9603' THEN '55bf9f5b-571d-40aa-a93d-a9921c1816af'  -- Respite Care
+        WHEN 'ea37d861-e0c7-4977-bda3-2081087e44e7' THEN 'ce96240b-6eac-4573-866d-3c17c35f4bee'  -- 24 Hours
+        WHEN 'e43e0291-4e5a-4d2f-899b-128521c8b37f' THEN 'b91ce433-57a1-4005-a139-4dceae30573e'  -- 5 Days
+    ELSE 'eca26d10-5e81-4311-a233-04e08e0e7a93'             -- Registered Nurse assigment
+    END)::uuid, now(), v_securityuserid, now(), v_securityuserid, NULL, v_av_personid, now(), NULL, NULL
+  from intakeservicerequest isr WHERE intakeserviceid = v_newintakeserviceid and activeflag = 1;
+
+  end if;
+
+
+ if(v_isApsContinue is true or v_addassignments is true or v_newcase is true) then
+  
+  if(v_addassignments = true or v_newcase = true) then
+  select fromsecurityusersid into v_fromsecurityusersid from routing where eventcode ='SCCR' and routingstatustypeid = 15 and
+  objectid =v_oldintakeserviceid :: character varying  order by insertedon desc limit 1;
+ 
+  end if;
+  if(v_isApsContinue = true) then
+   select insertedby into v_fromsecurityusersid from intakeservicerequestdispositioncode i where activeflag =1 and intakeserviceid =v_oldintakeserviceid order by insertedon 
+        desc limit 1;
+  end if;
+  if v_fromsecurityusersid is not null then
+  
+  select fromteamid ,toteamid ,servicetype  into  v_fromteamid, v_toteamid, v_servicetype from caseassignment where toworkeridno = v_fromsecurityusersid and
+  objectid =v_oldintakeserviceid  order by insertedon desc limit 1;
+
+  if(v_intakeServReqTypeId = 'd207bdd4-f281-4ec8-949c-8fd9657227f9' and v_servicerequestclassid = '609903ca-2c4e-464a-9760-6dcb31df7238') then
+    v_servicetype = 'APS Continuing';
+  end if;
+    IF v_addassignments IS TRUE THEN 
+  INSERT INTO caseassignment
+  (fromworkeridno, toworkeridno, insertedby, updatedby, insertedon, updatedon,startdate, objecttypekey, objectid,responsibilitytypekey,fromteamid,toteamid, servicetype)
+  VALUES(v_securityuserid,v_fromsecurityusersid,v_securityuserid,v_securityuserid,now(),now(),now(),'servicecase',v_newintakeserviceid,'primary',v_fromteamid, v_toteamid, v_servicetype);
+ end if;
+
+
+  end if;
+
+  if(v_isApsContinue = true) then
+
+          SELECT tm.teammemberid 
+          into v_team_member_id
+              FROM muser m
+              INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS'
+              INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1
+              INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = m.SecurityUsersId AND   tma.activeflag =1  
+                  INNER JOIN  teammember tm  ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+                  inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+                  inner join teammemberroletype tmrt on tmrt.roletypekey = r.roletypekey 
+              WHERE  m.SecurityUsersId = v_fromsecurityusersid;
+            
+
+          INSERT INTO areateammemberservicerequest(
+                          activeflag, teammemberid, intakeserviceid, 
+                          routingstatustypekey,securityusersid, routedby, insertedby, insertedon)
+                  VALUES (1, v_team_member_id, v_newintakeserviceid, 
+                          'New',v_fromsecurityusersid, NULL, v_securityuserid, now());
+
+              INSERT INTO intakeservicerequestuseraccess(
+                          activeflag, securityusersid, 
+                          intakeserviceid, insertedby)
+                  VALUES (1, v_fromsecurityusersid, v_newintakeserviceid,v_securityuserid);
+
+                 
+                   update caseassignment 
+                set enddate = now(), updatedon = now(), updatedby = v_securityuserid
+                where objectid = v_oldintakeserviceid and activeflag=1 and enddate is null;
+
+                --enddate aps case services.
+                For v_programarea in (select asservicesoncaseid , personprogramid, caseservicesubtypekey from asservicesoncase where ascaseid = v_oldintakeserviceid and caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') and enddate is null and activeflag = 1) 
+
+                loop
+
+                        select investigationfindingtypekey into v_investigationfindingtypekey from investigationfinding ig
+                        inner join investigationallegation i on ig.investigationallegationid =i.investigationallegationid
+                        inner join allegation a on a.allegationid =i.allegationid
+                        inner join investigation iv on i.investigationid =iv.investigationid
+                        where a.name =(CASE WHEN v_programarea.caseservicesubtypekey='07A3' THEN 'Financial Exploitation' 
+                        WHEN v_programarea.caseservicesubtypekey='07A5' THEN 'Self-Neglect'
+                        WHEN v_programarea.caseservicesubtypekey='07A1' THEN 'Physical Abuse'
+                        WHEN v_programarea.caseservicesubtypekey='07A2' THEN 'Sexual Abuse/Exploitation'
+                        WHEN v_programarea.caseservicesubtypekey='07A4' THEN 'Neglect by Others'
+                        else '' end)  and a.activeflag =1
+                        and i.activeflag =1 and ig.activeflag =1 and iv.intakeserviceid = v_oldintakeserviceid
+                        order by ig.insertedon desc limit 1;
+                
+                      if (v_programarea.caseservicesubtypekey = '07A5') then
+                      
+                        select investigationfindingtypekey into v_investigationfindingtypekey from investigationfinding ig
+                        inner join investigationallegation ia on ia.investigationallegationid = ig.investigationallegationid 
+                        inner join investigation iv on iv.investigationid = ia.investigationid 
+                        where 
+                        ia.allegationid ='00000000-0000-0000-0000-000000000000' and ia.activeflag =1 and ig.activeflag =1 and
+                        iv.intakeserviceid  = v_oldintakeserviceid limit 1;
+                      end if;
+                      
+                        v_reasoncd='';
+                        if (v_investigationfindingtypekey = 'UC')                                                                                                                                                                                                                                                                                                                                                                               
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3419';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;                                                                                                                                                                                                                                                                                                                                                                                               
+                                                                                                                                                                                                                          
+                        if (v_investigationfindingtypekey = 'ID')                                                                                                                                                                                                                                                                                                                                                                            
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3420';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;
+
+                        if (v_investigationfindingtypekey = 'UD')                                                                                                                                                                                                                                                                                                                                                                            
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3421';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;
+                        
+                        if (v_investigationfindingtypekey = 'RO')                                                                                                                                                                                                                                                                                                                                                                            
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3422';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;
+
+                          UPDATE asservicesoncase
+                          SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, approvalstatus = 'closed', reason = v_reasoncd
+                          WHERE asservicesoncaseid = v_programarea.asservicesoncaseid;
+
+                          UPDATE personprogramarea
+                          SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = v_reasoncd
+                          WHERE personprogramid = v_programarea.personprogramid;
+
+   
+
+
+                  UPDATE asservicesoncase
+                  SET enddate=now(), updatedon=now(), updatedby=v_securityuserid , approvalstatus = 'closed', reason = '3414'
+                  WHERE asservicesoncaseid = v_programarea.asservicesoncaseid and enddate is null;
+
+                  UPDATE personprogramarea
+                  SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = '3414'
+                  WHERE personprogramid = v_programarea.personprogramid and enddate is null;
+
+                End loop;  
+                 
+                 
+      end if;
+
+ 
+ end if;
+ELSE  
+  RAISE NOTICE 'Calling as_createduplicatemaltreatmentallegation';
+  SELECT as_createduplicatemaltreatmentallegation INTO  v_createduplicatemaltreatmentallegation
+  FROM as_createduplicatemaltreatmentallegation(v_oldintakeserviceid,v_newintakeserviceid,v_securityuserid);
+
+  update caseassignment 
+  set enddate = now(), updatedon = now(), updatedby = v_securityuserid
+  where objectid = v_oldintakeserviceid and activeflag=1 and enddate is null;
+
+
+  SELECT personid INTO v_av_personid FROM intakeservicerequestactor isra WHERE isra.intakeserviceid = v_oldintakeserviceid AND isra.activeflag = 1 AND isra.intakeservicerequestpersontypekey in ('AV','RA') ORDER BY isra.insertedon DESC LIMIT 1;
+  
+  v_personprogramid = gen_random_uuid();
+  INSERT INTO personprogramarea
+  (personprogramid, personid, startdate, enddate, insertedon, insertedby, updatedon, updatedby, activeflag, datavalidflag, clientmergeid, endreasonkey, ifpsatriskflag, old_id, programkey, subprogramkey, objecttypekey, objectid, entityid, alternateid, datatransferflag, datasentdate, etl_userid, etl_load_date, sourcetype)
+  VALUES(v_personprogramid, v_av_personid, now(), NULL, now(), v_securityuserid, now(), v_securityuserid, 1, NULL, NULL, NULL, 0, NULL, '07M1', '', 'servicerequest', v_newintakeserviceid, null, null, 'C', now(), NULL, NULL, 'AS');
+  
+
+
+
+  select count(*) into v_asservicecount from asservicesoncase a 
+  join intakeservicerequest i on i.intakeserviceid = a.ascaseid 
+  where 
+  a.caseserviceid = i.intakeservreqtypeid 
+  and a.ascaseid =v_oldintakeserviceid
+  and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1')
+  and a.enddate is null and a.activeflag = 1;
+
+  if(v_asservicecount = 0) then
+  
+  INSERT INTO asservicesoncase
+    (asservicesoncaseid, personprogramid, ascaseid, approvalstatus, reason, enddate, activeflag, caseserviceid, caseservicetypeid, insertedon, insertedby, updatedon, updatedby, routingid, personid, caseservicesubtypekey, startdate, recon_due_dt, recon_done_dt)
+    select gen_random_uuid(), v_personprogramid, v_newintakeserviceid, 'approved', NULL, NULL, 1, asoc1.caseserviceid, asoc1.caseservicetypeid, now(), v_securityuserid, now(), v_securityuserid, NULL, v_av_personid, '07M1', now(), NULL, NULL
+    from asservicesoncase asoc1 WHERE ascaseid = v_oldintakeserviceid and (caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') OR caseservicesubtypekey = '07M1')  and activeflag = 1 order by asoc1.insertedon desc limit 1;
+
+  end if;
+
+  INSERT INTO asservicesoncase
+  (asservicesoncaseid, personprogramid, ascaseid, approvalstatus, reason, enddate, activeflag, caseserviceid, caseservicetypeid, insertedon, insertedby, updatedon, updatedby, routingid, personid, caseservicesubtypekey, startdate, recon_due_dt, recon_done_dt)
+  select gen_random_uuid(), v_personprogramid, v_newintakeserviceid, 'approved', NULL, NULL, 1, asoc1.caseserviceid, asoc1.caseservicetypeid, now(), v_securityuserid, now(), v_securityuserid, NULL, v_av_personid, '07M1', now(), NULL, NULL
+  from asservicesoncase asoc1 WHERE ascaseid = v_oldintakeserviceid and enddate is null and activeflag = 1 limit 1;
+
+  --end if;
+
+  For v_programarea in (select asservicesoncaseid , personprogramid from asservicesoncase where ascaseid = v_oldintakeserviceid and caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') and enddate is null and activeflag = 1) 
+
+  loop
+
+    UPDATE asservicesoncase
+    SET enddate=now(), updatedon=now(), updatedby=v_securityuserid , approvalstatus = 'closed', reason = '3414'
+    WHERE asservicesoncaseid = v_programarea.asservicesoncaseid;
+
+    UPDATE personprogramarea
+    SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = '3414'
+    WHERE personprogramid = v_programarea.personprogramid;
+
+  End loop;  
+END IF;
+
+RETURN QUERY 
+
+ SELECT v_fromsecurityusersid, DAT.ServiceRequestNumber as ResponseServiceReqNum,
+    DAT.IntakeServiceId as ResponseIntakeServiceId 
+    ,CAST('SUCCESS' as character varying) AS Message ,                            
+          COALESCE((SELECT CAST(INSRA.IntakeServiceRequestActorId AS VARCHAR(50))                            
+           FROM IntakeServiceRequestActor INSRA                            
+                JOIN Actor AC  ON INSRA.ActorId = AC.ActorId                             
+           WHERE  INSRA.IntakeServiceId = DAT.IntakeServiceId AND AC.ActorType in ('RA','RC') limit 1                           
+           ),NULL) AS IntakeServiceRequestActorId                               
+   FROM intakeservicerequest DAT where DAT.intakeserviceid = v_newintakeserviceid;  
+
+DROP TABLE sp_CreateIntake_Temp_DAGeneral;
+DROP TABLE sp_CreateIntake_Temp_DAType;
+DROP TABLE sp_CreateIntake_Temp_PersonAlias;
+DROP TABLE sp_CreateIntake_Temp_DAPerson;
+--DROP TABLE sp_CreateIntake_Temp_DARecordings;
+--DROP TABLE sp_CreateIntake_Temp_ProgressNote;
+--DROP TABLE sp_CreateIntake_Temp_CrossReference;
+DROP TABLE sp_CreateIntake_Temp_DAPersonTemp;
+--DROP SEQUENCE sp_createintake_temp_datype_seq;
+
+END IF;
+
+END;
+
+$function$
+

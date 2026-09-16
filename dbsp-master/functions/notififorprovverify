@@ -1,0 +1,46 @@
+CREATE OR REPLACE FUNCTION notififorprovverify()
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+declare 
+vl_msgdata json;
+vl_msg character varying;
+vl_notifymsg character varying;
+vl_status text;
+i json;
+
+begin
+select json_agg(x) as msgdata into vl_msgdata 
+from (
+select   distinct tpa.provider_id,tpa.applicant_id ,tpd.fromroleid,tpd.fromsecurityusersid,
+(CASE WHEN (tp.provider_nm is null OR tp.provider_nm ='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) ELSE tp.provider_nm END) AS provider_nms,
+(select distinct tpu.securityusers_id from tb_provider_userconfig tpu where tpa.provider_id::int = tpu.provider_id and tpu.securityusers_id is not null limit 1) as provider_userid
+from tb_provider_referral tpr 
+join tb_provider_applicant tpa on tpr.provider_id :: varchar = tpa.provider_id
+join tb_provider_decision tpd on tpa.applicant_id = tpd.objectid 
+join tb_provider tp on tpa.provider_id :: int = tp.provider_id
+where 
+tpd.fromroleid = 'Program Manager' and
+tpd.objectid not in 
+(select distinct objectid from tb_provider_decision  where fromroleid in('Applicant/Provider','Executive Director')) and
+(date_part('day', now()-insertedon) > 10)
+)x;
+
+for i in select json_array_elements(Vl_msgdata)
+loop
+vl_msg := 'Referal notification for Provider('|| coalesce(i->>'provider_nms','') ||') and Provider id('|| coalesce(i->>'provider_id','')|| ') to submit application '|| 'for applicant id('||coalesce(i->>'applicant_id','') || ')';
+vl_notifymsg := 'Referal notification for Provider('|| coalesce(i->>'provider_nms','') ||') and Provider id('|| coalesce(i->>'provider_id','')|| ') to submit application '|| 'for applicant id('||coalesce(i->>'applicant_id','') || ')';
+
+SELECT prov_send_notification INTO vl_status FROM prov_send_notification(i->>'fromsecurityusersid',i->>'provider_userid',i->>'fromsecurityusersid',
+                         'System', 'High', vl_msg,  vl_notifymsg , i ->> 'applicant_id',false , false);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+
+SELECT prov_send_notification INTO vl_status FROM prov_send_notification(i->>'provider_userid',i->>'fromsecurityusersid',i->>'provider_userid',
+                         'System', 'High', vl_msg,  vl_notifymsg , i ->> 'applicant_id',false , false);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+end loop; 
+
+vl_status := 'SUCCESS';
+return vl_status;
+END;
+$function$
+

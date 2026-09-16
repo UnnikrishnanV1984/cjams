@@ -1,0 +1,202 @@
+CREATE OR REPLACE FUNCTION sp_batch_sp_log(as_sp_nm character varying, al_batch_log_id bigint, as_action_sw character, al_updt_batch_sp_log_id bigint, as_arguments character varying, as_status character, as_comments character varying)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+----------------------------------------------------------------------------------------------
+-- Author          : Vineet Tirodkar
+-- Date            : 06/15/2012
+-- Description     : This SP is to capture statistics (pertaining to the stored procedures) 
+--                   such as run date, start time, end time, success/failure, and so forth in the TB_BATCH_SP_LOG table. 
+-- Request #       : PRJ-02667 - MD public Batch Process Redesign
+
+-- Arguments:
+-- 1) IN as_sp_nm (SP_NM from table TB_BATCH_SP_MASTER)
+-- 2) IN al_batch_log_id (BATCH_LOG_ID as FK)
+-- 3) IN as_action_sw ('I' to Insert & 'U' to Update record in TB_BATCH_SP_LOG)
+-- 4) IN al_updt_batch_sp_log_id (BATCH_SP_LOG_ID PK of TB_BATCH_SP_LOG for Update the record)
+-- 5) IN as_arguments (Comma separated list of arguments of SP)
+-- 6) IN as_status (Y/N to update SUCCESS_SW based on the run of main SP)
+-- 7) IN as_comments (Provision for additional comments)
+
+-- SP will return new BATCH_SP_LOG_ID to the script when action is 'I' & for any error SP will return -1
+-- Note: 'The data type of the RETURN statement value in an SQL procedure must be INTEGER' 
+-- & INTEGER can hold value up to 2147483647; so need to reset the data in TB_BATCH_SP_LOG after BATCH_SP_LOG_ID = 2147483647
+
+-- Revision:
+-- 11/24/2020 - Vineet Tirodkar - Modifications to remove redundant raise notices 
+----------------------------------------------------------------------------------------------
+
+DECLARE 
+vs_message_text       VARCHAR DEFAULT '';
+vl_ret_status         INTEGER DEFAULT 0;
+vs_Procedure_nm       VARCHAR DEFAULT 'SP_BATCH_SP_LOG';           
+al_sqlcode            VARCHAR DEFAULT '00000';
+as_error              VARCHAR DEFAULT '';
+vl_batch_sp_master_id BIGINT;
+vl_batch_sp_log_id    INTEGER DEFAULT 0;          
+           
+           
+BEGIN
+ -- Action - Insert
+ IF as_action_sw  = 'I' THEN
+  -- Get BATCH_SP_MASTER_ID
+  BEGIN  
+   -- raise notice '%', al_batch_log_id;
+   -- raise notice '%', vl_batch_sp_master_id;        
+            
+   SELECT BATCH_SP_MASTER_ID 
+    INTO vl_batch_sp_master_id
+   FROM TB_BATCH_SP_MASTER 
+   WHERE UPPER(SP_NM) = UPPER(as_sp_nm)
+    AND BATCH_MASTER_ID IN ( SELECT BATCH_MASTER_ID 
+           FROM TB_BATCH_LOG 
+           WHERE BATCH_LOG_ID = al_batch_log_id
+          ) ;
+
+
+   EXCEPTION WHEN OTHERS THEN                  
+    al_sqlcode := SQLSTATE;
+    vs_message_text :=SQLERRM;
+    as_error := 'Error in getting BATCH_SP_MASTER_ID.';
+    as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+    as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(COALESCE(vl_batch_sp_master_id, 0) as VARCHAR) ;
+    as_error := as_error || vs_message_text;  
+    
+    Select SP_BATCH_ERROR_LOG(  vs_Procedure_nm,
+           al_batch_log_id::bigint,
+           vl_batch_sp_log_id::bigint,
+           NULL::character varying,
+           NULL::integer,
+           NULL::character varying,
+           SQLSTATE::character varying, 
+           as_error::character varying,
+           'Script'::character varying
+           ) INTO vl_ret_status;       
+
+
+    return -1;           
+
+  END;
+                      
+        IF vl_batch_sp_master_id > 0 THEN
+   -- Insert record in TB_BATCH_SP_LOG with Start Time
+   -- BATCH_SP_LOG_ID (Not required - Auto Increment)
+   BEGIN
+    INSERT INTO TB_BATCH_SP_LOG (  BATCH_LOG_ID,
+            BATCH_SP_MASTER_ID,
+            SP_ARGS,
+            COMMENTS_TX,
+            START_TS
+           )
+    VALUES (  al_batch_log_id,
+       vl_batch_sp_master_id,
+       as_arguments,
+       as_comments,
+       CURRENT_TIMESTAMP
+      );  
+                                                        
+                                                        
+    EXCEPTION WHEN OTHERS THEN                  
+     al_sqlcode := SQLSTATE;
+     vs_message_text :=SQLERRM;
+     as_error := 'Error in inserting Start Time into TB_BATCH_SP_LOG.';
+     as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+     as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(COALESCE(vl_batch_sp_master_id, 0) as VARCHAR) ;
+     as_error := as_error || vs_message_text;         
+
+     Select SP_BATCH_ERROR_LOG( vs_Procedure_nm,
+            al_batch_log_id::bigint,
+            vl_batch_sp_log_id::bigint,
+            NULL::character varying,
+            NULL::integer,
+            NULL::character varying,
+            SQLSTATE::character varying, 
+            as_error::character varying,
+            'Script'::character varying
+           ) INTO vl_ret_status;--       
+     return -1;           
+
+   END;                                                        
+                      
+   -- Get the Newly generated BATCH_SP_LOG_ID
+   BEGIN
+    SELECT MAX(BATCH_SP_LOG_ID) 
+     INTO vl_batch_sp_log_id
+    FROM TB_BATCH_SP_LOG
+    WHERE BATCH_LOG_ID = al_batch_log_id
+     AND BATCH_SP_MASTER_ID = vl_batch_sp_master_id ;
+     
+    EXCEPTION WHEN OTHERS THEN                  
+     
+    al_sqlcode := SQLSTATE;
+    vs_message_text :=SQLERRM;
+    as_error := 'Error in getting Newly generated BATCH_SP_LOG_ID.';
+    as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+    as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(COALESCE(vl_batch_sp_master_id, 0) as VARCHAR) ;
+    as_error := as_error || vs_message_text;     
+    
+    Select SP_BATCH_ERROR_LOG( vs_Procedure_nm,
+           al_batch_log_id::bigint,
+           vl_batch_sp_log_id::bigint,
+           NULL::character varying,
+           NULL::integer,
+           NULL::character varying,
+           SQLSTATE::character varying, 
+           as_error::character varying,
+           'Script'::character varying
+            ) INTO vl_ret_status;--       
+    
+    return -1;           
+
+   END;                       
+  END IF;           
+ END IF;
+           
+    -- Action - Update 
+ IF as_action_sw  = 'U' THEN
+  vl_batch_sp_log_id := al_updt_batch_sp_log_id;
+
+  -- Update TB_BATCH_SP_LOG with End Time
+  BEGIN           
+   IF as_comments is NOT NULL THEN
+    UPDATE TB_BATCH_SP_LOG 
+     SET SUCCESS_SW = as_status,
+      END_TS = CURRENT_TIMESTAMP,
+      COMMENTS_TX = as_comments
+    WHERE BATCH_SP_LOG_ID = al_updt_batch_sp_log_id ;
+   ELSE
+    UPDATE TB_BATCH_SP_LOG 
+     SET SUCCESS_SW = as_status,
+      END_TS = CURRENT_TIMESTAMP
+    WHERE BATCH_SP_LOG_ID = al_updt_batch_sp_log_id ;
+   END IF;
+    
+   EXCEPTION WHEN OTHERS THEN                  
+                  
+    al_sqlcode := SQLSTATE;
+    vs_message_text :=SQLERRM;
+    as_error := 'Error in updating End Time into TB_BATCH_SP_LOG.';
+    as_error := COALESCE(as_error ,'') || CAST(CURRENT_TIMESTAMP AS VARCHAR) ||'::' || vs_Procedure_nm || '.' ;
+    as_error := COALESCE(as_error ,'') || '::RO Batch Master id ::' || CAST(COALESCE(vl_batch_sp_master_id, 0) as VARCHAR) ;
+    as_error := as_error || vs_message_text;         
+       
+                Select SP_BATCH_ERROR_LOG( vs_Procedure_nm,
+           al_batch_log_id::bigint,
+           vl_batch_sp_log_id::bigint,
+           NULL::character varying,
+           NULL::integer,
+           NULL::character varying,
+           SQLSTATE::character varying, 
+           as_error::character varying,
+           'Script'::character varying
+            ) INTO vl_ret_status;--       
+       
+                return -1;           
+  END;                      
+ END IF;
+           
+    Return vl_batch_sp_log_id;
+END ;
+
+$function$
+

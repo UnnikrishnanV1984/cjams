@@ -1,0 +1,1 @@
+ALTER TABLE tb_ive_fostercare_audit ALTER COLUMN reasonforwhytheagencyisnottherepresentativepayee TYPE varchar(100);

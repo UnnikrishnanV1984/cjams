@@ -1,0 +1,1 @@
+ALTER TABLE cjams.ivepersonincome ALTER COLUMN involvedclientname TYPE character varying(100);

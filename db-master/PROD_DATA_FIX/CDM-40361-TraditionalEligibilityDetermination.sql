@@ -1,0 +1,21 @@
+/*
+Issue Description: User needs the Traditional eligibility data as shown in ticket
+Category/Module: Bug
+Root cause: Users cannot save Traditional eligibility data in old plans after recent update
+Fix provided: DB query to edit service plan and show the traditional eligibility data
+Code/Data fix ticket#: CDM-40361
+Regression Impacts: N/A
+Is Code fix Required?: No
+Code fix ticket#: N/A
+Reason why no related code fix: Page working as intended
+Status of the code fix if already submitted and expected prod fix date: data fix done, raising the PR
+Backup before update/ delete:Query:
+*/
+
+--Updating serviceplan to show the eligibility data
+update serviceplan
+set
+serviceplancandidacy = '{"candidates": [], "candidatestraditional": [{"id": "2064436", "ebp": {"notes": null, "utilized": null, "utilizedtypes": null, "additionalinfo": null, "noadditionalinfo": "No", "isebpreferralmade": "No"}, "name": "DANIEL ROWELL ", "details": "None", "candidacy": "0", "disablefield": false, "candidacydate": "2024-07-24T21:15:37.561Z", "imminentrisks": ["NONE"]}, {"id": "2732349", "ebp": {"notes": null, "utilized": null, "utilizedtypes": null, "additionalinfo": null, "noadditionalinfo": "No", "isebpreferralmade": "No"}, "name": "ISAIAH VERNON ROWELL ", "details": "None", "candidacy": "0", "disablefield": false, "candidacydate": "2024-07-24T21:15:38.641Z", "imminentrisks": ["NONE"]}, {"id": "4101008", "ebp": {"notes": null, "utilized": null, "utilizedtypes": null, "additionalinfo": null, "noadditionalinfo": "No", "isebpreferralmade": "No"}, "name": "HANNAH ROWELL ", "details": "None", "candidacy": "0", "disablefield": false, "candidacydate": "2024-07-24T21:15:39.662Z", "imminentrisks": ["NONE"]}, {"id": "4101011", "ebp": {"notes": null, "utilized": null, "utilizedtypes": null, "additionalinfo": null, "noadditionalinfo": "No", "isebpreferralmade": "No"}, "name": "JACOB ROWELL ", "details": "None", "candidacy": "0", "disablefield": false, "candidacydate": "2024-07-24T21:15:41.433Z", "imminentrisks": ["NONE"]}, {"id": "4101007", "ebp": {"notes": null, "utilized": null, "utilizedtypes": null, "additionalinfo": null, "noadditionalinfo": "No", "isebpreferralmade": "No"}, "name": "SARAH ROWELL ", "details": "None", "candidacy": "0", "disablefield": false, "candidacydate": "2024-07-24T21:15:42.149Z", "imminentrisks": ["NONE"]}]}'::jsonb,
+involvedpersons = '{"persons":[{"name":"DANIEL ROWELL ","id":"2064436","imminentrisks":["NONE"],"comment":null,"disabledit":false,"livingininformalkinship":null,"enablelivinginink":false,"previousriskreasonids":["NONE"],"ebp":{"isebpreferralmade":"No","utilized":null,"utilizedtypes":null,"additionalinfo":null,"noadditionalinfo":"No","notes":null}},{"name":"ISAIAH VERNON ROWELL ","id":"2732349","imminentrisks":["NONE"],"comment":null,"disabledit":false,"livingininformalkinship":null,"enablelivinginink":false,"previousriskreasonids":["NONE"],"ebp":{"isebpreferralmade":"No","utilized":null,"utilizedtypes":null,"additionalinfo":null,"noadditionalinfo":"No","notes":null}},{"name":"HANNAH ROWELL ","id":"4101008","imminentrisks":["NONE"],"comment":null,"disabledit":false,"livingininformalkinship":null,"enablelivinginink":false,"previousriskreasonids":["NONE"],"ebp":{"isebpreferralmade":"No","utilized":null,"utilizedtypes":null,"additionalinfo":null,"noadditionalinfo":"No","notes":null}},{"name":"JACOB ROWELL ","id":"4101011","imminentrisks":["NONE"],"comment":null,"disabledit":false,"livingininformalkinship":null,"enablelivinginink":false,"previousriskreasonids":["NONE"],"ebp":{"isebpreferralmade":"No","utilized":null,"utilizedtypes":null,"additionalinfo":null,"noadditionalinfo":"No","notes":null}},{"name":"SARAH ROWELL ","id":"4101007","imminentrisks":["NONE"],"comment":null,"disabledit":false,"livingininformalkinship":null,"enablelivinginink":false,"previousriskreasonids":["NONE"],"ebp":{"isebpreferralmade":"No","utilized":null,"utilizedtypes":null,"additionalinfo":null,"noadditionalinfo":"No","notes":null}}]}',
+updatedby = 'CDM-40361', updatedon = now()
+where serviceplanid = '0fd61fbc-41ae-4b5d-afa8-98603808d5a2' and activeflag = 1;

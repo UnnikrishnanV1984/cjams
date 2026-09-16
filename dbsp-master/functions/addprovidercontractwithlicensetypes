@@ -1,0 +1,162 @@
+CREATE OR REPLACE FUNCTION addprovidercontractwithlicensetypes(insertedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+returnStatus text;
+
+contractId numeric;
+providerId numeric;
+contractStartDate date;
+contractEndDate date;
+comments text;
+estimateValue numeric;
+contractReceivedDate date;
+contractEntryDate date;
+contractSolicitation text;
+contractTypeNewValue text;
+contractNumber text;
+contractAgency text;
+contractTermType text;
+contractTermStatus text;
+contractTermEndReason text;
+ contractpo text;
+ contractbpo text;
+ totalcontractbeds text;
+contractLicenseTypes json;
+ contractBudgetCodes json; 
+ contractBudgetType text;  
+currentRow json;
+ budgetCodelicense json;                                                                                                                                         
+ v_license_bed integer;
+ v_irc_bed_capacity integer;
+ v_fiscal_date timestamp ;
+ v_contract_license_type_status character varying;   
+contractfiscalyear json;
+
+BEGIN
+
+contractId=insertedtlsobj->>'contract_id';
+providerId=insertedtlsobj->>'provider_id';
+contractStartDate= insertedtlsobj->>'start_dt';
+contractEndDate =insertedtlsobj->>'end_dt';
+comments=insertedtlsobj->>'comments_tx';
+estimateValue= insertedtlsobj->>'estimate_value_no';
+contractReceivedDate= insertedtlsobj->>'contract_received_date';
+contractEntryDate = insertedtlsobj->>'contract_entry_date';
+contractSolicitation = insertedtlsobj->>'contract_solicitation';
+contractTypeNewValue =insertedtlsobj->>'contract_type_new_value';
+contractNumber= insertedtlsobj->>'contract_number';
+contractAgency = insertedtlsobj->>'contract_agency';
+contractTermType= insertedtlsobj->>'contract_term_type';
+contractTermStatus= insertedtlsobj->>'contract_term_status';
+contractTermEndReason= insertedtlsobj->>'contract_term_end_reason';
+contractLicenseTypes= insertedtlsobj->>'contract_license_types';
+contractfiscalyear= insertedtlsobj->>'fiscalyeararray';
+contractBudgetCodes= insertedtlsobj->>'contract_budget_codes';
+ contractBudgetType= insertedtlsobj->>'budget_code_type';
+ contractpo = insertedtlsobj->>'contract_po';
+ contractbpo = insertedtlsobj->>'contract_bpo';
+ totalcontractbeds = insertedtlsobj->>'total_contract_beds';                                                                                          
+v_license_bed := insertedtlsobj->>'license_bed';
+v_irc_bed_capacity := insertedtlsobj->>'irc_bed_capacity';
+v_fiscal_date := insertedtlsobj->>'fiscal_date';
+v_contract_license_type_status :=  insertedtlsobj->>'contract_license_type_status';  
+
+
+RAISE NOTICE '111 : %', insertedtlsobj->>'contract_po' ;                                                                                                                                                                          
+RAISE NOTICE '222 : %', insertedtlsobj->>'contract_bpo' ;  
+RAISE NOTICE '333 : %', insertedtlsobj->>'total_contract_beds' ; 
+
+-------
+--- Update if the contract id has value
+--- IF providerrateid>0
+--- then 
+--- update tb_prov_program_rates set prov_program_actual_max_cd='5590' where program_id=providerId and program_rate_id=providerrateid;
+--- 
+--- END IF;
+-------
+
+if(contractId is not null)
+then
+UPDATE tb_provider_contracts
+SET contract_type_cd='', start_dt=contractStartDate, end_dt=contractEndDate, comments_tx=comments, provider_id=providerId,
+estimate_value_no=estimateValue, update_ts=now(), update_user_id= insertedtlsobj->>'update_user_id',
+delete_sw='N'::bpchar, status_cd='', contract_received_date=contractReceivedDate, contract_entry_date=contractEntryDate, 
+contract_solicitation=contractSolicitation, contract_type_new_value=contractTypeNewValue, contract_number=contractNumber,
+contract_agency = contractAgency,
+contract_term_type=contractTermType, contract_term_status=contractTermStatus, contract_term_end_reason=contractTermEndReason,
+contract_po = contractpo, contract_bpo = contractbpo, total_contract_beds = totalcontractbeds, contract_budget_type = contractBudgetType
+WHERE contract_id=contractId;
+
+else
+ 
+INSERT INTO tb_provider_contracts
+(contract_type_cd, start_dt, end_dt, comments_tx, provider_id, estimate_value_no,
+contract_received_date, contract_entry_date, contract_solicitation, contract_type_new_value, 
+contract_number, contract_agency, contract_term_type, contract_term_status, contract_term_end_reason,
+   create_ts, create_user_id, update_ts, update_user_id, delete_sw, status_cd, contract_po, contract_bpo, total_contract_beds,
+  contract_budget_type)
+VALUES
+('', contractStartDate, contractEndDate, comments, providerId, estimateValue,
+contractReceivedDate, contractEntryDate, contractSolicitation, contractTypeNewValue,
+contractNumber, contractAgency, contractTermType, contractTermStatus, contractTermEndReason,
+insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id',
+'N'::bpchar, '',insertedtlsobj->>'contract_po',insertedtlsobj->>'contract_bpo',insertedtlsobj->>'total_contract_beds',
+  insertedtlsobj->>'budget_code_type'
+  )  RETURNING contract_id INTO contractId;      
+   
+-- Get the contract_id that was inserted using sequence, and add it to the tb_contract_program
+-- Insert into the tb_contract_program, for each of the contract license types selected
+FOR currentRow IN SELECT * FROM json_array_elements(contractLicenseTypes)
+LOOP
+
+INSERT INTO tb_contract_program
+(contract_id, program_nm, start_dt, end_dt, capacity_percentage_no, contract_beds_no, vacancy_no, preferred_cd, program_status_cd, admission_comments_tx, 
+create_ts, create_user_id, update_ts, update_user_id, 
+delete_sw, program_purpose_cd, child_specific_agreement_cd, child_specific_update_staff_id, child_specific_change_ts,
+license_no, license_bed,irc_bed_capacity,fiscal_date,contract_license_type_status)                                                                                                                                               
+ VALUES(contractId, '', null, null, 0, 0, 0, '', '', '',                                                                                                   
+ insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id',                         
+ 'N'::bpchar, '', '', 0, '', currentRow->>'license_no',v_license_bed , v_irc_bed_capacity , v_fiscal_date , v_contract_license_type_status);                                                                                                   
+END LOOP;
+
+FOR budgetCodelicense IN SELECT *FROM  json_array_elements(contractBudgetCodes)
+LOOP
+
+ INSERT INTO tb_contract_budget_codes
+ (contract_id, budget_code, license_no, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+ VALUES (contractId,  budgetCodelicense->>'budget_code', budgetCodelicense->>'license_no', insertedtlsobj->>'create_ts', 
+ insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id', 'N'::bpchar, 1);  
+ END LOOP;  
+
+end if;
+
+-- Get the contract_id that was inserted using sequence, and add it to the tb_contract_fiscal_year
+-- Insert into the tb_contract_fiscal_year, for each generated fiscal year
+
+if contractfiscalyear is not null then
+ 
+FOR currentRow IN SELECT * FROM json_array_elements(contractfiscalyear)
+LOOP
+
+RAISE NOTICE 'values %', currentRow->>'fiscalstartdate';
+INSERT INTO tb_contract_fiscal_year
+(contract_id, fiscalyear, fiscalstartdate, fiscalenddate, amount, create_ts, create_user_id, update_ts, update_user_id)
+VALUES(contractId, (currentRow->>'fiscalyear')::int4, currentRow->>'fiscalstartdate', currentRow->>'fiscalenddate',
+(currentRow->>'amount')::numeric, insertedtlsobj->>'create_ts', insertedtlsobj->>'create_user_id', insertedtlsobj->>'update_ts', insertedtlsobj->>'update_user_id');
+
+end loop;
+
+End if;
+
+
+returnStatus:= 'Success';
+
+RETURN returnStatus;
+                                                      
+END;
+
+$function$
+

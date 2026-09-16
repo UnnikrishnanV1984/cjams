@@ -1,0 +1,198 @@
+CREATE OR REPLACE FUNCTION as_f_fm005r_expenditures(start_date date, end_date date)
+ RETURNS TABLE(fiscal_category_cd character, current_payments numeric, current_adjustments numeric, current_receivalbles numeric, net_current_expenditures numeric, federal_amt numeric, state_amt numeric, client_count numeric, county text)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+( 
+select 
+tb_main.FISCAL_CATEGORY_CD,
+ sum(tb_main.CURRENT_PAYMENTS) CURRENT_PAYMENTS,
+sum(tb_main.CURRENT_ADJUSTMENTS) CURRENT_ADJUSTMENTS,
+ sum(tb_main.CURRENT_RECEIVALBLES) CURRENT_RECEIVALBLES,
+sum(tb_main.NET_CURRENT_EXPENDITURES) NET_CURRENT_EXPENDITURES,
+ sum(tb_main.FEDERAL_AMT) FEDERAL_AMT,
+sum(tb_main.STATE_AMT) STATE_AMT,
+ sum(coalesce(tb_main.CLIENT_COUNT :: numeric,0)) CLIENT_COUNT  ,
+ tb_main.county from (
+SELECT  main.FISCAL_CATEGORY_CD
+        ,main.CURRENT_PAYMENTS
+        ,main.CURRENT_ADJUSTMENTS
+        ,main.CURRENT_RECEIVALBLES
+        ,((main.CURRENT_PAYMENTS  + main.CURRENT_ADJUSTMENTS)    -  main.CURRENT_RECEIVALBLES )  AS NET_CURRENT_EXPENDITURES
+        ,main.FEDERAL_AMT     
+        ,main.STATE_AMT
+        ,coalesce(main.CLIENT_COUNT,0) CLIENT_COUNT,
+      -- as_f_plvalue(COUNTY_CD,104) as county
+        (SELECT
+distinct trim(value_tx) as value_tx
+FROM TB_PICKLIST_VALUES 
+WHERE PICKLIST_TYPE_ID =104  AND
+TRIM(PICKLIST_VALUE_CD)  = 1448 :: varchar AND
+DELETE_SW <> 'Y' AND ACTIVE_SW = 'Y') as county
+FROM
+(
+        --CURRENT PAYMENTS
+   SELECT TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,
+      SUM(COALESCE(FINAL_AMOUNT_NO,0)) AS CURRENT_PAYMENTS,
+      0 as CURRENT_ADJUSTMENTS,
+      0 as CURRENT_RECEIVALBLES,
+               0  AS FEDERAL_AMT,     
+               0  AS STATE_AMT, 
+                        0 AS CLIENT_COUNT,county_cd
+                  FROM   TB_FISCAL_CATEGORY_MASTER  LEFT OUTER JOIN
+     (select final_amount_no,final_fiscal_category_cd,county_cd from tb_payment_detail where payment_id in (
+     SELECT PH.PAYMENT_ID FROM TB_PAYMENT_HEADER PH,TB_PAYMENT_STATUS PS
+      WHERE PH.PAYMENT_ID = PS.PAYMENT_ID AND
+     PH.PAYMENT_TYPE_CD IN ('4','6','7','5689','5989') AND PH.PAYMENT_START_DT >= CAST(Start_date AS DATE)--PREV_MONTH_FIRST_DAY
+     AND PH.PAYMENT_START_DT <= CAST(End_date  AS DATE)--PREV_MONTH_LAST_DAY
+     and (PAYMENT_END_DT <= CAST(End_date  AS DATE)--PREV_MONTH_LAST_DAY 
+       OR PH.PAYMENT_END_DT IS NULL )
+     AND PS.PAYMENT_STATUS_CD = '1636')) AA
+     ON TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD = AA.final_fiscal_category_cd
+     WHERE TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N'
+     GROUP BY TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD ,county_cd  
+   
+   UNION
+   
+   --CURRENT ADJUSTSMENTS
+    SELECT TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,
+      0 AS CURRENT_PAYMENTS,
+      SUM(COALESCE(FINAL_AMOUNT_NO,0))   AS CURRENT_ADJUSTMENTS,
+      0 as CURRENT_RECEIVALBLES,
+               0  AS FEDERAL_AMT,     
+               0  AS STATE_AMT,
+            0 AS CLIENT_COUNT,county_cd  
+                   FROM   TB_FISCAL_CATEGORY_MASTER  
+                   LEFT OUTER JOIN
+     (select final_amount_no,final_fiscal_category_cd,county_cd from tb_payment_detail where payment_id in (
+     SELECT PH.PAYMENT_ID FROM TB_PAYMENT_HEADER PH,TB_PAYMENT_STATUS PS
+      WHERE PH.PAYMENT_ID = PS.PAYMENT_ID AND
+     PH.PAYMENT_TYPE_CD IN ('3294') AND PH.PAYMENT_START_DT >= CAST(Start_date AS DATE) --PREV_MONTH_FIRST_DAY
+     AND PH.PAYMENT_START_DT <= CAST(End_date  AS DATE)--PREV_MONTH_LAST_DAY
+     and (PAYMENT_END_DT <= CAST(End_date  AS DATE) --PREV_MONTH_LAST_DAY 
+       OR PH.PAYMENT_END_DT IS NULL )
+     AND PS.PAYMENT_STATUS_CD = '1636')) AA
+     ON TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD = AA.final_fiscal_category_cd
+         WHERE TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N'
+     GROUP BY TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,county_cd
+   UNION
+   
+--CURRENT RECEIVABLES (COLLECTED AND OFFSET AMOUNTS)
+             SELECT TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,
+                      0 AS CURRENT_PAYMENTS,
+                   0 AS CURRENT_ADJUSTMENTS,
+                   SUM(COALESCE(AA.RECEIVABLE_AMT,0)  )  AS CURRENT_RECEIVALBLES ,
+                   0  AS FEDERAL_AMT,     
+                   0  AS STATE_AMT,
+                            0 AS CLIENT_COUNT,county_cd          
+                   FROM   TB_FISCAL_CATEGORY_MASTER
+                            LEFT OUTER JOIN 
+                            (SELECT PD.FINAL_FISCAL_CATEGORY_CD,COALESCE(PR.PAYMENT_AMOUNT_NO,0) AS RECEIVABLE_AMT,pd.county_cd
+                            FROM TB_RECEIVABLE_LIQUIDATION RL,TB_PAYMENT_RECEIPT PR,
+                                TB_RECEIVABLE_DETAIL RD,TB_PAYMENT_DETAIL PD
+                            WHERE RD.RECEIVABLE_DETAIL_ID = RL.RECEIVABLE_DETAIL_ID AND
+                            PD.PAYMENT_DETAIL_ID = RD.PAYMENT_DETAIL_ID AND
+                            PR.RECEIPT_ID = RL.RECEIPT_ID
+                            AND PR.RECEIPT_DT >= CAST(Start_date AS DATE) --PREV_MONTH_FIRST_DAY
+                            AND PR.RECEIPT_DT <= CAST(End_date  AS DATE) --PREV_MONTH_LAST_DAY
+                    UNION  ALL
+                            SELECT PD.FINAL_FISCAL_CATEGORY_CD,COALESCE(RO.OFFSET_AMOUNT_NO,0) AS RECEIVABLE_AMT,pd.county_cd
+                            FROM TB_RECEIVABLE_LIQUIDATION RL,TB_RECEIVABLE_OFFSET RO,
+                            TB_RECEIVABLE_DETAIL RD,TB_PAYMENT_DETAIL PD
+                            WHERE RD.RECEIVABLE_DETAIL_ID = RL.RECEIVABLE_DETAIL_ID AND
+                            PD.PAYMENT_DETAIL_ID = RD.PAYMENT_DETAIL_ID AND
+                            RL.OFFSET_ID = RO.OFFSET_ID
+                            AND RO.OFFSET_DT >= CAST(Start_date AS DATE) --PREV_MONTH_FIRST_DAY
+                            AND RO.OFFSET_DT <= CAST(End_date  AS DATE) --PREV_MONTH_LAST_DAY
+       ) AA
+                             ON  TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD = AA.FINAL_FISCAL_CATEGORY_CD
+                                WHERE TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N'
+         GROUP BY TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,county_cd
+
+-- FEDERAL CLAIMS
+ UNION
+            SELECT TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,
+   0 AS CURRENT_PAYMENTS,
+   0   AS CURRENT_ADJUSTMENTS,
+   0 as CURRENT_RECEIVALBLES,
+   SUM(COALESCE(FUNDING_AMOUNT_NO,0))  AS FEDERAL_AMT,     
+   0  AS STATE_AMT,
+            0 AS CLIENT_COUNT,county_cd
+                FROM   TB_FISCAL_CATEGORY_MASTER 
+               LEFT OUTER JOIN (
+    select FUNDING_AMOUNT_NO,final_fiscal_category_cd,county_cd from tb_payment_detail
+    LEFT OUTER JOIN TB_PAYMENT_FUND_ALLOCATION
+    ON tb_payment_detail.PAYMENT_DETAIL_ID = TB_PAYMENT_FUND_ALLOCATION.PAYMENT_DETAIL_ID
+     AND FUNDING_SOURCE_CD = '4894'          -- FEDERAL
+     where payment_id in (
+     SELECT  PH.PAYMENT_ID FROM TB_PAYMENT_HEADER PH,TB_PAYMENT_STATUS PS
+      WHERE PH.PAYMENT_ID = PS.PAYMENT_ID
+     AND PH.PAYMENT_START_DT >= CAST(Start_date AS DATE)  --PREV_MONTH_FIRST_DAY
+     AND PH.PAYMENT_START_DT <= CAST(End_date  AS DATE) --PREV_MONTH_LAST_DAY
+     and (PAYMENT_END_DT <= CAST(End_date  AS DATE)  --PREV_MONTH_LAST_DAY 
+       OR PH.PAYMENT_END_DT IS NULL )
+     AND PS.PAYMENT_STATUS_CD = '1636')) AA
+     ON TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD = AA.final_fiscal_category_cd
+         WHERE TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N'
+     GROUP BY TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,county_cd
+
+  UNION
+--  STATE CLAIMS
+            SELECT  TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,
+   0 AS CURRENT_PAYMENTS,
+   0 AS CURRENT_ADJUSTMENTS,
+   0 as CURRENT_RECEIVALBLES,
+   0 as FEDERAL_AMT,     
+   SUM(COALESCE(FUNDING_AMOUNT_NO,0)) AS STATE_AMT,
+          0 AS CLIENT_COUNT ,county_cd
+                FROM   TB_FISCAL_CATEGORY_MASTER 
+               LEFT OUTER JOIN (
+    select FUNDING_AMOUNT_NO,final_fiscal_category_cd,county_cd from tb_payment_detail
+    LEFT OUTER JOIN TB_PAYMENT_FUND_ALLOCATION
+    ON tb_payment_detail.PAYMENT_DETAIL_ID = TB_PAYMENT_FUND_ALLOCATION.PAYMENT_DETAIL_ID
+     AND FUNDING_SOURCE_CD = '4895'  -- STATE
+     where payment_id in (
+     SELECT  PH.PAYMENT_ID FROM TB_PAYMENT_HEADER PH,TB_PAYMENT_STATUS PS
+      WHERE PH.PAYMENT_ID = PS.PAYMENT_ID
+    AND PH.PAYMENT_START_DT >= CAST(Start_date AS DATE)  --PREV_MONTH_FIRST_DAY
+     AND PH.PAYMENT_START_DT <= CAST(End_date  AS DATE)  --PREV_MONTH_LAST_DAY
+     and (PAYMENT_END_DT <= CAST(End_date  AS DATE) --PREV_MONTH_LAST_DAY 
+       OR PH.PAYMENT_END_DT IS NULL )
+     AND PS.PAYMENT_STATUS_CD = '1636')) AA
+     ON TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD = AA.final_fiscal_category_cd
+         WHERE TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N'
+     GROUP BY TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,county_cd
+UNION
+-- distinct child counts
+     SELECT TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD,    
+      0 AS CURRENT_PAYMENTS,
+                        0 as CURRENT_ADJUSTMENTS,
+                  0 as CURRENT_RECEIVALBLES,
+                        0  AS FEDERAL_AMT,     
+                     0  AS STATE_AMT,
+                        0 as client_count,county_cd
+                                 FROM   TB_FISCAL_CATEGORY_MASTER LEFT OUTER JOIN
+                           (select COUNT( DISTINCT tb_payment_detail.client_id) as client_count,final_fiscal_category_cd,county_cd from tb_payment_detail
+                    where tb_payment_detail.FINAL_SERVICE_ID IS NOT NULL AND
+                     payment_id in (
+                     SELECT PH.PAYMENT_ID FROM TB_PAYMENT_HEADER PH,TB_PAYMENT_STATUS PS
+                      WHERE PH.PAYMENT_ID = PS.PAYMENT_ID
+                    AND PH.PAYMENT_START_DT >= CAST(Start_date AS DATE) --PREV_MONTH_FIRST_DAY
+                    AND PH.PAYMENT_START_DT <= CAST(End_date  AS DATE) --PREV_MONTH_LAST_DAY
+                    and (PAYMENT_END_DT <= CAST(End_date  AS DATE)  --PREV_MONTH_LAST_DAY 
+          OR PH.PAYMENT_END_DT IS NULL )
+             AND PS.PAYMENT_STATUS_CD = '1636')
+             GROUP BY final_fiscal_category_cd,county_cd) AA
+                   ON TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_CD = AA.final_fiscal_category_cd
+                           WHERE TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N'     
+
+  )  MAIN
+  
+ORDER BY  FISCAL_CATEGORY_CD,county) tb_main
+       group by 
+tb_main.FISCAL_CATEGORY_CD,
+tb_main.county);
+END;
+$function$
+

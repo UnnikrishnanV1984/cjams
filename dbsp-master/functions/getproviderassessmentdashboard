@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION getproviderassessmentdashboard(v_securityusersid character varying, v_status character varying, _page integer, _limit integer, v_roletypecode character varying DEFAULT ''::character varying)
+ RETURNS TABLE(totalcount bigint, assessmenttemplateid uuid, intakeserviceid uuid, securityusersid character varying, external_templateid character varying, intakenumber character varying, name text, titleheadertext text, status character varying, duedays integer, assignedon timestamp without time zone, completedon timestamp without time zone, address character varying, phonenumber character varying, state character varying, email character varying, countycode character varying, zipcode character varying, countyname character varying, intakeassessment json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE          
+_offset  integer;
+BEGIN
+_offset := (_page - 1) * _limit;  
+
+RETURN QUERY 
+select count(1) OVER() totalcount,* from (
+   select aas.assessmenttemplateid,aas.intakeserviceid,aas.securityusersid,ast.external_templateid,aas.intakenumber,ast.name, ast.titleheadertext, aas.status,ast.duedays,
+   (select min(a2.insertedon) from assignedassessment a2 where a2.assessmenttemplateid =aas.assessmenttemplateid  
+ and a2.securityusersid = v_securityusersid ) as assignedon, case when aas.status = 'Completed' then aas.insertedon else null end as completedon,
+ stf.address,stf.phonenumber,stf.state,stf.email,stf.countycode,stf.zipcode,c.countyname,  
+ (select * from getassessmentdetails(
+ --aas.intakenumber
+ case when aas.intakenumber is null then aas.intakeserviceid :: character varying else aas.intakenumber end 
+ ,AST.assessmenttemplateid,
+ case when aas.intakenumber is null then true else false end
+ ,v_roletypecode)) as intakassessment 
+  from assignedassessment aas 
+ join assessmenttemplate ast on ast.assessmenttemplateid= aas.assessmenttemplateid and ast.activeflag=1 and aas.activeflag=1
+ 
+left join intakeservicerequest rst 
+on case when aas.intakenumber is null then rst.intakeserviceid= aas.intakeserviceid 
+         else rst.intakenumber=aas.intakenumber end
+and rst.activeflag=1
+
+left join county c on c.countyid=rst.countyid and c.activeflag=1
+left join stateoffice stf on stf.countycode=c.countycode and stf.activeflag=1
+where aas.securityusersid=v_securityusersid 
+AND case when v_status = 'Pending' then aas.status in ('open','Reopen') else aas.status ='Completed' end)as ast
+  
+LIMIT _limit OFFSET _offset;
+
+ END;
+ 
+$function$
+

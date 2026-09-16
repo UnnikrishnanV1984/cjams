@@ -1,0 +1,31 @@
+CREATE OR REPLACE FUNCTION cjams.get_fredura_service_log()
+ RETURNS TABLE(frequency character varying, duration character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- Revision(s):
+-- 05/10/2021 Vineet Tirodkar - Modifications for Provider schema changes (B-102023)
+------------------------------------------------------------------------
+BEGIN
+	RETURN QUERY
+	SELECT CASE WHEN PT.PICKLIST_TYPE_TX LIKE '%Frequency%' THEN  PV.VALUE_TX END  AS frequency
+        ,CASE WHEN PT.PICKLIST_TYPE_TX LIKE '%Duration%'  THEN  PV.VALUE_TX END  AS Duration
+	--  ,PV.VALUE_TX AS DETAIL_SUM
+	--  ,PV.DESCRIPTION_TX
+	--  ,PS.start_dt AS Actual_start_dt
+	--  ,PS.end_dt AS Actual_end_dt
+	--  ,SUBSTRING(SE.create_ts,12,30)  AS Actural_Start_time
+	--  ,SUBSTRING(PS.create_ts,12,30)  AS Actural_End_time
+	--  ,PT.PICKLIST_TYPE_TX
+	--  ,PV.PICKLIST_VALUE_CD                       
+	--  PV.CATEGORY_TX
+	FROM cjams.TB_PICKLIST_VALUES AS PV
+		LEFT JOIN cjams.TB_PICKLIST_TYPE   AS PT ON PT.PICKLIST_TYPE_ID = PV.PICKLIST_TYPE_ID
+		LEFT JOIN TB_services SE ON SE.service_id::INTEGER = PT.PICKLIST_TYPE_ID
+		LEFT JOIN TB_PROVIDER_SERVICES PS ON PS.service_id = SE.service_id
+	WHERE PT.picklist_type_id IN ('1397', '1398');
+
+END
+
+$function$
+;

@@ -1,0 +1,255 @@
+CREATE OR REPLACE FUNCTION providerroutingmonitoring(objectls json)
+ RETURNS TABLE(emailnotify json)
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_appstatus character varying;
+v_objectid character varying;
+v_eventcode character varying;
+v_msg character varying;
+v_msgs character varying;
+v_tosecurityusersid character varying;
+v_tousersid RECORD;
+v_username character varying;
+v_notification character varying;
+v_notifymsg character varying DEFAULT ''::character varying;
+v_site_id character varying;
+v_request_no character varying;
+v_request_type character varying;
+v_status character varying;
+v_isfinal boolean;
+v_activeflag integer;
+v_rejectedbyid character varying;
+resubmit integer;
+v_toroleid character varying;
+v_touserid character varying;
+v_emailid json;
+v_provider_id integer;
+v_expiry_dt date;
+
+
+begin
+v_fromsecurityuserid:= objectls->>'fromsecurityuserid';
+v_appstatus:= objectls->>'status';
+v_objectid:= objectls->>'objectid';
+v_eventcode := objectls->>'eventcode';
+v_tosecurityusersid := objectls->>'tosecurityusersid';
+v_isfinal := objectls->>'isfinalapproval';
+v_toroleid := objectls->>'toroleid';
+v_touserid := objectls->>'tosecurityusersid';
+v_expiry_dt := objectls->>'license_expiry_dt';
+--
+select pm.provider_id 
+into v_provider_id 
+ from prov_monitoring pm where pm.monitoring_id = v_objectid;
+
+select fromsecurityusersid into v_rejectedbyid from tb_provider_decision where objectid = v_objectid and eventcode in ('MVR') and activeflag= 1;
+
+select count(1) into resubmit from tb_provider_decision where objectid = v_objectid and eventcode in ('MVR') and status = 'Rejected' ;
+--update tb_provider_decision set tosecurityusersid = v_fromsecurityuserid
+--where objectid = v_objectid and eventcode in ('LICR') and activeflag= 1;
+
+raise notice 'here';
+
+
+if(v_appstatus = 'Submitted')
+then
+raise notice 'here 1.1';
+v_status := 'Approved';
+v_activeflag := 0;
+raise notice 'here 1.1.1'; 
+update prov_monitoring set license_expiry_dt = v_expiry_dt where monitoring_id = v_objectid;
+if(resubmit = 0)
+then
+v_msg := 'Requested Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_objectid||')';
+else 
+v_msg := 'Resubmitted Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_objectid||')';
+
+end if;
+elsif(v_appstatus = 'Approved')
+then
+raise notice 'here 1.2';
+v_status := 'Approved';
+v_activeflag := 0;
+v_msg := 'Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_objectid||') is Approved';
+raise notice 'here 2';
+raise notice 'here 3';
+if (v_isfinal = true) 
+then   
+update tb_provider_applicant set requested_license_end_date = v_expiry_dt where site_id in (select site_id from prov_monitoring_site where monitoring_id = v_objectid);
+update tb_provider_licensing set license_expiry_dt = v_expiry_dt where site_id in (select site_id from prov_monitoring_site where monitoring_id = v_objectid);
+end if;
+elsif (v_appstatus = 'Rejected')
+then
+v_toroleid := 'OLMQA';
+select tpd.fromsecurityusersid into v_touserid from tb_provider_decision tpd where objectid = v_objectid and eventcode in ('MVR');
+
+v_status := 'Rejected';
+v_activeflag := 1;
+v_msg := 'Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_objectid||') is rejected';
+elsif (v_appstatus = 'Incomplete')
+then
+v_status := 'Incomplete';
+v_activeflag := 1;
+v_msg :=  'Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_objectid||') is Returned';
+--elsif (v_appstatus = 'Rejectedqa')
+--then
+--v_status := 'Rejectedqa';
+--v_activeflag := 1;
+--v_msg := 'Provider ('||v_provider_id||') requested for '||v_request_type||' in the Site ('||v_site_id||') with Request Number
+-- ('||v_request_no||') is Recommented to Reject';
+--elsif (v_appstatus = 'Incompleteqa')
+--then
+--v_status := 'Incompleteqa';
+--v_activeflag := 1;
+--v_msg := 'Provider ('||v_provider_id||') requested for '||v_request_type||' in the Site ('||v_site_id||') with Request Number
+-- ('||v_request_no||') is Recommented to Return';
+end if;
+raise notice 'here 4';
+update tb_provider_decision set activeflag = v_activeflag ,status = v_status where objectid = v_objectid and eventcode in ('MVR') and activeflag= 1;
+
+--if(v_appstatus not in ('Rejected','Incomplete'))
+--then
+raise notice 'here 5';
+INSERT INTO tb_provider_decision
+(decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+toroleid,tosecurityusersid)
+VALUES(gen_random_uuid(),objectls->>'eventcode', v_fromsecurityuserid, objectls->>'fromroleid', v_objectid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+now(), false, objectls->>'remarks', v_appstatus,  (objectls->>'decisiondate')::timestamp,v_toroleid,v_touserid);
+--end if;
+
+--if(v_eventcode = 'MVR' and v_appstatus in ('Submitted'))
+--then 
+--  FOR v_tousersid IN 
+--    select mu.securityusersid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+--     join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+--     where  r.roletypekey in ('OLMQA','OLMPM')
+--     loop
+--      select COALESCE(fullname,'') into v_username
+--     FROM userprofile WHERE securityusersid = v_fromsecurityuserid;
+--      v_msgs:=  v_msg || ' by ';
+--      v_msgs:= COALESCE(v_msgs ,'') ||COALESCE( v_username,'');
+--      raise notice 'v_tousersid.securityusersid %',v_tousersid.securityusersid;
+--    
+--     SELECT prov_send_notification into v_notification  FROM prov_send_notification( v_tousersid.securityusersid,v_fromsecurityuserid, v_tousersid.securityusersid,
+--     'System', 'High', v_msgs,
+--     v_msgs , v_objectid);
+--  end loop;
+-- else 
+ if(v_appstatus in ('Submitted'))
+ then
+  SELECT COALESCE(fullname,'') into v_username
+   FROM userprofile WHERE securityusersid = v_fromsecurityuserid;
+     v_msg:=  v_msg || ' by ';
+     v_msg:= COALESCE(v_msg ,'') ||COALESCE( v_username,'');
+    --raise notice 'v_tousersid.securityusersid %',v_tousersid.securityusersid;
+   SELECT prov_send_notification into v_notification  FROM prov_send_notification(v_tosecurityusersid,v_fromsecurityuserid, v_tosecurityusersid,
+   'System', 'High', v_msg,
+    v_msg , v_objectid);
+-- elsif(v_appstatus in ('Rejectedqa','Incompleteqa'))
+-- then
+--  SELECT COALESCE(fullname,'') into v_username
+--   FROM userprofile WHERE securityusersid = v_fromsecurityuserid;
+--     v_msg:=  v_msg || ' by ';
+--     v_msg:= COALESCE(v_msg ,'') ||COALESCE( v_username,'');
+--      --raise notice 'v_tousersid.securityusersid %',v_tousersid.securityusersid;
+--  SELECT prov_send_notification into v_notification  FROM prov_send_notification(v_tosecurityusersid,v_fromsecurityuserid, v_tosecurityusersid,
+--   'System', 'High', v_msg,
+--    v_msg , v_objectid);
+  elsif(v_appstatus in ('Approved','Rejected'))
+  then 
+  FOR v_tousersid IN 
+   select tpd.fromsecurityusersid as securityusersid from 
+   tb_provider_decision tpd where objectid = v_objectid and eventcode in ('MVR')
+     loop
+     raise notice 'here 6';
+      select COALESCE(fullname,'') into v_username
+     FROM userprofile WHERE securityusersid = v_fromsecurityuserid;
+      v_msgs:=  v_msg || ' by ';
+      v_msgs:= COALESCE(v_msgs ,'') ||COALESCE( v_username,'');
+      raise notice 'v_tousersid.securityusersid %',v_tousersid.securityusersid;
+    
+     SELECT prov_send_notification into v_notification  FROM prov_send_notification( v_tousersid.securityusersid,v_fromsecurityuserid, v_tousersid.securityusersid,
+     'System', 'High', v_msgs,
+     v_msgs , v_objectid);
+  end loop;
+ 
+ else 
+  SELECT COALESCE(fullname,'') into v_username
+   FROM userprofile WHERE securityusersid = v_fromsecurityuserid;
+     v_msg:=  v_msg || ' by ';
+     v_msg:= COALESCE(v_msg ,'') ||COALESCE( v_username,'');
+      --raise notice 'v_tousersid.securityusersid %',v_tousersid.securityusersid;
+  SELECT prov_send_notification into v_notification  FROM prov_send_notification(v_rejectedbyid,v_fromsecurityuserid, v_rejectedbyid,
+   'System', 'High', v_msg,
+    v_msg , v_objectid);
+  
+end if;   
+--end if;
+--
+--if(v_isfinal =  true)
+--then
+--if(v_request_type = 'Voluntary Closure')
+--then
+--update tb_provider_licensing set(license_expiry_dt) 
+--= (select coalesce(pp.request_date,null) 
+--from Providerportalrequest pp 
+--where request_no = v_objectid )
+--WHERE license_application_id = (select license_application_id from tb_provider_licensing 
+--where site_id = (select site_id from providerportalrequest where request_no = v_objectid )::int); 
+-- 
+--elsif(v_request_type = 'License Change')
+--then
+--UPDATE tb_prov_accomodation pa SET (minimum_age_no, maximum_age_no, gender_cd, children_no)
+--= (select coalesce(pp.min_age_to,pp.min_age_from)::integer , coalesce(pp.max_age_to,pp.max_age_from) ::integer, 
+--coalesce(pp.gender_to,pp.gender_from), coalesce(pp.children_no_to,pp.children_no_from) :: integer from Providerportalrequest pp 
+--where request_no = v_objectid )
+--WHERE license_application_id = (select license_application_id from tb_provider_licensing 
+--where site_id = (select site_id from providerportalrequest where request_no = v_objectid )::int);
+--
+--end if;
+--end if;
+
+--RETURN 'success';
+
+if(v_appstatus = 'Submitted')
+then
+select json_agg(j) into v_emailid from (
+select mu.email from muser mu 
+join tb_provider_decision tpd on tpd.tosecurityusersid = mu.securityusersid
+where tpd.objectid =  v_objectid
+and tpd.activeflag =1 limit 1) j;
+raise notice 'here 7';
+elsif(v_appstatus in ('Approved','Rejected'))
+then
+select json_agg(j) into v_emailid from (
+select mu.email from muser mu
+join tb_provider_decision tpd on tpd.fromsecurityusersid = mu.securityusersid
+where tpd.objectid = v_objectid
+and tpd.eventcode = 'MVR' group by mu.email) as j;
+
+elsif(v_appstatus = 'Incomplete')
+then
+select json_agg(j) into v_emailid from (
+select mu.email from muser mu 
+join tb_provider_decision tpd on tpd.fromsecurityusersid = mu.securityusersid
+where tpd.objectid =  v_objectid
+and tpd.activeflag =1 limit 1) as j;
+
+end if;
+
+RETURN QUERY
+select json_agg(x) from (
+select 
+v_emailid,v_msg,v_objectid ,v_provider_id) as x
+;
+end;
+$function$
+

@@ -1,0 +1,54 @@
+ CREATE OR REPLACE FUNCTION public.assessmentscoremapping(v_pagenumber integer, v_limit integer, _assessmentscoretypekey character varying)                                                  
+  RETURNS TABLE(assessmentscoretypekey character varying, typedescription character varying, scoringmethod character varying, name text, assessmenttemplateid uuid)                          
+  LANGUAGE plpgsql                                                                                                                                                                           
+ AS $function$                                                                                                                                                                               
+    DECLARE                                                                                                                                                                                  
+       v_liPageNumber  INT;                                                                                                                                                                  
+       v_liPageSize   INT;                                                                                                                                                                   
+       v_pageoffset  INT;                                                                                                                                                                    
+       scoretypekey character  varying;                                                                                                                                                      
+ BEGIN                                                                                                                                                                                       
+                                                                                                                                                                                             
+   v_liPageNumber := v_pagenumber;                                                                                                                                                           
+   v_liPageSize := v_limit ;                                                                                                                                                                 
+                                                                                                                                                                                             
+   v_liPageNumber := v_liPageNumber-1;                                                                                                                                                       
+   v_pageoffset = v_liPageNumber * v_liPageSize;                                                                                                                                             
+                                                                                                                                                                                             
+     IF  _assessmentscoretypekey != 'undefined' THEN                                                                                                                                         
+     RAISE NOTICE '%','111111111';                                                                                                                                                           
+       scoretypekey = _assessmentscoretypekey;                                                                                                                                               
+     RETURN QUERY                                                                                                                                                                            
+                                                                                                                                                                                             
+                                                                                                                                                                                             
+                                                                                                                                                                                             
+  select a.AssessmentScoreTypeKey as AssessmentScoreTypeKey,a.typedescription as typedescription ,b.scoringmethod as scoringmethod ,c.name ,c.assessmenttemplateid as assessmenttemplateid   
+ from assessmentscoretype a,assessmenttemplatescoremapping b,assessmenttemplate c,assessmentscoringmethod d                                                                                  
+  where a.AssessmentScoreTypeKey= b.AssessmentScoreTypeKey                                                                                                                                   
+  and c.AssessmentTemplateId = b.AssessmentTemplateId and                                                                                                                                    
+  b.scoringmethod =  d.scoringmethod and                                                                                                                                                     
+  a.AssessmentScoreTypeKey = scoretypekey                                                                                                                                                    
+  group by a.AssessmentScoreTypeKey,                                                                                                                                                         
+  a.typedescription,                                                                                                                                                                         
+  a.AssessmentScoreTypeKey,                                                                                                                                                                  
+  b.scoringmethod,c.assessmenttemplateid                                                                                                                                                     
+  order by assessmentscoretypekey asc LIMIT v_liPageSize OFFSET v_pageoffset;                                                                                                                
+                                                                                                                                                                                             
+  ELSE                                                                                                                                                                                       
+ RAISE NOTICE '%','2222222222';                                                                                                                                                              
+  RETURN QUERY                                                                                                                                                                               
+                                                                                                                                                                                             
+     select a.AssessmentScoreTypeKey as AssessmentScoreTypeKey,a.typedescription as typedescription ,b.scoringmethod as scoringmethod ,c.name ,c.assessmenttemplateid as assessmenttemplateid
+ from assessmentscoretype a,assessmenttemplatescoremapping b,assessmenttemplate c,assessmentscoringmethod d                                                                                  
+  where a.AssessmentScoreTypeKey= b.AssessmentScoreTypeKey                                                                                                                                   
+  and c.AssessmentTemplateId = b.AssessmentTemplateId and                                                                                                                                    
+  b.scoringmethod =  d.scoringmethod                                                                                                                                                         
+  group by a.AssessmentScoreTypeKey,                                                                                                                                                         
+  a.typedescription,                                                                                                                                                                         
+  a.AssessmentScoreTypeKey,                                                                                                                                                                  
+  b.scoringmethod,c.assessmenttemplateid                                                                                                                                                     
+  order by assessmentscoretypekey asc LIMIT v_liPageSize OFFSET v_pageoffset;                                                                                                                
+  END IF;                                                                                                                                                                                    
+   END;                                                                                                                                                                                      
+ $function$                                                                                                                                                                                  
+

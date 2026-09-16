@@ -1,0 +1,128 @@
+CREATE OR REPLACE FUNCTION createnewuser(v_email character varying, v_firstname character varying, v_lastname character varying, v_middlename character varying, v_fullname character varying, v_agencycode character varying, v_openamrole character varying, v_countycode character varying, v_teamcode character varying, v_teamname character varying, v_ldss character varying, v_add1 character varying, v_city character varying, v_zipcode character varying, v_phonenumber character varying, v_staffid character varying, v_positioncode character varying, v_positiontitle character varying, v_username character varying, v_super_id character varying, v_as_super_id character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+ declare v_teamid uuid ;
+ v_teammemberid uuid ;
+ v_securityusersid uuid ;
+ v_inactive_securityusersid uuid ;
+ v_sup_securityusersid uuid ;
+ v_as_sup_securityusersid uuid ;
+ v_roleid integer;
+ v_roletypekey character varying;
+ v_teamtypekey character varying; 
+ v_message character varying(100);
+  
+  
+ BEGIN
+ v_roletypekey:= NULL;
+ v_message:= 'New User onboarded Successfully';
+
+    IF (v_staffid IS NULL OR v_staffid = '' OR v_staffid = '1234') THEN
+  v_staffid =  lower(substring(v_firstname, 1, 1)) || lower(v_lastname)::character varying ;
+ END IF;
+
+ Select teamid into v_teamid from team where lower(teamnumber ) = lower(v_teamcode);
+ IF (v_super_id IS NOT NULL AND v_super_id != '')  THEN
+ Select securityusersid into v_sup_securityusersid from userprofile where lower(email ) = lower(v_super_id);
+ END IF;
+ IF (v_as_super_id IS NOT NULL AND v_as_super_id != '')  THEN
+ Select securityusersid into v_as_sup_securityusersid from userprofile where lower(email ) = lower(v_as_super_id);
+ END IF;
+ 
+    SELECT r.id, r.roletypekey, tr.teamtypekey INTO v_roleid, v_roletypekey, v_teamtypekey 
+ from role r, teammemberroletype tr where tr.roletypekey  = r.roletypekey and lower(r.openamrole) = lower(v_openamrole) and r.activeflag = 1 and tr.activeflag=1 limit 1;
+ 
+ IF (v_roletypekey IS NULL) THEN 
+  v_message:= 'Role does not exist';
+ ELSE 
+   /*Team Insert*/
+   IF (coalesce(v_teamid::character varying,'')='') THEN 
+    INSERT INTO team
+    (teamid, activeflag, teamname, teamnumber, teamtypekey, description, officetimingfrom, officetimingto, parentteamid, insertedby, insertedon, updatedby, updatedon, effectivedate, expirationdate, "timestamp", region, regionid, old_id, countyid)
+    VALUES(gen_random_uuid(), 1, v_teamname, v_teamcode, v_teamtypekey, v_teamname, '01:00:00', '04:00:00', (SELECT countyid FROM county WHERE statecountycode =v_countycode AND activeflag =1 LIMIT 1), 'admin', now(), 'admin', now(), now(), NULL, NULL, 0, NULL, NULL, (SELECT countyid FROM county WHERE statecountycode =v_countycode AND activeflag =1 LIMIT 1)) returning teamid into v_teamid ;
+   END IF;
+   
+   Select securityusersid into v_inactive_securityusersid from userprofile where lower(email ) = lower(v_email) and activeflag = 0;
+   
+   If (v_inactive_securityusersid IS NOT NULL) THEN
+   
+   update userprofile
+   set email = REPLACE(v_email, 'gov', 'md.state.com'), updatedon = now(), updatedby = 'admin'
+   where securityusersid = v_inactive_securityusersid :: character varying;
+   
+   update muser
+   set email = REPLACE(v_email, 'gov', 'md.state.com'), updatedon = now(), updatedby = 'admin'
+   where securityusersid = v_inactive_securityusersid :: character varying;
+   
+   END IF;
+   
+   Select securityusersid into v_securityusersid from userprofile where lower(email ) = lower(v_email) and activeflag = 1;
+   
+   /*User Inser*/
+   IF (coalesce(v_securityusersid::character varying,'')=''AND v_roletypekey IS NOT NULL) THEN 
+     
+    INSERT INTO teammember (teammemberid, activeflag, teamid, loadnumber, roletypekey, positioncode, description, isoncall,
+    insertedby, insertedon, updatedby, updatedon, effectivedate, expirationdate, "timestamp", linenumber, voidedby, voidedon, voidreasonid, rtfdate, coadate, old_id, isdefaultroute)
+    VALUES (gen_random_uuid(), 1, v_teamid, v_staffid , v_roletypekey,
+    v_positioncode ,v_positiontitle, true, '', now(), 'admin',  now(),  now(), null, NULL,
+    NULL , NULL, NULL, NULL,  now(), now(), NULL, 1)  returning teammemberid into v_teammemberid; 
+
+    INSERT INTO userprofile(
+     securityusersid, firstname, lastname, displayname, fullname, middlename,
+     activeflag,   email,    insertedby, insertedon, updatedby, updatedon,
+       teamtypekey,usertypekey,autonotification,old_id,title,primarycountycd,supervisorid,assupervisorid)
+    values(gen_random_uuid(),v_firstname,v_lastname,v_firstname || v_lastname,v_fullname,v_middlename,
+     1,v_email ,'admin' ,now(),'admin',now(),v_teamtypekey,'DSDS',false,v_staffid,null,v_countycode,v_sup_securityusersid,v_as_sup_securityusersid) returning securityusersid into v_securityusersid ;
+
+    INSERT INTO securityusers(
+     securityusersid, username , activeflag, insertedby, updatedby, insertedon, updatedon,old_id)
+     select securityusersid, displayname,  1,'admin','admin',now(),now(),'man' from userprofile where email= v_email;
+    INSERT INTO muser(
+        password, email,  id, securityusersid,
+     insertedby, updatedby, insertedon, updatedon, activeflag ,old_id,username)
+     SELECT  '$2a$10$fwlp0MMCDZHj9wk7mNdQ6uf1hQkZXcDYiqlLZZVWK0Ic4PCcm0lyW',email,nextval('muser_id_seq'),securityusersid, 'admin' ,'admin',now(),now(),1, v_staffid,v_username from userprofile where email= v_email;
+    IF COALESCE(v_add1,'')<>'' THEN
+     INSERT INTO userprofileaddress (securityusersid,userprofileaddresstypekey,address,zipcode,city,state,county,countyid,activeflag,insertedby,updatedby)
+     VALUES (v_securityusersid,'P',v_add1,v_zipcode,v_city,'MD',v_ldss,(SELECT countyid FROM county WHERE statecountycode =v_countycode AND activeflag =1 LIMIT 1),1,'admin','admin');
+       END IF;
+    IF COALESCE(v_phonenumber,'')<>'' THEN
+     INSERT INTO userprofilephonenumber (userprofilephonenumberid, securityusersid, activeflag, userprofiletypekey, phonenumber, updatedby, insertedby, updatedon, insertedon ) 
+     VALUES(gen_random_uuid(), v_securityusersid, 1,'cell',v_phonenumber, 'admin','admin',now(),now());
+    END IF;
+    
+    IF (v_teamtypekey = 'AS') THEN
+     INSERT INTO as_teammemberassignment
+      (teammemberassignmentid, activeflag, teammemberid, securityusersid, insertedby, insertedon, updatedby, updatedon, effectivedate)
+     VALUES (gen_random_uuid(), 1, v_teammemberid,v_securityusersid, 'admin', now(), 'admin', now(), now());
+    ELSE
+     INSERT INTO teammemberassignment
+     (teammemberassignmentid, activeflag, teammemberid, securityusersid, insertedby, insertedon, updatedby, updatedon, effectivedate)
+     VALUES (gen_random_uuid(), 1, v_teammemberid,v_securityusersid, 'admin', now(), 'admin', now(), now());
+    END IF; 
+    
+    IF (v_teamtypekey = 'IV-E' OR v_teamtypekey = 'FNS') THEN
+     INSERT INTO rolemapping
+     (id, principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, teamtypekey)
+     select nextval('rolemapping_id_seq'),'USER',id::character varying, v_roleid   ,1, 'admin', 'admin', now(), now(), 'CW'
+     from muser where securityusersid in (select securityusersid from userprofile where email= v_email);  
+    ELSE IF (v_teamtypekey = 'PROV' OR v_teamtypekey = 'PVPROV') THEN
+     INSERT INTO rolemapping
+     (id, principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, teamtypekey)
+     select nextval('rolemapping_id_seq'),'USER',id::character varying, v_roleid   ,1, 'admin', 'admin', now(), now(), 'LDSS'
+     from muser where securityusersid in (select securityusersid from userprofile where email= v_email);       
+    ELSE
+     INSERT INTO rolemapping
+     (id, principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, teamtypekey)
+     select nextval('rolemapping_id_seq'),'USER',id::character varying, v_roleid   ,1, 'admin', 'admin', now(), now(), v_teamtypekey
+     from muser where securityusersid in (select securityusersid from userprofile where email= v_email);    
+      END IF;
+   END IF;  
+  ELSE      
+     v_message:=  (SELECT * FROM updateteamassignment(v_email, v_teamcode, v_countycode, v_teamname, v_roletypekey,v_super_id, v_as_super_id, v_teamtypekey));  
+  END IF;
+ END IF; 
+  return v_message;
+  END  
+   $function$
+

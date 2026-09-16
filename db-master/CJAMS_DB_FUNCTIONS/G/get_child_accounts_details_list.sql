@@ -1,0 +1,223 @@
+Drop function if exists cjams.get_child_accounts_details_list(searchobj json, v_lipagenumber bigint, v_lipagesize bigint);
+CREATE OR REPLACE FUNCTION cjams.get_child_accounts_details_list(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, balanceforancillary numeric, availcoc numeric, obligated_for_anc numeric, assigned_to character varying, requested_by character varying, client_account_id bigint, client_id bigint, client_name character varying, case_id bigint, open_dt date, close_dt date, account_no_tx character varying, account_type_cd text, account_type_nm character varying, status_cd text, status_nm character varying, total_balance_no numeric, available_balance_no numeric, original_available_balance_no numeric, account_exists_sw character, bank_nm character varying, county_cd text, county_nm character varying, comm_bank_nm character varying, comm_account_no character varying, comm_account_id integer, disbursement_id integer, service_id integer, service_nm character varying, tax_type_cd character varying, tax_id_no character varying, fundingstatus text, paymentstatus text, issent integer, tosecurityusersid character varying, intakeserviceid uuid, payee_nm character varying, disbursement_dt date, payment_id integer, category_code text, category_code_cd text, remarks text, adr_street_no character varying, adr_street_nm character varying, adr_city_nm character varying, adr_county_cd character varying, adr_state_cd character varying, adr_zip5_no text,adr_zip4_no text, type_1099_cd character varying, report_1099_sw character, payment_method_cd character varying, client_acc_sw character, disbursment_history json, reason_tx text, disbursement_validation json, obligated_for_ancillary numeric)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 04/19/2023 Vineet Tirodkar - Performance Issue fix (CDM-30377)
+------------------------------------------------------------------------------------------------------------	
+DECLARE  
+
+	v_client_id bigint;
+	v_pagenumber int;
+	v_pageoffset int;
+	v_securityuserid character varying;
+	v_istransaction boolean default false;
+	
+BEGIN 
+	v_client_id := searchobj ->> 'client_id';
+	v_securityuserid := searchobj ->> 'current_user';
+	v_istransaction := searchobj ->> 'istransaction';
+	v_pagenumber := v_liPageNumber - 1;
+	v_pageoffset := v_pagenumber * v_liPageSize;
+
+	return query
+		
+	SELECT COUNT(1) OVER() totalcount,
+		case when (v_istransaction = false and coalesce(clientac.account_type_cd,'') != '592') then GETBALANCEFORANCILLARY(clientac.client_account_id) else null end  as balanceforancillary,
+		case when (v_istransaction = false and coalesce(clientac.account_type_cd,'') != '592') then GETAVAILCOC (clientac.client_account_id) else null end as availcoc,
+		clientac.obligated_for_anc,
+		(select up.fullname from routing r 
+		join  userprofile up on up.securityusersid = r.tosecurityusersid
+		where r.objectid = tcad.disbursement_id ::  character varying  and r.eventcode ='FINALDIS' and r.activeflag =1 order by r.insertedon desc limit 1) as assigned_to,
+		(select up.fullname from routing r 
+		join  userprofile up on up.securityusersid = r.fromsecurityusersid
+		where r.objectid = tcad.disbursement_id ::  character varying  and r.eventcode ='FINALDIS' and r.activeflag =1 order by r.insertedon desc limit 1) as assigned_by,
+		clientac.client_account_id As client_account_id,
+		clientac.client_id As client_id,
+		concat(p.firstname,' ',p.lastname) :: character varying as client_name, 
+		clientac.case_id As case_id,
+		clientac.open_dt As open_dt,
+		clientac.close_dt As close_dt,
+		clientac.account_no_tx As account_no_tx,
+		TRIM(clientac.account_type_cd) As account_type_cd,
+		(select value_tx from tb_picklist_values where PICKLIST_TYPE_ID=40 AND TRIM(PICKLIST_VALUE_CD)=clientac.account_type_cd::text) As  account_type_nm,
+		TRIM(clientac.status_cd) As status_cd,
+		(select value_tx from tb_picklist_values where PICKLIST_TYPE_ID=41 AND  TRIM(PICKLIST_VALUE_CD)=clientac.status_cd::text) As  status_nm,
+		clientac.total_balance_no As total_balance_no,
+		round(coalesce(tcad.amount ,clientac.available_balance_no),2) As available_balance_no,
+		round(clientac.available_balance_no,2) As original_available_balance_no,
+		clientac.account_exists_sw as account_exists_sw,
+		clientac.bank_nm as bank_nm,
+		TRIM(clientac.county_cd) as county_cd,
+		(select value_tx from tb_picklist_values where PICKLIST_TYPE_ID=104 AND  TRIM(PICKLIST_VALUE_CD)=clientac.county_cd::text) As  county_nm,
+		commacc.bank_nm AS comm_bank_nm,
+		commacc.account_no AS comm_account_no,
+		commacc.comm_account_id,  
+		tcad.disbursement_id,tcad.service_id,
+		'' ::  character varying,
+		tcad.tax_type_cd,tcad.tax_id_no::character varying,
+		case when tcad.funding_approval_status='3047' then 'Approved' when tcad.funding_approval_status='3281' then 'Denied' 
+		when tcad.funding_approval_status='3045' then 'Pending'
+		else '' end as fundingStatus,
+		case when tcad.payment_approval_status='3047' then 'Approved' when tcad.payment_approval_status='3281' then 'Denied'
+		when tcad.payment_approval_status='3045' then 'Pending'
+		else '' end as paymentStatu,
+		(select  r.routingstatustypeid :: integer from routing r where r.objectid = tcad.disbursement_id ::  character varying  and r.eventcode ='FINALDIS' and r.activeflag =1  order by r.insertedon desc limit 1) as issent
+		,(select  r.tosecurityusersid from routing r where r.objectid = tcad.disbursement_id ::  character varying  and r.eventcode ='FINALDIS' and r.activeflag =1  order by r.insertedon desc limit 1) as tosecurityuserid
+		,(select ins.servicecaseid from servicecase ins where ins.servicecasenumber = clientac.case_id :: character varying and ins.activeflag=1) as servicecaseid,
+		tcad.payee_nm,tcad.disbursement_dt,tcad.payment_id,
+		case when Trim(clientac.account_type_cd) :: integer = 590 then 'Disbursements from Conserved Accounts (7502)'
+		when Trim(clientac.account_type_cd) :: integer = 591 then 'Disbursements from Dedicated Accounts(7503)' 
+		when Trim(clientac.account_type_cd) :: integer = 592 then 'Disbursements from Youth Accounts(7504)'
+		end as category_code
+		 ,case when Trim(clientac.account_type_cd) :: integer = 590 then '7502' 
+		 when Trim(clientac.account_type_cd) :: integer = 591 then '7503' 
+		 when Trim(clientac.account_type_cd) :: integer = 592 then '7504' 
+		 end as fiscal_category
+		,(select  
+		case when r.routingstatustypeid=58 then  r.remarks 
+		when r.routingstatustypeid=61 then  r.remarks 
+		when  r.tosecurityusersid=v_securityuserid  then  'Pending' 
+		else  r.remarks  end as remarks
+		from routing r where r.objectid = tcad.disbursement_id ::  character varying  and r.eventcode ='FINALDIS' and r.activeflag =1 order by r.insertedon desc limit 1) as remarks
+		,tcad.adr_street_no::character varying,
+		tcad.adr_street_nm,
+		tcad.adr_city_nm,
+		tcad.adr_county_cd,
+		tcad.adr_state_cd,
+		coalesce(lpad(tcad.adr_zip5_no::character varying, 5, '0') ,''),
+		coalesce(lpad(tcad.adr_zip4_no::character varying, 4, '0') ,''),
+		(select tpd.type_1099_cd from tb_payment_detail tpd  where tpd.payment_id = tcad.payment_id limit 1) as type_1099_cd,
+		(select tpd.report_1099_sw from tb_payment_detail tpd  where tpd.payment_id = tcad.payment_id limit 1) as report_1099_sw,
+		(select tph.payment_method_cd from tb_payment_header tph  where tph.payment_id = tcad.payment_id limit 1) as payment_method_cd,
+		tcad.client_acc_sw
+		,(select json_agg(x) from (
+		(select '' as reason_tx,'Approved' as status,r.insertedon approved_dt,up.fullname as approved_by,
+		case when tca.service_id = 101 then 'Final Disbursment' else 'Other Disbursment' end as disbursment_type,
+		tca.disbursement_id, tca.client_account_id, tca.disbursement_dt, tca.client_id, tca.service_id, 
+		tca.amount, tca.payment_id, tca.funding_approval_status, tca.payee_nm,
+		tca.payment_approval_status, tca.adr_type_cd, tca.adr_format_cd, tca.adr_street_no, 
+		tca.adr_street_nm,  tca.adr_city_nm, tca.adr_county_cd, tca.adr_state_cd,
+		coalesce(lpad(tca.adr_zip5_no::character varying, 5, '0') ,''),
+		coalesce(lpad(tca.adr_zip4_no::character varying, 4, '0') ,''), tca.adr_direction_tx, 
+		tca.sprvsr_approval_status_cd, tca.ads_approval_status_cd, tca.tax_id_no, tca.tax_type_cd, tca.adr_street_tx,
+		(select up.fullname from routing r 
+		left join userprofile up on up.securityusersid = r.fromsecurityusersid where 
+		r.objectid = tca.disbursement_id :: character varying and r.eventcode = 'FINALDIS' and r.routingstatustypeid=56 limit 1
+		)  as requested_by,
+		(select r.insertedon from routing r 
+		left join userprofile up on up.securityusersid = r.fromsecurityusersid where 
+		r.objectid = tca.disbursement_id :: character varying and r.eventcode = 'FINALDIS' and r.routingstatustypeid=56 limit 1
+		)  as requested_dt
+		from tb_child_account_disbursement tca 
+		left join routing r on r.objectid = tca.disbursement_id :: character varying and r.eventcode = 'FINALDIS' and r.routingstatustypeid=58
+		left join userprofile up on up.securityusersid = r.tosecurityusersid 
+		where tca.activeflag =0 and tca.client_account_id =clientac.client_account_id and tca.payment_approval_status='3047'  order by r.insertedon desc)
+		union all
+		(select r.routeddescription as reason_tx,'Denied' as status,r.insertedon approved_dt,up.fullname as approved_by,
+		case when tca.service_id = 101 then 'Final Disbursment' else 'Other Disbursment' end as disbursment_type,
+		tca.disbursement_id, tca.client_account_id, tca.disbursement_dt, tca.client_id, tca.service_id, 
+		tca.amount, tca.payment_id, tca.funding_approval_status, tca.payee_nm,
+		tca.payment_approval_status, tca.adr_type_cd, tca.adr_format_cd, tca.adr_street_no, 
+		tca.adr_street_nm,  tca.adr_city_nm, tca.adr_county_cd, tca.adr_state_cd,
+		coalesce(lpad(tca.adr_zip5_no::character varying, 5, '0') ,''),
+		coalesce(lpad(tca.adr_zip4_no::character varying, 4, '0') ,''), tca.adr_direction_tx, 
+		tca.sprvsr_approval_status_cd, tca.ads_approval_status_cd, tca.tax_id_no, tca.tax_type_cd, tca.adr_street_tx,
+		(select up.fullname from routing r 
+		left join userprofile up on up.securityusersid = r.fromsecurityusersid where 
+		r.objectid = tca.disbursement_id :: character varying and r.eventcode = 'FINALDIS' and r.routingstatustypeid=61 limit 1
+		)  as requested_by,
+		(select r.insertedon from routing r 
+		left join userprofile up on up.securityusersid = r.fromsecurityusersid where 
+		r.objectid = tca.disbursement_id :: character varying and r.eventcode = 'FINALDIS' and r.routingstatustypeid=61 limit 1
+		)  as requested_dt
+		from tb_child_account_disbursement tca 
+		left join routing r on r.objectid = tca.disbursement_id :: character varying and r.eventcode = 'FINALDIS'
+		left join userprofile up on up.securityusersid = r.tosecurityusersid 
+		where  tca.client_account_id =clientac.client_account_id  and r.routingstatustypeid=61 order by r.insertedon desc)
+		)x) as disbursment_history
+		,tcad.reason_tx,
+		(select otherdisbursement_validation from otherdisbursement_validation(clientac.client_account_id::integer,clientac.account_type_cd)) as disbursement_validation,
+		(select coalesce(sum(spa.cost_no),0) 
+			from tb_service_purchase_authorization spa 
+		 where spa.delete_sw = 'N' 
+			and coalesce(spa.sprvsr_approval_status_cd, '') <> '3281'
+			and coalesce(spa.ads_approval_status_cd, '') <> '3281' 
+			and coalesce(spa.funding_approval_status_cd, '') <> '3281' 
+			and coalesce(spa.payment_approval_status_cd, '') not in ('3047', '3281')
+			and spa.authorization_id 
+				in (select tr.authorization_id 
+						from tb_account_transaction tr 
+					where tr.client_account_id = clientac.client_account_id 
+						and tr.delete_sw = 'N' 
+						and tr.authorization_id is not null	
+						and (select count(*) 
+								from routing ro 
+							where ro.objectid::character varying = tr.authorization_id::character varying 
+								and ro.activeflag = 1 
+								and ro.routingstatustypeid = '62'
+							) = 0
+					)) as obligated_for_ancillary 
+	from TB_CLIENT_ACCOUNT clientac
+		LEFT JOIN tb_commingled_account commacc ON clientac.comm_account_id=commacc.comm_account_id 
+			AND clientac.delete_sw='N' 
+			AND commacc.delete_sw='N'
+		left join tb_child_account_disbursement tcad on tcad.client_account_id = clientac.client_account_id 
+			and tcad.activeflag = 1 
+		join person p on p.cjamspid = clientac.client_id 
+			and p.activeflag=1 
+	where clientac.client_id=v_client_id
+	group by tcad.reason_tx,
+		assigned_to,
+		assigned_by,
+		clientac.client_account_id ,
+		clientac.client_id ,
+		client_name, 
+		clientac.case_id ,
+		clientac.open_dt ,
+		clientac.close_dt ,
+		clientac.account_no_tx ,
+		clientac.account_type_cd,
+		account_type_nm,
+		clientac.status_cd,
+		status_nm,
+		clientac.total_balance_no,
+		clientac.available_balance_no,
+		original_available_balance_no,
+		clientac.account_exists_sw ,
+		clientac.bank_nm ,
+		clientac.county_cd,
+		county_nm,
+		commacc.bank_nm ,
+		commacc.account_no ,
+		commacc.comm_account_id,  
+		tcad.disbursement_id,tcad.service_id,
+		tcad.tax_type_cd,tcad.tax_id_no,
+		fundingStatus,
+		paymentStatu,
+		issent
+		,  tosecurityuserid
+		,servicecaseid,
+		tcad.payee_nm,tcad.disbursement_dt,tcad.payment_id,
+		category_code
+		, fiscal_category
+		,remarks
+		,tcad.adr_street_no,
+		tcad.adr_street_nm,
+		tcad.adr_city_nm,
+		tcad.adr_county_cd,
+		tcad.adr_state_cd,
+		tcad.adr_zip5_no ,
+		tcad.adr_zip4_no ,
+		type_1099_cd,
+		report_1099_sw,
+		payment_method_cd,
+		tcad.client_acc_sw
+		,tcad.amount,
+		clientac.obligated_for_anc
+	LIMIT v_liPageSize OFFSET v_pageoffset; 
+END;
+
+$function$;

@@ -1,0 +1,1 @@
+alter table csesclientsupportorder alter column sodatasource type character varying;

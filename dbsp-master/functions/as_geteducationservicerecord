@@ -1,0 +1,87 @@
+CREATE OR REPLACE FUNCTION as_geteducationservicerecord(p_intakenumber character varying, p_intakeserviceid uuid)
+ RETURNS TABLE(infojson json)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+     RETURN QUERY 
+      select json_agg(b) as infojson from (
+  select distinct isr.intakenumber,
+ (case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as youthname,
+ cast(p.cjamspid as character varying) as youtid,
+ cast(p.dob as character varying) as dob,
+ cast(concat(ypa.address,',',ypa.address2) as character varying) as youthaddress,
+ cast(p.gendertypekey as character varying) as sex,
+ cast(rt.typedescription as character varying) as race,
+ cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Ht' and activeflag = 1) as character varying) as height,
+ cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Wt' and activeflag = 1) as character varying) as weight,
+ cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Eyecolor' and activeflag = 1 limit 1) as character varying) as eyecolor,
+ cast((select attributevalue from personphysicalattribute where personid = p.personid and physicalattributetypekey = 'Haircolor' and activeflag = 1) as character varying) as haircolor,
+ cast(pgdetail.parentguaridanname as character varying) as parentguaridanname,
+ cast(pgdetail.relationshiptypekey as character varying) as relationtoyouth,
+ cast(pgdetail.parentaddress as character varying) as parentaddress,
+ cast(pgdetail.parentcontactnumber as character varying) as parentcontactnumber,
+ cast(pl.addate as character varying) as admissiondate,
+ cast(pr.providername as character varying) as facilityname,
+ cast(null as character varying) as foldermanager,
+ cast(null as character varying) as area,
+ cast(null as character varying) as groupleader,
+ cast(null as character varying) as teacher,
+ cast(pl.startdatetime as character varying) as dateinitiated,
+ cast(null as character varying) as frwdpoofc,
+ cast(pe.educationname as character varying) as schoolname,
+ cast(cs.countyname as character varying) as schoolcounty,
+ cast(pe.lastgradetypekey as character varying) as grade,
+ cast(pe.lastattendeddate as character varying) as lastaattendeddate,
+ cast(pe.specialeducationtypekey as character varying) as specialeducationservice,
+ cast(null as character varying) as handicappingcode,
+ cast(isc.currentiep as character varying) as activeiep,
+ cast(null as character varying) as creditsearned,
+ cast(null as character varying) as creditneeded,
+ cast(null as character varying) as functestpassed,
+ cast(null as character varying) as instructionalpurpose,
+ cast(null as character varying) as goal
+from intakeservicerequest isr 
+ left join (select *,row_number() over(partition by intakeserviceid order by startdatetime desc) as recno from placement) pl on pl.intakeserviceid = isr.intakeserviceid and pl.activeflag = 1 and pl.recno = 1
+ left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+ join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+ join actor a on a.actorid = isra.actorid and a.activeflag = 1
+ join person p on p.personid = a.personid and p.activeflag = 1
+ left join personaddress ypa on ypa.personid = p.personid and ypa.activeflag = 1
+ left join racetype rt ON rt.racetypekey = P.racetypekey AND rt.activeflag = 1
+ left join (select *,row_number() over(partition by personid order by startdate desc) as recno from personeducation) pe on pe.personid = p.personid and pe.recno = 1
+ --left join school s on s.schoolid = pe.schoolid
+ left join (select  isra.intakeserviceid,
+      row_number() over(partition by isra.intakeserviceid order by rel) as recno,
+      cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying) as parentguaridanname,
+  cast(coalesce(pph.phoneextension,'000')||pph.phonenumber as character varying) as parentcontactnumber,
+  cast(pa.address||' '||pa.address2||' '||pa.city||','||pa.state||','||pa.zipcode as character varying) as parentaddress,ac.relationshiptypekey
+ from intakeservicerequestactor isra  
+ left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+ join actor a on a.actorid = isra.actorid and a.activeflag =1
+ join person p on p.personid = a.personid and p.activeflag = 1
+ left join personphonenumber pph on pph.personid = p.personid
+ left join personaddress pa on pa.personid = p.personid
+ join (select 1 as seq,'father' as relation union 
+    select 2 as seq,'mother' as relation union
+    select 3 as seq,'fosterparent' as relation union 
+    select 4 as seq,'stepparent' as relation union
+    select 5 as seq,'adoptiveparent' as relation union 
+    select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey )pgdetail on pgdetail.intakeserviceid = isr.intakeserviceid and pgdetail.recno = 1 
+ left join emergencycontactperson ep on ep.personid = p.personid and ep.activeflag = 1
+ left join person epp on epp.personid = ep.contactpersonid and epp.activeflag =1 
+ left join personphonenumber eph on eph.personid = epp.personid and eph.activeflag = 1
+ left join ( select r.description,r.ref_key 
+      from referencetype rt 
+      join referencevalues r on rt.referencetypeid = r.referencetypeid and r.activeflag = 1
+      where rt.tablename = 'providerunittype' and rt.activeflag = 1 ) rv on rv.ref_key = pr.providerunit 
+ left join county cs on cs.countyid = pe.countyid and cs.activeflag = 1
+ left join iepspecialeducation isc on isc.personeducationid = pe.personeducationid and isc.activeflag = 1 
+     where isr.activeflag = 1 
+   and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end) 
+   and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end))b;
+   
+END;
+$function$
+

@@ -1,0 +1,50 @@
+CREATE OR REPLACE FUNCTION getlegalcustody(v_personid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_legalcustody json;
+
+BEGIN
+ 
+
+ IF ( v_personid is not null ) THEN  
+  RAISE  NOTICE  'v_personid>>>>>>>>>>>%',v_personid;   
+SELECT json_agg(legalcustody) INTO l_legalcustody FROM (
+SELECT lc.legalcustodyid, lc.servicecaseid,
+   (select servicecasenumber from servicecase where servicecaseid = lc.servicecaseid limit 1) as servicecasenumber,
+    lc.intakeservicerequestactorid,lc.permanencyplanid,
+       lc.legalcustodytypekey, TBPLV.value_text AS legalcustodytypedesc , lc.reason, lc.fromdate, lc.todate, pn.personid, 
+    (SELECT  r2.description 
+  FROM actorrelationship arp, relationshiptype r2 
+  WHERE TRIM(r2.relationshiptypekey) = TRIM(arp.relationshiptypekey) and arp.intakeservicerequestactorid = isra.intakeservicerequestactorid AND arp.activeflag =1 order by arp.updatedon desc LIMIT 1
+    ) relationshiptypekey,
+    padd.address As personaddress, concat_ws(' ',coalesce(pn.prefx,null),coalesce(pn.firstname,null),coalesce(pn.middlename,null),coalesce(pn.lastname,null),coalesce(pn.suffix,null) ):: character varying As personname, 
+    (Select ppn.phonenumber from personphonenumber ppn where ppn.personid = pn.personid AND ppn.activeflag =1 order by updatedon DESC Limit 1),
+ (SELECT  json_agg(legalcustodydetail)  AS  legalcustodydetail  FROM  (
+      SELECT lcy.legalcustodytypekey, rv.description FROM legalcustody lcy
+   INNER JOIN referencevalues rv ON rv.ref_key = lcy.legalcustodytypekey AND rv.activeflag =1 AND lcy.activeflag =1
+   WHERE lcy.legalcustodyid = lc.legalcustodyid               
+ )  legalcustodydetail)
+FROM legalcustody lc
+INNER JOIN person pn ON pn.personid = lc.personid AND pn.activeflag = 1 AND lc.activeflag = 1
+INNER JOIN intakeservicerequestactor isra ON isra.personid = lc.personid 
+--LEFT JOIN actorrelationship arp ON arp.intakeservicerequestactorid = isra.intakeservicerequestactorid AND arp.activeflag =1
+--LEFT JOIN personphonenumber ppn ON ppn.personid = pn.personid AND ppn.activeflag =1
+LEFT JOIN (SELECT max(personaddressid:: character varying) personaddressid, personid FROM personaddress
+  WHERE personaddresstypekey = 'C' AND activeflag =1 GROUP BY personid) pa 
+     ON pa.personid = pn.personid
+LEFT JOIN personaddress padd ON padd.personaddressid:: character varying = pa.personaddressid
+LEFT JOIN  referencevalues as TBPLV ON TBPLV.ref_key = lc.legalcustodytypekey and TBPLV.referencetypeid=28
+WHERE isra.intakeservicerequestactorid =  v_personid
+) AS legalcustody;
+
+RETURN l_legalcustody;     
+
+end if;
+
+
+end;
+
+$function$
+

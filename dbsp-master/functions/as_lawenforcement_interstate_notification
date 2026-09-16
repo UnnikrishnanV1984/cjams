@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION as_lawenforcement_interstate_notification(v_intakeservreqtypeid uuid, v_intakenumber character varying, v_securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE  
+
+v_date timestamp without time zone;
+v_intakeservreqtypekey character varying;
+j_icjunitworkers json;
+v_icjunitworkerid  Character varying; 
+v_notifystatusicj  Character varying;
+v_writwarrentnumber Character varying;
+v_username character varying;
+v_msg character varying;
+v_youthname character varying;
+v_cjamspid bigint;
+ 
+BEGIN
+
+ SELECT intakeservreqtypekey into v_intakeservreqtypekey from intakeservicerequesttype where intakeservreqtypeid = v_intakeservreqtypeid and activeflag = 1;
+ 
+ SELECT coalesce(lastname,'')||', '|| coalesce(firstname,'')into v_username FROM userprofile WHERE securityusersid = v_securityuserid;
+  
+IF lower(v_intakeservreqtypekey) = 'le' THEN
+  
+  SELECT JSON_AGG(mu.securityusersid) AS j_icjunitworkerid INTO j_icjunitworkers FROM  muser mu  
+  JOIN rolemapping rm ON rm.principalid::int = mu.id and rm.activeflag = 1 
+  JOIN role r ON r.id = rm.roleid :: int and r.activeflag = 1
+  WHERE r.roletypekey ilike'%JSUW%' and mu.activeflag=1;
+  
+ FOR  v_icjunitworkerid in SELECT * FROM json_array_elements(j_icjunitworkers) 
+ LOOP 
+  SELECT  ISRIS.writwarrentnumber,
+  cast(initcap(trim(coalesce(P.lastname, ''))|| case when P.suffix is not null then ' ' else '' end || trim(coalesce(P.suffix, '')) || ', ' || trim(coalesce(P.firstname, ''))) as character varying), 
+  P.cjamspid INTO v_writwarrentnumber, v_youthname, v_cjamspid FROM intakedastaging AS IDAS
+  JOIN person as P
+   ON P.personid = IDAS.focuspersonid AND P.activeflag =1
+  JOIN intakeserreqinterstate as ISRIS 
+   ON ISRIS.intakenumber = IDAS.intakenumber AND ISRIS.activeflag = 1
+  WHERE IDAS.intakenumber = v_intakenumber  AND IDAS.activeflag = 1; 
+  
+  v_icjunitworkerid    :=    replace(v_icjunitworkerid,'"','');
+  --v_msg:=  'Approver changed Intake('||v_intakenumber||') to status - '||v_dispositionstatusdescription || ' by ';
+  v_msg:=  'Intake is Submitted by ('||coalesce(v_username, '')||'). Youth Name : ('||coalesce(v_youthname, '')||'), CJAMS ID : ('|| v_cjamspid ||'), Writ/Warrant : ('||coalesce(v_writwarrentnumber, '')||') , Intake : ('||coalesce(v_intakenumber, '')||').';
+
+  SELECT send_notification INTO v_notifystatusicj FROM as_send_notification(v_icjunitworkerid, v_securityuserid, v_icjunitworkerid, 'System', 'High',v_msg , v_msg, v_intakenumber, false);
+
+ END LOOP;
+  
+END IF;  
+ 
+Return 'Success';
+ 
+END;
+$function$
+

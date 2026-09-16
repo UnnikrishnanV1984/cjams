@@ -1,0 +1,91 @@
+CREATE OR REPLACE FUNCTION prov_getteamlist(v_securityusersid character varying, v_teamtypekey character varying, v_teamid character varying)
+ RETURNS TABLE(teamid uuid, teamtypekey character varying, teamnumber character varying, name character varying, region integer, officetimingfrom time without time zone, officetimingto time without time zone, effectivedate timestamp without time zone, expirationdate timestamp without time zone, parentteamid uuid, isdefault integer, parentteamname character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE l_teamid CHARACTER VARYING;
+  l_parentteamid uuid;
+  l_isldss int;  
+
+BEGIN
+
+ if (lower(v_teamtypekey) = 'ldss') then
+  
+
+  SELECT  (pt.teamid)::character varying into l_teamid FROM  teammemberassignment tma 
+  INNER JOIN teammember tm  ON tma.teammemberid = tm.teammemberid 
+  inner join team t on t.teamid = tm.teamid and t.activeflag =1 
+  inner join team pt on pt.teamid = t.parentteamid and pt.teamtypekey ='LDSS' and pt.activeflag =1
+  WHERE tma.securityusersid::character varying = v_securityusersid ::character varying  AND tma.activeflag = 1;
+ raise notice 'ifl_teamid%',l_teamid;
+
+
+ else
+
+  SELECT  (tm.teamid)::character varying into l_teamid FROM  teammemberassignment tma 
+  INNER JOIN teammember tm  ON tma.teammemberid = tm.teammemberid 
+  WHERE tma.securityusersid::character varying = v_securityusersid ::character varying  AND tma.activeflag = 1;
+ 
+  raise notice 'elsel_teamid%',l_teamid;
+
+ end if;
+ 
+ 
+ 
+ if (COALESCE(l_teamid,'') NOT IN ( '','0')) THEN 
+ raise notice 'l_teamid%',l_teamid;
+  IF (v_teamtypekey = 'OLM') or (v_teamtypekey = 'OLMDJS') THEN 
+   RETURN QUERY
+    WITH teams AS (
+     SELECT  t.*,CASE t.teamtypekey WHEN 'LDSS' THEN 2 ELSE 1 END  displayorder
+     FROM  team t
+     WHERE l_teamid::UUID IN (t.teamid, t.parentteamid)     
+    )  
+    SELECT  t.teamid, t.teamtypekey, t.teamnumber, t.teamname AS name, t.region, t.officetimingfrom,
+      t.officetimingto, t.effectivedate, t.expirationdate, t.parentteamid ,
+      case t.teamid when l_teamid::UUID then 1 else 0 end  , tt.teamname AS parentteamname 
+    FROM  teams t LEFT JOIN team tt ON tt.teamid = t.parentteamid 
+    WHERE  t.activeflag =1
+    ORDER BY t.displayorder, t.teamtypekey, t.teamname; 
+   
+  ELSE 
+   RETURN QUERY
+ 
+    WITH RECURSIVE teams AS (
+     SELECT  t.*,CASE t.teamtypekey WHEN 'LDSS' THEN 2 ELSE 1 END  displayorder
+     FROM  team t
+     WHERE l_teamid::UUID IN (t.teamid, t.parentteamid)
+     UNION
+     SELECT t1.*, CASE t1.teamtypekey WHEN 'LDSS' THEN 2 ELSE 1 END  displayorder
+     FROM team t1 INNER JOIN teams t2 ON (t1.parentteamid = t2.parentteamid OR t1.teamid = t2.parentteamid) 
+     AND t1.teamtypekey NOT IN ('ORG')
+    )  
+    SELECT  t.teamid, t.teamtypekey, t.teamnumber, t.teamname AS name, t.region, t.officetimingfrom,
+      t.officetimingto, t.effectivedate, t.expirationdate, t.parentteamid ,
+      case t.teamid when l_teamid::UUID then 1 else 0 end , tt.teamname AS parentteamname 
+    FROM  teams t INNER JOIN team tt ON tt.teamid = t.parentteamid 
+    WHERE  t.activeflag =1 and t.teamtypekey = v_teamtypekey
+    ORDER BY t.displayorder, t.teamtypekey, t.teamname; 
+  END IF;
+ else
+ raise notice 'l_teamid%',l_teamid;
+ /*Handle workload request*/
+  SELECT t.parentteamid INTO l_parentteamid FROM team  t WHERE t.teamid =l_teamid::UUID;
+  SELECT 1 into l_isldss FROM team t WHERE t.teamid =l_parentteamid AND t.teamtypekey ='LDSS';
+--   IF (COALESCE(l_isldss,0) =0 ) THEN
+--    l_teamid  = l_parentteamid;
+--   END IF;
+ RETURN QUERY
+ 
+  SELECT t.teamid, t.teamtypekey, t.teamnumber, t.teamname AS name, t.region, t.officetimingfrom,
+         t.officetimingto, t.effectivedate, t.expirationdate, t.parentteamid ,
+      case t.teamid when l_teamid::UUID then 1 else 0 end  , tt.teamname AS parentteamname
+   FROM team t 
+   LEFT JOIN team tt on tt.teamid = t.parentteamid 
+   WHERE lower(t.teamtypekey) in( lower(v_teamtypekey),'ldss') AND t.activeflag =1
+    AND t.parentteamid in( l_parentteamid,l_teamid::UUID) 
+   ORDER BY t.teamtypekey, t.teamname;  
+  END if;
+ END;
+
+$function$
+

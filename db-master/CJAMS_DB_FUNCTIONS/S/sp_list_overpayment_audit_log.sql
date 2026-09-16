@@ -1,0 +1,61 @@
+DROP FUNCTION if exists sp_list_overpayment_audit_log(integer,bigint,bigint,integer);
+CREATE OR REPLACE FUNCTION cjams.sp_list_overpayment_audit_log(v_receivable_detail_id integer, v_lipagenumber bigint, v_lipagesize bigint, v_client_id integer)
+ RETURNS TABLE(totalcount bigint, transation_dt timestamp without time zone, transation_type character varying, entry_dt date, entry_tm character varying, exit_dt date, exit_tm character varying, exit_type character varying, exit_reason character varying, requested_user character varying, accepted_user character varying, request_dt timestamp without time zone, accept_dt timestamp without time zone, validation_month character varying, adjstment json, local_dept character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+declare
+	v_pagenumber int;
+	v_pageoffset int;
+	
+BEGIN 
+	v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query 
+
+select count(1) over(), tfat.create_ts as transation_dt,tfat.description_tx as transation_type ,tp.entry_dt :: date ,tp.entry_tm ,tp.exit_dt :: date,tp.exit_tm ,
+--tp.exit_type_cd ,
+((SELECT value_tx FROM tb_picklist_values where picklist_type_id=737 and delete_sw='N' and TRIM(picklist_value_cd)=tp.exit_type_cd :: text limit 1)) as exit_type,
+--tp.exit_reason_cd,
+ert.description as  exit_reason,UP.fullname as requested_user , UP1.fullname as accepted_user ,UP.insertedon ,UP1.insertedon,
+--((SELECT value_tx FROM tb_picklist_values where picklist_type_id=737 and delete_sw='N' and TRIM(picklist_value_cd)=tp.exit_type_cd :: text)) as exit_reason,
+( select to_char( (PLVL.validation_end_dt), 'MONTH-YYYY')::character varying as validation_month
+ from tb_placement_validation PLVL where PLVL.placement_id= tp.placement_id and PLVL.delete_sw ='N' order by PLVL.placement_validation_id desc limit 1),
+ (select json_agg (x) from (select tpdi.payment_detail_id,tph.gross_amount_no,tpdi.payment_amount_no,ts.service_nm,tph.offset_amount_no,tph.payment_id,tfcm.fiscal_category_desc,tpd.final_service_end_dt,tpd.final_service_start_dt,tph.provider_id,
+(CASE WHEN (tp.provider_nm is null OR tp.provider_nm='') THEN CONCAT(tp.provider_first_nm,' ',tp.provider_last_nm) ELSE tp.provider_nm END) as providername,
+tp.provider_first_nm as providerfirstname,tp.provider_last_nm as providerlastname
+ from tb_payment_header tph 
+ join tb_payment_detail tpdi on tpdi.payment_id = tph.payment_id
+ join tb_provider tp on tp.provider_id = tph.provider_id
+ left join tb_fiscal_category_master tfcm on  tfcm.fiscal_category_cd =tpdi.final_fiscal_category_cd
+ left join tb_services ts on ts.service_id = tpdi.final_service_id
+ where tpdi.payment_detail_id= tpd.payment_detail_id) x),
+ c.countyname as local_dept
+from tb_receivable_detail trd
+left join tb_payment_detail tpd on tpd.payment_detail_id=trd.payment_detail_id and tpd.delete_sw ='N'
+left join TB_FISCAL_AUDIT_TRAIL tfat on tfat.event_id =tpd.placement_id and tfat.delete_sw='N'
+left join tb_placement tp on tp.placement_id = tfat.event_id and tp.delete_sw='N'
+left join exitreasontype ert on ert.exitreasontypekey = tp.exit_type_cd
+left join routing r on r.objectid = tp.placementid :: character varying and r.eventcode in ('PLTR') and r.fromroleid='CWSP'
+left join routing rr on rr.objectid = tp.placementid :: character varying and rr.eventcode in ('PLTR') and rr.fromroleid='CWCW'
+left join userprofile UP on UP.securityusersid=rr.fromsecurityusersid 
+left join  userprofile UP1 on UP1.securityusersid=r.fromsecurityusersid
+left join teammemberassignment tma on tma.securityusersid= up.securityusersid and tma.activeflag=1 
+left join teammember tm on tm.teammemberid = tma.teammemberid and tm.activeflag=1 
+left join team t on t.teamid = tm.teamid and t.activeflag=1
+left join county c on t.countyid = c.countyid::character varying
+where (v_receivable_detail_id is null or trd.receivable_detail_id=v_receivable_detail_id)
+and (v_client_id is null or tpd.client_id = v_client_id)
+group by transation_dt, transation_type,tp.entry_dt  ,tp.entry_tm ,tp.exit_dt ,tp.exit_tm ,exit_type
+, exit_reason,UP.fullname , UP1.fullname  ,UP.insertedon ,UP1.insertedon,tp.placement_id
+,tpd.final_service_end_dt,tpd.final_service_start_dt,tpd.payment_detail_id, c.countyname
+;
+
+
+END;
+
+
+$function$
+;

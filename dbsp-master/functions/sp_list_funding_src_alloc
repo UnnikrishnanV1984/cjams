@@ -1,0 +1,88 @@
+CREATE OR REPLACE FUNCTION sp_list_funding_src_alloc(v_client_id integer, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, payment_detail_id bigint, eligibility_status_cd character varying, fund_alloc_id bigint, eligibility_status text, total_ammount numeric, payment_dt date, final_service_start_dt date, final_service_end_dt date, final_service_id integer, service_nm character varying, fiscal_category_cd character varying, fiscal_category_desc character varying, funding_amount_no numeric, payment_amount numeric, ssi_funding_amt numeric, ssa_funding_amt numeric, coc_funding_amt numeric, state_funding_amt numeric, ivd_funding_amt numeric, ive_funding_amt numeric, local_funding_amt numeric, initial_stamping_sw character, client_id bigint, client_name character varying, client_dob timestamp without time zone, ssn character varying, client_gender character varying, case_id character varying, case_nm character varying, case_worker_id bigint, case_worker_name character varying, case_worker_phone_no character varying, local_dept character varying, county_cd text, fund_allocation_date date, paymentdetails jsonb)
+ LANGUAGE plpgsql
+AS $function$                                                                                                   
+ declare                                                                                                         
+         v_pagenumber int;                                                                                       
+         v_pageoffset int;                                                                                       
+ BEGIN                                                                                                           
+         v_pagenumber := v_liPageNumber - 1;                                                                     
+ v_pageoffset := v_pagenumber * v_liPageSize;                                                                    
+ return query select count(1) over(),x.* from ( select distinct tpd.payment_detail_id::bigint as pay_detail_id,fam.eligibility_status_cd,fam.fund_alloc_id,                                                                                                                                        
+ (select trim(value_tx) from tb_picklist_values where TRIM(lower(picklist_value_cd)) = TRIM(lower(fam.eligibility_status_cd)) AND PICKLIST_type_id=262 AND delete_sw='N' AND active_sw='Y') as  eligibility_status,                                                       
+ coalesce(fam.ssi_funding_amt,0)+coalesce(fam.ssa_funding_amt,0)+coalesce(fam.coc_funding_amt,0)+coalesce(fam.state_funding_amt,0)+                                                                                                                                       
+ coalesce(fam.ivd_funding_amt,0)+coalesce(fam.ive_funding_amt,0)+coalesce(fam.local_funding_amt,0) :: numeric,   
+ tph.payment_dt,tpd.final_service_start_dt,                                                                      
+ tpd.final_service_end_dt,tpd.final_service_id,ts.service_nm,fam.fiscal_category_cd,tfd.fiscal_category_desc,    
+ fam.funding_amount_no,fam.payment_amount,fam.ssi_funding_amt,fam.ssa_funding_amt,fam.coc_funding_amt,fam.state_funding_amt,                                                                                                                                              
+ fam.ivd_funding_amt,fam.ive_funding_amt,fam.local_funding_amt,fam.initial_stamping_sw,                          
+ P.cjamspid as client_ids,                                                                                       
+         CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||                                                
+         CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as client_names,                                                                                                               
+         P.dob as client_dob                                                                                     
+         ,(select pid.personidentifiervalue from personidentifier pid where pid.personidentifiertypekey = 'SSN' and pid.personid = p.personid and pid.activeflag = 1 limit 1) :: character varying as p_ssn                                                                      
+         ,GT.typedescription as client_gender                                                                    
+         ,sc.servicecasenumber as case_id                                                                        
+         ,(select description from IntakeServiceRequestType where intakeservreqtypeid=(select intakeservreqtypeid  from intakeservicerequest where servicecaseid =sc.servicecaseid order by insertedon desc limit 1)) :: character varying as case_nm                                                                            
+         ,up.cjamspid as case_worker_id                                                                          
+         ,up.displayname as case_worker_name                                                                     
+         ,uppn.phonenumber as case_worker_phone_no                                                               
+         ,upa.county as local_dept                                                                               
+         ,(select trim(PICKLIST_VALUE_CD) from tb_picklist_values where TRIM(lower(value_tx)) like TRIM(lower('%' || upa.county || '%')) AND PICKLIST_type_id=104 AND delete_sw='N' AND active_sw='Y' limit 1) as  county_cds,                                                    
+         fam.fund_allocation_date,                                                                               
+         (select json_agg(x) from (select distinct tpd.payment_detail_id,fam.fund_allocation_date,tph.payment_dt,ts.service_nm,fam.payment_amount                                                                                                                         
+         from tb_fund_allocation_master fam                                                                      
+left  join tb_payment_detail tpd on tpd.payment_detail_id= fam.payment_detail_id and tpd.delete_sw ='N'               
+left  join tb_payment_header tph on tph.payment_id= tpd.payment_id and tph.delete_sw='N'                              
+left  join person P on p.cjamspid=tpd.client_id                                                                      
+           LEFT JOIN tb_placement pl ON P.cjamspid=pl.client_id and pl.delete_sw='N'                                  
+            left join tb_services ts on ts.service_id = tpd.final_service_id and ts.delete_sw ='N'               
+            where tpd.client_id=v_client_id and fam.delete_sw='N' AND pl.placement_id=(SELECT MAX(PLA.placement_id) from tb_placement PLA where PLA.client_id=P.cjamspid)                                                                                               
+         )as x)::jsonb as paymentdetails                                                                         
+ --(select json_agg(x) from (select event_id, tsse.start_dt, tsse.end_dt, event_type_cd, status_cd, notes_tx, status_change_sw, tsse.eligibility_id from tb_ssi_eligibility_events tsse  where tsse.eligibility_id=tce.eligibility_id and tsse.delete_sw='N')as x)        
+ from tb_fund_allocation_master fam                                                                              
+left join tb_payment_detail tpd on tpd.payment_detail_id= fam.payment_detail_id and tpd.delete_sw ='N'               
+left join tb_payment_header tph on tph.payment_id= tpd.payment_id and tph.delete_sw='N'                              
+left   join person P on p.cjamspid=tpd.client_id                                                                      
+           left JOIN tb_placement pl ON P.cjamspid=pl.client_id and pl.delete_sw='N'                                  
+        left   JOIN gendertype as GT ON GT.gendertypekey = p.gendertypekey and GT.activeflag =1                      
+ --        JOIN actor as actor ON actor.personid=P.personid and actor.activeflag =1                              
+ --        JOIN intakeservicerequestactor as inseract ON inseract.actorid=actor.actorid and inseract.activeflag =1 and lower(inseract.intakeservicerequestpersontypekey)='rc'                                                                                             
+      left   join servicecase sc on sc.servicecasenumber = pl.case_id :: character varying and sc.activeflag=1       
+       -- left   JOIN intakeservicerequest as ISR ON ISR.servicecaseid = sc.servicecaseid and ISR.activeflag =1        
+          LEFT JOIN caseassignment ca on ca.objectid = sc.servicecaseid and ca.activeflag =1 and LOWER(ca.responsibilitytypekey) = 'family' AND ca.enddate IS NULL                                                                
+        --  JOIN routing rr on rr.objectid=isr.intakeserviceid :: character varying and rr.toroleid='CWCW' and rr.activeflag =1                                                                                                                                           
+         LEFT JOIN userprofile up on up.securityusersid=ca.toworkeridno and up.activeflag =1                           
+         LEFT join userprofilephonenumber uppn on up.securityusersid=uppn.securityusersid and uppn.userprofiletypekey='office'   and uppn.activeflag =1                                                                                                                   
+         LEFT join userprofileaddress upa on up.securityusersid=upa.securityusersid  and upa.activeflag =1       
+         LEFT JOIN personidentifier as PIDE ON PIDE.personid=P.personid and PIDE.activeflag =1                   
+         left join tb_services ts on ts.service_id = tpd.final_service_id and ts.delete_sw ='N'                  
+         left join tb_fiscal_category_master tfd on tfd.fiscal_category_cd=fam.fiscal_category_cd                
+                 where tpd.client_id=v_client_id  and fam.delete_sw='N' AND pl.placement_id=(SELECT MAX(PLA.placement_id) from tb_placement PLA where PLA.client_id=P.cjamspid)                                                                                            
+ --      AND ISR.servicerequestnumber=pl.case_id::character varying                                              
+         AND p.activeflag =1
+          --AND   ca.toworkeridno = (select toworkeridno  from caseassignment where objectid = sc.servicecaseid order by insertedon desc limit 1)
+             group by tpd.payment_detail_id,tph.payment_dt,tpd.final_service_start_dt,                               
+ tpd.final_service_end_dt,tpd.final_service_id,ts.service_nm,tpd.final_fiscal_category_cd,tfd.fiscal_category_desc,                                                                                                                                                     
+ fam.funding_amount_no,fam.payment_amount,fam.ssi_funding_amt,fam.ssa_funding_amt,fam.coc_funding_amt,fam.state_funding_amt,                                                                                                                                            
+ fam.ivd_funding_amt,fam.ive_funding_amt,fam.local_funding_amt,fam.initial_stamping_sw,                        
+  client_ids,client_names,                                                                                     
+         P.dob 
+  ,case_nm
+        ,p_ssn                                                                                                 
+       ,GT.typedescription                                                                                     
+       ,up.cjamspid                                                                                            
+       ,up.displayname                                                                                         
+       ,uppn.phonenumber                                                                                       
+      ,upa.county                                                                                             
+    ,county_cds ,
+    fam.eligibility_status_cd,
+    fam.fund_alloc_id,
+    fam.fiscal_category_cd,
+    sc.servicecasenumber,
+    fam.fund_allocation_date
+    order by pay_detail_id desc ) as x      
+           LIMIT v_liPageSize OFFSET v_pageoffset;                                                                                                         
+ END;                                                                                                            
+ $function$
+

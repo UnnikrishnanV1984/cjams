@@ -1,0 +1,1 @@
+ALTER TABLE cjams.permanencyplan ADD COLUMN IF NOT EXISTS parent2name uuid NULL;

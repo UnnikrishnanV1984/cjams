@@ -1,0 +1,96 @@
+CREATE OR REPLACE FUNCTION personappointmentlist(v_personid uuid, v_appointmentid character varying)
+ RETURNS TABLE(servreqaptmtid uuid, intakeserviceid uuid, title character varying, titledescription character varying, status character varying, notes text, insertedon timestamp without time zone, updatedon timestamp without time zone, appointmentdate timestamp without time zone, appointmentworkername character varying, appointmentworkerid uuid, id character varying, appointmentworkertype character varying, actors json, historycount integer, intakenumber character varying, servicerequestnumber character varying, teamname character varying, appointmentworkercjamspid bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+IF (v_appointmentid is null or v_appointmentid = '') THEN
+
+RETURN QUERY 
+
+select SRA.servreqaptmtid,SRA.intakeserviceid,SRA.title,
+(SELECT  rv.description FROM referencevalues rv WHERE rv.activeflag =1 AND SRA.title = rv.ref_key LIMIT 1),
+SRA.appointmentstatus,SRA.notes,
+SRA.insertedon,SRA.updatedon,SRA.appointmentdate,UP.displayname as appointmentworkername,
+SRA.appointmentworkerid,SRA.appointmentid,SRA.appointmentworkertype
+, (select json_agg(atmp) from (
+  select SRAC1.servreqappointmentactorid,
+  SRAC1.servreqaptmtid,intakeservicerequestactorid as actorid,SRAC1.isoptional,P.cjamspid,P.firstname, P.lastname, PI.personidentifiertypekey, PI.personidentifiervalue
+  from servicerequestappointment as SRA1
+  join servicerequestappointmentactor as SRAC1 
+    on SRAC1.servreqaptmtid = SRA1.servreqaptmtid 
+  join Person  as P 
+    on P.personid = SRAC1.intakeservicerequestactorid and P.activeflag=1 
+         left join personidentifier as PI
+            on PI.personid =  P.personid  and PI.activeflag=1    
+  where SRA1.appointmentid = SRA.appointmentid and SRAC1.servreqaptmtid= SRA.servreqaptmtid and SRA1.activeflag =1
+ ) as atmp) as actors,
+ (select count(1) from servicerequestappointment isra where isra.appointmentid = SRA.appointmentid and isra.activeflag = 0)::int as historycount,
+ ISR.intakenumber,ISR.servicerequestnumber,T.teamname,UP.cjamspid
+from servicerequestappointment as SRA
+join servicerequestappointmentactor as SRAA 
+     on SRAA.servreqaptmtid = SRA.servreqaptmtid and SRAA.activeflag=1
+left join muser as U 
+     on U.securityusersid = SRA.appointmentworkerid::character varying and U.activeflag=1
+join userprofile as UP 
+     on UP.securityusersid = U.securityusersid and UP.activeflag=1
+LEFT JOIN intakeservicerequest as ISR 
+      ON ISR.intakeserviceid = SRA.intakeserviceid and ISR.activeflag=1 
+
+JOIN person as PN 
+      ON PN.personid = SRAA.intakeservicerequestactorid AND PN.activeflag = 1 
+join teammemberassignment as TMA 
+     on TMA.securityusersid = U.securityusersid and TMA.activeflag=1 
+join teammember as TM      
+     ON TM.teammemberid = TMA.teammemberid  AND TM.activeflag= 1
+join team as T      
+     ON T.teamid = TM.teamid  AND T.activeflag= 1           
+where PN.personid = v_personid  and SRA.activeflag=1; -- and ISRA.intakeservicerequestpersontypekey in ('Youth')
+
+ELSE
+
+RETURN QUERY 
+
+select SRA.servreqaptmtid,SRA.intakeserviceid,SRA.title,
+(SELECT  rv.description FROM referencevalues rv WHERE rv.activeflag =1 AND SRA.title = rv.ref_key LIMIT 1),SRA.appointmentstatus,SRA.notes,
+ SRA.insertedon,SRA.updatedon,SRA.appointmentdate,UP.displayname as appointmentworkername,
+ SRA.appointmentworkerid,SRA.appointmentid,SRA.appointmentworkertype
+ , (select json_agg(atmp) from (
+  select SRAC1.servreqappointmentactorid,
+  SRAC1.servreqaptmtid,intakeservicerequestactorid as actorid,SRAC1.isoptional,P.cjamspid,P.firstname, P.lastname, PI.personidentifiertypekey, PI.personidentifiervalue
+  from servicerequestappointment as SRA1
+  join servicerequestappointmentactor as SRAC1 
+    on SRAC1.servreqaptmtid = SRA1.servreqaptmtid 
+  join Person  as P 
+    on P.personid = SRAC1.intakeservicerequestactorid and P.activeflag=1
+  left join personidentifier as PI
+            on PI.personid =  P.personid  and PI.activeflag=1  
+  where SRA1.appointmentid = SRA.appointmentid and SRAC1.servreqaptmtid= SRA.servreqaptmtid and SRA1.activeflag =0
+ ) as atmp) as actors, 0 as history,ISR.intakenumber,ISR.servicerequestnumber,T.teamname,UP.cjamspid
+from servicerequestappointment as SRA
+join servicerequestappointmentactor as SRAA 
+     on SRAA.servreqaptmtid = SRA.servreqaptmtid and SRAA.activeflag=1
+left join muser as U 
+     on U.securityusersid = SRA.appointmentworkerid::character varying and U.activeflag=1
+join userprofile as UP 
+     on UP.securityusersid = U.securityusersid and UP.activeflag=1
+
+LEFT JOIN intakeservicerequest as ISR 
+      ON ISR.intakeserviceid = SRA.intakeserviceid and ISR.activeflag=1 
+
+JOIN person as PN 
+      ON PN.personid = SRAA.intakeservicerequestactorid AND PN.activeflag = 1 
+join teammemberassignment as TMA 
+     on TMA.securityusersid = U.securityusersid and TMA.activeflag=1 
+join teammember as TM      
+     ON TM.teammemberid = TMA.teammemberid  AND TM.activeflag= 1
+join team as T      
+     ON T.teamid = TM.teamid  AND T.activeflag= 1                   
+where PN.personid = v_personid and SRA.appointmentid = v_appointmentid  and SRA.activeflag=0 ; -- and ISRA.intakeservicerequestpersontypekey in ('Youth')
+
+END IF;
+      
+END;
+
+$function$
+

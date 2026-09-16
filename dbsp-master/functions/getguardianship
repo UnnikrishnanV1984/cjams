@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION getguardianship(v_intakeserviceid uuid, v_placementid integer)
+ RETURNS TABLE(guardianoneproviderid integer, guardianoneprovidername character varying, guardiantwoproviderid integer, guardiantwoprovidername character varying, enteredby text, gapid character varying, gapdisclosure json, childname character varying, dob timestamp without time zone, role character varying, gapsuspension json)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+RETURN  query
+
+SELECT 
+ gap.guardianoneproviderid, 
+ tbp1.provider_nm AS guardianoneprovidername,
+ gap.guardiantwoproviderid,
+ tbp2.provider_nm AS guardiantwoprovidername, 
+ (SELECT up.firstname || ' ' || up.lastname from userprofile up where up.securityusersid=gc.insertedby and up.activeflag=1 limit 1) enteredby,
+ gap.gapid:: character varying, 
+    (SELECT json_agg((SELECT y FROM (SELECT gapdisclosureid,disclosuredate,ischildplacedsixmonths,isproviderapprovedgap,
+  iscourthearingcustody,isreunificationremoved,isadoptionremoved,iscgprovidesafe,isothergapfinsupport,iscgattendedorientation,
+  orientationmeetingdate,isrequirementdiscussed,iscgparticipategap,iscgenteredagreement,iscgcompleteauthorization,iscgaftercareservice,
+  isneedadditionalservices,iscgcompleteannualreview,issuspendedfromguardian,insertedby,r.remarks AS comments,  
+        r.typedescription AS routingstatus) AS y)) AS items
+  FROM gapdisclosure gd  
+        INNER JOIN (SELECT objectid,(typedescription) typedescription,(remarks) remarks
+      FROM routing r INNER JOIN routingstatustype rt ON rt.sequencenumber=r.routingstatustypeid AND rt.activeflag=1
+      WHERE r.activeflag=1) r ON r.objectid=gapdisclosureid :: character varying
+  WHERE gd.activeflag=1 and gd.gapid=gap.gapid
+ ) AS gapdisclosure, 
+    (ps.firstname || ' '||ps.lastname):: character varying childname, 
+    ps.dob,
+ isra.intakeservicerequestpersontypekey AS role, 
+    (SELECT json_agg((SELECT z FROM (SELECT gs.gapsuspensionid,gs.suspensionreasontypekey,gs.startdate,gs.enddate,gs.notes,gs.isdraft,gs.suspensiondesc,
+        r.remarks AS comments,srt.typedescription,r.typedescription AS routingstatus) AS z)) AS items FROM gapsuspension gs
+  INNER JOIN (SELECT objectid,(typedescription) typedescription,(remarks) remarks 
+     FROM routing r INNER JOIN routingstatustype rt ON rt.sequencenumber=r.routingstatustypeid AND rt.activeflag=1
+                    WHERE r.activeflag=1
+     ) r ON r.objectid=gs.gapsuspensionid :: character varying
+  INNER JOIN suspensionreasontype srt ON srt.suspensionreasontypekey = gs.suspensionreasontypekey AND srt.activeflag =1
+        WHERE gs.activeflag=1 and gs.gapid=gap.gapid
+ ) AS gapsuspension 
+FROM guardianship gap  
+INNER JOIN gapdisclosure gc ON gc.gapid=gap.gapid AND gc.activeflag=1
+INNER JOIN tb_placement pl ON pl.placement_id=gap.placement_id AND pl.delete_sw='N'
+INNER JOIN person ps ON pl.client_id=ps.cjamspid AND ps.activeflag=1
+LEFT JOIN intakeservicerequestactor isra ON isra.personid=ps.personid AND isra.activeflag=1 and isra.intakeserviceid=v_intakeserviceid
+--LEFT JOIN person ps1 ON (ps1.cjamspid :: character varying)= gap.guardianoneid AND ps1.activeflag=1
+--LEFT JOIN person ps2 ON (ps2.cjamspid :: character varying)= gap.guardiantwoid AND ps2.activeflag=1 
+LEFT JOIN tb_provider tbp1 ON tbp1.provider_id=gap.guardianoneproviderid
+LEFT JOIN tb_provider tbp2 ON tbp2.provider_id=gap.guardiantwoproviderid
+WHERE gap.intakeserviceid=v_intakeserviceid 
+--AND gap.placement_id=v_placementid 
+AND gap.activeflag=1 LIMIT 1;
+END;
+
+$function$
+

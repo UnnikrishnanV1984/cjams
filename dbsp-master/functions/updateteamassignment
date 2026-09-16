@@ -1,0 +1,172 @@
+CREATE OR REPLACE FUNCTION updateteamassignment(v_email character varying, v_teamnumber character varying, v_statecountycode character varying, v_teamname character varying, v_roletypekey character varying, v_supervisoremail character varying, v_assupervisoremail character varying, v_agencycode character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_teamid uuid;
+ v_countyid uuid;
+ v_positioncode character varying;
+ v_securityusersid character varying;
+ v_teammemberid uuid;
+ v_loadnumber character varying;
+ v_teammemberassignmentid uuid;
+ v_principalid character varying;
+ v_roleid integer;
+ v_supervisorid uuid;
+ v_assupervisorid uuid;
+ v_message character varying(100);
+
+BEGIN
+ v_teamid := null;
+ v_positioncode := v_statecountycode;
+ v_securityusersid := null;
+ v_teammemberid := null;
+ v_teammemberassignmentid := null;
+ v_principalid := null;
+ v_roleid := null;
+ v_supervisorid := null;
+ v_assupervisorid := null;
+ 
+ 
+ SELECT securityusersid, 
+        lower(substring(firstname, 1, 1)) || lower(lastname)::character varying
+     INTO v_securityusersid, v_loadnumber
+   FROM userprofile 
+   WHERE email = v_email
+   AND activeflag = 1
+   LIMIT 1;
+   
+ IF (v_securityusersid IS NULL) THEN
+  v_message:= 'New user.. Please go onboarding route';
+ ELSE
+ 
+    SELECT id INTO v_principalid FROM muser where securityusersid = v_securityusersid and activeflag=1 LIMIT 1;
+    SELECT id INTO v_roleid FROM role where roletypekey = v_roletypekey and activeflag=1 LIMIT 1;
+    IF (v_supervisoremail IS NOT NULL AND v_supervisoremail != '')  THEN
+    SELECT securityusersid INTO v_supervisorid FROM userprofile where lower(email) = lower(v_supervisoremail) and activeflag = 1 LIMIT 1;
+    END IF;
+    IF (v_assupervisoremail IS NOT NULL AND v_assupervisoremail != '')  THEN
+    SELECT securityusersid INTO v_assupervisorid FROM userprofile where lower(email) = lower(v_assupervisoremail) and activeflag = 1 LIMIT 1;
+    END IF;
+    
+    IF (v_roleid IS NOT NULL) THEN   
+       
+     IF (v_agencycode = 'IV-E' OR v_agencycode = 'FNS') THEN
+     
+      UPDATE rolemapping 
+      SET activeflag=0, updatedon = now(), updatedby = 'ADMIN'
+      WHERE principalid = v_principalid AND teamtypekey = 'CW' and activeflag = 1;
+      
+      INSERT INTO rolemapping (principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, old_id, teamtypekey) 
+      values ('USER', v_principalid, v_roleid, 1, 'ADMIN','ADMIN', now(), now(),'','CW'); 
+      v_message:= 'Role Updated Sucessfully';
+      
+     ELSE IF (v_agencycode = 'PROV' OR v_agencycode = 'PVPROV') THEN
+     
+         UPDATE rolemapping 
+      SET activeflag=0, updatedon = now(), updatedby = 'ADMIN'
+      WHERE principalid = v_principalid AND teamtypekey = 'LDSS' and activeflag = 1;
+      
+      INSERT INTO rolemapping (principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, old_id, teamtypekey) 
+      values ('USER', v_principalid, v_roleid, 1, 'ADMIN','ADMIN', now(), now(),'','LDSS'); 
+      v_message:= 'Role Updated Sucessfully';
+      
+     ELSE 
+     
+         UPDATE rolemapping 
+      SET activeflag=0, updatedon = now(), updatedby = 'ADMIN'
+      WHERE principalid = v_principalid AND teamtypekey = v_agencycode and activeflag = 1;
+      
+      INSERT INTO rolemapping (principaltype, principalid, roleid, activeflag, insertedby, updatedby, insertedon, updatedon, old_id, teamtypekey) 
+      values ('USER', v_principalid, v_roleid, 1, 'ADMIN','ADMIN', now(), now(),'',v_agencycode); 
+      v_message:= 'Role Updated Sucessfully';
+      
+     END IF; 
+      END IF;
+    END IF;
+  
+  IF (v_supervisorid IS NOT NULL) THEN
+     UPDATE userprofile
+     SET supervisorid = v_supervisorid, updatedon = now(), updatedby = 'ADMIN'
+     WHERE securityusersid = v_securityusersid and activeflag=1;
+     v_message:= 'Supervisor Updated Sucessfully';
+        END IF;
+    
+  IF (v_agencycode = 'AS' AND v_assupervisorid IS NOT NULL) THEN
+     UPDATE userprofile
+     SET assupervisorid = v_assupervisorid, updatedon = now(), updatedby = 'AS-ADMIN'
+     WHERE securityusersid = v_securityusersid and activeflag=1;
+     v_message:= 'AS Supervisor Updated Sucessfully';
+        END IF;
+    
+   IF (v_agencycode IS NOT NULL AND v_agencycode IN ('CW','AS','FNS','IV-E')) THEN 
+    
+    SELECT teamid  INTO v_teamid FROM team WHERE teamnumber = v_teamnumber AND activeflag = 1 LIMIT 1;
+    
+  
+  IF (v_teamid IS NULL) THEN
+   
+   SELECT countyid INTO v_countyid 
+    FROM county  WHERE statecountycode = v_statecountycode and activeflag = 1;
+    
+   INSERT INTO team(teamid,
+     activeflag, teamname, teamnumber, teamtypekey, description, 
+     officetimingfrom, officetimingto, parentteamid, insertedby, insertedon, updatedby, 
+     updatedon, effectivedate,  region, regionid, countyid, supervisorid)
+    VALUES (gen_random_uuid(),
+     1, v_teamname, v_teamnumber, v_agencycode, v_teamname, 
+     '08:00:00'::time without time zone, '16:00:00'::time without time zone, v_countyid::character varying, 'ADMIN', now(), 'ADMIN', 
+     now(), now(), 0, null, v_countyid::character varying, null) returning teamid into v_teamid;
+     
+  END IF;
+   
+  INSERT INTO teammember (teammemberid, activeflag, teamid, loadnumber, roletypekey, 
+    positioncode, description, isoncall, insertedby, insertedon, 
+    updatedby, updatedon, effectivedate, rtfdate, coadate, isdefaultroute)
+   VALUES (gen_random_uuid(), 1, v_teamid, v_loadnumber, v_roletypekey,
+    v_positioncode, '', true, '', now(), 
+    'ADMIN',  now(),  now(), now(), now(), 1)  returning teammemberid into v_teammemberid; 
+    
+  IF (v_agencycode = 'AS') THEN   
+      SELECT teammemberassignmentid INTO v_teammemberassignmentid FROM as_teammemberassignment where securityusersid = v_securityusersid and activeflag=1;
+   
+   IF (v_teammemberassignmentid IS NOT NULL) THEN
+  
+    UPDATE as_teammemberassignment 
+    SET teammemberid = v_teammemberid, activeflag = 1, updatedon=now(), updatedby='ADMIN'
+    WHERE teammemberassignmentid = v_teammemberassignmentid;
+    
+      ELSE 
+  
+    INSERT INTO as_teammemberassignment(teammemberassignmentid, activeflag, teammemberid, securityusersid, insertedby, insertedon, updatedby, updatedon, effectivedate) 
+    VALUES (gen_random_uuid(), 1, v_teammemberid, v_securityusersid, 'ADMIN', now(), 'ADMIN', now(), now());
+
+          END IF; 
+  ELSE 
+            SELECT teammemberassignmentid INTO v_teammemberassignmentid FROM teammemberassignment where securityusersid = v_securityusersid and activeflag=1;
+   
+   IF (v_teammemberassignmentid IS NOT NULL) THEN
+   
+    UPDATE teammemberassignment 
+    SET teammemberid = v_teammemberid, activeflag = 1, updatedon=now(), updatedby='ADMIN'
+    WHERE teammemberassignmentid = v_teammemberassignmentid;
+    
+    ELSE 
+  
+    INSERT INTO teammemberassignment(teammemberassignmentid, activeflag, teammemberid, securityusersid, insertedby, insertedon, updatedby, updatedon, effectivedate) 
+    VALUES (gen_random_uuid(), 1, v_teammemberid, v_securityusersid, 'ADMIN', now(), 'ADMIN', now(), now());
+
+          END IF; 
+     END IF;
+             
+  v_message:= 'Team updated successfully';
+ 
+    
+ END IF;
+ END IF;
+  return v_message;
+END;
+
+$function$
+

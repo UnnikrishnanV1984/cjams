@@ -1,0 +1,1 @@
+update cjams.ROUTING set activeflag = 0 where objectid = 'feb129da-bb47-4e55-ab28-0838b9fd7267' and eventcode = 'SPLAN' AND routingstatustypeid = 15 AND activeflag = 1;

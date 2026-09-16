@@ -1,0 +1,354 @@
+DROP FUNCTION IF EXISTS cjams.createdailynotification();
+
+CREATE OR REPLACE FUNCTION cjams.createdailynotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_isexternalentity boolean;
+
+BEGIN
+    
+    
+		CREATE    TEMP    TABLE    _Temp_usernotification
+		(
+	    usernotificationid    uuid    NOT    NULL    DEFAULT    gen_random_uuid(),
+	    securityusersid    character    varying(50),
+	    fromsercurityusersid    character    varying(50),
+	    tosecurityusersid                character    varying(50),
+	    usernotificationtypekey    character    varying(15)    NOT    NULL,
+	    objectid    character    varying(50),
+	    subject    character    varying(500),
+	    priorityleveltypekey    character    varying(15),
+	    body    text    NOT    NULL,
+	    updatedby    character    varying(50),
+	    updatedon    timestamp    without    time    zone,
+	    insertedby    character    varying(50),
+	    insertedon    timestamp    without    time    zone    DEFAULT    now()    ,
+	    isda    int    default    0,
+	    supmsg        character    varying(500),
+	    objecttype    character    varying(50), 
+					objectcasenumber    character    varying(50)    
+	        
+	    );
+    
+
+        /*Case close alert*/       
+               
+       INSERT INTO _temp_usernotification 
+            ( 
+                        securityusersid, 
+                        fromsercurityusersid, 
+                        tosecurityusersid, 
+                        usernotificationtypekey, 
+                        objectid, 
+                        subject, 
+                        priorityleveltypekey, 
+                        body, 
+                        updatedby, 
+                        insertedby, 
+                        insertedon, 
+                        updatedon,
+																								objecttype,
+																								objectcasenumber 
+            ) 
+		
+         SELECT DISTINCT isr.routedusersid, 
+		                'System', 
+		                isr.routedusersid, 
+		                'System', 
+		                isr.intakeserviceid, 
+		                'This CPS case is over ' || srtc.duedateoffset|| ' days . Please close the case', 
+		                'Normal', 
+		                'This CPS case is over ' || srtc.duedateoffset || ' days . Please close the case', 
+		                'System', 
+		                'System', 
+		                Now(), 
+		                now(),'cps', isr.servicerequestnumber 
+		FROM            intakeservicerequest isr 
+		INNER JOIN      servicerequesttypeconfig srtc ON   srtc.intakeservreqtypeid = isr.intakeservreqtypeid AND  srtc.activeflag =1 
+		WHERE           isr.activeflag =1  and isr.isrouted = true and isr.exitdate is null
+		AND             extract(day FROM (isr.reporteddate::date +srtc.duedateoffset -now() )) <= 0 
+		AND             isr.intakeserviceid :: character VARYING NOT IN 
+		                (      SELECT objectid 
+		                       FROM   usernotification 
+		                       WHERE  subject LIKE '%Please close the case%'
+		                      and insertedon::date = now()::date);
+	 
+		                
+		INSERT INTO usernotification 
+		            (usernotificationid, 
+		             securityusersid, 
+		             usernotificationtypekey, 
+		             objectid, 
+		             subject, 
+		             priorityleveltypekey, 
+		             body, 
+		             updatedby, 
+		             insertedby, 
+		             insertedon, 
+		             updatedon, 
+		             ismailsent, objecttype, objectcasenumber, teamtypekey) 
+		SELECT usernotificationid, 
+		       securityusersid, 
+		       usernotificationtypekey, 
+		       objectid, 
+		       subject, 
+		       priorityleveltypekey, 
+		       body, 
+		       updatedby, 
+		       insertedby, 
+		       insertedon, 
+		       updatedon, 
+		       false, objecttype, objectcasenumber , 'CW'
+		FROM   _temp_usernotification; 
+   
+
+		INSERT INTO usernotificationmap 
+	            (usernotificationid, 
+	             fromsecurityusersid, 
+	             tosecurityusersid, 
+	             updatedby, 
+	             insertedby, 
+	             insertedon, 
+	             updatedon) 
+		SELECT usernotificationid, 
+		       'System', 
+		       tosecurityusersid, 
+		       updatedby, 
+		       insertedby, 
+		       insertedon, 
+		       updatedon 
+		FROM   _temp_usernotification; 
+
+drop    TABLE    _Temp_usernotification;
+
+CREATE TEMP table tmp_useralert
+		(
+	    usernotificationid   uuid    NOT    NULL    DEFAULT    gen_random_uuid(),
+	    notificationuserid  character  varying(50),
+	    fromsercurityusersid  character  varying(50),
+	    tosecurityusersid  character    varying(50),
+	    usernotificationtypekey    character    varying(15)    NOT    NULL,
+	    priorityleveltypekey    character    varying(15), 
+	    subject    character    varying(500),
+	    body    text    NOT    NULL,
+	    objectid    character    varying(50),
+	    objecttype    character    varying(50), 
+					objectcasenumber    character    varying(50) 
+  );
+
+------ adoption agreement rate notification alert
+INSERT INTO tmp_useralert ( 
+        notificationuserid,
+	    fromsercurityusersid,
+	    tosecurityusersid,
+	    usernotificationtypekey,
+	    priorityleveltypekey, 
+	    subject,
+	    body,
+	    objectid,
+					objecttype, 
+					objectcasenumber  
+            )   
+SELECT  distinct r.tosecurityusersid,
+            r.fromsecurityusersid,
+            r.tosecurityusersid,
+            'System', 
+            'High',
+            'Adopotion Aggrement Rate End Date Alert Before '|| DATE_PART('day',agr.enddate::timestamp -  current_Date::timestamp) ||' Days',
+            'Agreement - ADOPTION Agreement Rate is about to end in '|| DATE_PART('day',agr.enddate::timestamp -  current_Date::timestamp) ||' Days for Client '|| 
+		    'NAME : ' || concat_ws(' ',p.firstname ,p.lastname) || ' Case No : ' ||sc.servicecasenumber,
+    		 sc.servicecaseid, 'servicecase', sc.servicecasenumber
+		FROM adoptionagreementrate agr 	
+		join routing r on r.objectid = agr.adoptionagreementrateid::character varying and r.activeflag = 1 and routingstatustypeid=16
+		join adoptionagreement adg on agr.adoptionagreementid = adg.adoptionagreementid
+		join adoptionplanning adp on adp.adoptionplanningid = adg.adoptionplanningid
+		join permanencyplan as pp on adp.permanencyplanid = pp.permanencyplanid
+		join servicecase sc on sc.servicecaseid = pp.servicecaseid
+		join intakeservicerequestactor itsr on itsr.intakeservicerequestactorid = pp.intakeservicerequestactorid
+		join person p on p.personid = itsr.personid
+		WHERE agr.activeflag = 1   and DATE_PART('day', agr.enddate::timestamp - current_date ::timestamp  ) in (30,60,90);
+	
+------ adoption case agreement rate notification alert
+INSERT INTO tmp_useralert ( 
+        notificationuserid,
+	    fromsercurityusersid,
+	    tosecurityusersid,
+	    usernotificationtypekey,
+	    priorityleveltypekey, 
+	    subject,
+	    body,
+	    objectid,
+					objecttype, 
+					objectcasenumber  
+            )   
+SELECT  distinct r.tosecurityusersid,
+            r.fromsecurityusersid,
+            r.tosecurityusersid,
+            'System', 
+            'High',
+            'Adopotion Case Aggrement Rate End Date Alert  Before '|| DATE_PART('day',agr.enddate::timestamp -  current_Date::timestamp) ||' Days',
+            'Agreement - ADOPTION Case Agreement Rate is about to end in '|| DATE_PART('day',agr.enddate::timestamp -  current_Date::timestamp) ||' Days for Client '|| 
+		    'NAME : ' || concat_ws(' ',p.firstname ,p.lastname) || ' Case No : ' || ac.adoptioncasenumber,
+    		 ac.adoptioncaseid, 'adoptioncase', ac.adoptioncasenumber
+FROM adoptioncaseagreementrate agr 
+join routing r on r.objectid = agr.adoptionagreementid::character varying and r.activeflag = 1 and routingstatustypeid=16
+join adoptioncaseagreement adg on agr.adoptionagreementid = adg.adoptionagreementid
+join adoptioncase ac on ac.adoptioncaseid = adg.adoptioncaseid
+join adoptionplanning adp on adp.adoptionplanningid = ac.adoptionplanningid	
+join intakeservicerequestactor itsr on itsr.intakeservicerequestactorid = adp.intakeservicerequestactorid
+join person p on p.personid = itsr.personid
+WHERE agr.activeflag = 1 and DATE_PART('day', agr.enddate::timestamp -  current_Date::timestamp) in (30,60,90);
+
+------ adoption case agreement notification alert
+INSERT INTO tmp_useralert ( 
+        notificationuserid,
+	    fromsercurityusersid,
+	    tosecurityusersid,
+	    usernotificationtypekey,
+	    priorityleveltypekey, 
+	    subject,
+	    body,
+	    objectid,
+					objecttype, 
+					objectcasenumber  
+            )  
+ SELECT  distinct r.tosecurityusersid,
+       r.fromsecurityusersid,
+       r.tosecurityusersid,
+       'System', 
+       'High',
+       'Adopotion Case Aggrement End Date Alert  Before '|| DATE_PART('day',adg.enddate::timestamp -  current_Date::timestamp) ||' Days',
+       'Agreement - ADOPTION Case Agreement is about to end in '|| DATE_PART('day',adg.enddate::timestamp -  current_Date::timestamp) ||' Days for Client '|| 
+       'NAME : ' || concat_ws(' ',p.firstname ,p.lastname) || ' Case No : ' ||ac.adoptioncasenumber,
+     	ac.adoptioncaseid, 'adoptioncase', ac.adoptioncasenumber
+FROM adoptioncaseagreement adg  
+join routing r on r.objectid = adg.adoptionagreementid::character varying and r.activeflag = 1 and routingstatustypeid=16
+join adoptioncase ac on ac.adoptioncaseid = adg.adoptioncaseid
+join adoptionplanning adp on adp.adoptionplanningid = ac.adoptionplanningid	
+join intakeservicerequestactor itsr on itsr.intakeservicerequestactorid = adp.intakeservicerequestactorid
+join person p on p.personid = itsr.personid
+WHERE adg.activeflag = 1 and DATE_PART('day',  adg.enddate::timestamp -  current_Date::timestamp ) in (30,60,90);
+
+------ adoption agreement notification alert
+INSERT INTO tmp_useralert ( 
+        notificationuserid,
+	    fromsercurityusersid,
+	    tosecurityusersid,
+	    usernotificationtypekey,
+	    priorityleveltypekey, 
+	    subject,
+	    body,
+	    objectid,
+					objecttype, 
+					objectcasenumber  
+            )  
+    	SELECT  distinct r.tosecurityusersid,
+            r.fromsecurityusersid,
+            r.tosecurityusersid,
+            'System', 
+            'High',
+            'Adopotion Aggrement End Date Alert Before '|| DATE_PART('day',adg.enddate::timestamp -  current_Date::timestamp) ||' Days',
+            'Agreement - ADOPTION Agreement is about to end in '|| DATE_PART('day',adg.enddate::timestamp -  current_Date::timestamp) ||' Days for Client '|| 
+     	    'NAME : ' || concat_ws(' ',p.firstname ,p.lastname) || ' Case No : ' ||sc.servicecasenumber,
+    		sc.servicecaseid, 'servicecase', sc.servicecasenumber
+		FROM adoptionagreement adg 	
+		join routing r on r.objectid = adg.adoptionagreementid::character varying and r.activeflag = 1 and routingstatustypeid=16
+		join adoptionplanning adp on adp.adoptionplanningid = adg.adoptionplanningid
+		join permanencyplan as pp on adp.permanencyplanid = pp.permanencyplanid
+		join servicecase sc on sc.servicecaseid = pp.servicecaseid
+		join intakeservicerequestactor itsr on itsr.intakeservicerequestactorid = pp.intakeservicerequestactorid
+		join person p on p.personid = itsr.personid
+		WHERE adg.activeflag = 1 and DATE_PART('day', adg.enddate::timestamp - current_Date::timestamp  ) in (30,60,90);
+
+------ gap agreement rate notification alert
+INSERT INTO tmp_useralert ( 
+        notificationuserid,
+	    fromsercurityusersid,
+	    tosecurityusersid,
+	    usernotificationtypekey,
+	    priorityleveltypekey, 
+	    subject,
+	    body,
+	    objectid,
+					objecttype, 
+					objectcasenumber  
+            )   
+SELECT  distinct r.tosecurityusersid,
+            r.fromsecurityusersid,
+            r.tosecurityusersid,
+            'System', 
+            'High',
+            'Gap Aggrement Rate End Date Alert  Before '|| DATE_PART('day',gar.enddate::timestamp -  current_Date::timestamp) ||' Days',
+            'Agreement - GAP Agreement Rate is about to end in '|| DATE_PART('day',gar.enddate::timestamp -  current_Date::timestamp) ||' Days for Client '|| 
+		    'NAME : ' || concat_ws(' ',p.firstname ,p.lastname) || ' Case No : ' ||sc.servicecasenumber,
+    		 sc.servicecaseid, 'servicecase', sc.servicecasenumber
+from gapagreementrate gar
+join gapagreement ga on ga.gapagreementid = gar.gapagreementid and ga.activeflag = 1
+join guardianship gap on gap.gapid = ga.gapid and gap.activeflag = 1
+join permanencyplan pp on pp.permanencyplanid = gap.permanencyplanid and pp.activeflag=1
+join intakeservicerequestactor isra on isra.intakeservicerequestactorid = pp.intakeservicerequestactorid and isra.activeflag=1
+join person p on p.personid = isra.personid and p.activeflag=1
+join servicecase sc on sc.servicecaseid = isra.servicecaseid and sc.activeflag=1 
+join routing r on ga.gapagreementid :: character varying = r.objectid and ga.activeflag=1 and r.activeflag=1
+where DATE_PART('day',  gar.enddate::timestamp - current_Date::timestamp) in (30,60,90) ;
+
+------ gap agreement notification alert
+INSERT INTO tmp_useralert ( 
+        notificationuserid,
+	    fromsercurityusersid,
+	    tosecurityusersid,
+	    usernotificationtypekey,
+	    priorityleveltypekey, 
+	    subject,
+	    body,
+	    objectid,
+					objecttype, 
+					objectcasenumber  
+            )   
+SELECT  distinct r.tosecurityusersid,
+            r.fromsecurityusersid,
+            r.tosecurityusersid,
+            'System', 
+            'High',
+            'Gap Aggrement End Date Alert Before '|| DATE_PART('day',ga.enddate::timestamp -  current_Date::timestamp) ||' Days',
+            'Agreement - GAP Agreement is about to end in '|| DATE_PART('day',ga.enddate::timestamp -  current_Date::timestamp) ||' Days for Client '|| 
+		    'NAME : ' || concat_ws(' ',p.firstname ,p.lastname) || ' Case No : ' ||sc.servicecasenumber,
+    		 sc.servicecaseid, 'servicecase', sc.servicecasenumber
+from gapagreement ga 
+join guardianship gap on gap.gapid = ga.gapid and gap.activeflag = 1
+join permanencyplan pp on pp.permanencyplanid = gap.permanencyplanid and pp.activeflag=1
+join intakeservicerequestactor isra on isra.intakeservicerequestactorid = pp.intakeservicerequestactorid and isra.activeflag=1
+join person p on p.personid = isra.personid and p.activeflag=1
+join servicecase sc on sc.servicecaseid = isra.servicecaseid and sc.activeflag=1 
+join routing r on gapagreementid :: character varying = r.objectid and ga.activeflag=1 and r.activeflag=1
+where  DATE_PART('day', ga.enddate::timestamp -  current_Date::timestamp ) in (30,60,90) ;
+
+
+INSERT INTO usernotification (usernotificationid,securityusersid,usernotificationtypekey,
+objectid,activeflag,subject,priorityleveltypekey,body,isexternalentity,updatedby,
+updatedon,insertedby,insertedon,effectivedate,ismailsent,objecttype,objectcasenumber, teamtypekey)
+( select  usernotificationid ,notificationuserid,usernotificationtypekey,	  
+		objectid,1,subject,	priorityleveltypekey,body,false,fromsercurityusersid,
+		now(),fromsercurityusersid,	now(),now(), false, 'CW'   
+from tmp_useralert) ;
+       
+
+INSERT INTO usernotificationmap(usernotificationid,fromsecurityusersid,tosecurityusersid,isread,
+effectivedate,activeflag,updatedby,
+updatedon,insertedby,insertedon)
+ ( select  usernotificationid, fromsercurityusersid, tosecurityusersid, false,
+ now() , 1,  fromsercurityusersid,
+        now(), fromsercurityusersid,now()  
+from tmp_useralert) ;
+
+drop TABLE  tmp_useralert;
+
+RETURN    'SUCCESS';    
+END;    
+
+$function$
+;

@@ -1,0 +1,1 @@
+ALTER table IF EXISTS adoptionapplicabilityinfo ALTER column raceorethnicitywithoneofthesabove TYPE text;

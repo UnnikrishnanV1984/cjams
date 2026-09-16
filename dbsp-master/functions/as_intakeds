@@ -1,0 +1,163 @@
+CREATE OR REPLACE FUNCTION as_intakeds(i_evalutionid uuid, i_secid character varying)
+ RETURNS TABLE(youthname character varying, youthid character varying, address character varying, folderid character varying, dob character varying, race character varying, gender character varying, phone character varying, school character varying, grade character varying, mname character varying, mrace character varying, maddress character varying, mphone character varying, mguardian character varying, mlivewith character varying, fname character varying, frace character varying, faddress character varying, fphone character varying, fguardian character varying, flivewith character varying, oname character varying, orelation character varying, oguardian character varying, complaintsource character varying, complaintsname character varying, complaintaddress character varying, complaint_id character varying, complaintdate character varying, offensename character varying[], offencedate character varying, decision character varying, appstatus character varying, appdate character varying, appnotes character varying, cw_name character varying, cw_address character varying, cw_phone character varying, iw_name character varying, sup_name character varying, victim_name character varying, victim_address character varying, victim_phonecharacter character varying, history character varying, officeworkername character varying)
+ LANGUAGE plpgsql
+AS $function$
+declare P_ID UUID;
+   BEGIN  
+             select p.personid into P_ID
+          from intakeservicerequestevaluation inve
+             join intakeservicerequest INTSR on INTSR.intakenumber=inve.intakenumber and INTSR.activeflag=1
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             where  inve.intakeservicerequestevaluationid = i_evalutionid ;   
+ RETURN QUERY    
+ (        select distinct
+             cast(concat(p.lastname,case when (p.suffix is null or p.suffix ='') then '' else concat(' ',p.suffix) end,', ',p.firstname) as 
+    character varying) as youthname,
+             CAST(p.cjamspid as character varying) as youthid,
+             CAST(pa.address||','||pa.zipcode||','||pa.city||','||pa.state||','||pa.country as character varying) as address,
+             INTSR.intakenumber as folderid,
+             cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as DOB,
+             (select distinct typedescription from racetype where racetypekey=p.racetypekey) as race,
+             (select distinct typedescription from gendertype where gendertypekey=p.gendertypekey) as gender,
+             CAST(ppn.phonenumber as character varying) as phone,
+             CAST(s.schoolname as character varying) as school,
+             CAST(pe.currentgradetypekey as character varying) as grade,
+             CAST(mother.mother_name as character varying) as mname,
+             CAST(mother.mother_race as character varying) as mrace,
+             CAST(mother.mother_address as character varying) as maddress,
+             CAST(mother.mother_phone as character varying) as mphone,
+             CAST(mother.Guardian as character varying) as mguardian,
+             CAST(mother.livewithmother as character varying) as mlivewith,
+             CAST(father.father_name as character varying) as fname,
+             CAST(father.father_race as character varying) as frace,
+             CAST(father.father_address as character varying) as faddres,
+             CAST(father.father_phone as character varying) as fphone,
+             CAST(father.Guardian as character varying) as fguardian,
+             CAST(father.livewithfather as character varying) as flivewith,
+             CAST(other.other_name as character varying) as oname,
+             CAST(other.relationship as character varying) as orelation,
+             CAST(other.Guardian as character varying) as oguardian,
+             cast((select distinct description from evaluationsourceagency where evaluationsourcetypekey=es.evaluationsourcekey) as character varying)  as 
+complaintsource,
+             cast(concat(p.lastname,case when (p.suffix is null or p.suffix ='') then '' else concat(' ',p.suffix) end,', ',p.firstname) as character varying) as complaintsname,
+             cast(es.streetno ||' '||es.street1||' '||es.street2 as character varying) as complaintaddress,
+             cast(complaintid as character varying) as complaint_id,
+             cast (to_char(complaintreceiveddate,'MM/DD/YYYY') as character varying) as complaintdate,
+             (select array_agg(AG.name)  from  allegation AG
+         join intakeservicerequestevaluationconfig ITSEC  on ITSEC.allegationid=AG.allegationid and AG.activeflag=1
+         where  ITSEC.intakeservicerequestevaluationid=inve.intakeservicerequestevaluationid and ITSEC.activeflag=1 )as offensename,
+             cast(case 
+          when inve.unknownrange=0 then to_char(inve.offensedate,'MM/DD/YYYY') 
+           when inve.unknownrange=1 then to_char(inve.offensedate,'MM/DD/YYYY')
+            when inve.unknownrange=2 then to_char(inve.begindate,'MM/DD/YYYY')|| ' - ' || to_char(inve.enddate,'MM/DD/YYYY')
+             end as character varying)as offensedate ,
+             cast((select distinct description from dispositioncode where dispositioncode =srtcdc.dispositioncode)as character varying) as decision,
+             cast(case when sap.appointmentstatus ='Completed' then 'Held'
+                       when sap.appointmentstatus !='Completed' then 'Not Held'
+                  end as character varying) as appstatus,
+             CAST(to_char(sap.appointmentdate,'MM/DD/YYYY') as character varying) as appdate,
+             CAST(sap.notes as character varying) as appnotes,
+             CAST(cw.cwname as character varying) as cw_name,
+             CAST(cw.cwaddress as character varying) as cw_address,
+             CAST(cw.cwphone as character varying) as cw_phone,
+             CAST(iw.iwname as character varying) as iw_name,
+             CAST(sup.supname as character varying) as sup_name,
+             CAST(victim_details.victimname as character varying) as victim_name,
+             CAST(victim_details.victimaddress as character varying) as victim_address,
+             CAST(victim_details.victimphonenumber as character varying) victim_phone,
+             cast(case when prior_history.idcount>1 then 'History Present'
+             else 'No History' end as character varying) as history,
+             (select distinct cast(concat(lastname,',',' ',firstname) as character varying) from userprofile up where securityusersid = i_secid) as officeworkername
+             from intakeservicerequestevaluation inve
+             join intakeservicerequest INTSR on INTSR.intakenumber=inve.intakenumber and INTSR.activeflag=1
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             left join personaddress pa on p.personid = pa.personid and pa.activeflag=1
+             left join personeducation pe on p.personid = pe.personid and pe.activeflag=1
+             left join school s on pe.schoolid=s.schoolid and s.activeflag=1
+             left join personphonenumber ppn on p.personid = ppn.personid and ppn.activeflag=1
+             left join evaluationsource es on es.evaluationsourceid=inve.evaluationsourceid and es.activeflag=1
+             left join  intakeservicerequestdispositioncode isrdc ON INTSR.intakeserviceid = isrdc.intakeserviceid AND isrdc.activeflag = 1
+             left join  servicerequesttypeconfigdispositioncode srtcdc ON isrdc.servicerequesttypeconfigiddispostionid = srtcdc.servicerequesttypeconfigiddispostionid 
+AND srtcdc.activeflag = 1 
+             left join (select m.pid as mother_pid,firstname||','||lastname as mother_name,personaddress.address||','||personaddress.zipcode||','||
+personaddress.city||','||personaddress.state||','||personaddress.country as mother_address,personphonenumber.phonenumber as mother_phone ,m.livewithmother as 
+livewithmother, racetype.typedescription as mother_race,
+                        case when relationshiptypekey='guardian' then 'Guardian'
+                           end as Guardian
+                        from  person  
+                        left join personaddress on person.personid=personaddress.personid and personaddress.activeflag=1
+                        left join personphonenumber on person.personid=personphonenumber.personid and personphonenumber.activeflag=1
+                        left join actor a on a.personid= person.personid
+                        left join actorrelationship ar on ar.intakeservicerequestactorid=a.actorid
+                        left join racetype on racetype.racetypekey=person.racetypekey
+      join (select personrelation.personid as pid,personrelation.personrelativeid as prid,personrelation.livingwith as 
+livewithmother from personrelation  where personrelation.actorrelationshipkey='mother' and personrelation.personid=P_ID) m
+                        on person.personid=m.prid
+                        ) mother
+                        on p.personid=mother.mother_pid
+                       left join (select f.pid as father_pid,firstname||','||lastname as father_name,personaddress.address||','||personaddress.zipcode||','||
+personaddress.city||','||personaddress.state||','||personaddress.country as father_address,personphonenumber.phonenumber as father_phone ,f.livewithfather as 
+livewithfather, racetype.typedescription as father_race,
+                        case when relationshiptypekey='guardian' then 'Guardian'
+                        end as Guardian
+                        from  person  
+                        left join personaddress on person.personid=personaddress.personid and personaddress.activeflag=1
+                        left join personphonenumber on person.personid=personphonenumber.personid and personphonenumber.activeflag=1
+                        left join actor a on a.personid= person.personid
+                        left join actorrelationship ar on ar.intakeservicerequestactorid=a.actorid
+                        left join racetype on racetype.racetypekey=person.racetypekey
+      join (select personrelation.personid as pid,personrelation.personrelativeid as prid,personrelation.livingwith as 
+livewithfather from personrelation where personrelation.actorrelationshipkey='father' and personrelation.personid=P_ID) f
+                       on person.personid=f.prid) father
+                        on p.personid=father.father_pid
+            left join (select o.pid as other_pid,firstname||','||lastname as other_name,o.relationship as relationship,
+                       case when relationshiptypekey='guardian' then 'Guardian'
+                       end as Guardian
+                      from  person 
+                      left join actor a on a.personid= person.personid
+                      left join actorrelationship ar on ar.intakeservicerequestactorid=a.actorid 
+       join  (select personrelation.personid as pid,personrelation.personrelativeid as prid,personrelation.actorrelationshipkey as 
+relationship from personrelation where personrelation.actorrelationshipkey not in ('mother','father') and personrelation.personid=P_ID) o
+                      on person.personid=o.prid) other
+                      on p.personid=other.other_pid
+            left join servicerequestappointment sap on sap.intakeserviceid=INTSR.intakeserviceid and sap.activeflag=1
+            left join 
+            (select objectid,up.fullname as cwname,cast(upa.address ||','|| upa.city ||','|| upa.state ||','|| upa.country ||','|| upa.zipcode as character varying)  
+as cwaddress,upp.phonenumber as cwphone
+             from routing join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSCW'
+             left join userprofileaddress upa on routing.tosecurityusersid=upa.securityusersid and upa.activeflag=1
+             left join userprofilephonenumber upp on routing.tosecurityusersid=upp.securityusersid and upp.activeflag=1 and upp.userprofiletypekey='office' ) cw
+            on cast(INTSR.intakeserviceid as character varying)=cw.objectid
+            left join 
+            (select objectid,up.fullname as iwname from routing join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSIW' ) iw
+             on INTSR.intakenumber=iw.objectid
+             left join
+             (select objectid,up.fullname as supname from routing  join userprofile up
+             on routing.tosecurityusersid=up.securityusersid and up.activeflag=1 and routing.toroleid='JSSP'  ) sup
+             on INTSR.intakenumber=sup.objectid
+             left join
+             (select INTSR.intakenumber as intakenumber,p.lastname ||' '|| p.firstname as victimname,pa.address victimaddress,pp.phonenumber victimphonenumber from 
+              intakeservicerequest INTSR 
+              left join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1 and 
+INSRA.intakeservicerequestpersontypekey='Victim'
+              left join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Victim'
+              left join person p on ACC.personid=p.personid and p.activeflag=1
+              left join personaddress pa on p.personid=pa.personid and pa.activeflag=1
+              left join personphonenumber pp on p.personid=pp.personid and pp.activeflag=1) victim_details
+              on INTSR.intakenumber=victim_details.intakenumber
+              left join (select p.cjamspid as id,count(distinct INTSR.intakenumber)as idcount from  intakeservicerequest INTSR 
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype='Youth'
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             group by p.cjamspid having count(distinct INTSR.intakenumber)>1) prior_history
+             on  p.cjamspid=prior_history.id
+              where  inve.intakeservicerequestevaluationid = i_evalutionid   limit 1) ;   
+   end;
+  $function$
+

@@ -1,0 +1,52 @@
+CREATE OR REPLACE FUNCTION prov_licensechangedjs(v_request_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+v_details json;
+v_address json;
+v_staff json;
+v_request_details json;
+v_license_signature json;
+begin 
+
+
+select jsonb_agg(a) into v_details from (
+select distinct ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, ps.employee_type,
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no,ps.provider_staff_id,ps.staff_email
+from providerstaff ps 
+join providerportalrequest ta on ta.provider_id = ps.object_id and ta.request_no= v_request_id and ps.employee_type = 'Program Administrator'
+)a;
+select jsonb_agg(a) into v_request_details from (
+select * from providerportalrequest ta where ta.request_no = v_request_id 
+)a;
+select jsonb_agg(a) into v_license_signature from (
+ select * from tb_provider_decision ta where ta.objectid = v_request_id and ta.status in ('Approved','Denied')
+)a;
+select json_agg(a) into v_address from (
+select ta.program_address,string_to_array(ta.program_address, ',') as address_details, tb.provider_nm,ta.reason_for_request_waiver,ta.reason_for_request_variance,tp.request_comments,prvdec.decisiondate,TO_CHAR(prvdec.decisiondate, 'Month') AS "decisionMonth",
+prvdec.remarks,ta.request_date,tpl.license_expiry_dt,tpl.license_issue_dt,tpl.license_type,tpa.adr_state_cd,tpa.adr_zip5_no,tpa.adr_zip4_no from providerportalrequest ta 
+left join tb_provider tb on tb.provider_id = ta.site_id
+left join tb_provider_addresses tpa on tpa.parent_key_id = ta.site_id 
+left join tb_provider_licensing tpl on ta.site_id=tpl.site_id and tpl.active_sw = 'Y'
+left join tb_provider_decision prvdec on prvdec.objectid = v_request_id and prvdec.status in ('Rejected','Approved','Denied')
+left join providerportalrequestnarrative tp on ta.request_no=tp.request_no and tp.request_narrative_id in
+(select request_narrative_id from providerportalrequestnarrative where request_no=v_request_id and 
+request_narrative_by = 'QA worker' and delete_sw = 'N' order by create_ts desc limit 1)
+  where ta.request_no = v_request_id)a;
+
+select jsonb_agg(a) into v_staff from ( 
+select m.username,(select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) from userprofilephonenumber u where  u.securityusersid in (select create_user_id from providerportalrequest where request_no =  v_request_id and delete_sw = 'N' limit 1)) as phonenumber,r.name from muser m left join userprofilephonenumber u 
+on u.securityusersid =m.securityusersid join rolemapping r2 on r2.principalid = m.id and r2.activeflag = '1' and r2.teamtypekey not in ('CW','ASPROV','AS')
+  join role r on r.id = r2.roleid
+ where   m.securityusersid in 
+ (select create_user_id from providerportalrequest where request_no =  v_request_id and delete_sw = 'N' limit 1)
+)a;
+  
+
+return (json_build_object('address',v_address,'staff',v_staff,'details',v_details,'request_details',v_request_details,'license_signature',v_license_signature));
+END;
+$function$
+

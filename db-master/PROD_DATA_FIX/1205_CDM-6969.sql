@@ -1,0 +1,2 @@
+INSERT INTO hearingclients (courthearingid,updatedby,updatedon,insertedby,insertedon,activeflag,personid,courtcasenotx,otherclientflag,datavalidflag,clientmergeid,annualnoticebenefitdt,old_id,etl_userid,etl_load_date) VALUES 
+('b0b72399-5819-42df-ba97-ce0620a7b02d','CDM-6969',now(),'8b57303b-06a1-4cd7-908a-3e3e54dda2fe',now(),1,'7e930543-b936-4842-940f-ad322b173f39','C-21-JV-19-000203',0,NULL,NULL,NULL,NULL,NULL,NULL);

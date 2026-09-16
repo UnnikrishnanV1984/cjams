@@ -1,0 +1,1 @@
+update cjams.tb_client_eligibility set delete_sw = 'Y' where client_id = '4367060' and removal_id  = 250428 and case_id = '20200149019648'

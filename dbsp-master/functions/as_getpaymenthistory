@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION as_getpaymenthistory(v_providerid integer, v_lipagesize bigint, v_lipagenumber bigint)
+ RETURNS TABLE(totalcount bigint, provider_id integer, payment_id integer, payment_dt date, payment_type_nm character varying, payment_type_cd character varying, payment_status_nm character varying, payment_status_cd character varying, gross_amount_no numeric, offset_amount_no numeric, netamount numeric, paymentdetail json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+    v_pagenumber int;
+ v_pageoffset int;
+
+ 
+BEGIN 
+
+ 
+IF COALESCE(v_liPageSize, 0) < 1 THEN                     
+ v_liPageSize := 10;
+END IF;
+
+IF COALESCE(v_liPageNumber, 0) < 1 
+THEN
+ v_liPageNumber := 1; 
+end if;
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+
+return query
+
+select count(1) over() as totalcount,payhead.provider_id,payhead.payment_id,payhead.payment_dt,(select value_tx from tb_picklist_values where TRIM(PICKLIST_VALUE_CD)=payhead.payment_type_cd
+AND PICKLIST_TYPE_ID='2') AS payment_type_nm,payhead.payment_type_cd,(select value_tx from tb_picklist_values where TRIM
+(PICKLIST_VALUE_CD)=tps.payment_status_cd
+AND PICKLIST_TYPE_ID='133') as payment_status_nm,tps.payment_status_cd,payhead.gross_amount_no,coalesce(payhead.offset_amount_no,0.00) as offset_amount_no, 
+(payhead.gross_amount_no +coalesce(payhead.offset_amount_no,0.00) ) as netamount,(select json_agg(x) from (select distinct paydet.client_id,client.firstname,client.lastname,paydet.final_fiscal_category_cd,
+paydet.final_service_start_dt,case when payhead.payment_type_cd='3294' then (select pd.final_service_start_dt from tb_payment_detail pd where pd.payment_detail_id =
+(select phd.reference_payment_detail_id from tb_payment_detail phd where phd.payment_detail_id=paydet.payment_detail_id limit 1) limit 1) else 
+paydet.final_service_end_dt end AS final_service_end_dt,paydet.county_cd,(select value_tx from tb_picklist_values where 
+TRIM(PICKLIST_VALUE_CD)=paydet.county_cd
+AND PICKLIST_TYPE_ID='104') as localdepartment,paydet.final_amount_no as gross_amount_no from tb_payment_detail paydet
+INNER JOIN person as client ON paydet.client_id = client.cjamspid
+where paydet.payment_id = payhead.payment_id) as x)::json as paymentdetail
+from tb_payment_header payhead
+--INNER JOIN tb_payment_detail as paydet ON payhead.payment_id = paydet.payment_id
+inner join prov.tb_provider prov on prov.provider_id = payhead.provider_id
+--INNER JOIN person as client ON paydet.client_id = client.cjamspid
+inner join tb_payment_status tps on tps.payment_id = payhead.payment_id
+where payhead.provider_id=v_providerid and payhead.payment_type_cd in(21,22)
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+ 
+
+END;
+
+$function$
+

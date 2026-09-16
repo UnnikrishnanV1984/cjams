@@ -1,0 +1,59 @@
+-- FUNCTION: cjams.receivable_colletion_status_list(bigint)
+
+DROP FUNCTION if exists cjams.receivable_colletion_status_list(bigint);
+
+CREATE OR REPLACE FUNCTION cjams.receivable_colletion_status_list(
+	v_receivable_detail_id bigint)
+    RETURNS TABLE(collection_status_cd character varying, create_ts timestamp, username character varying) 
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+    ROWS 1000
+AS $BODY$
+
+DECLARE
+    results json;
+    v_counter json;
+
+begin
+	
+drop table if exists  temp_notifications_list;
+
+create temp TABLE temp_notifications_list                                                                                                             
+    (                                                                                                                                                                   
+    collection_status_cd character varying,
+    create_ts timestamp,
+    username character varying                                                                                                                                                                                                                                                                                                                     
+    );
+
+
+SELECT json_agg(x) FROM (
+    select trim(PICKLIST_VALUE_CD) as PICKLIST_VALUE_CD from tb_picklist_values where PICKLIST_TYPE_ID='52'
+) as x  into results;
+
+FOR v_counter IN SELECT * FROM json_array_elements(results)
+    LOOP
+
+        insert into temp_notifications_list(collection_status_cd, create_ts, username)
+        select  trcs.collection_status_cd, trcs.create_ts, up.fullname 
+        from tb_receivable_collection_status trcs
+        left join userprofile up on up.securityusersid = trcs.update_user_id
+        where trcs.receivable_detail_id = v_receivable_detail_id and  trim(trcs.collection_status_cd) = (v_counter ->> 'picklist_value_cd')
+        group by trcs.collection_status_cd, trcs.create_ts,up.fullname
+        order by trcs.create_ts desc nulls last limit 1;
+    
+    END LOOP;
+
+return query 
+
+select 
+(select value_tx from tb_picklist_values where TRIM(PICKLIST_VALUE_CD)=tnl.collection_status_cd AND PICKLIST_TYPE_ID='52') as collection_status_cd,
+tnl.create_ts, tnl.username from temp_notifications_list tnl;
+
+DROP table if exists temp_notifications_list; 
+
+END; 
+
+$BODY$;
+

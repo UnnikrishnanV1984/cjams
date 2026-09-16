@@ -1,0 +1,313 @@
+-- FUNCTION: cjams.sp_account_transaction_insert(bigint, bigint, character varying, character varying, numeric, character, date, numeric, character varying, character varying)
+
+DROP FUNCTION IF EXISTS cjams.sp_account_transaction_insert(bigint, bigint, character varying, character varying, numeric, character, date, numeric, character varying, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.sp_account_transaction_insert(
+	al_account_id bigint,
+	al_payment_detail_id bigint,
+	as_scource_cd character varying,
+	as_funding_scource_cd character varying,
+	adc_amount numeric,
+	as_flag character,
+	ad_run_dt date,
+	adc_payment_amt numeric,
+	as_fiscal_cat_cd character varying,
+	as_eligibility_status_cd character varying,
+	OUT al_sqlcode integer,
+	OUT as_error character varying)
+    RETURNS record
+    LANGUAGE 'plpgsql'
+
+    COST 100
+    VOLATILE 
+AS $BODY$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Amit Rastogi
+-- 05/20/2004
+-- generating account transaction to get the money from child account thru payment stamping
+-- inserting record for fund allocation for payment stamping
+-- changed the updated user_id to finance from batch
+-- added payment_detail_id for child account transaction insert
+-- 05/09/2007 Vineet Tirodkar - Added OUT parameters SQLCODE, ERROR TEXT and ERROR_SECTION # 14088
+-- 03/03/2009 Vineet Tirodkar - CIS-17739
+--            To add New Parameter as Run Date
+--            Insert Transaction amount as +ve value with Credit_Debit_SW as 'D'
+--            Also Update TRANSACTION_SOURCE_CD as '5477' COC Payments
+-- 03/24/2009 Vineet Tirodkar - To Update Source Type in Notes.
+-- 05/11/2009 Vineet Tirodkar - CIS-18372
+--            1) New Arguments: Payment Amount and Fiscal Category Code 
+--            2) Change in logic based for new table TB_FUND_ALLOCATION_MASTER 
+-- 02/27/2012 Vineet Tirodkar - PRJ-02312
+-- New Argument: Eligibility Status Code to Update in TB_FUND_ALLOCATION_MASTER (New Column)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+------------------------------------------------------------------------
+
+DECLARE vl_acc_transaction_id BIGINT DEFAULT 0;--
+DECLARE vs_acc_transaction_id VARCHAR(50) DEFAULT 'sq_account_transaction';--
+
+DECLARE vl_funding_allocation_id BIGINT DEFAULT 0;--
+-- DECLARE vs_funding_allocation_id VARCHAR(50) DEFAULT 'SQ_PAYMENT_FUND_ALLOCATION';--
+DECLARE vs_funding_allocation_id VARCHAR(50) DEFAULT 'sq_fund_allocation_master';--
+
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE v_sqlcode int DEFAULT 0;--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_ACCOUNT_TRANSACTION_INSERT';--
+
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vd_current_month_end_dt DATE;--
+DECLARE vs_NOTES_TX VARCHAR(500) ;--
+
+DECLARE vl_fund_alloc_id BIGINT DEFAULT 0;--
+DECLARE vdc_ssi_amt decimal(10,2) DEFAULT 0.00;--
+DECLARE vdc_ssa_amt decimal(10,2) DEFAULT 0.00;--
+DECLARE vdc_coc_amt decimal(10,2) DEFAULT 0.00;--
+DECLARE vdc_state_amt decimal(10,2) DEFAULT 0.00;--
+DECLARE vdc_ive_amt decimal(10,2) DEFAULT 0.00;--
+      
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+begin
+	EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+   	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;--
+     v_sqlcode := -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || 'Client Account ID/ Payment Detail ID' || ' :: ' || COALESCE((al_account_id)::character varying,'') || '/ ' || COALESCE((al_payment_detail_id)::character varying,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');
+	-- as_error :='';
+END;	 
+--END;--
+
+--  Get the last month start date and end date based on parameter date - CIS-17739
+/*
+SELECT  ( DATE(SUBSTR(CHAR(ad_run_dt  -  DAY(ad_run_dt) DAYS,ISO),1,8)||'01')),
+        ( ad_run_dt  -  DAY(ad_run_dt) DAYS ),
+        ( ad_run_dt + 1 month - DAY(ad_run_dt) DAYS)
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt,
+        vd_current_month_end_dt
+FROM sysibm.sysdummy1;--
+*/
+SELECT (date_trunc('month', ad_run_dt) - interval '1 month')::date,
+       (date_trunc('month', ad_run_dt)::date - 1),
+       ((date_trunc('month', ad_run_dt) + interval '1 month')- interval '1 Day')::date
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt,
+        vd_current_month_end_dt;
+IF as_flag = 'Y' THEN
+
+    vs_NOTES_TX := 'Payment Stamping' ;--
+   IF as_scource_cd = '587' THEN -- SSI
+       vs_NOTES_TX := vs_NOTES_TX || ' (SSI).'; 	--
+   ELSEIF as_scource_cd = '586' THEN -- SSA
+       vs_NOTES_TX := vs_NOTES_TX || ' (SSA).'; 	--
+   ELSEIF as_scource_cd = '585' THEN -- Other (Cost Of Care)
+       vs_NOTES_TX := vs_NOTES_TX || ' (Other [Cost Of Care]).'; 	--
+   END IF;--
+
+   SELECT sp_nextid ( vs_acc_transaction_id) into vl_acc_transaction_id;--
+
+   INSERT INTO
+       TB_ACCOUNT_TRANSACTION
+       (
+          TRANSACTION_ID,                  CLIENT_ACCOUNT_ID,
+          TRANSACTION_TYPE_CD,             TRANSACTION_SOURCE_CD,
+          BENEFIT_START_DT,                BENEFIT_END_DT,
+          TRANSACTION_AMOUNT_NO,           TRANSACTION_DT,
+          CREDIT_DEBIT_SW,                 NOTES_TX,
+          CREATE_TS,                       FREQUENCY_CD,
+          CREATE_USER_ID,                  UPDATE_TS,
+          UPDATE_USER_ID,                  DELETE_SW,
+          PAYMENT_DETAIL_ID
+       )
+        VALUES
+       (
+          vl_acc_transaction_id,           al_account_id,
+          '3444',                          '5477',
+          vd_previous_month_start_dt,      vd_previous_month_end_dt,
+          adc_amount,                      CURRENT_DATE,
+          'D',                             vs_NOTES_TX,
+          CURRENT_TIMESTAMP,               NULL,
+          'finance',                       CURRENT_TIMESTAMP,
+          'finance',                       'N',
+          al_payment_detail_id
+       );--
+
+       -- as_scource_cd hard coded as '5477'
+
+        al_sqlcode := SQLCODE;--
+       IF al_sqlcode <> 0  THEN
+           as_error := 'Error in inserting Account Transaction record';--
+       END IF ;--
+END IF;--
+
+-- To Insert / Update in funding allocation table
+
+-- To check record is already there in TB_FUND_ALLOCATION_MASTER
+ vl_fund_alloc_id := NULL; -- INITIAL VALUE
+ vl_funding_allocation_id := NULL; -- INITIAL VALUE
+
+SELECT FUND_ALLOC_ID
+   INTO vl_fund_alloc_id
+  FROM TB_FUND_ALLOCATION_MASTER  
+WHERE PAYMENT_DETAIL_ID = al_payment_detail_id 
+      AND DELETE_SW = 'N'  ;--
+
+ al_sqlcode := SQLCODE;--
+IF al_sqlcode < 0  THEN
+    as_error := 'Error finding existing record in TB_FUND_ALLOCATION_MASTER';--
+END IF ;--
+
+IF vl_fund_alloc_id is NULL THEN -- Insert
+
+   IF as_funding_scource_cd = '587' THEN -- SSI
+       vdc_ssi_amt := adc_amount;	--
+       vdc_ssa_amt := 0.00;--
+       vdc_coc_amt := 0.00; --
+       vdc_state_amt := 0.00; --
+       vdc_ive_amt := 0.00; --
+   ELSEIF as_funding_scource_cd = '586' THEN -- SSA
+       vdc_ssi_amt  := 0.00;	--
+       vdc_ssa_amt := adc_amount;--
+       vdc_coc_amt := 0.00; --
+       vdc_state_amt := 0.00; --
+       vdc_ive_amt := 0.00; --
+   ELSEIF as_funding_scource_cd = '4893' THEN -- Other[COC]
+       vdc_ssi_amt := 0.00;	--
+       vdc_ssa_amt := 0.00;--
+       vdc_coc_amt := adc_amount; --
+       vdc_state_amt := 0.00; --
+       vdc_ive_amt := 0.00; --
+   ELSEIF as_funding_scource_cd = '4895' THEN -- State
+       vdc_ssi_amt := 0.00;	--
+       vdc_ssa_amt := 0.00;--
+       vdc_coc_amt := 0.00; --
+       vdc_state_amt := adc_amount; --
+       vdc_ive_amt := 0.00; --
+   ELSEIF as_funding_scource_cd = '4894' THEN -- IV-E
+       vdc_ssi_amt := 0.00;	--
+       vdc_ssa_amt := 0.00;--
+       vdc_coc_amt := 0.00; --
+       vdc_state_amt := 0.00; --
+       vdc_ive_amt := adc_amount; --
+   END IF;--
+
+   SELECT sp_nextid (vs_funding_allocation_id) into vl_funding_allocation_id;--
+   
+   INSERT INTO TB_FUND_ALLOCATION_MASTER  
+            ( FUND_ALLOC_ID,			FUNDING_AMOUNT_NO,   
+              PAYMENT_DETAIL_ID,		FUND_ALLOCATION_DATE,   
+              PAYMENT_AMOUNT,			FISCAL_CATEGORY_CD,   
+              SSI_FUNDING_AMT,			SSA_FUNDING_AMT,   
+              COC_FUNDING_AMT,			STATE_FUNDING_AMT,   
+              IVE_FUNDING_AMT,			IVD_FUNDING_AMT,   
+              LOCAL_FUNDING_AMT,		INITIAL_STAMPING_SW,   
+              DELETE_SW,   
+              CREATE_TS,    			CREATE_USER_ID,   
+              UPDATE_TS,			    UPDATE_USER_ID,
+			  ELIGIBILITY_STATUS_CD	)  
+     VALUES ( vl_funding_allocation_id,		0,   
+	      al_payment_detail_id,		ad_run_dt,   
+   	      adc_payment_amt,			as_fiscal_cat_cd,   
+   	      vdc_ssi_amt,			vdc_ssa_amt,   
+   	      vdc_coc_amt,			vdc_state_amt,   
+   	      vdc_ive_amt,			0,   
+   	      0,				'Y',   
+   	      'N',   
+   	      CURRENT_TIMESTAMP,		'finance',   
+	      CURRENT_TIMESTAMP,		'finance',
+		  as_eligibility_status_cd )  ;--
+	      
+    al_sqlcode := SQLCODE;--
+   IF al_sqlcode <> 0  THEN
+      as_error := 'Error in inserting funding allocation record';--
+   END IF ;	      --
+			  
+ELSE -- Update
+    vl_funding_allocation_id := vl_fund_alloc_id ; 	--
+   
+   IF as_funding_scource_cd = '587' THEN -- SSI
+      UPDATE TB_FUND_ALLOCATION_MASTER  
+        SET SSI_FUNDING_AMT = adc_amount,
+            UPDATE_TS = CURRENT_TIMESTAMP,
+	    UPDATE_USER_ID = 'finance'
+      WHERE FUND_ALLOC_ID = vl_funding_allocation_id 
+	    AND DELETE_SW = 'N';--
+	    
+   ELSEIF as_funding_scource_cd = '586' THEN -- SSA
+      UPDATE TB_FUND_ALLOCATION_MASTER  
+        SET SSA_FUNDING_AMT = adc_amount,
+            UPDATE_TS = CURRENT_TIMESTAMP,
+	    UPDATE_USER_ID = 'finance'
+      WHERE FUND_ALLOC_ID = vl_funding_allocation_id 
+	    AND DELETE_SW = 'N';   --
+	    
+   ELSEIF as_funding_scource_cd = '4893' THEN -- Other[COC]
+      UPDATE TB_FUND_ALLOCATION_MASTER  
+     	SET COC_FUNDING_AMT = adc_amount,
+     	    UPDATE_TS = CURRENT_TIMESTAMP,
+	    UPDATE_USER_ID = 'finance'
+      WHERE FUND_ALLOC_ID = vl_funding_allocation_id 
+	    AND DELETE_SW = 'N';   --
+	    
+   ELSEIF as_funding_scource_cd = '4895' THEN -- State
+      UPDATE TB_FUND_ALLOCATION_MASTER  
+        SET STATE_FUNDING_AMT = adc_amount,
+            UPDATE_TS = CURRENT_TIMESTAMP,
+	    UPDATE_USER_ID = 'finance'
+      WHERE FUND_ALLOC_ID = vl_funding_allocation_id   
+	    AND DELETE_SW = 'N';   --
+	    
+   ELSEIF as_funding_scource_cd = '4894' THEN -- IV-E
+      UPDATE TB_FUND_ALLOCATION_MASTER  
+        SET IVE_FUNDING_AMT = adc_amount,
+            UPDATE_TS = CURRENT_TIMESTAMP,
+	    UPDATE_USER_ID = 'finance'
+      WHERE FUND_ALLOC_ID = vl_funding_allocation_id 
+  	    AND DELETE_SW = 'N';   --
+   END IF;--
+   
+    al_sqlcode := SQLCODE;--
+   IF al_sqlcode <> 0  THEN
+      as_error := 'Error in Updating funding allocation record';--
+   END IF ;--
+END IF;--
+
+-- Commented CIS-18372
+--INSERT INTO
+--CHESSIE.TB_PAYMENT_FUND_ALLOCATION
+--(
+--   PMT_FUND_ALLOC_ID,                 PAYMENT_DETAIL_ID,
+--   FUNDING_SOURCE_CD,                 FUNDING_AMOUNT_NO,
+--   CREATE_TS,                         CREATE_USER_ID,
+--   UPDATE_TS,                         UPDATE_USER_ID,
+--   DELETE_SW
+--)
+-- VALUES
+--(
+--   vl_funding_allocation_id,           al_payment_detail_id,
+--   as_funding_scource_cd,              adc_amount,
+--   CURRENT TIMESTAMP,                 'finance',
+--   CURRENT TIMESTAMP,                 'finance',
+--   'N'
+--);--
+
+--SET al_sqlcode = SQLCODE;--
+--IF al_sqlcode <> 0  THEN
+--  SET as_error = 'Error in inserting funding allocation record';--
+--END IF ;--
+
+ al_sqlcode := v_sqlcode;--
+END;
+
+$BODY$;
+
+

@@ -1,0 +1,1 @@
+ALTER TABLE permanencyplan ALTER COLUMN reason TYPE character varying;

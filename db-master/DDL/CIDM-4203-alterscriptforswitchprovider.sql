@@ -1,0 +1,1 @@
+alter table adoptioncaseagreementrevision add column if not exists switchprovider BOOLEAN;

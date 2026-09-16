@@ -1,0 +1,572 @@
+CREATE OR REPLACE FUNCTION cjams.sp_payment_plan_insert(al_receivable_id bigint, OUT al_sqlcode integer)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created :04/20/2007
+-- To Insert records in Payment  Plan Table either for OFFSET or RECOVERY
+-- CORRECTED LOGIC FOR RECOVERY
+-- 05/11/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in tb_BATCH_ERROR_LOG # 14088
+-- 06/24/2007 Vineet Tirodkar - Also to Update the Payment Plan Table as per current plan for 
+--            OFFSET or RECOVERY with current Outstanding Amount
+-- 12/19/2008 Vineet Tirodkar - CIS-18124
+--    1)New Argument to SP - Receivable ID
+--    Pass '0' - from UnderOver SPs (Run for all Providers)
+--    Pass Receivable_id - from screen AR005C manual overpayment entry (Run for specific Providers)
+--    2) Change in logic - For system generated receivables,
+--    If provider is having open placements then payment plan collection status should be 
+--    Offset -- else Recovery
+--    If old plan exists with same status i.e. Offset / Recovery then
+--       update plan with current receivable balance
+--    else close the old plan with END DT as (Current date - 1 day) 
+--         and create new plan effective from current date.
+--    3) If plan status i.e. Offset / Recovery change then Update Collection status of all the outstanding receivables
+--       as applicable i.e. Offset / Recovery, except for the old status as 'Reffered to CCU'  		
+-- 01/16/2009 Vineet Tirodkar - Changes NOT to include receivables amounts in Payment Plan
+-- 	      with collection status as 'Reffered to CCU'  CIS-18126	
+-- 02/28/2013 Vineet Tirodkar PRJ-XXXX- Production Lockwait issue Feb 2014
+-- To add CONNECT TO, SET SCHEMA, DROP PROCEDURE & GRANT EXECUTE statements			
+-- 08/31/2015 - Vineet Tirodkar - PRJ-05327 - MD CHESSIE Fiscal Phases 2
+-- 				Changes to create/update payment plan as 'Recovery' - 100% for GAP & Adoption Subsidy account receivables.
+-- 04/08/2021 - Vineet Tirodkar - Temporary fix for Provider ID: 5001284 (Nexus Woodbourne Family Healing) - CDM-11714	
+-- 09/13/2022 - Vineet Tirodkar - To revert Provider ID: 5001284 (Nexus Woodbourne Family Healing) plan to default (CIDM-5577)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+------------------------------------------------------------------------
+
+-- Declare variablesCASE
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE vl_provider_id BIGINT ;--
+DECLARE vdc_receivable_balance_total decimal(10,2);--
+DECLARE vdc_recv_bal_exl_sub decimal(10,2);--
+DECLARE vl_receivable_id BIGINT ;--
+DECLARE vl_payment_plan_id BIGINT ;--
+DECLARE vs_provider_cat CHAR(5);--
+DECLARE vdc_payment_percentage decimal(5,2) DEFAULT 0.00;--
+DECLARE vdc_old_payment_percentage decimal(5,2) DEFAULT 0.00;--
+DECLARE vs_payment_option VARCHAR(20) DEFAULT NULL;--
+DECLARE vs_offset_sw CHAR(1) DEFAULT NULL;--
+DECLARE vs_offset_option CHAR(1) DEFAULT NULL;--
+DECLARE vdc_provider_bal decimal(10,2);--
+DECLARE vs_payment_plan_id VARCHAR(50) DEFAULT 'sq_payment_plan';--
+
+DECLARE vl_old_payment_plan_id BIGINT ;--
+DECLARE vs_offset_recovery CHAR(1) ;--
+DECLARE vs_offset_recovery_old CHAR(1) ;--
+DECLARE vs_old_offset_sw CHAR(1) DEFAULT NULL;--
+DECLARE vs_percentage_change_sw CHAR(1);--
+DECLARE vl_sqlcode INT DEFAULT 0;--
+
+DECLARE vl_row_cnt BIGINT DEFAULT 0;--
+DECLARE vs_cursor_sql VARCHAR(12000) ;--
+
+DECLARE vl_receivable_detail_id BIGINT ;--
+DECLARE vs_collection_status VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_collection_status_id VARCHAR(50) DEFAULT 'sq_receivable_collection_status';--
+DECLARE vl_collection_status_id BIGINT;--
+DECLARE vl_placement_count INT;--
+DECLARE vd_old_plan_start_dt DATE;--
+DECLARE vd_old_plan_end_dt DATE;--
+
+--Log Error
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_PAYMENT_PLAN_INSERT';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+
+--DECLARE CUR_RECEIVABLES CURSOR WITH HOLD FOR s1;--
+CUR_RECEIVABLES REFCURSOR;--
+cur_collection_status record;
+ cur_collection_status_refcur REFCURSOR;
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+	-- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+	--	    SET al_sqlcode = -1 ;--
+	begin
+		EXCEPTION WHEN OTHERS THEN
+	   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+		GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+		 as_error = COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+		 as_error = COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+		 as_error = as_error || COALESCE(vs_message_text ,'');--
+
+		SELECT SP_BATCH_ERROR_LOG ( 'SP_PAYMENT_PLAN_INSERT' ,
+										   NULL::bigint,
+							NULL::bigint,
+							NULL::character varying,
+							NULL::INTEGER,
+							NULL::character varying,
+							SQLSTATE::character varying,
+							as_error::character varying,
+							'finance'::character varying) INTO
+							vl_ret_status;
+
+		 as_error := '';--
+	END;
+	--Log error
+
+	-- To get All Providers with Outstanding Balance
+	IF al_receivable_id = 0 THEN -- call from UnderOver Sps
+	   -- SQL for Cursor (called from Under Over Batch) - START	
+		vs_cursor_sql :=
+		' SELECT RH.PROVIDER_ID, '||
+		'	    RH.RECEIVABLE_ID, '||
+		'	    ( SELECT SUM(RD.RECEIVABLE_BALANCE_NO) '||       
+		'		FROM tb_RECEIVABLE_DETAIL RD, '||
+		'		     tb_RECEIVABLE_COLLECTION_STATUS RCS '||
+		'	      WHERE RCS.RECEIVABLE_DETAIL_ID = RD.RECEIVABLE_DETAIL_ID '||
+		'		    AND RD.RECEIVABLE_ID = RH.RECEIVABLE_ID '||
+		'		    AND RD.RECEIVABLE_STATUS_CD IN (''19'',''22'') '||
+		'		    AND ((RD.MANUAL_SW = ''N'') OR (RD.MANUAL_SW = ''Y'' AND RD.APPROVAL_STATUS_CD = ''3047'')) '||
+		'		    AND RD.DELETE_SW = ''N'' '||
+		'		    AND RCS.DELETE_SW = ''N'' '||
+		'		    AND RCS.ACTIVE_SW = ''Y'' '||
+		'		    AND RCS.COLLECTION_STATUS_CD <> ''775''  ) AS BALANCE_NO, '||
+		'	    F_PRVPCKLST_CAT(RH.PROVIDER_ID,''PLACEMENT'') AS PROV_CAT '||
+		'       FROM tb_RECEIVABLE_HEADER RH '||
+		'     WHERE RH.DELETE_SW =  ''N'' '|| 
+		'	    	AND ( SELECT SUM(RD.RECEIVABLE_BALANCE_NO) '||      
+		'	    		FROM tb_RECEIVABLE_DETAIL RD, '||
+		'  		             tb_RECEIVABLE_COLLECTION_STATUS RCS '||
+		'		      WHERE RCS.RECEIVABLE_DETAIL_ID = RD.RECEIVABLE_DETAIL_ID '||
+		'			    AND RD.RECEIVABLE_ID = RH.RECEIVABLE_ID '||
+		' 			    AND RD.RECEIVABLE_STATUS_CD IN (''19'',''22'')  '||
+		'			    AND ((RD.MANUAL_SW = ''N'') OR (RD.MANUAL_SW = ''Y'' AND RD.APPROVAL_STATUS_CD = ''3047'')) '||
+		'  			    AND RD.DELETE_SW = ''N'' '|| 
+		' 			    AND RCS.DELETE_SW = ''N'' '||	
+		'			    AND RCS.ACTIVE_SW = ''Y'' '||   
+		' 			    AND RCS.COLLECTION_STATUS_CD <> ''775''  ) > 0  '; --
+		
+	   -- SQL for Cursor (called from Under Over Batch) - END	
+			
+	   -- Take count to run a loop for cursor (called from Under Over Batch) - START
+		  SELECT COUNT(*)
+			INTO vl_row_cnt
+		   FROM (
+		   SELECT DISTINCT RH.RECEIVABLE_ID
+			  FROM tb_RECEIVABLE_HEADER RH
+		   WHERE RH.DELETE_SW =  'N'
+			 AND ( SELECT SUM(RD.RECEIVABLE_BALANCE_NO)       
+				   FROM tb_RECEIVABLE_DETAIL RD,
+						tb_RECEIVABLE_COLLECTION_STATUS RCS
+				WHERE RCS.RECEIVABLE_DETAIL_ID = RD.RECEIVABLE_DETAIL_ID
+					  AND RD.RECEIVABLE_ID = RH.RECEIVABLE_ID
+					  AND RD.RECEIVABLE_STATUS_CD IN ('19','22') 
+					  AND ((RD.MANUAL_SW = 'N') OR (RD.MANUAL_SW = 'Y' AND RD.APPROVAL_STATUS_CD = '3047'))
+					  AND RD.DELETE_SW = 'N' 
+					  AND RCS.DELETE_SW = 'N'	
+					  AND RCS.ACTIVE_SW = 'Y'   
+					  AND RCS.COLLECTION_STATUS_CD <> '775'  ) > 0
+			   ) AS DUMMY ;--
+	   -- Take count to run a loop for cursor (called from Under Over Batch) - END	
+	ELSE -- call from AR005C Manual Overpayment Entry
+	-- SQL for Cursor (called from AR005C) - START	
+		vs_cursor_sql :=
+		' SELECT RH.PROVIDER_ID, '||
+		'	    RH.RECEIVABLE_ID, '||
+		'	    ( SELECT SUM(RD.RECEIVABLE_BALANCE_NO) '||       
+		'		FROM tb_RECEIVABLE_DETAIL RD, '||
+		'		     tb_RECEIVABLE_COLLECTION_STATUS RCS '||
+		'	      WHERE RCS.RECEIVABLE_DETAIL_ID = RD.RECEIVABLE_DETAIL_ID '||
+		'		    AND RD.RECEIVABLE_ID = RH.RECEIVABLE_ID '||
+		'		    AND RD.RECEIVABLE_STATUS_CD IN (''19'',''22'') '||
+		'		    AND ((RD.MANUAL_SW = ''N'') OR (RD.MANUAL_SW = ''Y'' AND RD.APPROVAL_STATUS_CD = ''3047'')) '||
+		'		    AND RD.DELETE_SW = ''N'' '||
+		'		    AND RCS.DELETE_SW = ''N'' '||
+		'		    AND RCS.ACTIVE_SW = ''Y'' '||
+		'		    AND RCS.COLLECTION_STATUS_CD <> ''775''  ) AS BALANCE_NO, '||
+		'	    F_PRVPCKLST_CAT(RH.PROVIDER_ID,''PLACEMENT'') AS PROV_CAT '||
+		'       FROM tb_RECEIVABLE_HEADER RH '||
+		'     WHERE RH.DELETE_SW =  ''N'' '||
+		'      AND RH.RECEIVABLE_ID = ' ||  CAST(al_receivable_id AS VARCHAR) ||' AND '||
+		'	       ( SELECT SUM(RD.RECEIVABLE_BALANCE_NO) '||      
+		'	      	     FROM tb_RECEIVABLE_DETAIL RD, '||
+		'  		          tb_RECEIVABLE_COLLECTION_STATUS RCS '||
+		'		 WHERE RCS.RECEIVABLE_DETAIL_ID = RD.RECEIVABLE_DETAIL_ID '||
+		'		    AND RD.RECEIVABLE_ID = RH.RECEIVABLE_ID '||
+		' 		    AND RD.RECEIVABLE_STATUS_CD IN (''19'',''22'')  '||
+		'		    AND ((RD.MANUAL_SW = ''N'') OR (RD.MANUAL_SW = ''Y'' AND RD.APPROVAL_STATUS_CD = ''3047'')) '||
+		'  		    AND RD.DELETE_SW = ''N'' '|| 
+		' 		    AND RCS.DELETE_SW = ''N'' '||	
+		'		    AND RCS.ACTIVE_SW = ''Y'' '||   
+		' 		    AND RCS.COLLECTION_STATUS_CD <> ''775''  ) > 0  '; --
+	   -- SQL for Cursor (called from AR005C) - END	
+			
+	   -- Take count to run a loop for cursor (called from AR005C) - START
+		   vl_row_cnt := 1 ;--
+	   -- Take count to run a loop for cursor (called from AR005C) - END	
+
+	END IF;--
+
+	--PREPARE s1 FROM vs_cursor_sql;--
+	--OPEN CUR_RECEIVABLES;--
+	OPEN CUR_RECEIVABLES FOR EXECUTE vs_cursor_sql;--
+	<<RECEIVABLES>>
+	--RECEIVABLES:
+	--WHILE vl_row_cnt > 0  DO
+	loop EXIT WHEN vl_row_cnt = 0::bigint ;
+		 vl_provider_id := 0; -- INITIAL VALUE
+		 vl_receivable_id := 0; -- INITIAL VALUE
+		 vdc_receivable_balance_total := 0; -- INITIAL VALUE
+		 vs_provider_cat := NULL; -- INITIAL VALUE
+
+		FETCH CUR_RECEIVABLES INTO vl_provider_id, vl_receivable_id, vdc_receivable_balance_total, vs_provider_cat;--
+
+		IF vl_row_cnt = 0 THEN
+		  -- LEAVE RECEIVABLES;--
+		END IF;--
+		
+		-- (Nexus Woodbourne Family Healing) -- CIDM-5577	
+		-- IF vl_provider_id = 5001284 THEN -- CDM-11714 - START
+			-- Do nothing for now
+		-- ELSE
+			-- PRJ-05327
+			-- Identify Receivable balance excluding Receivable GAP or Adoption Subsidy payments - START
+			SELECT SUM(RD.RECEIVABLE_BALANCE_NO)  
+					INTO vdc_recv_bal_exl_sub
+				FROM tb_RECEIVABLE_DETAIL RD, 
+					tb_RECEIVABLE_COLLECTION_STATUS RCS,
+					tb_PAYMENT_DETAIL PD		 
+			WHERE RCS.RECEIVABLE_DETAIL_ID = RD.RECEIVABLE_DETAIL_ID 
+				AND RD.PAYMENT_DETAIL_ID = PD.PAYMENT_DETAIL_ID		
+				AND RD.RECEIVABLE_ID = vl_receivable_id
+				AND RD.RECEIVABLE_STATUS_CD IN ('19','22') 
+				AND ((RD.MANUAL_SW = 'N') OR (RD.MANUAL_SW = 'Y' AND RD.APPROVAL_STATUS_CD = '3047')) 
+				AND RD.DELETE_SW = 'N' 
+				AND RCS.DELETE_SW = 'N' 
+				AND PD.DELETE_SW = 'N'			
+				AND RCS.ACTIVE_SW = 'Y' 
+				AND RCS.COLLECTION_STATUS_CD <> '775' 
+				AND PD.SUBSIDY_AGREEMENT_ID IS NULL ; -- excluding A/R for GAP or Adoption Subsidy
+
+			 al_sqlcode := SQLCODE;--
+			IF al_sqlcode < 0 THEN
+				as_error := 'Error in getting Receivable balance for Foster Care payments';--
+				vs_identity_column := 'Receivable ID';--
+				vs_identity_val := (vl_receivable_id)::character varying;--
+			   --SIGNAL p_sp_error;--
+			END IF ;--
+			
+			IF vdc_recv_bal_exl_sub is NULL THEN
+				 vdc_recv_bal_exl_sub := 0;--
+			END IF;		--
+			-- Identify Receivable balance excluding Receivable GAP or Adoption Subsidy payments - END
+			
+			 vl_placement_count := 0; -- INTIAL VALUE
+			 vl_old_payment_plan_id := 0; -- INTIAL VALUE
+			 vs_offset_recovery := NULL; -- INTIAL VALUE
+			 vs_offset_recovery_old := NULL; -- INTIAL VALUE
+			
+			SELECT COUNT(*)
+				INTO vl_placement_count
+			  FROM tb_PLACEMENT
+			WHERE ( PROVIDER_ID = vl_provider_id OR PROVIDER_ORGANIZATION_ID = vl_provider_id)
+				AND ENTRY_DT IS NOT NULL
+				AND (EXIT_DT IS NULL OR EXIT_DT > CURRENT_DATE)
+				AND ( VOID_SW is NULL OR VOID_SW = 'N' OR RTRIM(LTRIM(VOID_SW)) = '' )
+				AND DELETE_SW = 'N' ;--
+			
+			IF vs_provider_cat = '1783' or vs_provider_cat = '1785' THEN -- chessie_mask	
+				-- PRJ-05327 - Active Placement(s) & Foster Care Receivable > 0
+				IF vl_placement_count > 0 AND vdc_recv_bal_exl_sub > 0 THEN
+					vs_offset_recovery := 'O'; --Offset
+				ELSE
+					vs_offset_recovery := 'R'; --Recovery
+				END IF;--
+			ELSE -- Private
+				IF vl_placement_count > 0 THEN
+					vs_offset_recovery := 'O'; --Offset
+				ELSE
+					vs_offset_recovery := 'R'; --Recovery
+				END IF;--
+			END IF;--
+			
+			-- Check for existing payment plan
+			SELECT PAYMENT_PLAN_ID
+			   INTO vl_old_payment_plan_id
+			  FROM tb_PAYMENT_PLAN
+			WHERE RECEIVABLE_ID = vl_receivable_id
+			  AND DELETE_SW = 'N'
+			  AND START_DT is NOT NULL
+			  AND END_DT is NULL
+			ORDER BY PAYMENT_PLAN_ID DESC
+			FETCH FIRST ROW ONLY ; --
+
+			IF vl_old_payment_plan_id IS NULL THEN
+				vl_old_payment_plan_id := 0;--
+			END IF;--
+							
+			IF vl_old_payment_plan_id > 0 THEN
+				 vs_old_offset_sw := NULL; -- INITIAL VALUE
+				 vd_old_plan_start_dt := NULL; -- INITIAL VALUE
+				 vdc_old_payment_percentage := NULL; -- INITIAL VALUE
+
+				SELECT COALESCE(OFFSET_SW,'N'),
+						START_DT,
+						COALESCE(PERCENTAGE_NO,0) AS PERCENTAGE_NO
+				INTO vs_old_offset_sw,
+					 vd_old_plan_start_dt,
+					 vdc_old_payment_percentage			 
+				FROM tb_PAYMENT_PLAN
+				WHERE PAYMENT_PLAN_ID = vl_old_payment_plan_id;--
+
+				IF vs_old_offset_sw = 'Y' THEN
+					 vs_offset_recovery_old := 'O';--
+				ELSE
+					 vs_offset_recovery_old := 'R';--
+				END IF;--
+			ELSE
+				vs_offset_recovery_old := vs_offset_recovery ;--
+			END IF;	--
+			
+			IF vs_offset_recovery = 'O' THEN -- Offset current placements
+			   IF vs_provider_cat = '1783' or vs_provider_cat = '1785' THEN -- chessie_mask 25%
+				   vdc_payment_percentage := 25.00;--
+				   vs_payment_option := NULL;--
+				   vs_offset_sw := 'Y';--
+				   vs_offset_option := 'A';--
+				   vdc_provider_bal := (vdc_receivable_balance_total * 25 ) / 100 ;--
+			   ELSE -- Private 100%
+				   vdc_payment_percentage := 100.00;--
+				   vs_payment_option := NULL;--
+				   vs_offset_sw := 'Y';--
+				   vs_offset_option := 'A';--
+				   vdc_provider_bal :=  vdc_receivable_balance_total;--
+			   END IF;           		--
+			ELSEIF vs_offset_recovery = 'R' THEN -- Recovery no placements
+				IF vs_provider_cat = '1783' or vs_provider_cat = '1785' THEN -- chessie_mask 25%
+					 vs_offset_sw := NULL;--
+					 vs_offset_option := NULL;--
+					 vs_payment_option := 'A';--
+
+					-- Receivable balance is only for GAP or Adoption Subsidy payments 
+					IF vdc_recv_bal_exl_sub = 0 THEN
+						 vdc_payment_percentage := 100.00;--
+						 vdc_provider_bal := vdc_receivable_balance_total;--
+					ELSE -- Receivable balance for excluding subsidies is > 0 
+						 vdc_payment_percentage := 25.00;--
+						 vdc_provider_bal := (vdc_receivable_balance_total * 25) /100 ;				--
+					END IF;		--
+				ELSE -- Private 100%				
+					 vs_offset_sw := NULL;--
+					 vs_offset_option := NULL;--
+					 vdc_payment_percentage := 100.00;--
+					 vs_payment_option := 'A';--
+					 vdc_provider_bal :=  vdc_receivable_balance_total;--
+				END IF;--
+			END IF;--
+
+			IF vl_old_payment_plan_id = 0 THEN
+				-- No Payment Plan found
+				SELECT SP_nextid (vs_payment_plan_id) INTO vl_payment_plan_id;--
+
+				INSERT INTO tb_PAYMENT_PLAN (
+					PAYMENT_PLAN_ID, PLAN_DT, RECEIVABLE_ID, AMOUNT_NO,
+					PERCENTAGE_NO, MONTHS_NO, START_DT, END_DT,
+					OFFSET_SW, PAYMENT_OPTION_SW, OFFSET_OPTION_SW, MANUAL_SW,
+					CREATE_TS, CREATE_USER_ID, UPDATE_TS, UPDATE_USER_ID, DELETE_SW,
+					CURRENT_RECEIVABLE_AMOUNT)
+				VALUES (
+					vl_payment_plan_id, current_date, vl_receivable_id, vdc_provider_bal,
+					vdc_payment_percentage,	NULL, current_date, NULL,
+					vs_offset_sw, vs_payment_option, vs_offset_option, 'N',
+					current_timestamp, 'finance', current_timestamp, 'finance', 'N',
+					vdc_receivable_balance_total);--
+
+				 al_sqlcode := SQLCODE;--
+				IF al_sqlcode <> 0 THEN
+					as_error := 'Error in Inserting PAYMENT PLAN';--
+					vs_identity_column := 'Receivable ID';--
+					vs_identity_val := (vl_receivable_id)::character varying;--
+				   --SIGNAL p_sp_error;--
+				END IF ;--
+			ELSE
+				-- PRJ-05327 - New condition to identify plan change on Foter Care PIF 
+				 vs_percentage_change_sw := 'N'; -- INITIAL VALUE
+				
+				IF vs_provider_cat = '1783' or vs_provider_cat = '1785' THEN -- chessie_mask 25%
+					IF vl_old_payment_plan_id > 0 THEN
+						IF vdc_payment_percentage <> vdc_old_payment_percentage THEN -- Plan Percentage	change
+							 vs_percentage_change_sw := 'Y';--
+						END IF;--
+					END IF;--
+				END IF;--
+				
+				-- Old Payment Plan found
+				IF vs_offset_recovery = vs_offset_recovery_old AND vs_percentage_change_sw = 'N' THEN
+
+				   SELECT a.al_sqlcode from SP_PAYMENT_PLAN_UPDATE ( vl_receivable_id,
+														'PPI', 	
+														vdc_receivable_balance_total) a INTO
+														vl_sqlcode;--
+							
+				   al_sqlcode := vl_sqlcode;--
+				  IF al_sqlcode <> 0 THEN
+					  as_error := 'Error in Updating PAYMENT PLAN';--
+					  vs_identity_column := 'Receivable ID';--
+					  vs_identity_val := (vl_receivable_id)::character varying;--
+					 --SIGNAL p_sp_error;--
+				  END IF ;--
+				ELSE
+					-- Current and Old plan collection status are Different
+					-- Close Old Payment Plan
+					IF vd_old_plan_start_dt is NOT NULL AND vd_old_plan_start_dt = CURRENT_DATE THEN
+						 vd_old_plan_end_dt := CURRENT_DATE;--
+					ELSE
+						 vd_old_plan_end_dt := CURRENT_DATE - interval '1 day';--
+					END IF;--
+			  
+					UPDATE tb_PAYMENT_PLAN
+					SET END_DT = vd_old_plan_end_dt,
+						UPDATE_TS = CURRENT_TIMESTAMP,
+						UPDATE_USER_ID = 'finance'
+					WHERE PAYMENT_PLAN_ID = vl_old_payment_plan_id
+						AND DELETE_SW = 'N' ;--
+			
+					 al_sqlcode := SQLCODE;--
+					IF al_sqlcode <> 0 THEN
+						 as_error := 'Error in Updating Old PAYMENT PLAN';--
+						 vs_identity_column := 'Old Payment Plan ID';--
+						 vs_identity_val := (vl_old_payment_plan_id)::character varying;--
+						--SIGNAL p_sp_error;--
+					END IF;--
+			
+					-- Insert New Payment Plan
+					SELECT SP_nextid (vs_payment_plan_id) INTO vl_payment_plan_id;--
+			
+					INSERT INTO tb_PAYMENT_PLAN (
+						PAYMENT_PLAN_ID, PLAN_DT, RECEIVABLE_ID, AMOUNT_NO,
+						PERCENTAGE_NO, MONTHS_NO, START_DT, END_DT,
+						OFFSET_SW, PAYMENT_OPTION_SW, OFFSET_OPTION_SW, MANUAL_SW,
+						CREATE_TS, CREATE_USER_ID, UPDATE_TS, UPDATE_USER_ID, DELETE_SW,
+						CURRENT_RECEIVABLE_AMOUNT )
+					VALUES (
+						vl_payment_plan_id, current_date, vl_receivable_id, vdc_provider_bal,
+						vdc_payment_percentage,	NULL, current_date, NULL,
+						vs_offset_sw, vs_payment_option, vs_offset_option, 'N',
+						current_timestamp, 'finance', current_timestamp, 'finance', 'N',
+						vdc_receivable_balance_total );--
+			
+					 al_sqlcode := SQLCODE;--
+					IF al_sqlcode <> 0 THEN
+						 as_error := 'Error in Inserting New PAYMENT PLAN';--
+						 vs_identity_column := 'Receivable ID / Payment Plan ID';--
+						 vs_identity_val := (vl_receivable_id)::character varying || (vl_payment_plan_id)::character varying ;--
+						--SIGNAL p_sp_error;--
+					END IF ;--
+			
+					IF vs_percentage_change_sw = 'N' THEN
+						-- Update Collection Status
+						OPEN cur_collection_status_refcur FOR						
+						--FOR cur_collection_status AS
+						--	cur1 CURSOR WITH HOLD FOR
+							SELECT A.RECEIVABLE_DETAIL_ID
+							FROM tb_RECEIVABLE_DETAIL A,
+								 tb_RECEIVABLE_COLLECTION_STATUS B
+							WHERE A.RECEIVABLE_DETAIL_ID = B.RECEIVABLE_DETAIL_ID
+								AND A.RECEIVABLE_ID = vl_receivable_id
+								AND A.RECEIVABLE_BALANCE_NO > 0
+								AND B.ACTIVE_SW = 'Y'
+								AND B.DELETE_SW = 'N'
+								AND A.DELETE_SW = 'N'
+								AND A.RECEIVABLE_STATUS_CD IN ('19','22')
+								AND B.COLLECTION_STATUS_CD <> '775'
+								AND ((A.MANUAL_SW = 'N')
+								OR (A.MANUAL_SW = 'Y' AND A.APPROVAL_STATUS_CD = '3047'));
+
+						--DO
+						loop
+						fetch cur_collection_status_refcur into cur_collection_status;
+												 exit when not found;
+
+							 vl_receivable_detail_id := cur_collection_status.RECEIVABLE_DETAIL_ID ;--
+				
+							UPDATE tb_RECEIVABLE_COLLECTION_STATUS
+								SET ACTIVE_SW = 'N',
+									UPDATE_TS = CURRENT_TIMESTAMP,
+									UPDATE_USER_ID = 'finance'		
+							WHERE RECEIVABLE_DETAIL_ID = vl_receivable_detail_id
+								AND ACTIVE_SW = 'Y'
+								AND DELETE_SW = 'N' ;--
+				
+							 al_sqlcode := SQLCODE;--
+							IF al_sqlcode <> 0 THEN
+								 as_error := 'Error in Updating COLLECTION_STATUS';--
+								 vs_identity_column := 'Receivable Detail ID';--
+								 vs_identity_val := (vl_receivable_detail_id)::character varying;--
+								--SIGNAL p_sp_error;--
+							END IF ;--
+				
+							IF vs_offset_recovery = 'O' THEN
+								 vs_collection_status := '779'; -- offset
+							ELSE
+								 vs_collection_status := '780'; -- recovery
+							END IF;--
+				
+							-- GENERATING THE COLLECTION STATUS
+							--SELECT SP_nextid ( vs_collection_status_id, vl_collection_status_id);--
+							SELECT SP_nextid ( vs_collection_status_id) INTO vl_collection_status_id;--
+							INSERT INTO tb_RECEIVABLE_COLLECTION_STATUS
+								(
+								COLLECTION_STATUS_ID,                      COLLECTION_STATUS_CD,
+								COLLECTION_STATUS_DT,                      ACTIVE_SW,
+								CREATE_TS,                                 CREATE_USER_ID,
+								UPDATE_TS,                                 RECEIVABLE_DETAIL_ID,
+								UPDATE_USER_ID,                            DELETE_SW
+								)
+							VALUES
+								(
+								vl_collection_status_id,                 vs_collection_status,
+								CURRENT_DATE,                            'X',--'Y',
+								CURRENT_TIMESTAMP,                       'finance',
+								CURRENT_TIMESTAMP,                       vl_receivable_detail_id,
+								'finance',                               'N'
+								);--
+							--Oct 25,2019--Added for avoiding continuous loop for inseritng into tb_RECEIVABLE_COLLECTION_STATUS table.
+							-- Inserting 'X' instead of 'Y',
+							al_sqlcode := SQLCODE;--
+							IF al_sqlcode <> 0 THEN
+								 as_error := 'Error in Inserting COLLECTION_STATUS';--
+								 vs_identity_column := 'Receivable Detail ID';--
+								 vs_identity_val := (vl_receivable_detail_id)::character varying;--
+								--SIGNAL p_sp_error;--
+							END IF ;--
+				
+						--END FOR;--
+						END LOOP;				
+						close cur_collection_status_refcur;
+						--Oct 25,2019--Added for avoiding continuous loop for inseritng into tb_RECEIVABLE_COLLECTION_STATUS table.
+						UPDATE TB_RECEIVABLE_COLLECTION_STATUS
+							SET ACTIVE_SW = 'Y',
+								UPDATE_TS = CURRENT_TIMESTAMP,
+								UPDATE_USER_ID = 'finance'        
+						WHERE RECEIVABLE_DETAIL_ID IN ( SELECT RECEIVABLE_DETAIL_ID
+															FROM TB_RECEIVABLE_DETAIL
+														WHERE RECEIVABLE_ID    = vl_receivable_id    
+															AND DELETE_SW  = 'N'
+													   )    
+							AND ACTIVE_SW = 'X'
+							AND DELETE_SW = 'N' ;
+					END IF;	--
+				END IF;--
+			END IF;--
+		-- END IF; -- CDM-11714 - END	
+		vl_row_cnt := vl_row_cnt  - 1;--
+		--COMMIT;--
+	--END WHILE;--
+	END loop;
+	CLOSE CUR_RECEIVABLES ;--
+
+	--RETURN al_sqlcode;--
+END;
+
+$function$
+;

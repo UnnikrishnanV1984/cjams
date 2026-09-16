@@ -1,0 +1,125 @@
+CREATE OR REPLACE FUNCTION as_sp_get_person_mdm(person_id uuid)
+ RETURNS TABLE(personid uuid, "requestId" bigint, "sourceSystem" character varying, "sourceKey" character varying, role character varying, names json, "languageCd" character varying, "genderCd" character varying, "dateOfBirth" character varying, "deathDate" character varying, "maritalStatusCd" character varying, "raceCd" character varying, ssn character varying, "mdmId" character varying, "ethnicityCd" character varying, "driverLicenseNumber" character varying, addresses json, phones json, "emailAddresses" json, "subSystem" character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+        vs_person_id                      uuid;
+  
+ BEGIN
+          vs_person_id            := person_id;
+
+RETURN QUERY
+SELECT
+ "Person".personid,
+ (SELECT nextval('MDMrequestId') AS "requestId"),
+    ('CJAMS') :: character varying AS "sourceSystem",
+    ("Person".cjamspid ) :: character varying AS "sourceKey",
+ ('PERSON' ) :: character varying AS "role",
+ ( 
+  SELECT 
+   Json_agg(e) AS "names" 
+  FROM 
+  ( 
+   SELECT
+    'LEGAL' AS "nameTypeCode",
+    suffix AS "sufixCode",
+             lastname AS "lastName",
+          middlename AS "middleName",
+    firstname AS  "firstName",
+    CONCAT(firstname,' ', middlename,' ', lastname) AS "fullName",
+    (SELECT TO_CHAR(((now()) :: date),'MM-DD-YYYY')) AS "nameEffectiveStartDate",
+                ('12-31-9999') :: character varying AS "nameEffectiveEndDate"
+                                  
+   FROM person p                     
+   WHERE p.personid = vs_person_id) AS e
+ ) ::json,
+    (select distinct mdmcode AS "languageCd" from referencevalues where referencetypeid = 27 AND (mdmcode is not null OR mdmcode != '') AND ref_key = "Person".primarylanguage),--"Person".primarylanguage AS languageCd,
+ (select distinct mdmcode AS "genderCd" from referencevalues where referencetypeid = 301 AND (mdmcode is not null OR mdmcode != '') AND ref_key = "Person".gendertypekey),--"Person".gendertypekey AS genderCd,
+ (SELECT TO_CHAR((("Person".dob) :: date),'MM-DD-YYYY')):: character varying AS "dateOfBirth",
+ (SELECT TO_CHAR((("Person".dateofdeath) :: date),'MM-DD-YYYY')):: character varying AS "deathDate",
+    (select distinct mdmcode AS "maritalStatusCd" from referencevalues where referencetypeid = 118 AND (mdmcode is not null OR mdmcode != '') AND ref_key = "Person".maritalstatustypekey),--"Person".maritalstatustypekey AS maritalStatusCd,
+    (select distinct mdmcode AS "raceCd" from referencevalues where referencetypeid = 171 AND (mdmcode is not null OR mdmcode != '') AND ref_key = "Person".race),--"Person".race AS raceCd,
+    (SELECT personidentifiervalue from personidentifier pi where pi.personid = vs_person_id and personidentifiertypekey = 'SSN' and activeflag = 1) AS "ssn",
+    (SELECT personidentifiervalue from personidentifier pi where pi.personid = vs_person_id and personidentifiertypekey = 'MDM_ID' and activeflag = 1) AS "mdmId",
+    (select distinct mdmcode AS "ethnicityCd" from referencevalues where referencetypeid = 300 AND (mdmcode is not null OR mdmcode != '') AND ref_key = "Person".ethnicity),--"Person".ethnicity AS ethnicityCd,
+    (SELECT personidentifiervalue from personidentifier pi where pi.personid = vs_person_id and personidentifiertypekey = 'DL' and activeflag = 1) AS "driverLicenseNumber",
+( 
+  SELECT 
+   Json_agg(e) AS "addresses" 
+  FROM 
+  ( 
+   SELECT     
+    pa.address AS "addressLine1",
+                pa.address2 AS "addressLine2",
+                pa.city AS "addressCity",
+                pa.state AS "addressState",
+                pa.county AS "addressCounty",
+                pa.zipcode AS "addressZip",
+                pa.country AS "addressCountry",
+                (CASE WHEN (SELECT TO_CHAR(((pa.effectivedate) :: date),'MM-DD-YYYY')) IS NULL THEN (SELECT TO_CHAR(((now()) :: date),'MM-DD-YYYY')) END )AS "addressEffectiveBeginDate",
+                (CASE WHEN (SELECT TO_CHAR(((pa.expirationdate) :: date),'MM-DD-YYYY')) is NULL THEN ('12-31-9999') :: character varying END) AS "addressEffectiveEndDate",
+                (select distinct mdmcode AS "addressType" from referencevalues where referencetypeid = 172 AND (mdmcode is not null OR mdmcode != '') AND ref_key = pa.personaddresstypekey)                 
+   FROM personaddress  pa, referencevalues rv                  
+   WHERE pa.personid = vs_person_id and pa.activeflag = 1 and pa.personaddresstypekey in (select distinct ref_key from referencevalues where referencetypeid = 172 AND (mdmcode is not null OR mdmcode != '')) Limit 1) AS e
+ ) ::json,
+    ( 
+  SELECT 
+   Json_agg(e) AS "phones" 
+  FROM 
+  ( 
+   SELECT
+    ('PERSONAL') :: character varying AS "phoneType",     
+    (select distinct (CASE WHEN mdmcode = 'CL' THEN 'CELL' WHEN mdmcode = 'HM' THEN 'PHONE' END) AS "phoneCommType" from referencevalues where referencetypeid = 173 AND (mdmcode is not null OR mdmcode != '') AND ref_key = pn.personphonetypekey),--pn.personphonetypekey AS phoneType,
+                pn.phonenumber AS "phoneNumber",
+    (SELECT TO_CHAR(((now()) :: date),'MM-DD-YYYY')) AS "phoneEffectiveBeginDate",
+                ('12-31-9999') :: character varying AS "phoneEffectiveEndDate"
+
+   FROM personphonenumber pn                    
+   WHERE pn.personid = vs_person_id and pn.activeflag = 1 and pn.personphonetypekey in (select distinct ref_key from referencevalues where referencetypeid = 173 AND (mdmcode is not null OR mdmcode != ''))) AS e
+ ) ::json,
+
+    ( 
+  SELECT 
+   Json_agg(e) AS "emailAddresses" 
+  FROM 
+  ( 
+   SELECT     
+    (CASE WHEN personemailtypekey = 'P' THEN 'PERSONAL' ELSE 'BUSINESS' END) AS "emailType",
+                email AS "emailAddress",
+    (SELECT TO_CHAR(((now()) :: date),'MM-DD-YYYY')) AS "emailEffectiveBeginDate",
+                ('12-31-9999') :: character varying AS "emailEffectiveEndDate"
+
+   FROM personemail  pm                  
+   WHERE pm.personid = vs_person_id and activeflag = 1) AS e
+ ) ::json,
+ 'AS'::CHARACTER VARYING
+FROM  
+(
+ SELECT        
+        p.personid,
+        p.cjamspid,
+        p.firstname,
+     p.lastname,
+  p.middlename,
+        p.suffix,
+        p.primarylanguageid AS "primarylanguage",
+     p.gendertypekey,
+     p.dob,
+     p.dateofdeath,
+        p.maritalstatustypekey,
+        p.racetypekey AS "race",
+        p.ethnicgrouptypekey AS "ethnicity",
+        p.stateid
+
+    FROM
+        person p
+    WHERE
+        p.personid = vs_person_id 
+)AS  "Person" LIMIT 1;
+
+END;
+    
+
+$function$
+

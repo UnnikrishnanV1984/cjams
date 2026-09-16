@@ -1,0 +1,1 @@
+update intakeservicerequest set reporteddate = intakedaterecieved where reporteddate is null and servicerequestnumber like 'CW%';

@@ -1,0 +1,5 @@
+create index Xie1_investigationallegationinjury on investigationallegationinjury(investigationallegationid,activeflag);
+create index Xie1_investigationallegationcharacterstics on investigationallegationcharacterstics(investigationallegationid,activeflag);
+create index Xie1_investigationallegationinjurycharacterstics on investigationallegationinjurycharacterstics (investigationallegationid,activeflag);
+create index Xie1_expungement on expungement(maltreatmentid);
+create index Xie1_documentproperties on documentproperties(documentpropertiesid,activeflag);

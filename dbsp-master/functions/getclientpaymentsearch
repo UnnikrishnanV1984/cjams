@@ -1,0 +1,93 @@
+CREATE OR REPLACE FUNCTION getclientpaymentsearch(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(totalcount bigint, client_id bigint, client_name character varying, client_dob timestamp without time zone, ssn character varying, local_dept character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 05/28/2021 Vineet Tirodkar - Modifications to add the missing delete_sw in where clause of Payment tables (CDM-13300)
+------------------------------------------------------------------------------------------------------------ 
+DECLARE
+ v_client_id bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_DateFrom   TIMESTAMP(3);
+ v_DateTo TIMESTAMP(3);
+ v_ssn character varying;
+ v_caseworker_name character varying;
+ v_localdpt character varying;
+ v_firstname character varying;
+ v_lastname character varying;
+
+
+BEGIN
+ v_client_id := searchobj ->> 'clientid';
+ v_DateFrom   := searchobj ->> 'daterangefrom';
+ v_DateTo   := searchobj ->> 'daterangeto';
+ v_pagenumber := v_liPageNumber - 1;
+ v_pageoffset := v_pagenumber * v_liPageSize;
+ v_ssn := searchobj ->> 'ssn';
+ v_caseworker_name :=searchobj ->> 'caseworker_name';
+ v_localdpt := searchobj ->> 'local_dept';
+ v_firstname := searchobj ->> 'v_firstname';
+ v_lastname := searchobj ->> 'v_lastname';
+
+
+return query
+
+ select COUNT(1) OVER() totalcount,
+   P.cjamspid as client_ids,
+  CAST(INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+  CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)as character varying) as client_names,
+   P.dob as client_dob
+  ,(select pid.personidentifiervalue from personidentifier pid
+   where pid.personidentifiertypekey = 'SSN' and pid.personid = p.personid and pid.activeflag = 1 limit 1) :: character varying as l_ssn
+  ,c.countyname as local_dept
+  from  person as P --on p.cjamspid =tpd.client_id and p.activeflag=1
+  JOIN tb_payment_detail as tpd ON P.cjamspid =tpd.client_id 
+   and tpd.payment_detail_id 
+    =( SELECT MAX(tbpaydet.payment_detail_id) from tb_payment_detail tbpaydet 
+     where tbpaydet.client_id=P.cjamspid
+      and tbpaydet.delete_sw = 'N')
+  join tb_payment_header payhead on payhead.payment_id= tpd.payment_id
+  left join (
+   select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber from servicecase sce  where  sce.activeflag =1
+   union
+   select ac.adoptioncaseid :: uuid as servicecaseid,ac.adoptioncasenumber as servicecasenumber from adoptioncase ac where ac.activeflag =1
+   ) as sc ON sc.servicecasenumber = tpd.case_id:: character varying
+  LEFT JOIN caseassignment ca on ca.objectid = sc.servicecaseid and ca.activeflag =1 and (ca.enddate is null or ca.enddate::Date >= current_date) and ca.responsibilitytypekey='family'
+  LEFT JOIN userprofile up on up.securityusersid= ca.toworkeridno and up.activeflag =1
+  left join teammemberassignment tma on tma.securityusersid=  up.securityusersid and tma.activeflag=1
+  left join teammember tm on  tm.teammemberid = tma.teammemberid  and tm.activeflag=1
+  left join team t on t.teamid = tm.teamid and t.activeflag=1
+  left join county c on  t.countyid = c.countyid::character varying
+  --left join tb_payment_status tps on tps.payment_id = payhead.payment_id
+    Where (v_client_id is null or P.cjamspid = v_client_id)
+  and (v_firstname is null or
+   (lower(TRIM(P.firstname)) like '%'||  lower(TRIM(v_firstname)) ||'%'  or (soundex(lower(trim(p.firstname))) = soundex(lower(trim(v_firstname))))))
+  and (v_lastname is null or
+   (lower(TRIM(P.lastname)) like '%'||  lower(TRIM(v_lastname)) ||'%'  or (soundex(lower(trim(p.lastname))) = soundex(lower(trim(v_lastname))))))
+  and (v_DateFrom IS null or  to_char(payhead.payment_dt, 'YYYY-MM-DD') ::date >= to_char(DATE(v_DateFrom ::varchar), 'YYYY-MM-DD')  :: date)
+  and (v_DateTo IS null or  to_char(payhead.payment_dt, 'YYYY-MM-DD') ::date <= to_char(DATE(v_DateTo ::varchar), 'YYYY-MM-DD')  :: date)
+  AND (v_ssn is null or p.ssnno  = v_ssn )
+  AND (v_localdpt is null or c.countyname  ilike '%'||v_localdpt||'%' )
+  AND P.activeflag =1
+  -- and tps.payment_status_cd in ('1634','1636')
+  AND tpd.payment_detail_id = (SELECT MAX(tbpaydet.payment_detail_id) 
+          from tb_payment_detail tbpaydet 
+          where tbpaydet.client_id = P.cjamspid
+          and tbpaydet.delete_sw = 'N')
+  and payhead.delete_sw = 'N'
+ group by client_ids,
+  client_names,
+  client_dob
+  , l_ssn
+  , local_dept,
+  p.firstname,
+  p.lastname
+ order by  levenshtein((lower(CAST(INITCAP(TRIM(P.firstname) || ' '||TRIM(P.lastname) )as character varying))),(lower( trim(v_firstname) || ' ' || trim(v_lastname)  )),1,0,4)
+ LIMIT v_liPageSize OFFSET v_pageoffset;
+
+END;
+
+$function$
+

@@ -1,0 +1,1 @@
+CREATE INDEX tb_account_transaction_client_account_id_idx ON cjams.tb_account_transaction (client_account_id,transaction_type_cd,transaction_source_cd,benefit_start_dt,delete_sw);

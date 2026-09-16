@@ -1,0 +1,1 @@
+ALTER TABLE cjams.tb_eligibility_period ADD column IF NOT EXISTS progressnoteid uuid NULL;

@@ -1,0 +1,183 @@
+CREATE OR REPLACE FUNCTION as_f_fm010r(start_date date, end_date date)
+ RETURNS TABLE(pos numeric, neg numeric, quater_no text, final_fiscal_category text)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+( 
+
+
+WITH
+          TEMP (Q_START_DT, Q_END_DT, Q_IND)
+          AS
+             (SELECT T0.Q_START_DT, T0.Q_END_DT, T0.Q_IND
+                FROM (VALUES ((DATE (DATE_TRUNC ('QUARTER', DATE(End_date  )))),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    + INTERVAL '3 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q1'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '3 MONTH')),
+                             (DATE (
+                                   (DATE_TRUNC ('QUARTER', DATE(End_date  )))
+                                 - INTERVAL '1 DAY')),
+                             'Q2'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '6 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '3 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q3'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '9 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '6 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q4'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '12 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '9 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q5'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '15 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '12 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q6'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '18 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '15 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q7'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '21 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '18 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q9'),
+                             ((DATE (
+                                    DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                  - INTERVAL '24 MONTH')),
+                             (DATE (
+                                   (  DATE_TRUNC ('QUARTER', DATE(End_date  ))
+                                    - INTERVAL '21 MONTH')
+                                 - INTERVAL '1 DAY')),
+                             'Q8')) AS T0 (Q_START_DT, Q_END_DT, Q_IND)),
+          TEMP1 (QUARTER_NO)
+          AS
+             (SELECT    (TEMP.Q_IND || '-'::TEXT)
+                     || TEMP.Q_END_DT::CHARACTER (10)::TEXT
+              FROM TEMP),
+          TEMP2
+          AS
+             (SELECT SUBSTRING (PD.FINAL_FISCAL_CATEGORY_CD FROM 3 FOR 2)
+                        AS FINAL_FISCAL_CATEGORY,
+                     TEMP1.QUARTER_NO,
+                     0
+                        AS NEW_IVE_FUND_AMT,
+                     0
+                        AS OLD_IVE_FUND_AMT,
+                     FAM.FUND_ALLOC_ID
+                        AS FAM_ID,
+                     FAD.FUND_ALLOC_ID
+                        AS FAD_ID
+                FROM TB_PAYMENT_DETAIL PD,
+                     TB_FUND_ALLOCATION_MASTER FAM,
+                     TB_PAYMENT_HEADER PH,
+                     TB_FUND_ALLOCATION_DETAIL FAD,
+                     TEMP1
+               WHERE     PD.PAYMENT_DETAIL_ID = FAM.PAYMENT_DETAIL_ID
+                     AND FAD.FUND_ALLOC_ID = FAM.FUND_ALLOC_ID
+                     AND PH.PAYMENT_ID = PD.PAYMENT_ID
+                     AND FAD.IVE_FUNDING_AMT <> FAM.IVE_FUNDING_AMT
+                     AND FAM.INITIAL_STAMPING_SW = 'N'::BPCHAR
+                     AND PD.DELETE_SW::TEXT = 'N'::TEXT
+                     AND FAD.DELETE_SW = 'N'::BPCHAR
+                     AND FAM.DELETE_SW = 'N'::BPCHAR
+                     AND FAM.FUND_ALLOCATION_DATE >=
+                         CAST (Start_date AS DATE)
+                     AND FAM.FUND_ALLOCATION_DATE <= CAST (DATE(End_date  ) AS DATE)),
+          TEMP3
+          AS
+             (SELECT COALESCE (FAM.IVE_FUNDING_AMT, 0::NUMERIC)
+                        AS NEW_IVE_FUND_AMT,
+                     COALESCE (FAD.IVE_FUNDING_AMT, 0::NUMERIC)
+                        AS OLD_IVE_FUND_AMT,
+                        (TEMP.Q_IND || '-'::TEXT)
+                     || TEMP.Q_END_DT::CHARACTER VARYING::TEXT
+                        AS QUARTER_NO,
+                     FAM.FUND_ALLOC_ID
+                        AS FAM_ID,
+                     FAD.FUND_ALLOC_ID
+                        AS FAD_ID
+                FROM TB_PAYMENT_DETAIL PD,
+                     TB_FUND_ALLOCATION_MASTER FAM,
+                     TB_PAYMENT_HEADER PH
+                     LEFT JOIN TEMP
+                        ON     PH.PAYMENT_DT >= TEMP.Q_START_DT
+                           AND PH.PAYMENT_DT <= TEMP.Q_END_DT,
+                     TB_FUND_ALLOCATION_DETAIL FAD
+               WHERE     PD.PAYMENT_DETAIL_ID = FAM.PAYMENT_DETAIL_ID
+                     AND FAD.FUND_ALLOC_ID = FAM.FUND_ALLOC_ID
+                     AND PH.PAYMENT_ID = PD.PAYMENT_ID
+                     AND FAD.IVE_FUNDING_AMT <> FAM.IVE_FUNDING_AMT
+                     AND FAM.INITIAL_STAMPING_SW = 'N'::BPCHAR
+                     AND PD.DELETE_SW::TEXT = 'N'::TEXT
+                     AND FAD.DELETE_SW = 'N'::BPCHAR
+                     AND FAM.DELETE_SW = 'N'::BPCHAR
+                     AND FAM.FUND_ALLOCATION_DATE >=
+                         CAST (Start_date AS DATE)
+                     AND FAM.FUND_ALLOCATION_DATE <= CAST (DATE(End_date  ) AS DATE))
+         SELECT SUM (MAIN.PO_DIFF) AS "pos",
+                SUM (MAIN.NEGATIVE_DIFF) AS "neg",
+                MAIN.QUARTER_NO,
+                MAIN.FINAL_FISCAL_CATEGORY
+           FROM (SELECT TEMP2.QUARTER_NO,
+                        TEMP2.FINAL_FISCAL_CATEGORY,
+                        CASE
+                           WHEN (  TEMP3.NEW_IVE_FUND_AMT
+                                 - TEMP3.OLD_IVE_FUND_AMT) >
+                                0::NUMERIC
+                           THEN
+                              TEMP3.NEW_IVE_FUND_AMT - TEMP3.OLD_IVE_FUND_AMT
+                           ELSE
+                              0::NUMERIC
+                        END AS PO_DIFF,
+                        CASE
+                           WHEN (  TEMP3.NEW_IVE_FUND_AMT
+                                 - TEMP3.OLD_IVE_FUND_AMT) <
+                                0::NUMERIC
+                           THEN
+                              ABS (
+                                   TEMP3.NEW_IVE_FUND_AMT
+                                 - TEMP3.OLD_IVE_FUND_AMT)
+                           ELSE
+                              0::NUMERIC
+                        END AS NEGATIVE_DIFF
+                   FROM TEMP2
+                        LEFT JOIN TEMP3
+                           ON     TEMP2.FAM_ID = TEMP3.FAM_ID
+                              AND TEMP2.FAD_ID = TEMP3.FAD_ID
+                              AND TEMP2.QUARTER_NO = TEMP3.QUARTER_NO) MAIN
+       GROUP BY MAIN.QUARTER_NO, MAIN.FINAL_FISCAL_CATEGORY
+     );
+     end;
+      $function$
+

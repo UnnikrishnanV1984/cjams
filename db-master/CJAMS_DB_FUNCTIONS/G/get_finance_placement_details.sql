@@ -1,0 +1,255 @@
+CREATE OR REPLACE FUNCTION cjams.get_finance_placement_details(request json)
+ RETURNS TABLE(totalcount bigint, approval_status_cd character varying, case_id bigint, client_id bigint, client_merge_id integer, contract_program_id integer, conversion_sw character, court_ordered_sw character, data_valid_sw character, entry_dt timestamp without time zone, entry_tm character varying, exit_dt timestamp without time zone, exit_explanation_tx character varying, exit_reason_cd character varying, exit_tm character varying, exit_type_cd character varying, facility_id integer, fiscal_category_cd character, icpc_approved_sw character, medicaid_paid_sw character, orig_placement_id integer, other_services_tx character varying, over_under_sw character, payment_header_id integer, placement_change_dt timestamp without time zone, placement_id bigint, placement_structure_id integer, provider_id integer, provider_organization_id integer, rate_structure_id integer, removal_id integer, short_list_id integer, tfc_ifc_conversion_sw character, void_approval_dt timestamp without time zone, void_approval_status_cd character varying, void_reason_cd character varying, void_sw character, accept_plcmnt_ref_sw character, adm_cell_phone_tx character varying, adm_contact_first_nm character varying, adm_contact_last_nm character varying, adm_contact_middle_nm character varying, adm_contact_prefix_cd character varying, adm_contact_suffix_cd character varying, adm_email_tx character varying, adm_fax_tx character varying, adm_home_phone_tx character varying, adm_other_contact_tx character varying, adm_pager_tx character varying, adm_url_tx character varying, adm_work_phone_tx character varying, adm_work_xtn_tx character, admission_comments_tx character varying, adr_cell_phone_tx character varying, adr_email_tx character varying, adr_fax_tx character varying, adr_home_phone_tx character varying, adr_other_contact_tx character varying, adr_pager_tx character varying, adr_url_tx character varying, adr_work_phone_tx character varying, adr_work_xtn_tx character varying, affiliate_provider_id integer, business_end_tm character varying, business_start_tm character varying, co_dob_dt timestamp without time zone, co_first_nm character varying, co_last_nm character varying, co_middle_nm character varying, co_prefix_cd character varying, co_ssn_no numeric, co_suffix_cd character varying, collecting_entity_cd character varying, conversion_no_tx integer, county_cd character varying, dob_dt timestamp without time zone, eft_sw character, first_nm_soundex character, fnm_soundex character varying, formatted_first_nm character varying, formatted_last_nm character varying, formatted_middle_nm character varying, formatted_provider_nm character varying, indicator_1099_sw character, info_date_changed timestamp without time zone, ive_reimbursable_sw character, last_nm_soundex character, lnm_soundex character varying, mail_code_tx character varying, medicaid_sw character, medical_license_no_tx character varying, medical_speciality_tx character varying, paid_sw character, pay_to_affiliate_cd character varying, pnm_soundex character varying, profit_sw character, prov_tax_type_cd character varying, provider_category_cd character varying, provider_category_type character varying, provider_first_nm character varying, provider_last_nm character varying, provider_middle_nm character varying, provider_nm character varying, provider_nm_soundex character, provider_prefix_cd character varying, provider_status_cd character varying, provider_suffix_cd character varying, provider_type_cd character varying, reason_changed character varying, ref_cell_phone_tx character varying, ref_contact_first_nm character varying, ref_contact_last_nm character varying, ref_contact_middle_nm character varying, ref_contact_prefix_cd character varying, ref_contact_suffix_cd character varying, ref_email_tx character varying, ref_fax_tx character varying, ref_home_phone_tx character varying, ref_other_contact_tx character varying, ref_pager_tx character varying, ref_url_tx character varying, ref_work_phone_tx character varying, ref_work_xtn_tx character, school_district_tx character varying, source_tx character varying, tax_id_no numeric, vacancy_no integer, withhold_payment_sw character, address_id integer, adr_type_cd character varying, adr_format_cd character varying, adr_street_no integer, adr_box_no integer, adr_pre_dir_cd character varying, adr_street_nm character varying, adr_street_suffix_cd character varying, adr_post_dir_cd character varying, adr_unit_type_cd character varying, adr_unit_no_tx character varying, adr_city_nm character varying, adr_county_cd character varying, adr_state_cd character varying, adr_zip5_no numeric, adr_zip4_no numeric, adr_direction_tx character varying, adr_foreign_tx character varying, adr_foreign_state_tx character varying, adr_country_tx character varying, adr_postal_code_tx character varying, adr_default_sw character, adr_start_dt timestamp without time zone, adr_end_dt timestamp without time zone, adr_street_tx character varying, firstname character varying, middlename character varying, lastname character varying, gendertypekey character varying, program_nm character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- Vineet Tirodkar - 05/04/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+------------------------------------------------------------------------------------------------
+DECLARE	
+ v_pageNumber INT; 
+ v_pageSize INT;
+ v_pageNum INT; 
+ v_pageOffset INT;
+ 
+ v_placementId 		INT;                        
+ v_caseId  			INT;        
+ v_providerId 		INT;
+ v_providerName 	character varying (50);
+ v_clientId  		INT;
+ v_DateFrom 		TIMESTAMP(3);                        
+ v_DateTo 			TIMESTAMP(3);                        
+ v_address 			character varying (50);                        
+ v_city    			character varying (50);   
+ v_zipCode 			character varying (5);
+ v_county 			character varying (50);
+ v_region 			character varying (50);
+ v_phoneNumber  	character varying (10);
+ v_sortcol			character varying (50);
+ v_sortdir			character varying (50);
+            
+ 
+
+BEGIN
+ v_pageNumber    := request ->> 'pagenumber';
+ v_pageNum       := v_pageNumber - 1;
+ v_pageSize      := request ->> 'pagesize';
+ v_pageOffset    = v_pageNum  * v_pageSize;  
+ 
+ v_placementId 	 := request ->> 'placementid' ;
+ v_caseId  		 := request ->> 'caseid' ;                                                 
+ v_providerId 	 := request ->> 'providerid';                           
+ v_providerName  := request ->> 'providername';                        
+ v_clientId  	 := request ->> 'clientaccountid';                                                              
+ v_DateFrom 	 := request ->> 'daterangefrom';                       
+ v_DateTo 		 := request ->> 'daterangeto';                                                              
+ v_address 		 := request ->> 'address';                                                     
+ v_city    		 := request ->> 'city'; 
+ v_zipCode 		 := request ->> 'zip';                       
+ v_county 		 := request ->> 'county';                                                              
+ v_region 		 := request ->> 'region';                                                     
+ v_phoneNumber   := request ->> 'phone'; 
+ v_sortcol 		 := request ->> 'sortcol';                                                     
+ v_sortdir		 := request ->> 'sortdir'; 
+ 
+ 
+ IF v_DateTo IS NULL THEN
+	v_DateTo := current_timestamp;
+ END IF;
+ 
+ --raise notice 'v_DateFrom: %', to_date(cast(v_DateFrom as TEXT), 'YYYY-MM-DD');
+ --raise notice 'v_DateTo: %', to_date(cast(v_DateTo as TEXT), 'YYYY-MM-DD');
+ 
+ RETURN QUERY 
+SELECT 
+count(1)  over(),
+placement.approval_status_cd           as   approval_status_cd,
+placement.case_id                      as   case_id,
+placement.client_id                    as   client_id,
+placement.client_merge_id              as   client_merge_id,
+placement.contract_program_id          as   contract_program_id,
+placement.conversion_sw                as   conversion_sw,
+placement.court_ordered_sw             as   court_ordered_sw,
+placement.data_valid_sw                as   data_valid_sw,
+placement.entry_dt                     as   entry_dt,
+placement.entry_tm                     as   entry_tm,
+placement.exit_dt                      as   exit_dt,
+placement.exit_explanation_tx          as   exit_explanation_tx,
+placement.exit_reason_cd               as   exit_reason_cd,
+placement.exit_tm                      as   exit_tm,
+placement.exit_type_cd                 as   exit_type_cd,
+placement.facility_id                  as   facility_id,
+placement.fiscal_category_cd           as   fiscal_category_cd,
+placement.icpc_approved_sw             as   icpc_approved_sw,
+placement.medicaid_paid_sw             as   medicaid_paid_sw,
+placement.orig_placement_id            as   orig_placement_id,
+placement.other_services_tx            as   other_services_tx,
+placement.over_under_sw                as   over_under_sw,
+placement.payment_header_id            as   payment_header_id,
+placement.placement_change_dt          as   placement_change_dt,
+placement.placement_id                 as   placement_id,
+placement.placement_structure_id       as   placement_structure_id,
+placement.provider_id                  as   provider_id,
+placement.provider_organization_id     as   provider_organization_id,
+placement.rate_structure_id            as   rate_structure_id,
+placement.removal_id                   as   removal_id,
+placement.short_list_id                as   short_list_id,
+placement.tfc_ifc_conversion_sw        as   tfc_ifc_conversion_sw,
+placement.void_approval_dt             as   void_approval_dt,
+placement.void_approval_status_cd      as   void_approval_status_cd,
+placement.void_reason_cd               as   void_reason_cd,
+placement.void_sw                      as   void_sw,
+
+provider.accept_plcmnt_ref_sw     as    accept_plcmnt_ref_sw,
+provider.adm_cell_phone_tx        as    adm_cell_phone_tx,
+provider.adm_contact_first_nm     as    adm_contact_first_nm,
+provider.adm_contact_last_nm      as    adm_contact_last_nm,
+provider.adm_contact_middle_nm    as    adm_contact_middle_nm,
+provider.adm_contact_prefix_cd    as    adm_contact_prefix_cd,
+provider.adm_contact_suffix_cd    as    adm_contact_suffix_cd,
+provider.adm_email_tx             as    adm_email_tx,
+provider.adm_fax_tx               as    adm_fax_tx,
+provider.adm_home_phone_tx        as    adm_home_phone_tx,
+provider.adm_other_contact_tx     as    adm_other_contact_tx,
+provider.adm_pager_tx             as    adm_pager_tx,
+provider.adm_url_tx               as    adm_url_tx,
+provider.adm_work_phone_tx        as    adm_work_phone_tx,
+provider.adm_work_xtn_tx          as    adm_work_xtn_tx,
+provider.admission_comments_tx    as    admission_comments_tx,
+provider.adr_cell_phone_tx        as    adr_cell_phone_tx,
+provider.adr_email_tx             as    adr_email_tx,
+provider.adr_fax_tx               as    adr_fax_tx,
+provider.adr_home_phone_tx        as    adr_home_phone_tx,
+provider.adr_other_contact_tx     as    adr_other_contact_tx,
+provider.adr_pager_tx             as    adr_pager_tx,
+provider.adr_url_tx               as    adr_url_tx,
+provider.adr_work_phone_tx        as    adr_work_phone_tx,
+provider.adr_work_xtn_tx          as    adr_work_xtn_tx,
+provider.affiliate_provider_id    as    affiliate_provider_id,
+provider.business_end_tm          as    business_end_tm,
+provider.business_start_tm        as    business_start_tm,
+provider.co_dob_dt                as    co_dob_dt,
+provider.co_first_nm              as    co_first_nm,
+provider.co_last_nm               as    co_last_nm,
+provider.co_middle_nm             as    co_middle_nm,
+provider.co_prefix_cd             as    co_prefix_cd,
+provider.co_ssn_no                as    co_ssn_no,
+provider.co_suffix_cd             as    co_suffix_cd,
+provider.collecting_entity_cd     as    collecting_entity_cd,
+provider.conversion_no_tx         as    conversion_no_tx,
+provider.county_cd                as    county_cd,
+provider.dob_dt                   as    dob_dt,
+provider.eft_sw                   as    eft_sw,
+provider.first_nm_soundex         as    first_nm_soundex,
+provider.fnm_soundex              as    fnm_soundex,
+provider.formatted_first_nm       as    formatted_first_nm,
+provider.formatted_last_nm        as    formatted_last_nm,
+provider.formatted_middle_nm      as    formatted_middle_nm,
+provider.formatted_provider_nm    as    formatted_provider_nm,
+provider.indicator_1099_sw        as    indicator_1099_sw,
+provider.info_date_changed        as    info_date_changed,
+provider.ive_reimbursable_sw      as    ive_reimbursable_sw,
+provider.last_nm_soundex          as    last_nm_soundex,
+provider.lnm_soundex              as    lnm_soundex,
+provider.mail_code_tx             as    mail_code_tx,
+provider.medicaid_sw              as    medicaid_sw,
+provider.medical_license_no_tx    as    medical_license_no_tx,
+provider.medical_speciality_tx    as    medical_speciality_tx,
+provider.paid_sw                  as    paid_sw,
+provider.pay_to_affiliate_cd      as    pay_to_affiliate_cd,
+provider.pnm_soundex              as    pnm_soundex,
+provider.profit_sw                as    profit_sw,
+provider.prov_tax_type_cd         as    prov_tax_type_cd,
+provider.provider_category_cd     as    provider_category_cd,
+(CASE WHEN provider.provider_category_cd = '1783' THEN 
+	'Local Department Home' 
+WHEN provider.provider_category_cd = '3274' THEN 
+	'RCC Facility' 
+WHEN provider.provider_category_cd = '3794' THEN 
+	'Residential Treatment Center' 	
+WHEN provider.provider_category_cd = '3302' THEN 
+	'CPA Office' 
+ELSE 
+	''::character varying 
+END ) AS provider_category_type, 
+provider.provider_first_nm        as    provider_first_nm,
+provider.provider_last_nm         as    provider_last_nm,
+provider.provider_middle_nm       as    provider_middle_nm,
+provider.provider_nm              as    provider_nm,
+provider.provider_nm_soundex      as    provider_nm_soundex,
+provider.provider_prefix_cd       as    provider_prefix_cd,
+provider.provider_status_cd       as    provider_status_cd,
+provider.provider_suffix_cd       as    provider_suffix_cd,
+provider.provider_type_cd         as    provider_type_cd,
+provider.reason_changed           as    reason_changed,
+provider.ref_cell_phone_tx        as    ref_cell_phone_tx,
+provider.ref_contact_first_nm     as    ref_contact_first_nm,
+provider.ref_contact_last_nm      as    ref_contact_last_nm,
+provider.ref_contact_middle_nm    as    ref_contact_middle_nm,
+provider.ref_contact_prefix_cd    as    ref_contact_prefix_cd,
+provider.ref_contact_suffix_cd    as    ref_contact_suffix_cd,
+provider.ref_email_tx             as    ref_email_tx,
+provider.ref_fax_tx               as    ref_fax_tx,
+provider.ref_home_phone_tx        as    ref_home_phone_tx,
+provider.ref_other_contact_tx     as    ref_other_contact_tx,
+provider.ref_pager_tx             as    ref_pager_tx,
+provider.ref_url_tx               as    ref_url_tx,
+provider.ref_work_phone_tx        as    ref_work_phone_tx,
+provider.ref_work_xtn_tx          as    ref_work_xtn_tx,
+provider.school_district_tx       as    school_district_tx,
+provider.source_tx                as    source_tx,
+provider.tax_id_no                as    tax_id_no,
+provider.vacancy_no               as    vacancy_no,
+provider.withhold_payment_sw      as    withhold_payment_sw,
+--provider.ref_contact_first_nm as ref_contact_first_nm,
+provAddr.address_id               as   address_id,
+provAddr.adr_type_cd              as   adr_type_cd,
+provAddr.adr_format_cd            as   adr_format_cd,
+provAddr.adr_street_no            as   adr_street_no,
+provAddr.adr_box_no               as   adr_box_no,
+provAddr.adr_pre_dir_cd           as   adr_pre_dir_cd,
+provAddr.adr_street_nm            as   adr_street_nm,
+provAddr.adr_street_suffix_cd     as   adr_street_suffix_cd,
+provAddr.adr_post_dir_cd          as   adr_post_dir_cd,
+provAddr.adr_unit_type_cd         as   adr_unit_type_cd,
+provAddr.adr_unit_no_tx           as   adr_unit_no_tx,
+provAddr.adr_city_nm              as   adr_city_nm,
+provAddr.adr_county_cd            as   adr_county_cd,
+provAddr.adr_state_cd             as   adr_state_cd,
+provAddr.adr_zip5_no              as   adr_zip5_no,
+provAddr.adr_zip4_no              as   adr_zip4_no,
+provAddr.adr_direction_tx         as   adr_direction_tx,
+provAddr.adr_foreign_tx           as   adr_foreign_tx,
+provAddr.adr_foreign_state_tx     as   adr_foreign_state_tx,
+provAddr.adr_country_tx           as   adr_country_tx,
+provAddr.adr_postal_code_tx       as   adr_postal_code_tx,
+provAddr.adr_default_sw           as   adr_default_sw,
+provAddr.adr_start_dt             as   adr_start_dt,
+provAddr.adr_end_dt               as   adr_end_dt,
+provAddr.adr_street_tx            as   adr_street_tx,
+per.firstname as firstname,
+per.middlename as middlename,
+per.lastname as lastname,
+per.gendertypekey as gendertypekey,
+CP.program_nm as program_nm--,
+--TBS.service_nm as service_nm
+FROM tb_placement AS placement
+INNER JOIN tb_provider AS provider ON placement.provider_id=provider.provider_id
+INNER JOIN tb_provider_addresses AS provAddr ON provider.provider_id = provAddr.parent_key_id::bigint
+INNER JOIN person AS per on per.cjamspid = placement.client_id
+INNER JOIN tb_contract_program CP ON placement.contract_program_id = CP.program_id
+--LEFT JOIN tb_provider_services as TBPS ON TBPS.provider_id = provider.provider_id and TBPS.delete_sw = 'N'
+--LEFT JOIN tb_services as TBS ON  TBS.service_id =  TBPS.service_id and TBS.structure_service_cd='P' and TBS.delete_sw = 'N' -- Placement structures
+WHERE CASE WHEN v_providerId IS NOT NULL THEN placement.provider_id = v_providerId ELSE TRUE END 
+AND   CASE WHEN v_caseId IS NOT NULL THEN placement.case_id = v_caseId ELSE TRUE END 
+AND   CASE WHEN v_placementId IS NOT NULL THEN placement.placement_id = v_placementId ELSE TRUE END 
+AND   CASE WHEN v_providerName IS NOT NULL THEN LOWER(provider.provider_nm) = LOWER(v_providerName) ELSE TRUE END 
+AND   CASE WHEN v_clientId IS NOT NULL THEN placement.client_id = v_clientId ELSE TRUE END 
+AND   CASE WHEN v_DateFrom IS NOT NULL THEN to_date(cast(placement.entry_dt as TEXT), 'YYYY-MM-DD') 
+		between to_date(cast(v_DateFrom as TEXT), 'YYYY-MM-DD') and to_date(cast(v_DateTo as TEXT), 'YYYY-MM-DD')  ELSE TRUE END
+LIMIT v_pageSize OFFSET v_pageOffset;
+
+ END;
+
+$function$
+;

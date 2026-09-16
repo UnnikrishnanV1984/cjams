@@ -1,0 +1,78 @@
+CREATE OR REPLACE FUNCTION monitor_notification_schedule()
+ RETURNS TABLE(status text, msgdata jsonb, username character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+v_providernm character varying;
+v_notifymsg character varying;
+v_msg character varying;
+v_username character varying;
+v_toemailid character varying;
+v_provideruserid character varying;
+v_prov_id integer;
+v_hasattachments boolean default false;
+v_deficiency character varying;
+v_notifystatus text;
+i json;
+v_msgdata jsonb;
+
+
+BEGIN  
+-- Subject and Body for Email
+ 
+select  jsonb_agg(x) as msgdata into v_msgdata from ( 
+select distinct prm.monitoring_id,pmec.exit_dt,tp.provider_nm,up.email,up.username, up.securityusersid,tp.provider_id,'2'::text as days
+from prov_monitoring prm
+join prov_monitoring_exit_conf pmec on prm.monitoring_id=pmec.monitoring_id and pmec.exit_dt is not null and pmec.delete_sw='N'
+join muser up on up.securityusersid=prm.create_user_id
+join tb_provider tp on tp.provider_id=prm.provider_id
+where pmec.monitoring_id not in 
+(select OBJECTID from tb_provider_decision where eventcode = 'MVR' and activeflag=1 and objectid is not NULL)
+and trunc(DATE_PART('day',  now()::timestamp-pmec.exit_dt::timestamp ))=2
+union
+select distinct prm.monitoring_id,pmec.exit_dt,tp.provider_nm,up.email,up.username, up.securityusersid,tp.provider_id,'3'::text as days
+from prov_monitoring prm
+join prov_monitoring_exit_conf pmec on prm.monitoring_id=pmec.monitoring_id and pmec.exit_dt is not null and pmec.delete_sw='N'
+join muser up on up.securityusersid=prm.create_user_id
+join tb_provider tp on tp.provider_id=prm.provider_id
+where pmec.monitoring_id not in 
+(select OBJECTID from tb_provider_decision where eventcode = 'MVR' and activeflag=1 and objectid is not NULL)
+and trunc(DATE_PART('day',  now()::timestamp-pmec.exit_dt::timestamp ))>=3
+union
+select distinct prm.monitoring_id,pmec.exit_dt,tp.provider_nm,up.email,up.fullname username, up.securityusersid,tp.provider_id,'3'::text as days
+from prov_monitoring prm
+join prov_monitoring_exit_conf pmec on prm.monitoring_id=pmec.monitoring_id and pmec.exit_dt is not null and pmec.delete_sw='N'
+left join (select distinct up.email,fullname,up.teamtypekey, up.securityusersid from userprofile up join muser mu on mu.securityusersid=up.securityusersid and up.teamtypekey='OLM' join rolemapping rm on rm.principalid::int=mu.id and rm.roleid in (107,109)
+and up.teamtypekey='OLM'  and up.activeflag=1 ) up on teamtypekey='OLM' 
+join tb_provider tp on tp.provider_id=prm.provider_id
+where pmec.monitoring_id not in 
+(select OBJECTID from tb_provider_decision where eventcode = 'MVR' and activeflag=1 and objectid is not NULL)
+and trunc(DATE_PART('day',  now()::timestamp-pmec.exit_dt::timestamp ))>=3
+)x;
+
+
+
+FOR i in select jsonb_array_elements(v_msgdata)
+loop
+v_msg := 'Exit Conference is not completed within '||cast( i ->> 'days' as varchar) ||' business days for monitoring visit '|| cast( i ->> 'monitoring_id' as varchar) ||' ('|| coalesce(i->>'provider_nm','') || ' - ' || coalesce(i->>'provider_id','') ||' )';
+v_notifymsg := 'Exit Conference is not completed within '||cast( i ->> 'days' as varchar) ||' business days for monitoring visit '|| cast( i ->> 'monitoring_id' as varchar) ||' ('|| coalesce(i->>'provider_nm','') || ' - ' || coalesce(i->>'provider_id','') ||' )';
+v_username := i->>'username';
+
+RAISE NOTICE 'v_msg(v_msg)---:%',v_msg;
+RAISE NOTICE 'v_notifymsg-:%',v_notifymsg;
+
+SELECT prov_send_notification INTO v_notifystatus 
+FROM prov_send_notification(i->>'securityusersid',i->>'securityusersid',i->>'securityusersid',
+'System', 'High', v_msg,  v_notifymsg , i ->> 'monitoring_id',false , v_hasattachments);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+
+end loop;
+
+v_notifystatus:='SUCCESS';  
+return query
+
+select v_notifystatus,v_msgdata,v_username ;
+
+END;
+$function$
+

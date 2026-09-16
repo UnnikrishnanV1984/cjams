@@ -1,0 +1,113 @@
+CREATE OR REPLACE FUNCTION as_documentsearch_cnt(searchobj json)
+ RETURNS SETOF bigint
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+v_lvDocTypeCount INT;
+v_lvDocType varchar(50);
+v_ldReceivedFrom TIMESTAMP(3);
+v_ldReceivedTo TIMESTAMP(3);
+v_luSId INT;
+v_lAssigned INT;
+v_doctidentifier character varying;
+v_UserSID character varying;
+
+
+BEGIN
+
+
+CREATE TEMP TABLE documentsearch_cnt_temp_searchParms(parmKeyword VARCHAR(50),parmValue VARCHAR(1000));
+CREATE TEMP TABLE documentsearch_cnt_temp_doctypes(parmValue VARCHAR(1000));
+CREATE TEMP TABLE documentsearch_cnt_temp_daassigned(parmValue VARCHAR(1000));
+
+
+v_ldReceivedFrom := searchObj ->> 'receivedfrom';
+v_ldReceivedTo := searchObj ->> 'receivedto';
+v_luSId := searchObj ->> 'userid';
+v_doctidentifier := searchObj ->> 'documentidentifer';
+
+IF LENGTH(searchObj ->> 'assigned_1') > 0 or LENGTH(searchObj ->> 'assigned_2') > 0
+THEN
+SELECT securityusersid into v_UserSID FROM muser where id = v_luSId;
+END IF;
+
+
+
+ INSERT INTO documentsearch_cnt_temp_searchParms(parmKeyword, parmValue) VALUES 
+ ('doctype_1',searchObj ->> 'doctype_1'),
+ ('doctype_2',searchObj ->> 'doctype_2'),
+ ('doctype_3',searchObj ->> 'doctype_3'),
+ ('doctype_4',searchObj ->> 'doctype_4'),
+ ('doctype_5',searchObj ->> 'doctype_5'),
+ ('receivedfrom',searchObj ->> 'receivedfrom'),
+ ('receivedto',searchObj ->> 'receivedto'),
+ ('assigned',searchObj ->> 'assigned_1'),
+ ('assigned',searchObj ->> 'assigned_2'),
+ ('documentidentifer',searchObj ->> 'documentidentifer');
+ 
+ SELECT COUNT(*) INTO v_lvDocTypeCount FROM documentsearch_cnt_temp_searchParms WHERE parmKeyword in ('doctype_1','doctype_2','doctype_3','doctype_4','doctype_5') and parmValue is not null;
+ 
+ IF v_lvDocTypeCount > 0 THEN 
+ v_lvDocType = 'YES';
+ ELSE 
+ v_lvDocType = null;
+ END IF;
+ 
+ /*INSERT INTO documentsearch_cnt_temp_daassigned
+ SELECT parmValue
+ FROM documentsearch_cnt_temp_searchParms
+ WHERE parmKeyword = 'assigned';*/
+ 
+ INSERT INTO documentsearch_cnt_temp_doctypes
+ SELECT parmValue
+ FROM documentsearch_cnt_temp_searchParms
+ WHERE parmKeyword in('doctype_1','doctype_2','doctype_3','doctype_4','doctype_5');
+ 
+
+ SELECT COUNT(1) INTO v_lAssigned FROM documentsearch_cnt_temp_searchParms
+        WHERE parmValue = 'myteam';
+        
+ IF v_lAssigned > 0
+ THEN
+  INSERT INTO documentsearch_cnt_temp_daassigned
+  SELECT "TMA".SecurityUsersId as "SecurityUsersId"
+  FROM as_teammemberassignment as "TMA"
+  JOIN  TeamMember as "TM" ON "TM".TeamMemberId  = "TMA".TeamMemberId 
+  WHERE "TMA".TeamMemberId = "TM".TeamMemberId
+  AND "TM".TeamId IN (SELECT "TM".TeamId
+       FROM TeamMember as "TM"
+       JOIN as_teammemberassignment as "TMA" ON "TMA".TeamMemberId = "TM".TeamMemberId 
+       WHERE "TMA".SecurityUsersId  = v_UserSID 
+       );
+ END IF;
+ 
+ SELECT COUNT(1) INTO v_lAssigned FROM documentsearch_cnt_temp_searchParms
+        WHERE parmValue = 'mine';
+
+ IF v_lAssigned > 0 THEN
+  INSERT INTO documentsearch_cnt_temp_daassigned VALUES(v_UserSID);
+ END IF;
+
+
+RETURN QUERY
+ SELECT DISTINCT COUNT(*)
+ FROM IntakeServiceRequest ISR
+  JOIN  DocumentProperties AS DP ON  DP.ObjectId = ISR.IntakeServiceId
+  LEFT JOIN  IntakeServiceRequestType AS ISRT ON  ISR.IntakeServReqTypeId = ISRT.IntakeServReqTypeId
+  LEFT JOIN  ServiceRequestSubType AS SRST ON  ISR.IntakeServiceRequestClassId = SRST.ServiceRequestSubTypeId
+  LEFT JOIN  DocumentType AS DT ON  DT.DocumentTypeKey = DP.DocumentTypeKey
+ WHERE  (v_lvDocType IS NULL OR DT.DocumentTypeKey IN (SELECT parmValue FROM documentsearch_cnt_temp_doctypes where parmValue is not null))
+ AND  (v_ldReceivedFrom IS NULL  OR DP.insertedon BETWEEN v_ldReceivedFrom AND v_ldReceivedTo)
+ AND  (v_UserSID IS NULL OR DP.insertedby  IN (SELECT parmValue FROM documentsearch_cnt_temp_daassigned where parmValue is not null))
+ AND  (v_doctidentifier iS NULL OR DP.Tag = v_doctidentifier);
+
+
+DROP TABLE documentsearch_cnt_temp_searchParms;
+DROP TABLE documentsearch_cnt_temp_doctypes;
+DROP TABLE documentsearch_cnt_temp_daassigned; 
+   
+END;
+$function$
+

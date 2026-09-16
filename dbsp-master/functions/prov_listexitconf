@@ -1,0 +1,62 @@
+CREATE OR REPLACE FUNCTION prov_listexitconf(v_monitoring_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+v_jsondata json;
+begin 
+select json_agg(x) into v_jsondata from (
+
+select distinct mcf.monitoring_id,mcf.exit_conf_id,mcf.summary,mcf.exit_dt,mcf.program_changes,mcf.exit_conf_number,
+mcf.cap_number_djs,
+
+(select jsonb_agg(a) from (
+select distinct ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, ps.employee_type,
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no,ps.provider_staff_id,ps.staff_email
+from providerstaff ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.provider_staff_id::character varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N')a) as staffdetails,
+
+(select jsonb_agg(a) from (
+select distinct ps.monitoring_adhoc_staff_id, ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, 
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no , ps.staff_email 
+from prov_monitoring_adhoc_staff ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.monitoring_adhoc_staff_id::character varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N' and mcfs.objecttype = 'adhocstaff' )a) as adhocstaffdetails,
+
+(select jsonb_agg(a) from (
+select distinct ps.monitoring_adhoc_worker_id, ps.first_nm as first_nm,ps.last_nm as last_nm,
+ ps.job_title, ps.worker_phone_no , ps.worker_email 
+from prov_monitoring_adhoc_worker ps 
+join prov_monitoring_exit_conf_staff mcfs on  ps.monitoring_adhoc_worker_id::character varying =
+ mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.exit_conf_id = mcf.exit_conf_id and ps.delete_sw = 'N' and mcfs.objecttype = 'adhocworker' )a) as adhocworkerdetails,
+
+
+
+(select jsonb_agg(a) from (select distinct up.firstname || ' ' || up.lastname  as username,
+mu.email ,r.name as userrole ,r2.teamtypekey as agencykey,mu.securityusersid as userid, 
+p.address, p.city, p.state, p.zipcode,
+' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4)  as staffcell
+from muser mu
+inner join userprofile up on up.securityusersid = mu.securityusersid and up.activeflag = 1
+left join userprofilephonenumber u  on u.securityusersid = mu.securityusersid
+left join userprofileaddress p on p.securityusersid = mu.securityusersid
+join rolemapping r2 on r2.principalid = mu.id and r2.activeflag = '1'
+join role r on r.id = r2.roleid
+             and r2.teamtypekey in ('OLM', 'OLMDJS', 'RESDJS', 'OLMSSA')
+join prov.prov_monitoring_exit_conf_staff mcfs on  mu.securityusersid = mcfs.objectid  and mcfs.delete_sw = 'N'
+where mcf.exit_conf_id = mcfs.exit_conf_id )a) as workerdetail
+--,(select jsonb_agg(prv) from (select * from prov_getproviderviolationdetails(null, v_monitoring_id, 'Monitoring', null, null,null,1,10,null,null,null)prv) as violationdetails)
+
+from prov_monitoring_exit_conf mcf 
+where mcf.monitoring_id =v_monitoring_id and mcf.delete_sw = 'N'
+) x;         
+
+return v_jsondata;
+END;
+$function$
+

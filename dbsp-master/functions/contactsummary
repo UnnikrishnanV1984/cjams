@@ -1,0 +1,44 @@
+CREATE OR REPLACE FUNCTION contactsummary(i_personid uuid, pagenumber bigint, pagesize bigint, i_searchtext character varying)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, staffname character varying, contactdate timestamp without time zone, contacttype text, contactstatus boolean, locationname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare querytxt text;
+declare youthstatussearch character varying;
+
+begin
+ 
+ if(i_searchtext != '' and i_searchtext is not null)
+ then 
+youthstatussearch := ' AND fp.focuspersonstatustypekey = ''' || i_searchtext || '''';    
+ else
+ youthstatussearch='';
+ end if;
+ querytxt='
+select count(1) over() as totalcount,ISR.intakeserviceid,ISR.servicerequestnumber,ISR.intakenumber,up.displayname,PN.contactdate,PNT.description as contacttype,PN.contactstatus,PN.locationname
+                    FROM IntakeServiceRequest AS ISR                           
+     JOIN ProgressNote AS PN ON CAST(ISR.IntakeServiceId AS VARCHAR(50)) = PN.EntityTypeId   
+     LEFT OUTER JOIN DocumentProperties DP On DP.DocumentPropertiesId = PN.DocumentPropertiesId
+     JOIN ProgressNoteDetail AS PND ON PN.ProgressNoteId = PND.ProgressNoteId AND PND.ActiveFlag = 1               
+     JOIN ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId         
+     JOIN UserProfile up on pn.insertedby = up.SecurityUsersId                       
+     LEFT JOIN AreaTeamMemberServiceRequest atmsr on isr.IntakeServiceId = atmsr.IntakeServiceId AND atmsr.ActiveFlag = 1                 
+     LEFT JOIN TeamMember tm on atmsr.TeamMemberId = tm.TeamMemberId                
+     LEFT JOIN Team te on tm.TeamId = te.TeamId
+     LEFT JOIN Progressnoteroletype AS PNRT ON PN.ProgressNoteId = PNRT.ProgressNoteId AND PNRT.ActiveFlag = 1
+     LEFT JOIN progressnotepurposetype AS PNPT ON PNPT.progressnotepurposetypekey = PN.progressnotepurposetypekey AND PNRT.ActiveFlag = 1           
+     where PN.savemode=true and ISR.IntakeServiceId 
+      in (
+   select INTSR.intakeserviceid from intakeservicerequest INTSR 
+   join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1
+   join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 and ACC.actortype=''Youth''
+   join person p on Acc.personid=p.personid and p.activeflag=1
+   join focuspersoncasestatus fp on fp.personid=p.personid and fp.activeflag=1 
+   where ACC.personid ='''||i_personid||''''||youthstatussearch||') limit  '||pagesize||'  offset '||pagenumber;
+  return query execute querytxt;
+  end;
+
+
+
+$function$
+

@@ -1,0 +1,87 @@
+CREATE OR REPLACE FUNCTION as_getcasepersonname(v_objecttypekey character varying, v_objectid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE   l_personname json;
+declare v_person_json json;
+declare i json;
+declare j json;
+declare rolerec record;
+BEGIN                          
+IF (lower(v_objecttypekey)='servicecase') THEN 
+
+    SELECT json_agg(x)   INTO l_personname FROM ( 
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname
+        --COALESCE(p.firstname,'')  || ' ' || COALESCE(p.lastname,'') personname 
+  FROM  intakeservicerequestactor ISRA  
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 
+  WHERE    ISRA.activeflag =1  
+  AND ISRA.intakeservicerequestpersontypekey = 'LG'  
+  AND ISRA.servicecaseid:: character varying = v_objectid
+  ORDER BY 1 ) x;
+
+ELSIF (lower(v_objecttypekey)='intake') THEN 
+-- SELECT json_agg(x)   INTO l_personname FROM (
+--  SELECT   (data2->>'Firstname')::character varying || ' ' || (data2->>'Lastname'):: character varying  personname 
+--  FROM  intakedastaging  ia,json_array_elements((ia.jsondata::json)->'persons')        data2
+--  WHERE   coalesce( data2  ->>'Role',NULL)   IS  NOT  NULL  AND COALESCE(data2  ->>'Role','')  =  'LG'
+--  AND intakenumber = v_objectid AND activeflag =1 )    x; 
+ CREATE temp TABLE sp_person 
+  (
+  personname text
+  );
+ 
+ FOR rolerec IN select * from intakeservicerequestactor isra join person per on per.personid = isra.personid join actor act on act.actorid = isra.actorid and act.activeflag = 1  where isra.intakenumber = v_objectid and isra.activeflag = 1 
+ loop
+  if (rolerec.intakeservicerequestpersontypekey = 'LG')
+  then
+  
+   insert into sp_person 
+      SELECT   concat_ws(' ',coalesce(rolerec.firstname,null),coalesce(rolerec.middlename,null),coalesce(rolerec.lastname,null),coalesce(rolerec.suffix,null) );
+--     (rolerec.firstname)::character varying || ' ' || (rolerec.lastname):: character varying  personname ;
+       
+   
+  end if;
+ 
+ END loop;
+ 
+-- select ins.jsondata::json into v_person_json from intakedastaging ins where ins.intakenumber = v_objectid and ins.activeflag =1;
+-- FOR i IN select * from json_array_elements(v_person_json->'persons')
+--  loop
+--   RAISE NOTICE 'test 1 %',i -> 'personRole';
+--   FOR j IN select * from json_array_elements(i -> 'personRole')
+--  LOOP
+--    RAISE NOTICE 'output from space %', j ->> 'rolekey' ;
+--   if((j ->> 'rolekey') = 'LG')
+--   then
+--   
+--   insert into sp_person 
+--   SELECT   (i->>'Firstname')::character varying || ' ' || (i->>'Lastname'):: character varying  personname ;
+--  
+--     -- v_person_json -> 
+--     RAISE NOTICE 'output from space %', l_personname ;
+--   end if;
+--  END LOOP;
+-- END LOOP;
+   SELECT json_agg(x)   INTO l_personname FROM (
+  SELECT coalesce(personname,'') as personname  from sp_person) x;
+drop TABLE sp_person; 
+ELSE
+ SELECT json_agg(x) INTO l_personname  FROM ( 
+ SELECT distinct  concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ) :: character varying as personname
+ --COALESCE(p.firstname,'')  || ' ' || COALESCE(p.lastname,'') personname 
+    FROM  intakeservicerequestactor ISRA  
+ INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 
+    INNER JOIN person p on p.personid = a.personid AND  p.activeflag =1 
+    WHERE    ISRA.activeflag =1  
+    AND ISRA.intakeservicerequestpersontypekey = 'LG'  
+    AND ISRA.intakeserviceid:: character varying = v_objectid 
+ ORDER BY 1) x;
+   
+END IF;    
+
+ RETURN l_personname;
+END;
+$function$
+

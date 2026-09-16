@@ -1,0 +1,1 @@
+ALTER TABLE cjams.permanencyplan ADD column if not exists courtorderreceived boolean;

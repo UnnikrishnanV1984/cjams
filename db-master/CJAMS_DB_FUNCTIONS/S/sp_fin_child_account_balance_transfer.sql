@@ -1,0 +1,133 @@
+CREATE OR REPLACE FUNCTION cjams.sp_fin_child_account_balance_transfer()
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+--It is using for Balance transfer from conserved account to FCYS account
+--Created one new transaction type and new transaction source.Transactoin type -Balance Transfer(5532), source- Balance from Conserved to FCYS(5491)
+------------------------------------------------------------------------
+DECLARE
+ cur_child record; 
+ cur_child_refcur REFCURSOR;
+ v_accountCount integer;
+ v_fcysaccountno integer;
+ v_availableforotherdisbursement numeric;
+ v_pendingdisbursement numeric;
+ v_availablebalance numeric;
+ v_comm_account_id integer;
+ v_conserved_account_id integer;
+ v_conserved_acc_bal numeric;
+BEGIN
+
+
+  OPEN cur_child_refcur for
+  --get list of child accounts which is not yet transferred from tb_client_account_balance_transfer
+	select id,client_id, 
+	open_dt, county_cd,
+	comm_account_id, conserved_account_id, 
+	amount_to_fcys_account, delete_sw, is_fcys_created, is_bal_transferred from tb_client_account_balance_transfer where delete_sw='N' and is_fcys_created='Y' 
+	and is_bal_transferred='N'
+	and amount_to_fcys_account is not null;
+
+
+
+	LOOP
+	FETCH cur_child_refcur INTO cur_child;
+										 EXIT WHEN NOT FOUND;
+	
+	select count(1),client_account_id into v_accountCount,v_fcysaccountno from tb_client_account where client_id = cur_child.client_id
+	and trim(account_type_cd) = '592' -- 592 -- FCYS account type
+	and open_dt is not null 
+	and close_dt is null 
+	and status_cd = '592' -- active account
+	group by client_account_id
+	;
+	select client_account_id into v_conserved_account_id from tb_client_account where client_id = cur_child.client_id
+	and trim(account_type_cd) = '590' -- 590 -- Conserved account type
+	and open_dt is not null 
+	and close_dt is null 
+	and status_cd = '592'-- active account
+	and delete_sw='N' order by update_ts desc limit 1;
+    raise notice 'v_conserved_account_id>>>> %',v_conserved_account_id;
+
+	v_comm_account_id := coalesce(cur_child.comm_account_id,0);
+    raise notice 'FCYS account no>>>> %',v_fcysaccountno;
+    raise notice 'FCYS account count>>>> %',v_accountCount;
+    raise notice 'comm_account_id>>>> %',cur_child.comm_account_id;
+
+    --Available balance excluding COC amount, ancillary obligation and pending error correction
+	select otherdisbursement_validation ->0->> 'overall_no' into v_availableforotherdisbursement from otherdisbursement_validation(v_conserved_account_id::integer,'590');
+    raise notice 'available balance except coc,obligated amount and errorcorrection>>>>> %',v_availableforotherdisbursement;
+    
+    --Disbursement pending amounts
+    select coalesce(amount,0) into v_pendingdisbursement from tb_child_account_disbursement where
+   client_account_id=v_conserved_account_id and (funding_approval_status = '3045' or payment_approval_status = '3045');
+       raise notice 'v_pendingdisbursement>>>> %',v_pendingdisbursement;
+
+    v_availablebalance := coalesce(v_availableforotherdisbursement,0) - coalesce(v_pendingdisbursement,0);
+    
+    raise notice 'total available balance>>>> %',coalesce(v_availablebalance,0);
+    raise notice 'Amount to fcys account amount_to_fcys_account>>>> %',cur_child.amount_to_fcys_account;
+
+	IF (v_accountCount = 1 and (coalesce(v_availablebalance,0) >= cur_child.amount_to_fcys_account)) then
+    raise notice 'Inside if v_accountCount = 1 and v_availablebalance >= cur_child.amount_to_fcys_account>>>> %',v_availablebalance;
+
+	--Check for any pending transactoin with error correction, coc, ancillary, other and final disbursements
+	
+	-- Debit from conserved account
+	
+	--'588' --> Adjustments
+	--'5491' -->  Balance from Conserved to FCYS 
+	-- '5472' --> Bank Service Charges 
+	INSERT INTO cjams.tb_account_transaction
+	(client_account_id, transaction_type_cd, transaction_source_cd, benefit_start_dt, benefit_end_dt, transaction_amount_no, transaction_dt, credit_debit_sw, notes_tx, create_ts, frequency_cd, create_user_id, update_ts, update_user_id, delete_sw, adjustment_approval_status_cd, manual_db_approval_status_cd, reference_transaction_id, post_sw, payment_detail_id, authorization_id, late_entry_sw, comm_acct_trans_id, etl_userid, etl_load_date)
+	VALUES(v_conserved_account_id::bigint, '588', '5472', current_date, current_date, cur_child.amount_to_fcys_account, current_date, 'D', 'Debited from Conserved ac for balance transfer to FCYS ac', now(), 'N', 'finance', now(), 'finance', 'N', '3047', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+   
+	update tb_client_account set total_balance_no = (coalesce(total_balance_no,0)- cur_child.amount_to_fcys_account), 
+	available_balance_no = (coalesce(available_balance_no,0) - cur_child.amount_to_fcys_account) where client_account_id=v_conserved_account_id;
+	
+	--Close the child account if no any balance
+	select coalesce(total_balance_no,0) into v_conserved_acc_bal from tb_client_account  where client_account_id=v_conserved_account_id;
+	
+	if (v_conserved_acc_bal = 0 ) then
+	update tb_client_account set status_cd='593',close_dt=current_date,update_ts=now(), update_user_id='finance' where client_account_id=v_conserved_account_id
+	and total_balance_no=0 and available_balance_no=0;
+	end if;
+	
+	-- Credit into commingled account if FCYS is pseudo no
+	if (v_comm_account_id != 0 ) then
+    raise notice 'conserved tb_commingled_account>>>>>>>if (cur_child.comm_account_id <> null and cur_child.comm_account_id <>0 % )',v_comm_account_id;
+    raise notice 'conserved tb_commingled_account>>>>>>>cur_child.amount_to_fcys_account % )',cur_child.amount_to_fcys_account;
+
+	update tb_commingled_account set total_balance_no = (coalesce(total_balance_no,0) - cur_child.amount_to_fcys_account),update_ts=now() where comm_account_id = (select comm_account_id from tb_client_account where client_account_id=v_conserved_account_id);
+	end if;  
+	
+	-- Credit into fcys account
+	
+	--'589' --> Receipts
+	--'5491' -->  Balance from Conserved to FCYS
+	--582  --> Beginning Balance
+	INSERT INTO cjams.tb_account_transaction
+	(client_account_id, transaction_type_cd, transaction_source_cd, benefit_start_dt, benefit_end_dt, transaction_amount_no, transaction_dt, credit_debit_sw, notes_tx, create_ts, frequency_cd, create_user_id, update_ts, update_user_id, delete_sw, adjustment_approval_status_cd, manual_db_approval_status_cd, reference_transaction_id, post_sw, payment_detail_id, authorization_id, late_entry_sw, comm_acct_trans_id, etl_userid, etl_load_date)
+	VALUES(v_fcysaccountno, '589', '582', current_date, current_date, cur_child.amount_to_fcys_account, current_date, 'C', 'Balance transferred from Conserved ac to FCYS ac', now(), 'N', 'finance', now(), 'finance', 'N', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+	update tb_client_account set total_balance_no = (coalesce(total_balance_no,0) + cur_child.amount_to_fcys_account), 
+	available_balance_no = (coalesce(available_balance_no,0) + cur_child.amount_to_fcys_account) where client_account_id=v_fcysaccountno;
+
+	-- Credit into commingled account if FCYS is pseudo no
+	if (v_comm_account_id != 0 ) then
+    raise notice 'FCYS tb_commingled_account>>>>>>> if (cur_child.comm_account_id <> null and cur_child.comm_account_id <>0  )';
+
+	update tb_commingled_account set total_balance_no = (coalesce(total_balance_no,0) + cur_child.amount_to_fcys_account),update_ts=now() where comm_account_id = v_comm_account_id;
+	end if;
+	-- Update the transferred accounts is_bal_transferred='Y'
+	update tb_client_account_balance_transfer set is_bal_transferred='Y',update_ts=now() where id=cur_child.id;
+	
+	END IF;
+END LOOP;
+CLOSE cur_child_refcur;
+return 1;
+end;
+$function$;

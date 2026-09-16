@@ -1,0 +1,34 @@
+CREATE OR REPLACE FUNCTION as_gpsequipreturn(i_intakenumber character varying, i_intakeserviceid uuid, i_secid character varying)
+ RETURNS TABLE(youthname character varying, region character varying, cw_name character varying)
+ LANGUAGE plpgsql
+AS $function$
+   BEGIN  
+             
+ RETURN QUERY    
+ (        select distinct
+             cast(INITCAP(TRIM(coalesce(lastname,''))|| CASE WHEN (suffix is not null and suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(suffix,'')) || ', ' ||TRIM(coalesce(firstname,''))) as  character varying)   as youthname ,
+             cast(pa.county as character varying) as region,
+                 cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = i_secid) as character varying) as  cw_name
+             from  intakeservicerequest INTSR JOIN routing as R 
+                        ON R.objectid = INTSR.intakenumber 
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1 and INSRA.intakeservicerequestpersontypekey='Youth'
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             left join personaddress pa on p.personid = pa.personid and pa.activeflag=1
+              where  (INTSR.intakeserviceid =NULL or INTSR.intakeserviceid =i_intakeserviceid) or
+                (INTSR.intakenumber =NULL or INTSR.intakenumber=i_intakenumber)      
+        UNION
+          select 
+            cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+            cast(coalesce(obj->>'County','') as character varying) as region,
+                cast((select distinct up.lastname || ', ' || up.firstname from userprofile up where securityusersid = i_secid) as character varying) as  cw_name
+
+           FROM
+         intakedastaging ida 
+         , jsonb_array_elements(ida.jsondata->'persons') obj 
+          where  ida.activeflag=1  and obj->>'Role' ='Youth' and
+          (ida.intakenumber=NULL or ida.intakenumber=i_intakenumber)   
+       limit 1) ;   
+   end;
+  $function$
+

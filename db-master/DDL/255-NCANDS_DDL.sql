@@ -1,0 +1,210 @@
+
+
+/*
+NCANDS Tables DDL statement
+---------------------------
+V1.0 29/07/2019  Narendra/Ram   DDL creation
+
+
+*/
+
+DROP TABLE if exists tb_caregiver;
+DROP TABLE if exists tb_child_data;
+DROP TABLE if exists tb_childrisk;
+DROP TABLE if exists tb_mal;
+DROP TABLE if exists tb_services_ncands;
+DROP TABLE if exists tb_work_perp;
+DROP TABLE if exists ncands_caregiver;
+
+CREATE TABLE ncands_caregiver (
+	rptid varchar(50) NULL,
+FCALC varchar(1) NULL,
+	fcdrug varchar(1) NULL,
+	fcrtrd varchar(1) NULL,
+	fcemotnl varchar(1) NULL,
+	fcvisual varchar(1) NULL,
+	fcdlearn varchar(1) NULL,
+	fcphys varchar(1) NULL,
+	fcmedicl varchar(1) NULL,
+	fcviol varchar(1) NULL,
+	fchouse varchar(1) NULL,
+	fcmoney varchar(1) NULL,
+	fcpublic varchar(1) NULL
+);
+
+-- Drop table
+
+DROP TABLE if exists ncands_child_data;
+
+CREATE TABLE ncands_child_data (
+	subyr varchar(4) NULL,
+	staterr varchar(2) NULL,
+	rptid varchar(50) NULL,
+	chid varchar(50) NULL,
+	rptcnty varchar(3) NULL,
+	rptdt varchar(8) NULL,
+	invdate varchar(8) NULL,
+	rptsrc varchar(2) NULL,
+	rptdisp varchar(2) NULL,
+	rptdisdt varchar(8) NULL,
+	notifs varchar(1) NULL,
+	chage varchar(2) NULL,
+	chbdate varchar(8) NULL,
+	chsex varchar(1) NULL,
+	chracai varchar(1) NULL,
+	chracas varchar(1) NULL,
+	chracbl varchar(1) NULL,
+	chracnh varchar(1) NULL,
+	chracwh varchar(1) NULL,
+	chracud varchar(1) NULL,
+	chethn varchar(1) NULL,
+	chcnty varchar(3) NULL,
+	chlvng varchar(2) NULL,
+	chmil varchar(1) NULL,
+	chprior varchar(1) NULL
+);
+
+-- Drop table
+
+DROP TABLE if exists ncands_childrisk;
+
+CREATE TABLE ncands_childrisk (
+	rptid varchar(50) NULL,
+	cdalc varchar(1) NULL,
+	cddrug varchar(1) NULL,
+	cdrtrd varchar(1) NULL,
+	cdemotnl varchar(1) NULL,
+	cdvisual varchar(1) NULL,
+	cdlearn varchar(1) NULL,
+	cdphys varchar(1) NULL,
+	cdbehav varchar(1) NULL,
+	cdmedicl varchar(1) NULL
+);
+
+-- Drop table
+
+DROP TABLE if exists ncands_maltreator_info;
+
+CREATE TABLE ncands_maltreator_info (
+	rptid varchar(50) NULL,
+	chmal1 varchar(1) NULL,
+	mal1lev varchar(2) NULL,
+	chmal2 varchar(1) NULL,
+	mal2lev varchar(2) NULL,
+	chmal3 varchar(1) NULL,
+	mal3lev varchar(2) NULL,
+	chmal4 varchar(1) NULL,
+	mal4lev varchar(2) NULL,
+	maldeath varchar(1) NULL
+);
+
+-- Drop table
+
+DROP TABLE if exists ncands_services;
+
+CREATE TABLE ncands_services (
+	rptid varchar(50) NULL,
+	postserv varchar(1) NULL,
+	servdate varchar(8) NULL,
+	famsup varchar(1) NULL,
+	fampres varchar(1) NULL,
+	fostercr varchar(1) NULL,
+	rmvdate varchar(8) NULL,
+	juvpet varchar(1) NULL,
+	petdate varchar(8) NULL,
+	cochrep varchar(1) NULL,
+	adopt varchar(1) NULL,
+	casemang varchar(1) NULL,
+	counsel varchar(1) NULL,
+	daycare varchar(1) NULL,
+	educatn varchar(1) NULL,
+	employ varchar(1) NULL,
+	famplan varchar(1) NULL,
+	health varchar(1) NULL,
+	homebase varchar(1) NULL,
+	housing varchar(1) NULL,
+	transliv varchar(1) NULL,
+	inforef varchar(1) NULL,
+	legal varchar(1) NULL,
+	menthlth varchar(1) NULL,
+	pregpar varchar(1) NULL,
+	respite varchar(1) NULL,
+	ssdisabl varchar(1) NULL,
+	ssdelinq varchar(1) NULL,
+	subabuse varchar(1) NULL,
+	transprt varchar(1) NULL,
+	othersv varchar(1) NULL
+);
+
+-- Drop table
+
+DROP TABLE if exists ncands_work_perp;
+
+CREATE TABLE ncands_work_perp (
+	rptid varchar(50) NULL,
+	wrkrid varchar NULL,
+	suprvid varchar(12) NULL,
+	per1id varchar(12) NULL,
+	per1rel varchar(2) NULL,
+	per1prnt varchar(1) NULL,
+	per1cr varchar(1) NULL,
+	per1age varchar(2) NULL,
+	per1sex varchar(1) NULL,
+	p1racai varchar(1) NULL,
+	p1racas varchar(1) NULL,
+	p1racbl varchar(1) NULL,
+	p1racnh varchar(1) NULL,
+	p1racwh varchar(1) NULL,
+	p1racud varchar(1) NULL,
+	per1ethn varchar(1) NULL,
+	per1mil varchar(1) NULL,
+	per1pior varchar(1) NULL,
+	per1mal1 varchar(1) NULL,
+	per1mal2 varchar(1) NULL,
+	per1mal3 varchar(1) NULL,
+	per1mal4 varchar(1) NULL,
+	per2id varchar(12) NULL,
+	per2rel varchar(2) NULL,
+	per2prnt varchar(1) NULL,
+	per2cr varchar(1) NULL,
+	per2age varchar(2) NULL,
+	per2sex varchar(1) NULL,
+	p2racai varchar(1) NULL,
+	p2racas varchar(1) NULL,
+	p2racbl varchar(1) NULL,
+	p2racnh varchar(1) NULL,
+	p2racwh varchar(1) NULL,
+	p2racud varchar(1) NULL,
+	per2ethn varchar(1) NULL,
+	per2mil varchar(1) NULL,
+	per2pior varchar(1) NULL,
+	per2mal1 varchar(1) NULL,
+	per2mal2 varchar(1) NULL,
+	per2mal3 varchar(1) NULL,
+	per2mal4 varchar(1) NULL,
+	per3id varchar(12) NULL,
+	per3rel varchar(2) NULL,
+	per3prnt varchar(1) NULL,
+	per3cr varchar(1) NULL,
+	per3age varchar(2) NULL,
+	per3sex varchar(1) NULL,
+	p3racai varchar(1) NULL,
+	p3racas varchar(1) NULL,
+	p3racbl varchar(1) NULL,
+	p3racnh varchar(1) NULL,
+	p3racwh varchar(1) NULL,
+	p3racud varchar(1) NULL,
+	per3ethn varchar(1) NULL,
+	per3mil varchar(1) NULL,
+	per3pior varchar(1) NULL,
+	per3mal1 varchar(1) NULL,
+	per3mal2 varchar(1) NULL,
+	per3mal3 varchar(1) NULL,
+	per3mal4 varchar(1) NULL,
+	afcarsid varchar(12) NULL,
+	inciddt varchar(8) NULL,
+	rpttm varchar(4) NULL,
+	invstrtm varchar(4) NULL,
+	deathdt varchar(8) NULL,
+	fcdchdt varchar(8) NULL
+);

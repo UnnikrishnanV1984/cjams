@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION as_approvereceiptreversal(searchobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+ v_securityusersid character varying;
+    v_liquidationentry record;
+    v_tobesubtracted numeric;
+    v_receipt_id int;
+    v_receivableid int;
+    v_receivableamount numeric;
+    v_reasontx character varying;
+    v_outstandingstatus character varying;
+    v_status character varying;
+   v_newreceiptid int;
+  v_detailid int;
+ 
+BEGIN 
+ v_securityusersid := searchobj ->> 'securityusersid';
+     v_receipt_id := searchobj ->> 'receipt_id';
+     v_status := searchobj ->> 'status';
+ if(v_receipt_id is not null) then
+ if(v_status = 'A') then 
+ select trl.reversal_reason_tx,trl.receivable_detail_id into v_reasontx,v_detailid from as_tb_RECEIVABLE_LIQUIDATION trl inner join as_tb_receivable_detail trd on trd.receivable_detail_id= trl.receivable_detail_id and trd.isreversal=true where trl.receipt_id=v_receipt_id;
+ 
+  INSERT INTO as_tb_payment_receipt
+( provider_id, payee_cd, payment_method_cd, receipt_dt, notes_tx, reason_tx, status_cd, approval_status_cd, create_user_id, update_user_id, delete_sw, approve_staff_id, action_dt, payment_type_cd, payment_amount_no, create_ts, update_ts, reversal_amount_no)
+SELECT provider_id,payee_cd, '16', now()::date, notes_tx, v_reasontx, status_cd, approval_status_cd, v_securityusersid, v_securityusersid, 'N', approve_staff_id, action_dt, payment_type_cd
+, reversal_amount_no, now(), now(), reversal_amount_no from as_tb_payment_receipt where receipt_id= v_receipt_id returning receipt_id into v_newreceiptid;
+
+update as_tb_receivable_detail set isreversal=false where receivable_detail_id=v_detailid;
+  for v_liquidationentry in select rcvbl_liquidation_id,reversal_reason_tx,receipt_id,receivable_detail_id,collected_amount_no,reversal_amount_no from as_tb_RECEIVABLE_LIQUIDATION
+   where receipt_id=v_receipt_id and reversal_amount_no is not null
+   
+   
+   loop 
+   
+   
+   --update as_tb_RECEIVABLE_LIQUIDATION set collected_amount_no=(collected_amount_no-v_liquidationentry.reversal_amount_no) where rcvbl_liquidation_id=v_liquidationentry.rcvbl_liquidation_id;
+  
+   select receivable_id,receivable_balance_no into v_receivableid,v_receivableamount from as_tb_receivable_detail where receivable_detail_id=v_liquidationentry.receivable_detail_id;
+   raise notice 'v_receivableamount%',v_receivableamount;
+  raise notice 'v_receivableamount > 0%',v_receivableamount > 0;
+  v_outstandingstatus := null;
+ 
+  if (v_receivableamount = 0) then 
+  v_outstandingstatus := 19;
+  end if;
+ 
+  update as_tb_receivable_detail set receivable_balance_no = receivable_balance_no+v_liquidationentry.reversal_amount_no,receivable_status_cd=coalesce(v_outstandingstatus,receivable_status_cd),isreversal=false where receivable_detail_id=v_liquidationentry.receivable_detail_id;
+ 
+
+  --update as_tb_payment_receipt set reason_tx= v_liquidationentry.reversal_reason_tx where receipt_id=v_liquidationentry.receipt_id;
+ 
+  update as_tb_receivable_header set receivable_original_amount_no = receivable_original_amount_no+ v_liquidationentry.reversal_amount_no where receivable_id=v_receivableid;
+ 
+  update routing set remarks='Approved' where objectid=v_liquidationentry.receipt_id::character varying and activeflag=1 and eventcode='RVRSL';
+   end loop;
+  
+  INSERT INTO as_tb_RECEIVABLE_LIQUIDATION
+( collected_amount_no, receipt_id, receivable_detail_id, offset_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw, reversal_amount_no, reversal_reason_tx,isreversal)
+select  trl.reversal_amount_no, v_newreceiptid, trl.receivable_detail_id, trl.offset_id, now(), v_securityusersid, now(),v_securityusersid, 'N', trl.reversal_amount_no, 
+trl.reversal_reason_tx,true from as_tb_RECEIVABLE_LIQUIDATION  trl
+inner join as_tb_receivable_detail trd on trd.receivable_detail_id= trl.receivable_detail_id where trl.receipt_id= v_receipt_id;
+end if; 
+if (v_status = 'R') then 
+
+  for v_liquidationentry in select rcvbl_liquidation_id,reversal_reason_tx,receipt_id,receivable_detail_id,collected_amount_no,reversal_amount_no from as_tb_RECEIVABLE_LIQUIDATION
+   where receipt_id=v_receipt_id and reversal_amount_no is not null
+   loop
+   
+ update as_tb_RECEIVABLE_LIQUIDATION set reversal_amount_no=null where receipt_id=v_receipt_id;
+update as_tb_receivable_detail set isreversal=false where receivable_detail_id=v_liquidationentry.receivable_detail_id;
+update routing set remarks='Rejected' where objectid=v_liquidationentry.receipt_id::character varying and activeflag=1 and eventcode='RVRSL';
+end loop;
+end if;
+return 'Success';
+else 
+return 'Failure';
+end if;
+END;
+
+$function$
+

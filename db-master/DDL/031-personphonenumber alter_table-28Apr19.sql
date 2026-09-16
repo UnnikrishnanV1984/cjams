@@ -1,0 +1,2 @@
+
+alter table personphonenumber drop constraint fk_personphonenumber_personphonetype;

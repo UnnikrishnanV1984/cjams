@@ -1,0 +1,1 @@
+ALTER TABLE cjams.cpsresponsetimeractions add column if not exists reason varchar;

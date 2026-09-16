@@ -1,0 +1,187 @@
+CREATE OR REPLACE FUNCTION as_usersservicerequest_as(userid character varying, page integer, pagelimit integer, sortcolumn character varying, sortorder character varying, searchval character varying, searchcol character varying, v_focusperson character varying, actiontype character varying, v_foldertypekey character varying, v_status character varying)
+ RETURNS TABLE(totalcount bigint, groupnumber character varying, intakeserviceid uuid, legalguardian json, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, displayname character varying, county character varying, duedate timestamp without time zone, status character varying, accepteddate timestamp without time zone, routedon timestamp without time zone, ismaltreatment integer, approvaldate timestamp without time zone, personcjamspid bigint, programarea json, responsibilitytypekey json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  v_pageoffset  int;
+
+v_pagenumber  int;
+
+l_actiontype  character  varying;
+ 
+BEGIN
+
+    v_pagenumber  :=  (page-1)* pagelimit;
+
+    l_actiontype:=actiontype;
+     
+--    DROP TABLE IF EXISTS tmp_status;
+   
+ --   CREATE TEMP TABLE   tmp_status ( statustypeid uuid);
+
+    IF  (searchcol!='servicerequestnumber') THEN searchval:='';  END IF;
+
+/*    IF (v_status IN ('pending','inprogress')) THEN 
+         INSERT INTO tmp_status(statustypeid)
+         SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND LOWER(intakeserreqstatustypekey) NOT IN  ('closed', 'cancelled','completed','rejected');
+    ELSIF(v_status='closed') THEN 
+        INSERT INTO tmp_status(statustypeid)
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND  LOWER(intakeserreqstatustypekey) IN  ('closed');
+       ELSIF(v_status='rejected') THEN 
+        INSERT INTO tmp_status(statustypeid)
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND  LOWER(intakeserreqstatustypekey) IN  ('rejected');
+    ELSE
+         INSERT INTO tmp_status (statustypeid)       
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE   activeflag =1  AND LOWER(intakeserreqstatustypekey) NOT IN  ('cancelled','completed');
+    END IF;   */
+ 
+    RETURN QUERY
+ 
+    select count(1) over(), *  from (
+    
+    
+ SELECT 
+  --count(1) over() ,  
+        '':: character varying, 
+        ISR.intakeserviceid, 
+  null::json as legalguardian,
+ --       (select as_getcasepersonname as legalguardian from as_getcasepersonname ('servicerequest',ISR.intakeserviceid::character varying)),
+        ISR.servicerequestnumber, 
+        (SELECT  itsrt.description FROM  intakeservicerequesttype  as  itsrt
+   WHERE  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND  itsrt.activeflag  =1 limit  1), 
+        (SELECT  srst.classkey  FROM  servicerequestsubtype  as  srst WHERE  srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+    AND  srst.activeflag  =1    limit  1), 
+        ISR.reporteddate::timestamp without time zone,  
+        (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+        FROM intakeservicerequestactor ISRA 
+        INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+        INNER JOIN person PN ON PN.personid = a.personid 
+        WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV','RC') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1),
+        '':: character varying, 
+    --subtracting a day  to exclude the final day
+    --Added the logic to show recon due date if present CIDM-2623
+         (SELECT 
+            CASE WHEN ISR.TargetCompleteDate is null and (select MAX(a.recon_due_dt)  from asservicesoncase a  
+ join intakeserv i on  i.intakeservid = a.caseservicetypeid 
+ where a.ascaseid =isr.intakeserviceid  and ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='APS Continuing' and a.caseservicesubtypekey in ('07M1','07M2') or (i.intakeservtypekey =(select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId) or ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='24 Hours'
+ and i.intakeservtypekey='24H') or ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='5 Days' and i.intakeservtypekey='5D')))
+ and (a.approvalstatus in ('approved','closed') or (a.approvalstatus in ('draft','review') and a.enddate is not null)) and a.recon_due_dt is not null) is null then CAST(ISR.ReportedDate as date) + (CAST(src.DueDateOffset as integer))
+                WHEN  ISR.TargetCompleteDate  is null and (select MAX(a.recon_due_dt)  from asservicesoncase a  
+ join intakeserv i on  i.intakeservid = a.caseservicetypeid 
+ where a.ascaseid =isr.intakeserviceid  and ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='APS Continuing' and a.caseservicesubtypekey in ('07M1','07M2') or (i.intakeservtypekey =(select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId) or ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='24 Hours'
+ and i.intakeservtypekey='24H') or ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='5 Days' and i.intakeservtypekey='5D')))
+ and (a.approvalstatus in ('approved','closed') or (a.approvalstatus in ('draft','review') and a.enddate is not null)) and a.recon_due_dt is not null) is not null then (select MAX(a.recon_due_dt)  from asservicesoncase a  
+ join intakeserv i on  i.intakeservid = a.caseservicetypeid 
+ where a.ascaseid =isr.intakeserviceid  and ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='APS Continuing' and a.caseservicesubtypekey in ('07M1','07M2') or (i.intakeservtypekey =(select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId) or ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='24 Hours'
+ and i.intakeservtypekey='24H') or ((select classkey from servicerequestsubtype where ServiceRequestSubTypeId = isr.IntakeServiceRequestClassId)='5 Days' and i.intakeservtypekey='5D')))
+ and (a.approvalstatus in ('approved','closed') or (a.approvalstatus in ('draft','review') and a.enddate is not null)) and a.recon_due_dt is not null)  
+    ELSE ISR.TargetCompleteDate
+            END   
+        FROM ServiceRequestTypeConfig as src  
+        WHERE src.intakeservreqtypeid=isr.IntakeServReqTypeId AND src.servicerequestsubtypeid= isr.IntakeServiceRequestClassId and src.activeflag=1 
+   order by src.workload desc
+  limit 1
+        ) duedate, 
+        CAST(CASE isr.isclosecpshistory  when 1 then 'Closed' when 2 then 'Return to Worker' when 0 then 'Review' else 'Open' END
+             AS character  varying)  AS  status, 
+        ISR.accepteddate, 
+        ISR.routedon,
+  0,
+        ISR.insertedon AS approvaldate,
+        (   SELECT PN.cjamspid
+            FROM intakeservicerequestactor ISRA 
+            INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+            INNER JOIN person PN ON PN.personid = a.personid 
+            WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV','RC') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1),
+
+ (SELECT json_agg(e) AS programarea 
+  FROM
+  ( 
+  SELECT
+    DISTINCT ppa.programkey,
+    (SELECT ap.typedescription FROM intakeservsubtype ap 
+    WHERE ap.intakeservsubtypekey = ppa.programkey AND ap.activeflag =1 LIMIT 1 ) programname
+   FROM personprogramarea ppa 
+   WHERE ppa.objectid= ISR.intakeserviceid::character varying AND ppa.activeflag=1 AND ppa.sourcetype = 'AS' and  ((ppa.enddate IS NULL) OR ppa.enddate > now())
+  ) AS e),
+
+
+        (SELECT json_agg(e) AS responsibilitytypekey 
+  FROM
+  ( 
+  SELECT
+    DISTINCT ca.responsibilitytypekey
+   FROM caseassignment ca 
+   WHERE ca.objectid = ISR.intakeserviceid and ca.toworkeridno = userid AND ((ca.enddate IS NULL) OR ca.enddate > now())
+  ) AS e)
+
+  --ca.responsibilitytypekey::text
+   FROM intakeservicerequest as ISR
+   LEFT JOIN intakedastatus as IDAS ON IDAS.intakenumber=ISR.intakenumber and IDAS.activeflag=1 
+  -- INNER JOIN caseassignment ca on ca.objectid = ISR.intakeserviceid and ca.toworkeridno = userid AND ((ca.enddate IS NULL) OR ca.enddate > now()) 
+   WHERE ISR.intakeserviceid IN 
+   (SELECT ca.objectid FROM caseassignment ca WHERE ca.toworkeridno = userid AND ca.activeflag = 1 AND
+    CASE 
+      WHEN v_status IN ('pending','inprogress','rejected') THEN (ca.enddate IS NULL OR (ca.enddate)::date > (now())::date) 
+      ELSE true
+  END
+    )
+  /* INNER JOIN caseassignment ca ON ca.objectid = isr.intakeserviceid AND (       
+       CASE 
+        WHEN v_status IN ('pending','inprogress') THEN (ca.enddate IS NULL OR (ca.enddate)::date > (now())::date)
+        WHEN v_status = 'closed' THEN isr.isclosecpshistory = 1
+        WHEN v_status = 'all' THEN true
+        ELSE FALSE END 
+   ) AND ca.toworkeridno = userid and ca.activeflag = 1 */    
+    AND ISR.activeflag=1   
+    --AND LOWER(ISR.servicerequestnumber) LIKE '%' || LOWER(searchval) || '%'
+ AND ISR.teamtypekey = 'AS'
+    AND CASE 
+        WHEN v_status IN ('pending','inprogress') THEN (isr.isclosecpshistory is null or isr.isclosecpshistory = 0 or isr.isclosecpshistory = 2)
+        WHEN v_status = 'closed' THEN isr.isclosecpshistory = 1
+        WHEN v_status = 'rejected' THEN isr.isclosecpshistory = 2
+        WHEN v_status = 'all' THEN true
+        ELSE false
+    END                
+
+   ) as irl where (LOWER(irl.servicerequestnumber) LIKE '%' || LOWER(searchval) || '%' and 
+      regexp_replace(regexp_replace(LOWER(irl.initcap), '[\\s+]', '', 'g'), '[,]', '', 'g') like '%' ||
+      regexp_replace(regexp_replace(LOWER(v_focusperson), '[\\s+]', '', 'g'), '[,]', '', 'g') || '%' )
+ 
+      ORDER BY 
+      
+   -- duedate asc    
+    
+CASE sortorder
+     WHEN 'asc' then 
+      CASE sortcolumn 
+       WHEN 'servicerequestnumber' THEN irl.servicerequestnumber 
+       when 'srtype' then  irl.description
+     when 'displayname' then  irl.initcap
+       WHEN 'duedate' THEN concat (irl.duedate :: character varying,irl.cjamspid :: character varying)
+       when 'datereceived' then  cast( irl.reporteddate as character varying) 
+       when 'status' then  irl.status
+       when 'srsubtype' then  irl.classkey
+     --  when 'responsibilitytypekey' then irl.responsibilitytypekey
+       END
+ end asc,
+ case sortorder 
+ WHEN 'desc' THEN
+       CASE sortcolumn 
+       WHEN 'servicerequestnumber' THEN irl.servicerequestnumber 
+       when 'srtype' then  irl.description
+       when 'displayname' then  irl.initcap
+       WHEN 'duedate' THEN concat (irl.duedate :: character varying,irl.cjamspid :: character varying) 
+       when 'datereceived' then cast( irl.reporteddate as character varying) 
+       when 'status' then  irl.status
+       when 'srsubtype' then  irl.classkey
+     --  when 'responsibilitytypekey' then irl.responsibilitytypekey
+       END
+  end desc
+   
+  LIMIT pagelimit OFFSET v_pagenumber; 
+
+END;
+
+$function$
+

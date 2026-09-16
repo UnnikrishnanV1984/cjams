@@ -1,0 +1,43 @@
+
+--DROP FUNCTION nytdsurveynotification(v_reportingperiod character varying);
+
+CREATE OR REPLACE FUNCTION cjams.nytdsurveynotification(v_reportingperiod character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+DECLARE  
+v_activity  record;
+v_msg character varying;
+v_status character varying;
+
+BEGIN     
+/* Sending notifications to the case worker for the case worker to complete the survey */	
+FOR  v_activity  IN
+     
+    select distinct  p.cjamspid as cjamspid,ru.tosecurityusersid as tosecurityusersid,p.firstname||','||p.lastname pname
+	from personnytdsummary ps,person p, intakeservicerequestactor isra,routing ru,intakeservicerequestactor isr,servicecase sc
+	where 
+	ps.personid=p.personid and
+	p.personid=isra.personid and p.activeflag=1 and
+	isra.intakeserviceid=isr.intakeserviceid and isr.activeflag=1 and
+	isr.servicecaseid=sc.servicecaseid and sc.activeflag=1 and
+    sc.servicecaseid::varchar=ru.objectid and isra.activeflag=1 and 
+	reportingperiod=v_reportingperiod
+LOOP
+
+
+
+v_msg:=   'The NYTD survey is available for '|| v_activity.pname ||'  ('|| v_activity.cjamspid || ') for reporting period ('|| v_reportingperiod|| '). Please complete it.';
+
+
+
+SELECT send_notification INTO v_status FROM send_notification(v_activity.tosecurityusersid, v_activity.tosecurityusersid, v_activity.tosecurityusersid,
+'System', 'High', v_msg, v_msg , v_activity.cjamspid::character varying);
+
+
+END  LOOP;
+RETURN
+'Success';
+END;
+$function$
+;

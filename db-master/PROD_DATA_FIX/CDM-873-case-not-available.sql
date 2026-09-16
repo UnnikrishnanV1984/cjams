@@ -1,0 +1,2 @@
+insert into routing (eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon,updatedby, updatedon,isreviewrequest, servicerequestnumber)
+values ('INDR', 'f4c16596-6de1-461d-aab3-9bc03a8b3d72', '936ce49e-956d-46f8-bb8e-7e37415221ad', '892c70b9-0b7f-4c33-9af1-c199c8652d18', 'CWCW', 'CWSP', 'e1993333-2e21-43ab-ad55-ba3258657539', 15, 1, 'CDM-873',now(),'CDM-873', now(), true, '20200115017878');

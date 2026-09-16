@@ -1,0 +1,84 @@
+CREATE OR REPLACE FUNCTION addproviderstaff(insertedtlsobj json)
+ RETURNS TABLE(status text, providerstaff_id uuid)
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+v_Prov_Staff_Id uuid;
+v_Prov_Certificate_Id uuid;
+returnStatus text;
+v_Securityuserid text;
+v_Objectid text;
+v_training_names json;
+i json;
+j text;
+v_Prov_Staff_Id_len int8;
+v_certificates JSON;
+
+BEGIN
+v_Securityuserid := insertedtlsobj->>'securityuserid';
+v_Prov_Staff_Id := insertedtlsobj->>'provider_staff_id';
+v_Objectid := insertedtlsobj->>'object_id';
+v_certificates := insertedtlsobj ->> 'certificates';
+v_training_names := insertedtlsobj->>'prov_training_names';
+
+--RAISE NOTICE '%','11111111111111111111111111111111111111111111111111111';
+-- RAISE NOTICE ' corporation_entity_taxid>>>>>  :%', insertedtlsobj->>'corporation_entity_taxid';
+
+IF(v_Prov_Staff_Id IS NULL) THEN
+
+    INSERT INTO providerstaff
+    (object_id, first_nm, middle_nm, last_nm, affiliation_type, job_title, employee_type, start_date, end_date, 
+    reason_for_leaving,staff_comment,create_ts, create_user_id, update_ts, update_user_id, delete_sw, staff_email, staff_phone_no)
+    VALUES(insertedtlsobj->>'object_id', insertedtlsobj->>'first_nm', 
+    insertedtlsobj->>'middle_nm', insertedtlsobj->>'last_nm', insertedtlsobj->>'affiliation_type', 
+    insertedtlsobj->>'job_title', insertedtlsobj->>'employee_type', (insertedtlsobj->>'start_date')::date, 
+    (insertedtlsobj->>'end_date')::date,insertedtlsobj->>'reason_for_leaving',insertedtlsobj->>'staff_comment',
+    now()::timestamp,v_Securityuserid,null,null,'N',insertedtlsobj->>'staff_email',(insertedtlsobj->>'staff_phone_no')::bigint)
+
+    RETURNING "provider_staff_id" INTO v_Prov_Staff_Id;    
+
+ELSE    
+
+  DELETE FROM tb_prov_certificates WHERE provider_staff_id = v_Prov_Staff_Id;
+        DELETE FROM tb_prov_trainingnames WHERE provider_certificate_id = v_Prov_Certificate_Id;
+
+        FOR i IN SELECT *FROM json_array_elements_text(v_certificates)
+        LOOP
+
+        INSERT INTO tb_prov_certificates
+        (provider_staff_id, behavioral_interventions_training, rcc_certificate_type, rcc_certificate_due_date, 
+        rcc_date_application_mailed, rcc_date_tested, rcc_certification_effective_date, rcc_certification_number, 
+        rcc_certification_renewal_date, rcc_certificate_subtype, rcc_certificate_subtype_other, 
+        rcc_certificate_status, create_ts, create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+        VALUES(v_Prov_Staff_Id, i ->> 'behavioral_interventions_training', 
+               i ->> 'rcc_certificate_type', (i ->> 'rcc_certificate_due_date')::date, 
+               (i ->> 'rcc_date_application_mailed')::date, (i ->> 'rcc_date_tested')::date, 
+               (i ->> 'rcc_certification_effective_date')::date, i ->> 'rcc_certification_number' , 
+               (i ->> 'rcc_certification_renewal_date')::date, i ->> 'rcc_certificate_subtype', i ->> 'rcc_certificate_subtype_other', 
+               i ->> 'rcc_certificate_status', now(),v_Securityuserid, now(),v_Securityuserid, 'N'::bpchar, 1)
+
+            RETURNING "provider_certificate_id" INTO v_Prov_Certificate_Id;
+
+        FOR j IN SELECT *FROM json_array_elements_text((i ->> 'prov_training_names')::json)   
+        LOOP
+
+        INSERT INTO tb_prov_trainingnames
+        (provider_certificate_id, rcc_training_name, create_ts, 
+        create_user_id, update_ts, update_user_id, delete_sw, active_flag)
+        VALUES(v_Prov_Certificate_Id, j, now(), v_Securityuserid, now(), v_Securityuserid, 'N'::bpchar, 1); 
+
+        END LOOP;
+        END LOOP;           
+
+END IF;
+
+returnStatus:= 'Success';
+
+return query
+select returnStatus, v_Prov_Staff_Id;
+                                                      
+END;
+
+$function$
+

@@ -1,0 +1,1 @@
+ALTER TABLE cjams.documentattachment ALTER COLUMN attachmentclassificationsubtypekey TYPE varchar USING attachmentclassificationsubtypekey::varchar;

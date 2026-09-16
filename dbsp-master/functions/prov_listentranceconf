@@ -1,0 +1,50 @@
+CREATE OR REPLACE FUNCTION prov_listentranceconf(v_monitoring_id character varying)
+ RETURNS TABLE(monitoring_id character varying, entrance_conf_id integer, summary character varying, entrance_dt timestamp without time zone, program_changes character varying, is_lmb_present character varying, staffdetails jsonb, adhocstaffdetails jsonb, adhocworkerdetails jsonb, workerdetails jsonb)
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+begin 
+
+return query 
+
+select distinct mcf.monitoring_id,mcf.entrance_conf_id,mcf.summary,mcf.entrance_dt,mcf.program_changes,mcf.is_lmb_present,
+
+(select jsonb_agg(a) from (
+select distinct ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, ps.employee_type,
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no,ps.provider_staff_id,ps.staff_email
+from providerstaff ps 
+join prov_monitoring_entrance_conf_staff mcfs on  ps.provider_staff_id::character varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.entrance_conf_id = mcf.entrance_conf_id and ps.delete_sw = 'N')a) as staffdetails,
+
+(select jsonb_agg(a) from (
+select distinct ps.monitoring_adhoc_staff_id, ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, 
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no , ps.staff_email 
+from prov_monitoring_adhoc_staff ps 
+join prov_monitoring_entrance_conf_staff mcfs on  ps.monitoring_adhoc_staff_id::character 
+varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.entrance_conf_id = mcf.entrance_conf_id and ps.delete_sw = 'N' and ps.monitoring_id = mcf.monitoring_id)a) as adhocstaffdetails,
+
+(select jsonb_agg(a) from (
+select distinct ps.monitoring_adhoc_worker_id, ps.first_nm as first_nm,ps.last_nm as last_nm, ps.job_title,
+ ps.worker_phone_no , ps.worker_email 
+from prov_monitoring_adhoc_worker ps 
+join prov_monitoring_entrance_conf_staff mcfs on  ps.monitoring_adhoc_worker_id::character 
+varying = mcfs.objectid::character varying and  mcfs.delete_sw = 'N'
+where mcfs.entrance_conf_id = mcf.entrance_conf_id and ps.delete_sw = 'N' and ps.monitoring_id = mcf.monitoring_id)a) as adhocworkerdetails,
+
+(select jsonb_agg(a) from (select distinct (up.firstname ||' '|| up.lastname) as username,split_part(r.description,',',1) as userrole,split_part(r.description,',',2) as agencykey,mu.email,phonenumber as staffcell
+ from muser mu
+ left join userprofilephonenumber u  on u.securityusersid = mu.securityusersid
+ inner join userprofile up on up.securityusersid = mu.securityusersid and up.activeflag = 1
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+join prov_monitoring_entrance_conf_staff mcfs on  mu.securityusersid::character varying = mcfs.objectid::character varying  and mcfs.delete_sw = 'N'
+where mcf.entrance_conf_id = mcfs.entrance_conf_id )a) as workerdetails
+
+from prov_monitoring_entrance_conf mcf 
+where mcf.monitoring_id =v_monitoring_id and mcf.delete_sw = 'N';         
+END;
+$function$
+

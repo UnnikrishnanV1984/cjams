@@ -1,0 +1,785 @@
+Drop function if exists sp_fc_worksheet_periods_info(bigint,bigint);
+
+CREATE OR REPLACE FUNCTION cjams.sp_fc_worksheet_periods_info(al_client_id bigint, al_removal_id bigint)
+ RETURNS TABLE(key_id integer, cmpnt character varying, sqnm_sw character varying, start_dt date, end_dt date, removal_type character varying, hasthechildbeeninfostercarefor12monthsormore character varying, isthereanybestinterestfindingduringreviewperiod character varying, isbestinterestfindingtimely character varying, isthereanyreasonableeffortsfindingduringreviewperiod character varying, isreasonableeffortsfindingtimely character varying, isplacementreimbursible character varying, isthelivingarrangementsameasplacement character varying, silaplacementdetails character varying , silaplacementid character varying, beyondr1eligibility character varying, eligibilitystatus character varying)
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- Revisions:
+-- Vineet Tirodkar - 05/03/2021 - Modifications for New Provider Category 3794 - Residential Treatment Center (B-102022)
+-- SJ - 1/5/2022 - CDM-16823 - R4E4 end date error
+-- Rengith Manickam - 01/06/2022 - Invalid period created, added logic to not create a segment if Prev-REFPP end date is before current review period.
+-- Manasa Kasula - CDM-20383- 1/25/2023- Placement Logic- To consider only approved placements and living arrangements
+-- Manasa Kasula - CDM-21788- 1/30/2023- Placement logic - To consider rest of the review period when living arrangement date is same as start date
+-- CDM-32929 -Veera Nadimpalli 07-20 -Restricting incorrect review period
+-- CIDM-8153 - Veera Nadimpalli 11-30 Sila Youth Placement user story changes
+-- CIDM-8153 - Veera 02-13-2024
+-- CIDM-8174 -Siva Kumar Srungavarapu, Smitha Somasekharan 11/30/2023- Adding Events for Initial determination based on ctw, rpt, removal dates
+-- CDM-38225 - Veera Nadimpalli 04-16-2024 Placement event issue fix
+-- CIDM-9041 - Sushma Bade 07-25-2024 Court Validation story
+-- CIDM-9041 - Veera 10-09-2024 Court Validation user story issue fix
+-- 11/06/2024 - Vineet Tirodkar - To add new Non-paid Kinship Placement structure (B-207876 / CIDM-9688)
+-- 01/23/2026 - Veera Nadimpalli - Revert Kinship placement payments CIDM-11022
+------------------------------------------------------------------------------------------------
+DECLARE 
+		vs_Procedure_nm 								VARCHAR(100) DEFAULT 'sp_fc_worksheet_periods_info';
+		vd_removal_dt 									TIMESTAMP;
+		vd_return_dt									TIMESTAMP;
+		vs_removal_type_cd								VARCHAR(50);
+		vd_18th_bday									TIMESTAMP;
+		vd_21st_bday									TIMESTAMP;
+		vs_rem_type										VARCHAR(50);
+		vl_court_removal_count 							INT DEFAULT 0;
+		vs_court_removal_sw 							CHAR(1) DEFAULT NULL;
+		vl_court_removal_id    							INT DEFAULT 0;
+		vd_repr_crt_dt									TIMESTAMP;
+		vd_ctw_crt_dt									TIMESTAMP;
+		vd_vol_best_interest_dt							TIMESTAMP;
+		vn_row_num				 						INT := 1;
+		vd_court_order_dt								TIMESTAMP;
+		vn_date_diff									INT  := 0;
+		vd_18bday_date_diff                             INT  := 0;
+		vd_18bday_record                                INT  := 0;                         
+		vn_start_date_diff								INT  := 0;
+		vd_start_dt 									TIMESTAMP;
+		vd_end_dt  										TIMESTAMP;
+		vd_18bdy_end_dt									TIMESTAMP;
+		vd_18bdy_current_dt                             TIMESTAMP;
+		vd_end_dt_vpa									TIMESTAMP;
+		vn_redet_cntr									INT := 1;
+		pl_rec											RECORD;
+		vd_pl_entry_Dt									DATE;
+		vd_pl_exit_dt									DATE;
+		greatest_date									DATE;
+		vd_prev_court_order_dt							TIMESTAMP;
+		vn_ct_cntr										INT := 1;
+		lv_rec											RECORD;
+		v_personid										UUID;
+		vd_lv_start_dt									TIMESTAMP;
+		vd_lv_end_dt									TIMESTAMP;
+		vn_prev_court_eli_dt                            TIMESTAMP;
+		vn_prev_court_act_eli_dt						TIMESTAMP;
+		vn_court_inval_dt              					TIMESTAMP;
+		vd_high_dt 										TIMESTAMP;
+		vs_emergent_nature_sw    						CHAR(1) DEFAULT NULL;
+		vd_tn_court_order_dt                     		TIMESTAMP;
+		initial_ct_date_is_null                         CHAR(1) default 'N' ;
+		v_isplacementreimbursible          				VARCHAR(10);
+		v_prov_category 								VARCHAR(10);
+	   	vs_home_app 									VARCHAR(10);
+		vs_app_status_cd 								VARCHAR(10);
+		vs_lic_status    								VARCHAR(10);
+		v_typeoflapses                                  VARCHAR(20);
+		v_hasthechildbeeninfostercarefor12monthsormore  VARCHAR(10);
+		v_result										json;
+		v_dateagencylostlegalresponsibility				TIMESTAMP DEFAULT NULL;
+		v_isthelivingarrangementsameasplacement			VARCHAR(10);
+		v_map_silaplacementdetails                      VARCHAR(25);
+		v_map_silaplacementid							VARCHAR(50);
+		vd_placement_type								VARCHAR(10);
+		vs_ha_revoke_approval_dt 						DATE;
+		vd_beyondr1eligibility                          VARCHAR DEFAULT NULL;
+		vd_pl_start_dt          						TIMESTAMP;
+		vd_pl_evt_start_dt								TIMESTAMP;
+		vd_eligibilitystatus							VARCHAR DEFAULT NULL;
+		vd_repr_tlv_dt									TIMESTAMP;
+		vd_pl_event_remornot                            VARCHAR(10) default 'Y';
+		vd_crt_rec_total_cnt							INTEGER;
+		vd_ct_valid_full_period							INT  := 0;
+		vd_ct_order_diff							    INT  := 0;
+		vd_prev_ct_order_diff							INT  := 0;
+
+ BEGIN	
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_periods_info ( 
+		key_id 												  INTEGER, 
+		cmpnt 												  VARCHAR(50), 
+		sqnm_sw 											  VARCHAR(50), 
+		start_dt 											  DATE, 
+		end_dt 												  DATE,
+		removal_type 										  VARCHAR(50),		
+		hasthechildbeeninfostercarefor12monthsormore          VARCHAR(10),
+		IsThereAnyBestInterestFindingDuringReviewPeriod       VARCHAR(10),
+		IsBestInterestFindingTimely                           VARCHAR(10),
+		IsThereAnyReasonableEffortsFindingDuringReviewPeriod  VARCHAR(10),
+		IsReasonableEffortsFindingTimely                      VARCHAR(10),
+		isplacementreimbursible								  VARCHAR(10),
+		isthelivingarrangementsameasplacement                 VARCHAR(10),
+		silaplacementdetails                                  VARCHAR(25) DEFAULT NULL,
+		silaplacementid 									  VARCHAR(50) DEFAULT NULL,
+		beyondr1eligibility                                   VARCHAR,
+		eligibilitystatus									  VARCHAR
+	);
+
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_placement_info ( 
+		cmpnt 												  VARCHAR(50), 
+		start_dt 											  DATE, 
+		end_dt 												  DATE,
+		isplacementreimbursible								  VARCHAR(10),
+		isthelivingarrangementsameasplacement                 VARCHAR(10),
+		silaplacementdetails                                  VARCHAR(25) DEFAULT NULL,
+		silaplacementid 									  VARCHAR(50) DEFAULT NULL
+	);
+
+SELECT isrcr.removaldate, isrcr.exitdate, isrcr.removaltypekey 
+INTO   vd_removal_dt, vd_return_dt, vs_removal_type_cd 
+FROM   intakeservreqchildremoval isrcr
+WHERE  isrcr.removalid::bigint = al_removal_id AND isrcr.activeflag = 1 limit 1;
+	   
+SELECT per.dob + interval '18 years', 
+	   per.dob + interval '21 years',
+	   per.personid 
+INTO   vd_18th_bday, vd_21st_bday, v_personid
+FROM   person per 
+WHERE  per.cjamspid::bigint = al_client_id AND per.activeflag = 1;
+
+-- 2700 - Court Ordered
+IF vs_removal_type_cd = 'JD' THEN
+	vs_rem_type = 'CRT';		
+	-- 2702  - Time Limited Voluntary Placement
+	-- 12761 - Children with Disabilities Voluntary Placement
+	-- 2703  - Enhanced Aftercare Voluntary Placement
+	ELSE IF rtrim(vs_removal_type_cd) = 'TLV' 
+			OR rtrim(vs_removal_type_cd) = 'CDVP' 
+			OR rtrim(vs_removal_type_cd) = 'EHA' THEN
+		vs_rem_type = 'VPA';
+	END IF;
+END IF;
+
+-- Check Removal is attached to Court Order - START
+SELECT	COUNT(*) 
+INTO	vl_court_removal_count 
+FROM 	intakeservreqcourtorder isrco 
+	JOIN intakeservreqchildremoval ISRCR ON isrco.intakeserviceid = ISRCR.intakeserviceid AND ISRCR.activeflag = 1
+	WHERE	ISRCR.removalid::bigint = al_removal_id;
+
+IF vl_court_removal_count > 0 THEN 
+	vs_court_removal_sw = 'Y';
+	vl_court_removal_id  = al_removal_id::integer;
+	ELSE
+		vs_court_removal_sw = 'N';
+		vl_court_removal_id = 0; 
+END IF;
+-- Check Removal is attached to Court Order - END
+
+select tfcj.dateofreasonableeffortscourthearing::date, tfcj.reasonableeffortsnotnecessaryduetoemergentcircumstances, tfcj.dateoffindingctwdecision::date into vd_repr_crt_dt, vs_emergent_nature_sw, vd_ctw_crt_dt from tb_foster_care_judicial tfcj where client_id = al_client_id and removal_id = al_removal_id and period_type = 'I';
+	
+	
+--RAISE NOTICE 'Court Date %, VS_REM_TYPE %, vs_court_removal_sw %, vl_court_removal_id %, v_removal_dt %', vd_ctw_crt_dt, vs_rem_type, vs_court_removal_sw, vl_court_removal_id, vd_removal_dt;
+
+select tfcj.dateofcurrentjudicialfindingofbestinterest::date into vd_vol_best_interest_dt from tb_foster_care_judicial tfcj where client_id = al_client_id and removal_id = al_removal_id and period_type = 'R1';
+
+select tfcj.dateofreasonableeffortscourthearing::date into vd_repr_tlv_dt from tb_foster_care_judicial tfcj where client_id = al_client_id and removal_id = al_removal_id and period_type = 'R1';
+
+select tifa.beyondr1eligibility into vd_beyondr1eligibility from tb_ive_fostercare_audit tifa where tifa.cjamspid = al_client_id and tifa.removalid = al_removal_id and tifa.sqnm_sw = 'R1' order by tifa.insertedon desc limit 1;
+
+IF vs_rem_type = 'CRT' THEN
+	vd_prev_court_order_dt = vd_removal_dt + interval '60 days';
+ELSIF vs_rem_type = 'VPA' THEN
+	vd_prev_court_order_dt = vd_removal_dt;
+END IF;
+
+
+if vd_repr_crt_dt is null AND vd_ctw_crt_dt is null and vd_vol_best_interest_dt is null and vd_repr_tlv_dt is null
+then
+initial_ct_date_is_null = 'Y';
+end if ;
+
+select tep.finalresult into vd_eligibilitystatus from tb_eligibility_period tep join tb_client_eligibility tce on tce.eligibility_id = tep.eligibility_id 
+where tep.sqnm_sw = 'I' and tep.delete_sw = 'N' and tce.client_id = al_client_id and tce.removal_id = al_removal_id;
+
+-- Inserting Initial determination
+INSERT INTO Temp_worksheet_periods_info ( key_id, sqnm_sw, start_dt, end_dt, removal_type, eligibilitystatus )
+VALUES ( vn_row_num, 'I', vd_removal_dt, NULL :: date, vs_rem_type, vd_eligibilitystatus );
+
+--generating events for initial determination based on removal_date, ctw_date, rept_crt_date
+if vd_removal_dt is not null and vd_ctw_crt_dt is not null and vd_repr_crt_dt is not null and vd_ctw_crt_dt - vd_removal_dt <= INTERVAL '60 days' and vd_repr_crt_dt - vd_removal_dt <= INTERVAL '60 days'
+then
+SELECT GREATEST(vd_ctw_crt_dt, vd_repr_crt_dt) into greatest_date;
+
+if EXTRACT(month from (vd_removal_dt)) <> EXTRACT(month from greatest_date)
+then
+
+INSERT INTO Temp_worksheet_periods_info ( key_id, cmpnt, sqnm_sw, start_dt, end_dt, removal_type, eligibilitystatus )
+VALUES ( vn_row_num, 'CT', 'IE1', vd_removal_dt, (date_trunc('MONTH', (greatest_date)) - interval '1 day'),  vs_rem_type, 'Eligible Non-Reimbursable' );
+
+INSERT INTO Temp_worksheet_periods_info ( key_id, cmpnt, sqnm_sw, start_dt, end_dt, removal_type, eligibilitystatus )
+VALUES ( vn_row_num, 'CT', 'IE2', (date_trunc('MONTH', (greatest_date))), null ::date,  vs_rem_type, 'Eligible Reimbursable' );
+
+end IF;
+end IF;
+
+-- For Court Order Removal Type 
+IF ( vd_repr_crt_dt > vd_removal_dt + Interval '60 Days' 
+		AND vs_rem_type = 'CRT' 
+		AND vs_emergent_nature_sw is null) THEN 
+	vd_court_order_dt = vd_repr_crt_dt;
+
+END IF;
+	
+IF ( vd_ctw_crt_dt > vd_removal_dt + Interval '60 Days' 
+		AND vs_rem_type = 'CRT' ) THEN 
+	IF vd_ctw_crt_dt < vd_repr_crt_dt THEN 
+		vd_court_order_dt = vd_repr_crt_dt;
+	ELSE 
+		vd_court_order_dt = vd_ctw_crt_dt;
+		
+	END IF;
+END IF;
+	
+vn_date_diff = DATE(vd_court_order_dt) - DATE(vd_removal_dt + Interval '60 Days'); -- 60 days
+
+--	For VPA Removal Type
+IF ( vd_vol_best_interest_dt > vd_removal_dt + Interval '180 Days'
+		AND vs_rem_type = 'VPA' ) THEN
+	vd_court_order_dt = vd_vol_best_interest_dt;
+	vn_date_diff = DATE(vd_court_order_dt) - DATE(vd_removal_dt + Interval '180 Days'); -- 180 days
+END IF;
+
+vd_start_dt = vd_removal_dt; 
+
+IF vs_rem_type = 'CRT' THEN
+vd_end_dt = ( date_trunc('month', vd_start_dt) + interval '1 year' ) - interval '1 day';
+ELSIF vs_rem_type = 'VPA'
+then
+vd_end_dt = vd_start_dt + Interval '180 Days';
+vd_end_dt_vpa =  ( date_trunc('month', vd_start_dt) + interval '1 year' ) - interval '1 day';
+end if;
+
+vn_row_num = vn_row_num + 1;
+
+IF (vd_court_order_dt IS NOT null AND vs_rem_type = 'VPA')
+THEN
+
+INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+VALUES ( 2,'CT', 'R1E1', vd_start_dt, (vd_start_dt + Interval '180 Days'), 'YES' , 'YES');
+			
+INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+VALUES ( 2, 'CT', 'R1E2', (vd_start_dt + Interval '181 Days') , vd_end_dt, 'NO', 'NO');
+
+END IF;
+	
+-- Initial Court Entry End
+IF  vd_return_dt is not null then
+vd_high_dt = vd_return_dt + interval '1 year';
+ELSE 
+vd_high_dt = current_date;
+END IF;
+
+
+WHILE ( vd_high_dt > vd_end_dt ) 
+LOOP   	-- Begin of removal logic
+
+	select tfcp.typeoflapses into v_typeoflapses from tb_foster_care_placement tfcp where tfcp.clientid = al_client_id and tfcp.removalid = al_removal_id and tfcp.periodtype = 'R' || vn_redet_cntr;
+	
+	IF (v_typeoflapses = 'Permanent')
+	then 
+	select date_agency_lost_legal_responsibility::date into v_dateagencylostlegalresponsibility from tb_foster_care_judicial where client_id = al_client_id and removal_id = al_removal_id and period_type = 'R' || vn_redet_cntr;
+	END IF;
+
+	v_hasthechildbeeninfostercarefor12monthsormore = case when vs_rem_type = 'CRT' then 'YES' END;
+
+	IF vd_return_dt <= vd_end_dt and v_dateagencylostlegalresponsibility <= vd_end_dt then
+		IF vd_return_dt < v_dateagencylostlegalresponsibility then
+			vd_end_dt = vd_return_dt; 
+			vd_high_dt = vd_return_dt;
+		ELSE 
+			vd_end_dt = v_dateagencylostlegalresponsibility;
+			vd_high_dt = v_dateagencylostlegalresponsibility;
+		END IF;
+		IF vn_redet_cntr = 1 
+		THEN
+		v_hasthechildbeeninfostercarefor12monthsormore = case when vs_rem_type = 'CRT' then 'NO' END;
+		END IF;	
+	elsif vd_return_dt > vd_end_dt and v_dateagencylostlegalresponsibility <= vd_end_dt then 
+		vd_end_dt = v_dateagencylostlegalresponsibility;
+		vd_high_dt = v_dateagencylostlegalresponsibility;
+		IF vn_redet_cntr = 1 
+		THEN
+		v_hasthechildbeeninfostercarefor12monthsormore = case when vs_rem_type = 'CRT' then 'NO' END;
+		END IF;
+	elseif vd_return_dt is null and v_dateagencylostlegalresponsibility <= vd_end_dt then 
+		vd_end_dt = v_dateagencylostlegalresponsibility;
+		vd_high_dt = v_dateagencylostlegalresponsibility;
+		IF vn_redet_cntr = 1 
+		THEN
+		v_hasthechildbeeninfostercarefor12monthsormore = case when vs_rem_type = 'CRT' then 'NO' END;
+		END IF;
+	elseif v_dateagencylostlegalresponsibility is null and vd_return_dt <= vd_end_dt then 
+		vd_end_dt = vd_return_dt;
+		vd_high_dt = vd_return_dt;
+		IF vn_redet_cntr = 1 
+		THEN
+		v_hasthechildbeeninfostercarefor12monthsormore = case when vs_rem_type = 'CRT' then 'NO' END;
+		END IF;
+	--Added this condition because there are some scenarios 
+	--v_dateagencylostlegalresponsibility is greater than end date which was not taken care earlier 
+	--due to this loop is unconditional Eligibility worksheet information is not retrieved 
+	else IF v_dateagencylostlegalresponsibility >= vd_end_dt then
+		vd_end_dt = vd_return_dt;
+		vd_high_dt = vd_return_dt;
+		end if ;
+	END IF;	
+
+	select tep.finalresult into vd_eligibilitystatus from tb_eligibility_period tep join tb_client_eligibility tce on tce.eligibility_id = tep.eligibility_id 
+	where tep.sqnm_sw = 'R' || vn_redet_cntr and tep.delete_sw = 'N' and tce.client_id = al_client_id and tce.removal_id = al_removal_id;
+		
+	INSERT INTO Temp_worksheet_periods_info ( key_id, sqnm_sw, start_dt, end_dt, eligibilitystatus)
+	VALUES ( vn_row_num, 'R' || vn_redet_cntr, vd_start_dt, vd_end_dt, vd_eligibilitystatus);
+
+	IF(vd_beyondr1eligibility = 'Stop') THEN
+		UPDATE Temp_worksheet_periods_info A
+			SET beyondr1eligibility = vd_beyondr1eligibility
+		WHERE A.sqnm_sw = 'R' || vn_redet_cntr and A.sqnm_sw <> 'R1';
+	END IF;
+
+	IF vs_rem_type = 'CRT' THEN
+			UPDATE Temp_worksheet_periods_info A
+			  SET 	hasthechildbeeninfostercarefor12monthsormore = v_hasthechildbeeninfostercarefor12monthsormore 		
+			WHERE A.sqnm_sw = 'R' || vn_redet_cntr;
+		ELSIF vs_rem_type = 'VPA' THEN 
+			UPDATE Temp_worksheet_periods_info A
+			  SET 	hasthechildbeeninfostercarefor12monthsormore = CASE WHEN A.sqnm_sw <> 'R1' THEN 'NO' else 'YES' END
+			WHERE A.sqnm_sw = 'R' || vn_redet_cntr ;
+	     END IF;
+
+	FOR pl_rec IN
+		(SELECT tp.startdatetime as entry_dt, 
+			   tp.enddatetime as exit_dt , tp.service_id as placement_structure_id, tp.altproviderid as provider_id, 'Yes' as placementtype, null as silaplacementdetails, null as silaplacementid
+		 from 	placement tp 
+		 join intakeservreqchildremoval isrcr on isrcr.intakeservreqchildremovalid = tp.intakeservreqchildremovalid and isrcr.activeflag = 1
+		 WHERE tp.placementtypekey = 'PRPL' 
+			AND isrcr.removalid::bigint= al_removal_id 
+			AND tp.activeflag = 1 AND ( tp.isvoided = 0 OR tp.isvoided IS NULL )
+			AND (select count(1) > 0 from routing r where r.objectid = tp.placementid::varchar and r.eventcode = 'PLTR' and r.routingstatustypeid = 16 and r.activeflag = 1 )
+			AND (tp.enddatetime::date IS NOT NULL or (tp.startdatetime::date >= vd_start_dt::date and tp.startdatetime::date < vd_end_dt::date and tp.enddatetime::date IS null))
+			AND tp.startdatetime::date IS NOT NULL 
+			AND ((tp.startdatetime::date >= vd_start_dt::date and tp.startdatetime::date < vd_end_dt::date)
+					 OR (tp.enddatetime::date > vd_start_dt::date AND tp.enddatetime::date < vd_end_dt::date)) 
+		 union all 
+			SELECT 	la.livingstartdate  as entry_dt,
+					la.livingenddate as exit_dt , null, null , 'No' as placementtype, la.livingarrangementtypekey as silaplacementdetails, la.livingid as silaplacementid
+ 			FROM 	livingarrangement la
+			 WHERE 	la.personid = v_personid
+					AND la.livingarrangementtypekey not in ('32944', 'Placement', 'PLMT')
+					-- AND la.livingarrangementtypekey in ('RNW', 'MH', 'PSYH','REC', 'TVH')
+					AND (la.livingstartdate >= vd_removal_dt OR la.livingenddate is null)
+					AND (select count(1) > 0 from routing r inner join placement tp1 on r.objectid = tp1.placementid::varchar and tp1.activeflag = 1 AND ( tp1.isvoided = 0 OR tp1.isvoided IS NULL) where tp1.placementid = la.placementid and r.eventcode = 'PLTR' and r.routingstatustypeid = 16 and r.activeflag = 1 )
+					AND ( la.livingstartdate::date BETWEEN vd_start_dt::date AND vd_end_dt::date
+						OR la.livingenddate::date BETWEEN vd_start_dt::date AND vd_end_dt::date OR la.livingenddate is null ))
+		 ORDER  BY 1, 2
+   
+	LOOP		-- Begin of placement/living arrangement logic
+		vd_pl_entry_dt = pl_rec.entry_dt;
+		vd_pl_exit_dt = pl_rec.exit_dt;
+		vd_placement_type = pl_rec.placementtype;
+		v_map_silaplacementdetails = pl_rec.silaplacementdetails;
+		v_map_silaplacementid = pl_rec.silaplacementid;
+		IF vd_placement_type = 'Yes'  	
+		THEN
+			v_isthelivingarrangementsameasplacement = 'Y';
+			IF pl_rec.placement_structure_id in (8, 76, 530, 531)	THEN 
+				v_isplacementreimbursible = 'N';
+			ELSE		
+				select picklist_value_cd 
+					into v_prov_category 
+				from tb_provider_picklist 
+				where provider_id = pl_rec.provider_id 
+					and delete_sw = 'N' 
+					and picklist_value_cd in ('1782', '1783', '1785', '3049', '3274', '3302', '3794');
+		
+				IF v_prov_category = '1783'
+				THEN
+				select approval_type_cd, approval_status_cd, ha_revoke_approval_dt into vs_home_app, vs_app_status_cd, vs_ha_revoke_approval_dt from tb_provider_approval where provider_approval_id = (select max(provider_approval_id) from tb_provider_approval where provider_id = pl_rec.provider_id and ha_approval_status_cd = '3047' and approval_status_cd in ('3579','3585', '3584') and delete_sw = 'N');
+				
+					IF ((vs_home_app in ('3591', '3592' , '4989' , '4991') or vs_app_status_cd in ('3585', '3584')) and vd_pl_entry_dt::date > vs_ha_revoke_approval_dt) 
+					THEN v_isplacementreimbursible = 'N';
+					ELSE v_isplacementreimbursible = 'Y';
+					END IF;
+				ELSE 
+				select license_status_cd into vs_lic_status from tb_provider_licensing where site_id = pl_rec.provider_id and pl_rec.entry_dt between license_issue_dt and license_expiry_dt;
+					
+					IF vs_lic_status in ('3263', '3266', '3260', '5503')
+					THEN v_isplacementreimbursible = 'Y';
+					ELSE v_isplacementreimbursible = 'N';
+					END IF;
+					
+				END IF;
+			END IF;
+			vd_pl_event_remornot = v_isplacementreimbursible;
+		ELSIF vd_placement_type = 'No'
+		THEN 
+			v_isplacementreimbursible = 'N';
+			v_isthelivingarrangementsameasplacement = 'N';
+		END IF;	
+		IF (v_dateagencylostlegalresponsibility is null or (vd_pl_exit_dt::date is not null and v_dateagencylostlegalresponsibility >= vd_pl_exit_dt::date) or vd_pl_exit_dt is null) THEN						
+				
+			IF vd_pl_entry_dt::date  
+				BETWEEN vd_start_dt::date AND vd_end_dt::date AND ((vd_pl_exit_dt::date >= vd_start_dt::date and 
+				vd_pl_exit_dt::date <= vd_end_dt::date) OR vd_pl_exit_dt is null) THEN 
+					
+					INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt , isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+					VALUES ('PC', vd_pl_entry_dt, vd_pl_exit_dt, v_isplacementreimbursible, v_isthelivingarrangementsameasplacement, v_map_silaplacementdetails,v_map_silaplacementid);
+
+			ELSIF vd_pl_entry_dt::date 
+				BETWEEN vd_start_dt::date  AND vd_end_dt::date  AND (vd_pl_exit_dt::date  
+				NOT BETWEEN vd_start_dt::date  AND vd_end_dt::date  or vd_pl_exit_dt::date  is null) THEN
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+				VALUES ('PC', vd_pl_entry_dt, vd_end_dt, v_isplacementreimbursible, v_isthelivingarrangementsameasplacement, v_map_silaplacementdetails,v_map_silaplacementid);
+
+			ELSIF vd_pl_entry_dt::date  
+				NOT BETWEEN vd_start_dt::date  AND vd_end_dt::date AND (vd_pl_exit_dt::date >= vd_start_dt::date and 
+				vd_pl_exit_dt::date <= vd_end_dt::date) THEN
+
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+				VALUES ('PC', vd_start_dt, vd_pl_exit_dt, v_isplacementreimbursible, v_isthelivingarrangementsameasplacement, v_map_silaplacementdetails,v_map_silaplacementid);
+				
+			END IF;		
+
+		ELSIF (v_dateagencylostlegalresponsibility is not null and (v_dateagencylostlegalresponsibility < vd_pl_exit_dt::date or vd_pl_exit_dt is null) and vd_placement_type = 'No') THEN
+
+			IF 
+				vd_pl_entry_dt::date BETWEEN vd_start_dt::date AND vd_end_dt::date 
+				AND vd_pl_exit_dt::date BETWEEN vd_start_dt::date AND vd_end_dt::date THEN 
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+				VALUES ('PC', vd_pl_entry_dt, v_dateagencylostlegalresponsibility, v_isplacementreimbursible, v_isthelivingarrangementsameasplacement, v_map_silaplacementdetails,v_map_silaplacementid);
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt)
+				VALUES ( 'CC', v_dateagencylostlegalresponsibility, NULL :: date);
+
+				EXIT;
+			
+			ELSIF 
+				vd_pl_entry_dt::date BETWEEN vd_start_dt::date AND vd_end_dt::date 
+				AND (vd_pl_exit_dt::date NOT BETWEEN vd_start_dt::date AND vd_end_dt::date or vd_pl_exit_dt::date  is null) then 
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+				VALUES ('PC', vd_pl_entry_dt, v_dateagencylostlegalresponsibility, v_isplacementreimbursible, v_isthelivingarrangementsameasplacement, v_map_silaplacementdetails,v_map_silaplacementid);
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt)
+				VALUES ('CC', v_dateagencylostlegalresponsibility, NULL :: date);
+				EXIT;
+			
+			ELSIF 
+				vd_pl_entry_dt::date NOT BETWEEN vd_start_dt::date AND vd_end_dt::date 
+				AND (vd_pl_exit_dt::date >= vd_start_dt::date AND vd_pl_exit_dt::date < vd_end_dt::date) THEN
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+				VALUES ('PC', vd_start_dt, v_dateagencylostlegalresponsibility, v_isplacementreimbursible, v_isthelivingarrangementsameasplacement,v_map_silaplacementdetails,v_map_silaplacementid);
+				INSERT INTO Temp_worksheet_placement_info(cmpnt, start_dt, end_dt)
+				VALUES ('CC', v_dateagencylostlegalresponsibility, NULL :: date);
+				EXIT;
+				
+			END IF;
+		END IF;
+	END LOOP;	-- End of placement logic
+
+vd_pl_start_dt = vd_start_dt;
+For pl_rec IN select * from Temp_worksheet_placement_info
+LOOP
+	IF(vd_pl_start_dt < pl_rec.start_dt) THEN
+	
+		INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails)
+		VALUES (vn_row_num, 'PC', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_pl_start_dt, pl_rec.start_dt, vd_pl_event_remornot, vd_pl_event_remornot, v_map_silaplacementdetails);
+		vn_ct_cntr = vn_ct_cntr + 1;
+	END IF;    
+	INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails,silaplacementid)
+	VALUES (vn_row_num, pl_rec.cmpnt, 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, pl_rec.start_dt, pl_rec.end_dt, pl_rec.isplacementreimbursible, pl_rec.isthelivingarrangementsameasplacement, pl_rec.silaplacementdetails,pl_rec.silaplacementid);
+	vn_ct_cntr = vn_ct_cntr + 1;
+	vd_pl_start_dt = pl_rec.end_dt;
+	vd_pl_evt_start_dt = pl_rec.end_dt;
+
+end loop;
+DELETE FROM Temp_worksheet_placement_info; 
+IF (vd_pl_start_dt != vd_start_dt and vd_pl_start_dt::date < vd_end_dt::date ) THEN
+
+	INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails)
+	VALUES (vn_row_num, 'PC', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_pl_start_dt, vd_end_dt, vd_pl_event_remornot, vd_pl_event_remornot, v_map_silaplacementdetails);
+	vn_ct_cntr = vn_ct_cntr + 1;
+END IF;
+IF (vd_pl_evt_start_dt = vd_start_dt and vd_pl_evt_start_dt < vd_end_dt ) THEN
+
+	INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, isplacementreimbursible, isthelivingarrangementsameasplacement, silaplacementdetails)
+	VALUES (vn_row_num, 'PC', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_pl_evt_start_dt, vd_end_dt, vd_pl_event_remornot , vd_pl_event_remornot, v_map_silaplacementdetails);
+	vn_ct_cntr = vn_ct_cntr + 1;
+END IF;
+
+	-- Court event logic Begins
+	SELECT (case when vs_removal_type_cd in ('JD','TLV') then tfcj.dateofjudicialfindingofrefpp::date when vs_removal_type_cd in ('CDVP','EHA') then tfcj.dateofcurrentjudicialfindingofbestinterest::date end)
+			INTO vd_court_order_dt
+	FROM tb_foster_care_judicial tfcj where tfcj.client_id::BIGINT = al_client_id and tfcj.removal_id::BIGINT = al_removal_id and tfcj.period_type = 'R' || vn_redet_cntr;	
+
+	IF(vs_removal_type_cd = 'TLV' and vn_redet_cntr = 1) THEN
+		SELECT tfcj.dateofreasonableeffortscourthearing::date
+			INTO vd_court_order_dt
+		FROM tb_foster_care_judicial tfcj where tfcj.client_id::BIGINT = al_client_id and tfcj.removal_id::BIGINT = al_removal_id and tfcj.period_type = 'R' || vn_redet_cntr;
+	END IF;
+	
+	vn_prev_court_eli_dt = ((date_trunc('month',vd_prev_court_order_dt) + interval '2 month') - interval '1 day') + interval '1 year';
+	vn_prev_court_act_eli_dt = ((date_trunc('month',vd_prev_court_order_dt) + interval '1 month') - interval '1 day') + interval '1 year';
+		 				    
+	If(vd_court_order_dt is not null)
+	then
+	
+		vn_date_diff = 0;
+		
+		vn_date_diff = DATE(vd_court_order_dt) - DATE(vd_prev_court_order_dt);
+
+		vd_tn_court_order_dt = date_trunc('month' , vd_court_order_dt) - interval '1 day';
+				
+		if (vd_court_order_dt > vn_prev_court_eli_dt
+			and vn_prev_court_eli_dt > vd_start_dt)
+			then
+				
+			vn_court_inval_dt  = date_trunc('month',vd_court_order_dt) - interval '1 day';
+			
+			IF vs_removal_type_cd in ('JD','TLV') then
+			
+				if(vn_prev_court_act_eli_dt between vd_start_dt and vd_end_dt and vn_court_inval_dt is not null)
+				then
+					INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+					VALUES ( vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, vn_prev_court_act_eli_dt, 'YES' , 'YES');
+				
+					vn_ct_cntr = vn_ct_cntr + 1;					
+				end if;
+
+				INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+				VALUES ( vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vn_prev_court_act_eli_dt + interval '1 day') , vn_court_inval_dt, 'NO', 'NO');
+			
+				vn_ct_cntr = vn_ct_cntr + 1;
+			
+				INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+				VALUES ( vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vn_court_inval_dt + interval '1 day') , vd_end_dt, 'YES', 'YES');
+
+				vn_ct_cntr = vn_ct_cntr + 1;
+				
+			ELSIF vs_removal_type_cd in ('CDVP','EHA') THEN 
+				
+				INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES ( vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, vn_prev_court_act_eli_dt, 'YES' , 'YES');
+				
+				vn_ct_cntr = vn_ct_cntr + 1;
+			
+				INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES ( vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vn_prev_court_act_eli_dt + interval '1 day') , vn_court_inval_dt, 'NO', 'NO');
+			
+				vn_ct_cntr = vn_ct_cntr + 1;
+			
+				INSERT INTO Temp_worksheet_periods_info( key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES ( vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vn_court_inval_dt + interval '1 day') , vd_end_dt, 'YES', 'YES');
+
+				vn_ct_cntr = vn_ct_cntr + 1;
+
+			END IF;	
+		
+		elseif (vd_court_order_dt > vn_prev_court_eli_dt 
+		and vn_prev_court_eli_dt < vd_start_dt and vd_start_dt != (vd_tn_court_order_dt + interval '1 day'))
+			then
+	  
+			vn_start_date_diff = DATE(vd_court_order_dt) - DATE(vd_start_dt);
+
+			IF vs_removal_type_cd in ('JD','TLV') then
+
+				IF (vd_start_dt > vd_tn_court_order_dt and  vd_tn_court_order_dt < vd_end_dt) THEN
+
+					INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+					VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, (date_trunc('month',vd_court_order_dt) - interval '1 day') + interval '1 year' , 'NO', 'NO' );
+
+					vn_ct_cntr = vn_ct_cntr + 1;
+			  	ELSE
+  
+                INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, vd_tn_court_order_dt, 'NO', 'NO' );
+				
+				vn_ct_cntr = vn_ct_cntr + 1;
+				 
+			  	END IF;
+			
+			    if(vd_tn_court_order_dt >= vd_start_dt) then
+
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vd_tn_court_order_dt + interval '1 day') , vd_end_dt, 'YES', 'YES');
+			
+				vn_ct_cntr = vn_ct_cntr + 1;
+
+				END IF;
+
+			ELSIF vs_removal_type_cd in ('CDVP','EHA') THEN 	
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, vd_tn_court_order_dt, 'NO', 'NO' );
+				
+				vn_ct_cntr = vn_ct_cntr + 1;
+			
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vd_tn_court_order_dt + interval '1 day') , vd_end_dt, 'YES', 'YES');
+			
+				vn_ct_cntr = vn_ct_cntr + 1;
+
+			END IF;	
+		Elsif (v_dateagencylostlegalresponsibility is not null) then 
+
+					INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+					VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt , v_dateagencylostlegalresponsibility, 'YES', 'YES');
+					vn_ct_cntr = vn_ct_cntr + 1;
+		END IF;
+			
+		vd_prev_court_order_dt = vd_court_order_dt;
+	
+	ELSE 
+					
+		IF (((vn_prev_court_act_eli_dt + interval '1 day') > vd_start_dt AND (vn_prev_court_act_eli_dt + interval '1 day') <= vd_end_dt) 
+			and initial_ct_date_is_null = 'N')
+		then
+					
+			IF vs_removal_type_cd in ('JD','TLV') then
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, vn_prev_court_act_eli_dt, 'YES', 'YES');
+				
+				vn_ct_cntr = vn_ct_cntr + 1;
+			
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vn_prev_court_act_eli_dt + interval '1 day') , vd_end_dt, 'NO', 'NO');
+
+				vn_ct_cntr = vn_ct_cntr + 1;
+
+			ELSIF vs_removal_type_cd in ('CDVP','EHA') THEN 
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt, IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt, vn_prev_court_act_eli_dt, 'YES', 'YES');
+				
+				vn_ct_cntr = vn_ct_cntr + 1;
+			
+				INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, (vn_prev_court_act_eli_dt + interval '1 day') , vd_end_dt, 'NO', 'NO');
+
+				vn_ct_cntr = vn_ct_cntr + 1;
+
+			END IF;	
+
+		Elsif (v_dateagencylostlegalresponsibility is not null) then 
+			if(vn_prev_court_act_eli_dt >= vd_end_dt) then 
+
+				IF vs_removal_type_cd in ('JD','TLV') then
+
+					INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+					VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt , vd_end_dt, 'YES', 'YES');
+					vn_ct_cntr = vn_ct_cntr + 1;	
+
+				ELSIF vs_removal_type_cd in ('CDVP','EHA') THEN 
+				
+					INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+					VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt , vd_end_dt, 'YES', 'YES');
+					vn_ct_cntr = vn_ct_cntr + 1;	
+
+				END IF;	
+
+			Else 
+				IF vs_removal_type_cd in ('JD','TLV') then
+
+					INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyReasonableEffortsFindingDuringReviewPeriod, IsReasonableEffortsFindingTimely)
+					VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt , vd_end_dt, 'NO', 'NO');
+					vn_ct_cntr = vn_ct_cntr + 1;
+
+				ELSIF vs_removal_type_cd in ('CDVP','EHA') THEN 
+
+					INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt , IsThereAnyBestInterestFindingDuringReviewPeriod, IsBestInterestFindingTimely)
+					VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt , vd_end_dt, 'NO', 'NO');
+					vn_ct_cntr = vn_ct_cntr + 1;
+
+				END IF;	
+
+			End IF;
+					
+		END IF;
+	END IF; -- End of Court related logic
+
+
+		--court validation begins
+	
+	IF vs_rem_type = 'CRT' THEN
+
+		SELECT count(*) into vd_crt_rec_total_cnt  FROM Temp_worksheet_periods_info A 
+			where A.cmpnt = 'CT' and A.start_dt >= vd_start_dt and A.end_dt <= vd_end_dt and A.sqnm_sw like 'R%';
+
+
+		IF vd_crt_rec_total_cnt = 0  THEN
+			INSERT INTO Temp_worksheet_periods_info(key_id, cmpnt, sqnm_sw, start_dt, end_dt)
+				VALUES (vn_row_num, 'CT', 'R' || vn_redet_cntr || 'E' || vn_ct_cntr, vd_start_dt , vd_end_dt);
+		END IF;
+	END IF;	
+	--court validation end
+	
+	vd_18bdy_end_dt = vd_end_dt;
+	vd_18bdy_current_dt = NOW();
+
+	vd_18bday_date_diff = DATE(vd_18bdy_current_dt) - DATE(vd_18bdy_end_dt);
+
+	IF (((vd_18th_bday BETWEEN vd_start_dt AND vd_18bdy_end_dt) or  ((vd_18bday_date_diff < 365) 
+			and (vd_18th_bday BETWEEN vd_18bdy_end_dt AND vd_18bdy_current_dt))) and (vd_18bday_record < 1)) 				
+	 
+ 
+	then
+	select tep.finalresult into vd_eligibilitystatus from tb_eligibility_period tep join tb_client_eligibility tce on tce.eligibility_id = tep.eligibility_id 
+	where tep.sqnm_sw = '18BDAY' and tep.delete_sw = 'N' and tce.client_id = al_client_id and tce.removal_id = al_removal_id;
+
+	
+	vd_18bday_record =  1;
+	vn_row_num = vn_row_num+1;	
+    INSERT INTO Temp_worksheet_periods_info ( key_id, sqnm_sw, start_dt, end_dt, removal_type,beyondr1eligibility, eligibilitystatus)
+	VALUES ( vn_row_num, '18BDAY', vd_18th_bday, NULL :: date, vs_rem_type, vd_beyondr1eligibility, vd_eligibilitystatus);	
+	end if;
+
+		
+	IF vd_21st_bday BETWEEN vd_start_dt AND vd_end_dt 
+	THEN
+		vd_high_dt = vd_21st_bday;
+	END IF;  -- 18th/21st Birthday logic ends
+	
+
+	IF vs_rem_type = 'CRT' THEN
+		vd_start_dt = date_trunc ( 'month', vd_start_dt ) + interval '1 year';	
+		vd_end_dt = vd_end_dt + interval '1 year';
+	ELSIF (vs_rem_type = 'VPA' and vn_redet_cntr = 1) THEN
+		vd_start_dt = vd_end_dt + interval '1 day';
+		vd_end_dt = vd_end_dt_vpa;
+	ELSIF (vs_rem_type = 'VPA' and vn_redet_cntr = 2) THEN
+		vd_start_dt = vd_end_dt + interval '1 day';
+		vd_end_dt = vd_end_dt + interval '1 year';
+	else 
+		vd_start_dt = date_trunc ( 'month', vd_start_dt ) + interval '1 year';
+		vd_end_dt = vd_end_dt + interval '1 year';
+	end if;
+	
+	IF vd_return_dt <= vd_end_dt and vd_21st_bday <= vd_end_dt then
+		if vd_return_dt < vd_21st_bday then
+			vd_end_dt = vd_return_dt; 
+		else 
+			vd_end_dt = vd_21st_bday;
+		END IF;	
+	elsif vd_return_dt <= vd_end_dt and vd_21st_bday > vd_end_dt then 
+		vd_end_dt = vd_return_dt;
+	elsif vd_return_dt > vd_end_dt and vd_21st_bday <= vd_end_dt then 
+		vd_end_dt = vd_21st_bday;
+	elseif vd_return_dt is null and vd_21st_bday <= vd_end_dt then 
+		vd_end_dt = vd_21st_bday;
+	elseif vd_21st_bday is null and vd_return_dt <= vd_end_dt then 
+		vd_end_dt = vd_return_dt;
+	END IF;		
+
+	vn_row_num = vn_row_num + 1;		
+	vn_redet_cntr = vn_redet_cntr + 1;
+	vn_ct_cntr = 1;	
+END LOOP;   -- End of removal logic
+
+SELECT array_to_json(array_agg(row_to_json(pe))) into v_result FROM 
+		(
+		SELECT *  FROM Temp_worksheet_periods_info A where A.cmpnt is null
+		ORDER BY A.start_dt desc, A.key_id desc, coalesce(A.cmpnt,'1') desc 			
+		) pe;
+
+RETURN QUERY SELECT *
+               	FROM Temp_worksheet_periods_info A
+				ORDER BY A.key_id desc, A.start_dt desc, coalesce(A.cmpnt,'1') desc;
+              
+DROP TABLE Temp_worksheet_periods_info;
+DROP TABLE Temp_worksheet_placement_info;
+
+   END
+$function$
+;

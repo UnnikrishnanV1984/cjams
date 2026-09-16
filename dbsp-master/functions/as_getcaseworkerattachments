@@ -1,0 +1,113 @@
+CREATE OR REPLACE FUNCTION as_getcaseworkerattachments(v_servicerequestid uuid, objecttypekey character varying, v_intakenumber character varying, v_title character, v_attachmenttypekey character varying, v_updatedby character varying, startdate character varying, enddate character varying, sortcolumn character varying, sortorder character varying, pageno integer, pagesize integer)
+ RETURNS TABLE(totalcount bigint, documentpropertiesid uuid, title character varying, documenttypekey character varying, insertedon timestamp without time zone, updatedon timestamp without time zone, insertedby character varying, updatedby character varying, documentdate timestamp without time zone, mime character varying, s3bucketpathname character varying, description character varying, filename character varying, numberofbytes integer, originalfilename character varying, servicecaseid uuid, documentattachment json, userprofile json, updateduserprofile json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+ v_pageoffset int;
+  v_pagenumber int;
+
+BEGIN
+v_pagenumber := pageno-1;
+ v_pageoffset = v_pagenumber * pagesize;
+ RAISE NOTICE 'v_updatedby;:%', v_updatedby ;
+RETURN QUERY
+
+select COUNT(1) OVER() totalCOUNT,
+
+dp.documentpropertiesid,
+dp.title,
+dp.documenttypekey,
+dp.insertedon,
+dp.updatedon,
+dp.insertedby,
+dp.updatedby,
+dp.documentdate,
+dp.mime,
+
+dp.s3bucketpathname,
+dp.description,
+dp.filename,
+dp.numberofbytes,
+dp.originalfilename,
+dp.servicecaseid,
+
+(SELECT row_to_json(item) from
+(
+select dat.documentpropertiesid,
+dat.attachmenttypekey,
+dat.attachmentclassificationtypekey,
+dat.assessmenttemplateid  
+
+)item)documentattachment,
+(SELECT row_to_json(item) from
+(
+select up.firstname,
+up.lastname,
+up.securityusersid,
+up.displayname  
+
+)item)userprofile,
+(SELECT row_to_json(item) from
+(
+select up1.firstname,
+up1.lastname,
+up1.securityusersid,
+up1.displayname  
+
+)item)updateduserprofile
+from documentproperties dp
+join documentattachment dat on dat.documentpropertiesid=dp.documentpropertiesid and dat.activeflag=1
+join userprofile up on up.securityusersid=dp.insertedby and up.activeflag=1
+join userprofile up1 on up1.securityusersid=dp.updatedby and up1.activeflag=1
+where case when v_servicerequestid is not null then dp.servicerequestid=v_servicerequestid 
+else dp.intakenumber=v_intakenumber end
+
+and dp.activeflag=1
+
+and CASE WHEN v_title is NOT NULL THEN (dp.title = v_title) ELSE TRUE end
+
+and CASE WHEN v_attachmenttypekey is NOT NULL THEN (dat.attachmenttypekey = v_attachmenttypekey) ELSE TRUE end
+
+
+and CASE WHEN v_updatedby is NOT NULL THEN (dp.insertedby = v_updatedby) ELSE TRUE end
+
+and case WHEN startdate IS NOT NULL  THEN to_date(cast(dp.documentdate::date as text), 'YYYY-MM-DD')>= to_date(cast(startdate::date as TEXT), 'YYYY-MM-DD') else true end
+and case
+WHEN startdate IS NOT NULL and  enddate is not null THEN to_date(cast(dp.documentdate::date as text), 'YYYY-MM-DD') 
+BETWEEN to_date(cast(startdate::date as TEXT), 'YYYY-MM-DD') and to_date(cast(enddate::date as text), 'YYYY-MM-DD')
+else true end
+and dp.objecttypekey='ServiceRequest' and dp.filename is not null
+
+ORDER BY 
+ ( CASE sortorder WHEN 'asc' THEN 
+  CASE sortcolumn 
+  WHEN 'title' THEN 
+         CAST(dp.title as character varying ) 
+        WHEN 'attachmenttypekey' then 
+         CAST( lower(dat.attachmenttypekey) as character varying)
+  WHEN 'uplodedby' then 
+          CAST(up1.displayname as character varying) 
+        WHEN 'uplodeddate' then 
+          CAST( dp.insertedon as character varying) 
+  else CAST(dp.insertedon as character varying)  end end) asc,
+ ( CASE sortorder WHEN 'desc' THEN 
+  CASE sortcolumn 
+  WHEN 'title' THEN 
+         CAST(dp.title as character varying ) 
+        WHEN 'attachmenttypekey' then 
+         CAST( lower(dat.attachmenttypekey) as character varying)
+  WHEN 'uplodedby' then 
+          CAST(up1.displayname as character varying) 
+        WHEN 'uplodeddate' then 
+          CAST( dp.insertedon as character varying) 
+  else CAST(dp.insertedon as character varying)  end end) desc
+
+ limit pagesize  offset v_pageoffset ;
+
+END; 
+
+
+$function$
+

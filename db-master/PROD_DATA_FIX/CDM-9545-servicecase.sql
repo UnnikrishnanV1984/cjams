@@ -1,0 +1,32 @@
+INSERT INTO cjams.servicecasedisposition
+(servicecasedispositionid, servicecaseid, statusdate, intakeserreqstatustypekey, dispositioncode, "comments", effectivedate, activeflag, insertedby, insertedon, updatedby, updatedon, expirationdate, old_id, etl_userid, etl_load_date)
+SELECT gen_random_uuid(),servicecaseid, startdate, 'Open', 'Inprogress', 'Case Opened', startdate, 1, insertedby, insertedon, updatedby, updatedon, null, null, null, null 
+FROM cjams.servicecase 
+where servicecaseid in ('02b90e52-e9e5-4ff9-b747-89b1ff5390f4',
+'0681b605-2be9-44d4-96d6-250f46c6f1c0',
+'07374c65-2f69-493d-914d-3c9cd700d2aa',
+'12b3be07-9e5f-40b6-b89f-e4088720c30a',
+'1d537064-7651-4df1-8cea-67b7a411d4ed',
+'23c62140-d75b-4c9a-9899-14c885105a37',
+'2a7e1746-099c-4d97-b810-082228881f0c',
+'2c405c20-049d-46a8-bfec-928325dc07dd',
+'2f7924be-f4d9-40f6-8c3e-84ff3b8a3cd0',
+'4ddab455-6db4-405f-a346-28ccca74ea0a',
+'4e28c8df-50bd-4170-bd83-ec674ba718c7',
+'55d5bc6a-bfe4-4bac-b585-3710e6a0dd51',
+'63b60f33-99e8-44af-a90c-51b17ab6c768',
+'97f5c7bc-5e7d-4ddc-9330-ce3dba3bab16',
+'a4294551-55c8-47d1-b569-ba586846f5fe',
+'a78ee2cc-d61c-45f1-8372-27ea5276b08a',
+'ab2ee423-2c1e-4dbd-8a28-d763d240cfe3',
+'b6fa9082-47fa-484e-9b32-13fbe093a583',
+'bae22cd7-93b2-43d2-9811-174810a3bd07',
+'bdf0689b-2250-4bdc-9623-2abbedb4e436',
+'c4274bc3-aa67-481f-9e87-0a0eedaaa906',
+'c9dea7b4-7d0a-45fa-90d1-dbbe02fd3a18',
+'d13fcc9c-37b7-413d-a750-a30907820bb2',
+'e674963f-a559-4143-8c5a-4a606d7a34f3',
+'e6773c8d-a9cc-4741-8275-45275aefa7d1',
+'f5a2276e-2a86-4dd4-afab-e26c6784a9b2',
+'f8fe6e33-65a8-418b-b1b5-a911615116b0',
+'fc23354e-7c05-40da-8807-d7d5533ed7da');

@@ -1,0 +1,102 @@
+CREATE OR REPLACE FUNCTION prov_getassignedorientations(trgorientation json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+ jsondata json;
+ v_trainingnumber string;
+ v_personid string;
+ v_personrole string;
+ v_training_type string;
+ v_objectid string;
+ v_objecttype string;
+v_referral_id string;
+v_applicantid string;
+v_providerid string;
+begin
+ 
+ RAISE NOTICE '__________________________________________________';   
+v_trainingnumber=trgorientation->>'training_number';
+v_objectid=trgorientation->>'object_id' ;
+v_personrole=trgorientation->>'personrole';
+v_personid=trgorientation->>'personid';
+v_training_type = trgorientation->>'training_type';
+v_objecttype=trgorientation->>'object_type';
+--when v_objecttype='referral' then referral_id=v_objectid
+select referral_id,applicant_id,provider_id into v_referral_id,v_applicantid,v_providerid 
+ from providerapprovalphaserecord 
+ where delete_sw='N' and  case  when lower(v_objecttype)='application' then applicant_id =v_objectid
+      when lower(v_objecttype)='provider' then provider_id =v_objectid end 
+     order by create_ts desc limit 1;  
+    
+ RAISE NOTICE 'b4v_referral_id:%', v_referral_id;   
+RAISE NOTICE 'b4v_providerid:%', v_providerid;   
+RAISE NOTICE 'b4v_trainingnumber:%', v_trainingnumber;  
+RAISE NOTICE 'b4v_applicantid:%', v_applicantid;   
+--RAISE NOTICE '1111v_referral_id1111111:%', v_referral_id;   
+if ((v_referral_id is null ) and (v_applicantid is null) and (v_providerid is null)) then
+ v_referral_id=v_objectid;
+end if;
+RAISE NOTICE 'v_referral_id:%', v_referral_id;   
+RAISE NOTICE 'v_providerid:%', v_providerid;   
+RAISE NOTICE 'v_trainingnumber:%', v_trainingnumber;   
+
+
+
+ if (v_trainingnumber is null) then 
+ RAISE NOTICE 'ppppppppppppp:%', v_training_type;   
+SELECT JSON_AGG(trgobj) INTO jsondata FROM (  
+-- select count(1) over(),* ,(select json_agg(x) from (
+--    select firstname,lastname from person where personid=pota.personid ::uuid and activeflag=1
+--   ) x )personinfo
+-- from providerorientationtrainingattendance pota
+--    join providerorientationtraining pot on pota.training_number= pot.training_number
+--    where pota.delete_sw='N'
+--    and case when v_training_type is not null then
+--      (case when v_training_type='Information Meeting' then (pot.training_type =v_training_type and pota.object_id=v_referral_id)  else pot.training_type =v_training_type end) ELSE true end  
+--    --and case when v_objectid is not null then pota.object_id =v_objectid else true end
+--    and CASE WHEN v_personid IS NOT NULL THEN pota.personid = v_personid ELSE true end
+--    and CASE WHEN v_personrole IS NOT NULL THEN pota.personrole = v_personrole ELSE true END  
+--    and CASE WHEN (v_applicantid IS NOT null or v_providerid IS NOT null) THEN   (pota.object_id=v_applicantid or pota.object_id=v_providerid) ELSE true END  
+--    order by pota.training_number asc
+select  pota.training_number, pota.orientation_training_attendance_id,  pota.object_id, pota.narrative, pota.phase, pota.is_attended, pota.is_intent_to_attend, 
+   pota.attendee_first_nm, pota.attendee_last_nm, pota.personid, pota.personrole, pot.orientation_training_id, pot.training_number, pot.training_type, pot.training_date, 
+   pot.start_datetime, pot.end_datetime, pot.duration, pot.medium, pot.addr_line1, pot.addr_line2,pot.addr_city, pot.addr_state, pot.addr_zip, pot.training_url, 
+   pot.narrative, pot.instructor_1, pot.instructor_2, pot.jurisdiction, pot.training_topic, pot.training_status, pot.room_no, pot.session_type, pot.session_no, pot.is_cfe,
+ (select json_agg(x) from (
+    select firstname,lastname from person where personid=pota.personid ::uuid and activeflag=1
+   ) x )personinfo
+ from providerorientationtrainingattendance pota
+    join providerorientationtraining pot on pota.training_number= pot.training_number
+    where (pota.delete_sw='N' or pota.delete_sw is null)
+    and case when v_training_type is not null then
+      (case when v_training_type='Information Meeting' then (pot.training_type =v_training_type and pota.object_id=v_referral_id)  else pot.training_type =v_training_type end) ELSE true end 
+    --and case when v_objectid is not null then pota.object_id =v_objectid else true end
+    and CASE WHEN v_personid IS NOT NULL THEN pota.personid = v_personid ELSE true end
+    and CASE WHEN v_personrole IS NOT NULL THEN pota.personrole = v_personrole ELSE true END      
+    and case when (v_providerid is not null) then (pota.object_id is not null) and ((pota.object_id in (select applicant_id from providerapprovalphaserecord where provider_id=v_providerid)) or pota.object_id=v_providerid  or pota.object_id=v_referral_id) ELSE true end
+    and case when (v_providerid is null and v_applicantid IS NOT null) then (pota.object_id is not null) and  (pota.object_id=v_applicantid or pota.object_id=v_referral_id) ELSE true END      
+        order by pot.start_datetime desc
+       ) AS trgobj;
+ 
+else
+RAISE NOTICE 'sssssssssss:%', v_trainingnumber;   
+ SELECT JSON_AGG(trgobj) INTO jsondata FROM (  
+ select  pota.training_number,pota.orientation_training_attendance_id, pota.object_id, pota.narrative, pota.phase, pota.is_attended, pota.is_intent_to_attend, 
+   pota.attendee_first_nm, pota.attendee_last_nm, pota.personid, pota.personrole, pot.orientation_training_id, pot.training_number, pot.training_type, pot.training_date, 
+   pot.start_datetime, pot.end_datetime, pot.duration, pot.medium, pot.addr_line1, pot.addr_line2,pot.addr_city, pot.addr_state, pot.addr_zip, pot.training_url, 
+   pot.narrative, pot.instructor_1, pot.instructor_2, pot.jurisdiction, pot.training_topic, pot.training_status, pot.room_no, pot.session_type, pot.session_no, pot.is_cfe,
+   (select json_agg(x) from (
+    select firstname,lastname from person where personid=pota.personid ::uuid and activeflag=1
+   ) x )personinfo
+ from providerorientationtrainingattendance pota
+     join providerorientationtraining pot on pota.training_number= pot.training_number
+    where pota.training_number=v_trainingnumber and pota.delete_sw='N'
+    order by pot.start_datetime desc, pota.update_ts::timestamp desc 
+ ) AS trgobj;
+ end if;
+    return jsondata;
+END;
+
+$function$
+

@@ -1,0 +1,1 @@
+update cjams.tb_conv_inv_finding set investigation_finding_cd = 'Ruled Out' where referral_id='CW2259612'; 

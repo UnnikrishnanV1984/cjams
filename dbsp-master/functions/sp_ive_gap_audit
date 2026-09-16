@@ -1,0 +1,367 @@
+CREATE OR REPLACE FUNCTION sp_ive_gap_audit(reqobj json)
+ RETURNS TABLE(v_transactionid uuid, cjamspid bigint, v_gapauditid bigint, category character varying, gapeligibilitystatus character varying, extgapeligibilitystatus character varying, missinginfo character varying, gapv character varying, gr character varying, sa character varying, hhcheck character varying, hhdetails character varying, ivereimb character varying, egapv character varying, finalresult character varying)
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+ v_gapauditid bigint;
+ v_transactionid uuid;
+ childsecondguardianattachment varchar(50);
+ sg_numberofadditionalhouseholdmembers integer;
+ sg_nationalandstatecriminalhistorybackgroundcheck varchar(50);
+ sg_childabuseandmaltreatmentdatabasecheck varchar(50);
+ sg_relationshipid integer;
+ sg_agreementsigneddate date;
+ sg_dateofnationalandstatecriminalhistorybackgroundcheck date;
+ livingwithprimaryguardian varchar(50);
+ sg_dateofchildabuseandmaltreatmentdatabasecheck date;
+ sg_applicablechildwelfareagenciesinthepreviousstates varchar(50);
+
+ childsecondguardianid integer;
+ sg_outofstatewithinpast5years varchar(50);
+ sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate date;
+ guardianshipapplicationdate date;
+ guardianshipagreementsigneddate varchar(50);
+ relationshipid integer;
+ guardiancommitmentforpermanentchildcare varchar(50);
+ clientid varchar(50);
+ dateofbirth date;
+ removalcourtorderdate date;
+ appropriatepermanencyforchildoption1notbeingreturnedhome varchar(50);
+ countyofjurisdiction_ldss varchar(20);
+ childguardianattachment varchar(50);
+ childguardianid varchar(50);
+ gender varchar(50);
+ childname varchar(50);
+ childremovaldate date;
+
+ ageappropriateconsultationtakenplacewiththechild varchar(50);
+ secondguardianexists varchar(50);
+ appropriatepermanencyforchildoption2notbeingadopted varchar(50);
+ successorguardianexists varchar(50);
+ guardianshipfinalizationdate varchar(50);
+ numberofadditionalhouseholdmembers integer;
+ gapeligibilitystatus varchar(50);
+
+ childmeetcontinueeligibilitycriteria varchar(20);
+ childdisabilityevaluationdocumentiondate date;
+ startdateofsecondaryeducationorequivalentprogram date;
+ nameofpostsecondaryorvocationaleducation varchar(50);
+ nameofpromotetoemploymentprogram varchar(50);
+ childdisabilitytype varchar(50); 
+ startdateofpromotetoemploymentprogram date; 
+ hourspermonthemployed decimal; 
+ startdateofemployment date;
+ childdisabilitystartdate date; 
+ startdateofpostsecondaryorvocationaleducation date;
+ nameofsecondaryeducationorequivalentprogram varchar(50);
+ nameofemployer varchar(50); 
+ extgapeligibilitystatus varchar(50);
+
+ missinginfo varchar(500);
+ gapv varchar(500);
+ gr varchar(500);
+ sa varchar(500);
+ hhcheck varchar(500);
+ hhdetails varchar(500);
+ ivereimb varchar(500);
+ egapv varchar(500);
+ finalresult varchar(500);
+
+ secondguardianhouseholdmembers json;
+ v_counter json;
+ sg_dateofbirthofhouseholdmember date;
+ sg_nationalandstatecriminalhistorybackgroundcheck_HH varchar(50); 
+ sg_outofstatewithinpast5yearsoftheapplicationforgap_HH varchar(50);
+  sg_applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation_HH varchar(50);
+  sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate_HH date;
+  sg_dateofnationalandstatecriminalhistorybackgroundcheck_HH date;
+  sg_childabuseandmaltreatmentdatabasecheck_HH varchar(50);
+  sg_dateofchildabuseandmaltreatmentdatabasecheck_HH date;
+ 
+  siblingdetails json;
+  siblinggapeligiblitystatus varchar(50); 
+  siblingname varchar(50); 
+  siblingguardianid varchar(20);
+ 
+  licensedfosterhome json;
+  lastsixmonthfiscalcodeandpaymentstatus varchar(50); 
+  dateofnationalandstatecriminalhistorybackgroundcheck date;
+  dateoffullapproval_fp date;
+  nationalandstatecriminalhistorybackgroundcheck varchar(50);
+  outofstatewithinpast5yearsoftheapplicationfor_gap varchar(50); 
+  dateofchildabuseandmaltreatmentdatabasecheckoutofstate date;
+  latestfostercareplacementstartdatewithperpectiveguardian date;
+  applicablechildwelfareagenciesinthepreviousstatescontacted varchar(50); 
+  dateofchildabuseandmaltreatmentdatabasecheck date;
+  fosterhomeapprover varchar(50); 
+  childabuseandmaltreatmentdatabasecheck varchar(50);
+ 
+  category varchar(50);
+  cjamspid bigint;
+  removalid bigint;
+
+ guardiansubsidyid bigint;
+ 
+  householdmember json;
+  nationalandstatecriminalhistorybackgroundcheck_hh varchar(50); 
+  applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation varchar(50);
+  outofstatewithinpast5yearsoftheapplicationforgap varchar(50);
+  dateofbirthofhouseholdmember date;
+  childabuseandmaltreatmentdatabasecheck_hh varchar(50);
+  gapauditmessages json;
+  v_severity VARCHAR(20);
+ v_text varchar(3000);
+
+ v_picklist_value_cd varchar(50);
+ v_num_tce INT;
+ 
+ inputjson json;
+ outputjson json;
+ pagesnapshot json;
+ v_type_cd  varchar;
+ v_eligibility_period_id  int;
+ v_eligibility_id  int;
+ v_eli_start_dt  date;
+ v_eli_end_dt   date;
+
+begin
+ v_transactionid := reqobj ->> 'transactionid';
+ childsecondguardianattachment := reqobj ->> 'childsecondguardianattachment';
+ sg_numberofadditionalhouseholdmembers := reqobj ->> 'sg_numberofadditionalhouseholdmembers';
+ sg_nationalandstatecriminalhistorybackgroundcheck := reqobj ->> 'sg_nationalandstatecriminalhistorybackgroundcheck';
+ sg_childabuseandmaltreatmentdatabasecheck := reqobj ->> 'sg_childabuseandmaltreatmentdatabasecheck';
+ sg_relationshipid := reqobj ->> 'sg_relationshipid';
+ sg_agreementsigneddate := reqobj ->> 'sg_agreementsigneddate';
+ sg_dateofnationalandstatecriminalhistorybackgroundcheck := reqobj ->> 'sg_dateofnationalandstatecriminalhistorybackgroundcheck';
+ livingwithprimaryguardian := reqobj ->> 'livingwithprimaryguardian';
+ sg_dateofchildabuseandmaltreatmentdatabasecheck := reqobj ->> 'sg_dateofchildabuseandmaltreatmentdatabasecheck';
+ sg_applicablechildwelfareagenciesinthepreviousstates := reqobj ->> 'sg_applicablechildwelfareagenciesinthepreviousstates';
+
+ childsecondguardianid := reqobj ->> 'childsecondguardianid';
+ sg_outofstatewithinpast5years := reqobj ->> 'sg_outofstatewithinpast5years';
+ sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate := reqobj ->> 'sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate';
+ guardianshipapplicationdate := reqobj ->> 'guardianshipapplicationdate';
+ guardianshipagreementsigneddate := reqobj ->> 'guardianshipagreementsigneddate';
+ relationshipid := reqobj ->> 'relationshipid';
+ guardiancommitmentforpermanentchildcare := reqobj ->> 'guardiancommitmentforpermanentchildcare';
+ clientid := reqobj ->> 'clientid';
+ dateofbirth := reqobj ->> 'dateofbirth';
+ removalcourtorderdate := reqobj ->> 'removalcourtorderdate';
+ appropriatepermanencyforchildoption1notbeingreturnedhome := reqobj ->> 'appropriatepermanencyforchildoption1notbeingreturnedhome';
+ countyofjurisdiction_ldss := reqobj ->> 'countyofjurisdiction_ldss';
+ childguardianattachment := reqobj ->> 'childguardianattachment';
+ childguardianid := reqobj ->> 'childguardianid';
+ gender := reqobj ->> 'gender';
+ childname := reqobj ->> 'name';
+ childremovaldate := reqobj ->> 'childremovaldate';
+
+ ageappropriateconsultationtakenplacewiththechild := reqobj ->> 'ageappropriateconsultationtakenplacewiththechild';
+ secondguardianexists := reqobj ->> 'secondguardianexists';
+ appropriatepermanencyforchildoption2notbeingadopted := reqobj ->> 'appropriatepermanencyforchildoption2notbeingadopted';
+ successorguardianexists := reqobj ->> 'successorguardianexists';
+ guardianshipfinalizationdate := reqobj ->> 'guardianshipfinalizationdate';
+ numberofadditionalhouseholdmembers := reqobj ->> 'numberofadditionalhouseholdmembers';
+ gapeligibilitystatus := reqobj ->> 'gapeligibilitystatus';
+
+ childmeetcontinueeligibilitycriteria := reqobj ->> 'childmeetcontinueeligibilitycriteria';
+ childdisabilityevaluationdocumentiondate := reqobj ->> 'childdisabilityevaluationdocumentiondate';
+ startdateofsecondaryeducationorequivalentprogram := reqobj ->> 'startdateofsecondaryeducationorequivalentprogram';
+ nameofpostsecondaryorvocationaleducation := reqobj ->> 'nameofpostsecondaryorvocationaleducation';
+ nameofpromotetoemploymentprogram := reqobj ->> 'nameofpromotetoemploymentprogram';
+ childdisabilitytype := reqobj ->> 'childdisabilitytype';
+ startdateofpromotetoemploymentprogram := reqobj ->> 'startdateofpromotetoemploymentprogram';
+ hourspermonthemployed := reqobj ->> 'hourspermonthemployed';
+ startdateofemployment := reqobj ->> 'startdateofemployment';
+ childdisabilitystartdate := reqobj ->> 'childdisabilitystartdate';
+ startdateofpostsecondaryorvocationaleducation := reqobj ->> 'startdateofpostsecondaryorvocationaleducation';
+ nameofsecondaryeducationorequivalentprogram := reqobj ->> 'nameofsecondaryeducationorequivalentprogram';
+ nameofemployer := reqobj ->> 'nameofemployer';
+ extgapeligibilitystatus := reqobj ->> 'extgapeligibilitystatus';
+
+ category := reqobj ->> 'category'; 
+ cjamspid := reqobj ->> 'cjamsPid';
+ removalid := reqobj ->> 'removalid';
+
+ guardiansubsidyid := reqobj ->> 'guardiansubsidyid';
+
+ missinginfo := reqobj ->> 'missinginfo';
+ gapv := reqobj ->> 'gapv';
+ gr := reqobj ->> 'gr';
+ sa := reqobj ->> 'sa';
+ hhcheck := reqobj ->> 'hhcheck';
+ hhdetails := reqobj ->> 'hhdetails';
+ ivereimb := reqobj ->> 'ivereimb';
+ egapv := reqobj ->> 'egapv';
+ finalresult := reqobj ->> 'finalresult';
+
+ secondguardianhouseholdmembers := reqobj ->> 'sg_householdmembers';
+ siblingdetails := reqobj ->> 'person_siblingdetails';
+ licensedfosterhome := reqobj ->> 'person_licensedfosterhome';
+ householdmember := reqobj ->> 'householdmember';
+ gapauditmessages := reqobj ->> 'gapauditmessages';
+ inputjson := reqobj ->> 'inputjson';
+ outputjson := reqobj ->> 'outputjson';
+ pagesnapshot := reqobj ->> 'pagesnapshot';
+
+INSERT INTO tb_ive_gapaudit(transactionid, childsecondguardianattachment, sg_numberofadditionalhouseholdmembers, sg_nationalandstatecriminalhistorybackgroundcheck, 
+sg_childabuseandmaltreatmentdatabasecheck, sg_relationshipid, sg_agreementsigneddate, sg_dateofnationalandstatecriminalhistorybackgroundcheck, 
+livingwithprimaryguardian, sg_dateofchildabuseandmaltreatmentdatabasecheck, sg_applicablechildwelfareagenciesinthepreviousstates, 
+childsecondguardianid, sg_outofstatewithinpast5years, sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate, guardianshipapplicationdate,
+guardianshipagreementsigneddate, relationshipid, guardiancommitmentforpermanentchildcare, clientid, dateofbirth, removalcourtorderdate, 
+appropriatepermanencyforchildoption1notbeingreturnedhome, countyofjurisdiction_ldss, childguardianattachment, childguardianid, gender, 
+childname, childremovaldate, ageappropriateconsultationtakenplacewiththechild, secondguardianexists, appropriatepermanencyforchildoption2notbeingadopted,
+successorguardianexists, guardianshipfinalizationdate, numberofadditionalhouseholdmembers, gapeligibilitystatus, childmeetcontinueeligibilitycriteria, childdisabilityevaluationdocumentiondate, startdateofsecondaryeducationorequivalentprogram, nameofpostsecondaryorvocationaleducation,
+nameofpromotetoemploymentprogram, childdisabilitytype, startdateofpromotetoemploymentprogram, hourspermonthemployed, startdateofemployment,
+childdisabilitystartdate, startdateofpostsecondaryorvocationaleducation, nameofsecondaryeducationorequivalentprogram,
+nameofemployer, extgapeligibilitystatus, missinginfo, gapv, gr, sa, hhcheck, hhdetails, ivereimb, egapv, finalresult, category, cjamspid, removalid, inputjson, outputjson, pagesnapshot, guardiansubsidyid)
+
+VALUES(v_transactionid, childsecondguardianattachment, sg_numberofadditionalhouseholdmembers, sg_nationalandstatecriminalhistorybackgroundcheck, sg_childabuseandmaltreatmentdatabasecheck,
+sg_relationshipid, sg_agreementsigneddate, sg_dateofnationalandstatecriminalhistorybackgroundcheck, livingwithprimaryguardian,
+sg_dateofchildabuseandmaltreatmentdatabasecheck, sg_applicablechildwelfareagenciesinthepreviousstates, childsecondguardianid, 
+sg_outofstatewithinpast5years, sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate, guardianshipapplicationdate,
+guardianshipagreementsigneddate, relationshipid, guardiancommitmentforpermanentchildcare, clientid, dateofbirth, removalcourtorderdate, 
+appropriatepermanencyforchildoption1notbeingreturnedhome, countyofjurisdiction_ldss, childguardianattachment, childguardianid, gender, 
+childname, childremovaldate, ageappropriateconsultationtakenplacewiththechild, secondguardianexists, appropriatepermanencyforchildoption2notbeingadopted,
+successorguardianexists, guardianshipfinalizationdate, numberofadditionalhouseholdmembers, gapeligibilitystatus, childmeetcontinueeligibilitycriteria, childdisabilityevaluationdocumentiondate, startdateofsecondaryeducationorequivalentprogram, nameofpostsecondaryorvocationaleducation,
+nameofpromotetoemploymentprogram, childdisabilitytype, startdateofpromotetoemploymentprogram, hourspermonthemployed, startdateofemployment,
+childdisabilitystartdate, startdateofpostsecondaryorvocationaleducation, nameofsecondaryeducationorequivalentprogram,
+nameofemployer, extgapeligibilitystatus, missinginfo, gapv, gr, sa, hhcheck, hhdetails, ivereimb, egapv, finalresult, category, cjamspid, removalid, inputjson, outputjson, pagesnapshot, guardiansubsidyid);
+
+select tce.eligibility_id, tce.start_dt, tce.end_dt into v_eligibility_id, v_eli_start_dt, v_eli_end_dt from tb_client_eligibility tce where tce.client_id = cjamspid and tce.eligibility_type_cd = '2935' ;
+select gapauditid into v_gapauditid from tb_ive_gapaudit where transactionid = v_transactionid;
+Update tb_eligibility_period set delete_sw = 'Y' where eligibility_id = v_eligibility_id and sqnm_sw = category;
+
+
+v_type_cd = '2923';
+
+IF(category = 'R') THEN
+ gapeligibilitystatus := extgapeligibilitystatus;
+ v_type_cd = '2924';
+END IF;
+
+IF(gapeligibilitystatus = 'InComplete_Application') THEN
+ gapeligibilitystatus := 'Incomplete'; 
+END IF; 
+
+SELECT tpv.picklist_value_cd INTO v_picklist_value_cd FROM tb_picklist_values tpv 
+WHERE tpv.picklist_type_id = 262 AND upper(tpv.value_tx) = upper(gapeligibilitystatus);
+
+INSERT INTO tb_eligibility_period
+(eligibility_period_id, start_dt, end_dt, status_cd, eligibility_id, create_ts, create_user_id, update_ts, update_user_id, delete_sw, sqnm_sw, finalresult)
+VALUES(nextval('seq_tb_eligibility_period')::integer, v_eli_start_dt, v_eli_end_dt, v_picklist_value_cd, v_eligibility_id, now(), 'admin', now(), 'admin', 'N'::bpchar, category, gapeligibilitystatus) returning eligibility_period_id into v_eligibility_period_id;
+
+INSERT INTO tb_eligibility_events (event_id, type_cd, event_dt, eligibility_period_id, resulting_status_cd, create_ts, update_ts, create_user_id, update_user_id, delete_sw, event_start_dt, event_end_dt, active_sw) 
+VALUES (nextval('seq_tb_eligibility_events')::integer, v_type_cd, now(), v_eligibility_period_id, v_picklist_value_cd, now(), now(), 'admin', 'admin','N', v_eli_start_dt, v_eli_end_dt, 'Y');
+
+UPDATE tb_ive_gapaudit SET eligibility_period_id = v_eligibility_period_id WHERE gapauditid=v_gapauditid;
+
+FOR v_counter IN SELECT * FROM json_array_elements(secondguardianhouseholdmembers)  
+loop   
+ sg_dateofbirthofhouseholdmember := v_counter ->> 'sg_dateofbirthofhouseholdmember';
+ sg_nationalandstatecriminalhistorybackgroundcheck_HH := v_counter ->> 'sg_nationalandstatecriminalhistorybackgroundcheck';
+ sg_outofstatewithinpast5yearsoftheapplicationforgap_HH := v_counter ->> 'sg_outofstatewithinpast5yearsoftheapplicationforgap';
+ sg_applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation_HH := v_counter ->> 'sg_applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation';
+ sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate_HH := v_counter ->> 'sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate';
+ sg_dateofnationalandstatecriminalhistorybackgroundcheck_HH := v_counter ->> 'sg_dateofnationalandstatecriminalhistorybackgroundcheck';
+ sg_childabuseandmaltreatmentdatabasecheck_HH := v_counter ->> 'sg_childabuseandmaltreatmentdatabasecheck';
+ sg_dateofchildabuseandmaltreatmentdatabasecheck_HH := v_counter ->> 'sg_dateofchildabuseandmaltreatmentdatabasecheck';
+
+ insert into tb_gapaudit_secondguardianhouseholdmembers(secondguardianhouseholdmembersid, gapauditid, sg_dateofbirthofhouseholdmember, sg_nationalandstatecriminalhistorybackgroundcheck_HH, 
+ sg_outofstatewithinpast5yearsoftheapplicationforgap_HH, sg_applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation_HH, 
+ sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate_HH, sg_dateofnationalandstatecriminalhistorybackgroundcheck_HH, sg_childabuseandmaltreatmentdatabasecheck_HH, 
+ sg_dateofchildabuseandmaltreatmentdatabasecheck_HH)
+ 
+ values(gen_random_uuid(), v_gapauditid, sg_dateofbirthofhouseholdmember, sg_nationalandstatecriminalhistorybackgroundcheck_HH, 
+ sg_outofstatewithinpast5yearsoftheapplicationforgap_HH, sg_applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation_HH, 
+ sg_dateofchildabuseandmaltreatmentdatabasecheckoutofstate_HH, sg_dateofnationalandstatecriminalhistorybackgroundcheck_HH, sg_childabuseandmaltreatmentdatabasecheck_HH, 
+ sg_dateofchildabuseandmaltreatmentdatabasecheck_HH);
+END LOOP;
+ 
+FOR v_counter IN SELECT * FROM json_array_elements(siblingdetails)  
+loop   
+ siblinggapeligiblitystatus := v_counter ->> 'sibling_gap_eligiblitystatus';
+ siblingname := v_counter ->> 'siblingname';
+ siblingguardianid := v_counter ->> 'siblingguardianid';  
+
+ insert into tb_gapaudit_siblingdetails(siblingdetailsid, gapauditid, siblinggapeligiblitystatus, siblingname, siblingguardianid)
+ 
+ values(gen_random_uuid(), v_gapauditid, siblinggapeligiblitystatus, siblingname, siblingguardianid);
+END LOOP;
+ 
+FOR v_counter IN SELECT * FROM json_array_elements(licensedfosterhome)  
+loop   
+ lastsixmonthfiscalcodeandpaymentstatus := v_counter ->> 'lastsixmonthfiscalcodeandpaymentstatus';
+ dateofnationalandstatecriminalhistorybackgroundcheck := v_counter ->> 'dateofnationalandstatecriminalhistorybackgroundcheck';
+ dateoffullapproval_fp := v_counter ->> 'dateoffullapproval_fp';
+ nationalandstatecriminalhistorybackgroundcheck := v_counter ->> 'nationalandstatecriminalhistorybackgroundcheck';
+ outofstatewithinpast5yearsoftheapplicationfor_gap := v_counter ->> 'outofstatewithinpast5yearsoftheapplicationfor_gap';
+ dateofchildabuseandmaltreatmentdatabasecheckoutofstate := v_counter ->> 'dateofchildabuseandmaltreatmentdatabasecheckoutofstate';
+ latestfostercareplacementstartdatewithperpectiveguardian := v_counter ->> 'latestfostercareplacementstartdatewithperpectiveguardian';
+ applicablechildwelfareagenciesinthepreviousstatescontacted := v_counter ->> 'applicablechildwelfareagenciesinthepreviousstatescontacted';
+ dateofchildabuseandmaltreatmentdatabasecheck := v_counter ->> 'dateofchildabuseandmaltreatmentdatabasecheck';
+ fosterhomeapprover := v_counter ->> 'fosterhomeapprover';
+ childabuseandmaltreatmentdatabasecheck := v_counter ->> 'childabuseandmaltreatmentdatabasecheck';
+
+ insert into tb_gapaudit_licensedfosterhome(licensedfosterhomeid, gapauditid, lastsixmonthfiscalcodeandpaymentstatus, dateofnationalandstatecriminalhistorybackgroundcheck, 
+ dateoffullapproval_fp, nationalandstatecriminalhistorybackgroundcheck, outofstatewithinpast5yearsoftheapplicationfor_gap, dateofchildabuseandmaltreatmentdatabasecheckoutofstate, 
+ latestfostercareplacementstartdatewithperpectiveguardian, applicablechildwelfareagenciesinthepreviousstatescontacted, dateofchildabuseandmaltreatmentdatabasecheck,
+ fosterhomeapprover, childabuseandmaltreatmentdatabasecheck)
+
+ values(gen_random_uuid(), v_gapauditid, lastsixmonthfiscalcodeandpaymentstatus, dateofnationalandstatecriminalhistorybackgroundcheck, 
+ dateoffullapproval_fp, nationalandstatecriminalhistorybackgroundcheck, outofstatewithinpast5yearsoftheapplicationfor_gap, dateofchildabuseandmaltreatmentdatabasecheckoutofstate, 
+ latestfostercareplacementstartdatewithperpectiveguardian, applicablechildwelfareagenciesinthepreviousstatescontacted, dateofchildabuseandmaltreatmentdatabasecheck,
+ fosterhomeapprover, childabuseandmaltreatmentdatabasecheck);
+END LOOP;
+
+FOR v_counter IN SELECT * FROM json_array_elements(householdmember)  
+loop   
+ nationalandstatecriminalhistorybackgroundcheck_hh := v_counter ->> 'nationalandstatecriminalhistorybackgroundcheck_hh';
+ applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation := v_counter ->> 'applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation';
+ outofstatewithinpast5yearsoftheapplicationforgap := v_counter ->> 'outofstatewithinpast5yearsoftheapplicationforgap';
+ dateofbirthofhouseholdmember := v_counter ->> 'dateofbirthofhouseholdmember';
+ childabuseandmaltreatmentdatabasecheck_hh := v_counter ->> 'childabuseandmaltreatmentdatabasecheck_hh';
+  
+ insert into tb_gapaudit_householdmember(householdmemberid, gapauditid, nationalandstatecriminalhistorybackgroundcheck_hh, 
+ applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation, outofstatewithinpast5yearsoftheapplicationforgap,
+ dateofbirthofhouseholdmember, childabuseandmaltreatmentdatabasecheck_hh)
+ 
+ values(gen_random_uuid(), v_gapauditid, nationalandstatecriminalhistorybackgroundcheck_hh, 
+ applicablechildwelfareagenciesinthepreviousstatescontactedtoobtainchildabuseandmaltreatmentinformation, outofstatewithinpast5yearsoftheapplicationforgap,
+ dateofbirthofhouseholdmember, childabuseandmaltreatmentdatabasecheck_hh);
+END LOOP;
+ 
+FOR v_counter IN SELECT * FROM json_array_elements(gapauditmessages)  
+loop   
+ v_severity := v_counter ->> 'severity';
+ v_text := v_counter ->> 'message';  
+
+ insert into tb_gapaudit_messages(gapauditmessagesid, gapauditid, severity, message, cjamspid, insertedby, updatedby, insertedon, updatedon)
+ values(gen_random_uuid(), v_gapauditid, v_severity, v_text, cjamspid, 'admin', 'admin', now(), now());
+END LOOP; 
+ 
+RETURN QUERY
+select
+ --tb_audit_periods
+ ga.transactionid             AS  v_transactionid,
+ ga.cjamspid              AS  cjamspid,
+ ga.gapauditid               AS  v_gapauditid,
+ ga.category              AS  category,
+ ga.gapeligibilitystatus           AS  gapeligibilitystatus,
+ ga.extgapeligibilitystatus           AS  extgapeligibilitystatus,
+ ga.missinginfo              AS  missinginfo,
+ ga.gapv               AS  gapv,
+ ga.gr                AS  gr,
+ ga.sa                AS  sa,
+ ga.hhcheck               AS  hhcheck,
+ ga.hhdetails              AS  hhdetails,
+ ga.ivereimb              AS  ivereimb,
+ ga.egapv               AS  egapv,
+ ga.finalresult              AS  finalresult
+
+ FROM tb_ive_gapaudit AS ga
+ where ga.transactionid = v_transactionid;
+ 
+end
+ $function$
+

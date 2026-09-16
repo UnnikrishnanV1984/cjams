@@ -1,0 +1,146 @@
+CREATE OR REPLACE FUNCTION as_getvalidassessment(v_intakeserviceid uuid, v_securityuserid character varying, v_opennotes character varying, v_closenotes character varying, v_refkey character varying)
+ RETURNS TABLE(isclose boolean, isplacement boolean, ispredischarge boolean, ispostdischarge boolean, isunidischarge boolean, isdeceased boolean)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+v_count bigint;
+v_predischarge boolean;
+v_postdischarge boolean;
+v_placount boolean;
+v_unidischargeplan boolean;
+v_intakenumber character varying;
+v_close boolean DEFAULT false;
+v_focusperson character varying;
+v_personid uuid;
+v_notification character varying;
+v_deceased bool;
+
+BEGIN
+
+
+v_deceased:=null;
+
+
+SELECT personid INTO v_personid
+FROM intakeservicerequestactor 
+WHERE activeflag =1 
+AND intakeserviceid =v_intakeserviceid
+AND intakeservicerequestpersontypekey = 'Youth';
+
+
+SELECT  COUNT(*)INTO v_count 
+FROM intakeservicerequest isra
+WHERE 
+isra.intakeserviceid =v_intakeserviceid 
+and isra.activeflag =1 and isra.foldertypekey = 'Committed';
+
+
+SELECT CASE WHEN COUNT(*) > 0 THEN true ELSE false END INTO v_postdischarge
+FROM assessment ass 
+INNER JOIN assessmenttemplate ast ON ass.assessmenttemplateid = ast.assessmenttemplateid
+AND ast.activeflag =1
+WHERE ass.objectid =v_intakeserviceid AND ast.name ='postDischargeReEntryTransitionPlan'
+AND ass.assessmentstatustypekey = 'Submitted' AND ass.activeflag =1;
+
+
+SELECT CASE WHEN COUNT(*) >  0 THEN true ELSE false END INTO v_predischarge
+FROM assessment ass 
+INNER JOIN assessmenttemplate ast ON ass.assessmenttemplateid = ast.assessmenttemplateid
+AND ast.activeflag =1
+WHERE ass.objectid =v_intakeserviceid AND ast.name ='preDischargeReEntryTransitionPlan'
+AND ass.assessmentstatustypekey = 'Submitted' AND ass.activeflag =1;
+
+
+SELECT CASE WHEN COUNT(*) > 0  THEN true ELSE false END INTO v_unidischargeplan
+FROM assessment ass 
+INNER JOIN assessmenttemplate ast ON ass.assessmenttemplateid = ast.assessmenttemplateid
+AND ast.activeflag =1
+WHERE ass.objectid =v_intakeserviceid and ast.name ='uniformDischargePlan'
+AND ass.assessmentstatustypekey = 'Submitted' and ass.activeflag =1;
+
+SELECT   CASE WHEN COUNT(*) > 0  THEN true ELSE false END INTO v_placount 
+FROM placement pt 
+WHERE pt.activeflag =1 
+AND pt.enddatetime is not null
+AND pt.intakeserviceid = v_intakeserviceid;
+
+SELECT intakenumber INTO v_intakenumber FROM intakeservicerequest 
+WHERE activeflag =1 and intakeserviceid =v_intakeserviceid;
+
+   
+
+IF v_count > 0 THEN
+
+ IF v_refkey = 'SFTN' THEN 
+ 
+ 
+   IF (v_postdischarge = true AND v_predischarge =true) AND v_unidischargeplan = true  AND v_placount = true THEN
+
+   SELECT * FROM 
+   as_savefocuspersoncasestatus(v_personid,v_intakeserviceid,v_intakenumber,
+   'CDS','Closed',v_securityuserid,v_opennotes,v_closenotes) INTO v_focusperson;
+  
+   SELECT * FROM as_sendresidentialnotification(v_intakenumber,v_intakeserviceid,v_securityuserid)INTO v_notification;
+   
+   v_close = true;     
+   
+   ELSE 
+   
+   v_close = false;
+   
+   END IF;
+    
+ ELSIF v_refkey IN ('USFTN','WKCD') THEN 
+ 
+   v_postdischarge:=null;
+            v_predischarge:=null; 
+   
+ 
+   IF v_unidischargeplan = true  AND v_placount = true then
+   
+   
+   SELECT * FROM
+   as_savefocuspersoncasestatus(v_personid,v_intakeserviceid,v_intakenumber,'CDS','Closed',v_securityuserid,v_opennotes,v_closenotes) INTO v_focusperson;
+  
+  
+   SELECT * FROM as_sendresidentialnotification(v_intakenumber,v_intakeserviceid,v_securityuserid)INTO v_notification;
+   
+   v_close = true;
+     
+   ELSE 
+   
+   v_close = false;
+         
+   END IF;
+   
+   
+    ELSIF v_refkey = 'YTDD' THEN  
+         
+  v_postdischarge:=null;
+        v_predischarge:=null; 
+        v_unidischargeplan:=null;
+        v_placount:=null;
+
+  SELECT   CASE WHEN COUNT(*) > 0  THEN true ELSE false END INTO v_deceased 
+  FROM person p
+  WHERE p.activeflag =1 
+  AND p.dateofdeath is not null  
+  AND p.isapproxdod is not null 
+        AND  p.personid = v_personid;  
+   
+ ELSE
+   v_close = false;
+    
+ END IF;
+  
+ELSE
+     v_close = true;
+   
+ 
+END IF;
+
+return query SELECT v_close,v_placount,v_predischarge,v_postdischarge,v_unidischargeplan,v_deceased ;
+
+END;
+$function$
+

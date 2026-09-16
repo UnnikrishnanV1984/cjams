@@ -1,0 +1,1833 @@
+CREATE OR REPLACE FUNCTION sp_cares_outbound_interface_gen_data_01(vl_client_id integer, vl_other_id bigint, vs_transaction_type_cd character varying, vl_transaction_sequence integer, vd_transaction_ts timestamp without time zone, OUT vs_message character varying, OUT vl_output_sqlcode character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Author: Sudhin\r
+-- Date Created :08/25/2005\r
+-- generates Cares Interface Outbound Data\r
+\r
+-- Revision(s)\r
+-- 5/31/06 - Tanya Lee - Incident #7739 -- Updated eligibility fields to look at FC and Adoption\r
+-- 02/09/2007 - Sandhya -- #12329    - Added condition for transaction type = '15' (Subsidy Guardianship)\r
+-- 02/16/07 - sandhya - #12329 - Added condition before disability for no records found.\r
+-- #12329 02/19/07 - sandhya - default dates to null for subsidy guardianship\r
+-- #7739 04/18/07  -- sandhya - To pick Transaction date when eligibility status has been end dated.\r
+-- 04.10.08 -#17248 sandhya-  Check for telephone nos having spaces and store zeros in place.\r
+-- 04.14.2010 --GAYATHRI RAJUKMAR - MAPPED DECLINED RACE TO UNKNOWN\r
+-- 26.06.2019 --- Ram Kumar changes are commented with tag #26062019\r
+-- 06/10/2020 Vineet Tirodkar - To fix the get Caseworker & get Case county logic.\r
+-- 06/24/2020 Vineet Tirodkar - To modify logic to send Gender as 'U' for all other types than Male & Female \r
+-- 06/30/2020 Vineet Tirodkar - Modifications to send 'Unknown' for racetypekey 'Other' ro any not known code to MD CHESSIE \r
+-- 07/06/2020 Vineet Tirodkar - To report Person's Insurance info use personhealthinsurance table (Instead of personinsurance)\r
+-- 08/20/2020 Vineet Tirodkar - Modifications to send only Valid (Numeric) SSN attribute values (CDM-3270)\r
+-- 09/25/2020 Vineet Tirodkar - Changes to trim and compare Eligibility Status Code (CDM-4684)\r
+-- 10/05/2020 Vineet Tirodkar - Changes to send first 50 characters only for Person’s educationname (CIDM-1010)\r
+-- 03/08/2021 Vineet Tirodkar - Modifications for person name suffix logic fix (CIDM-2203)\r
+-- 03/11/2021 Vineet Tirodkar - Modifications to get the personaddress using personid (uuid) (CIDM-2203)\r
+-- 08/03/2021 Vineet Tirodkar - Modifications to send Client Person First/Last Names first 20 characters only \r
+--        and Middle Name first 10 characters (CDM-15668)\r
+-- 11/02/2021 Vineet Tirodkar - Modifications to send numeric values for telephone numbers (CIDM-4020)\r
+------------------------------------------------------------------------\r
+\r
+DECLARE VS_RECORD_TYPE VARCHAR(2);\r
+VS_OUTPUT_STATE VARCHAR(5) DEFAULT '00000';\r
+VL_RECORD_SEQUENCE INTEGER DEFAULT 000;\r
+VS_TRANSACTION_SEQUENCE VARCHAR(5);\r
+VS_RECORD_SEQUENCE VARCHAR(3);\r
+  -- Client Variables\r
+VL_STAFF_ID VARCHAR;\r
+VL_TRANSACTION_DATE INTEGER;   -- CARES_OUT_COL1\r
+VS_PLACEMENT_STRUCTURE_ID CHAR(1); -- CARES_OUT_COL2\r
+VS_PRIMARY_COUNTY_CD CHAR(2);   -- CARES_OUT_COL3\r
+VS_WORKER_NAME VARCHAR(50);     -- CARES_OUT_COL4\r
+VS_WORKER_PHONE VARCHAR(32);        -- CARES_OUT_COL5\r
+VS_CIS_CLIENT_ID VARCHAR(10);      --  CARES_OUT_COL6\r
+VS_CLIENT_SURNAME VARCHAR(20);  --  CARES_OUT_COL7\r
+VS_CLIENT_GIVENNAME VARCHAR(20); -- CARES_OUT_COL8\r
+VS_CLIENT_MIDDLENAME VARCHAR(10); -- CARES_OUT_COL9\r
+VS_CLIENT_SUFFIX VARCHAR(5);     -- CARES_OUT_COL10  \r
+VS_AKA_LAST_NM VARCHAR(20);       -- CARES_OUT_COL11\r
+VL_SSN_NO VARCHAR;                 -- CARES_OUT_COL12\r
+VL_DOB_DT INTEGER;                  -- CARES_OUT_COL13\r
+VS_CLIENT_GENDER CHAR(1);           -- CARES_OUT_COL14 \r
+VS_CLIENT_RACE VARCHAR(20);          -- CARES_OUT_COL15 -- length increased #26062019\r
+VL_PLACEMENT_START_DATE INTEGER;   -- CARES_OUT_COL16\r
+VL_PLACEMENT_END_DATE INTEGER;     -- CARES_OUT_COL17\r
+VS_PLACEMENT_NAME VARCHAR(100);     -- CARES_OUT_COL18\r
+VS_LONG_TERM_CF_INDICATOR CHAR(1);    -- CARES_OUT_COL19\r
+VL_LTCF_ADMISSION_DATE INTEGER;       -- CARES_OUT_COL20\r
+VL_LTCF_DISCHARGE_DATE INTEGER;       -- CARES_OUT_COL21\r
+VL_PROVIDER_ID INTEGER;\r
+VL_PLACEMENT_CASE_ID BIGINT;\r
+VS_CLIENT_BIRTH_HOSPITAL VARCHAR(50);  -- CARES_OUT_COL22\r
+VS_CLIENT_BIRTH_CITY VARCHAR(50);      -- CARES_OUT_COL23\r
+VS_CLIENT_BIRTH_STATE CHAR(2);         -- CARES_OUT_COL24\r
+VS_CLIENT_MARITAL_STATUS VARCHAR(5);    -- CARES_OUT_COL25\r
+VS_CLIENT_RESIDENCY_STATUS CHAR(1);    -- CARES_OUT_COL26\r
+VS_CLIENT_DISABLED CHAR(1) default 'N';             -- CARES_OUT_COL27\r
+VS_CLIENT_PHYSICAL_DISABILITY CHAR(2);   -- CARES_OUT_COL28\r
+VS_CLIENT_MENTAL_DISABILITY CHAR(2);      -- CARES_OUT_COL29\r
+VS_CLIENT_VISUAL_DISABILITY CHAR(2);       -- CARES_OUT_COL30\r
+VS_CLIENT_HEARING_DISABILITY CHAR(2);     -- CARES_OUT_COL31\r
+VS_CLIENT_MENTAL_RETARDATION CHAR(2);      -- CARES_OUT_COL32\r
+VS_CLIENT_LEARNING_DISABILITY CHAR(2);      -- CARES_OUT_COL33\r
+VS_CLIENT_COGNITIVE_DISABILITY CHAR(2);  -- CARES_OUT_COL34\r
+VS_CLIENT_DEV_DELAY_DISABILITY CHAR(2);   -- CARES_OUT_COL35\r
+VS_CLIENT_OTHER_DISABILITY CHAR(2);       -- CARES_OUT_COL36\r
+VS_CLIENT_MEDICAL_INSURANCE CHAR(1);      -- CARES_OUT_COL37\r
+CARES_OUT_COL38 CHAR(1);\r
+CARES_OUT_COL39 INTEGER;\r
+CARES_OUT_COL40 INTEGER;\r
+CARES_OUT_COL41 INTEGER;\r
+CARES_OUT_COL42 DECIMAL(10,2);\r
+CARES_OUT_COL42_CONVERT VARCHAR(15);\r
+CARES_OUT_COL43 VARCHAR(50);\r
+VL_PRIMARY_CAREGIVER_ID INTEGER;\r
+CARES_OUT_COL44 CHAR(3);\r
+CARES_OUT_COL45 VARCHAR(9); -- INTEGER\r
+CARES_OUT_COL46 VARCHAR(50);\r
+CARES_OUT_COL47 CHAR(5);\r
+CARES_OUT_COL48 CHAR(3);\r
+CARES_OUT_COL49 CHAR(5);\r
+CARES_OUT_COL50 VARCHAR(50);\r
+CARES_OUT_COL51 CHAR(2);\r
+CARES_OUT_COL52 INTEGER;\r
+CARES_OUT_COL53 CHAR(3);\r
+CARES_OUT_COL54 VARCHAR(9); -- INTEGER\r
+CARES_OUT_COL55 VARCHAR(50);\r
+CARES_OUT_COL56 CHAR(5);\r
+CARES_OUT_COL57 CHAR(3);\r
+CARES_OUT_COL58 CHAR(5);\r
+CARES_OUT_COL59 VARCHAR(50);\r
+CARES_OUT_COL60 CHAR(2);\r
+CARES_OUT_COL61 INTEGER;\r
+CARES_OUT_COL62 VARCHAR(32);\r
+CARES_OUT_COL63 VARCHAR(100);\r
+CARES_OUT_COL64 CHAR(3);\r
+CARES_OUT_COL65 VARCHAR(9); -- INTEGER\r
+CARES_OUT_COL66 VARCHAR(50);\r
+CARES_OUT_COL67 CHAR(5);\r
+CARES_OUT_COL68 CHAR(3);\r
+CARES_OUT_COL69 CHAR(5);\r
+CARES_OUT_COL70 VARCHAR(50);\r
+CARES_OUT_COL71 CHAR(2);\r
+CARES_OUT_COL72 INTEGER;\r
+CARES_OUT_COL73 VARCHAR(10);\r
+VL_ADOPTIVE_FATHER_ID INTEGER;\r
+VL_ADOPTIVE_MOTHER_ID INTEGER;\r
+CARES_OUT_COL74 VARCHAR(20);\r
+CARES_OUT_COL75 VARCHAR(20);\r
+CARES_OUT_COL76 VARCHAR(10);\r
+CARES_OUT_COL77 CHAR(5);\r
+CARES_OUT_COL78 CHAR(3);\r
+CARES_OUT_COL79 VARCHAR(9); -- INTEGER\r
+CARES_OUT_COL80 VARCHAR(50);\r
+CARES_OUT_COL81 CHAR(5);\r
+CARES_OUT_COL82 CHAR(3);\r
+CARES_OUT_COL83 CHAR(5);\r
+CARES_OUT_COL84 VARCHAR(50);\r
+CARES_OUT_COL85 CHAR(2);\r
+CARES_OUT_COL86 INTEGER;\r
+CARES_OUT_COL87 VARCHAR(10);\r
+CARES_OUT_COL88 CHAR(1);\r
+CARES_OUT_COL89 CHAR(1);\r
+CARES_OUT_COL90 CHAR(5);\r
+CARES_OUT_COL91 CHAR(5);\r
+CARES_OUT_COL92 VARCHAR(20);\r
+CARES_OUT_COL93 VARCHAR(20);\r
+CARES_OUT_COL94 CHAR(1);\r
+CARES_OUT_COL95 CHAR(5);\r
+CARES_OUT_COL96 CHAR(5);\r
+CARES_OUT_COL97 VARCHAR;\r
+CARES_OUT_COL98 VARCHAR(50);\r
+CARES_OUT_COL99 CHAR(3);\r
+CARES_OUT_COL100 VARCHAR(9); -- INTEGER\r
+CARES_OUT_COL101 VARCHAR(50);\r
+CARES_OUT_COL102 CHAR(5);\r
+CARES_OUT_COL103 CHAR(3);\r
+CARES_OUT_COL104 CHAR(5);\r
+CARES_OUT_COL105 VARCHAR(50);\r
+CARES_OUT_COL106 CHAR(2);\r
+CARES_OUT_COL107 INTEGER;\r
+service_case_id uuid;\r
+sec_id uuid;\r
+\r
+-- New Variables for Provider Payment Address\r
+VS_PAY_TO_AFFILIATE_CD VARCHAR(5);\r
+VS_ALTERNATE_ADR_TYPE_CD VARCHAR(5);\r
+VS_PAY_TO_AFFILIATE_CD_1 VARCHAR(5);\r
+VL_AFFILIATE_PROVIDER_ID INTEGER DEFAULT 0;\r
+VL_TEMP_PROVIDER_ID INTEGER DEFAULT 0;\r
+LS_temp_PROVIDER_NM varchar(100);\r
+LS_temp_PROV_FIRST_NM varchar(100);\r
+LS_temp_PROV_MIDDLE_NM varchar (100);\r
+LS_temp_PROV_LAST_NM varchar (100);\r
+LS_temp_PROV_SUFFIX varchar (100);\r
+V_PRIMARY_COUNTY_CD VARCHAR(4);\r
+\r
+BEGIN    \r
+ VL_OUTPUT_SQLCODE:='00000';  \r
+\r
+ --   RAISE NOTICE 'GEN DATA 01 STARTS';\r
+\r
+\r
+ -- SET transaction sequence\r
+ VS_TRANSACTION_SEQUENCE := LTRIM(RTRIM(CAST(VL_TRANSACTION_SEQUENCE AS VARCHAR))) ;\r
+\r
+ -- Get CIS_CLIENT_ID\r
+ BEGIN\r
+  SELECT  person.cisclientid\r
+   INTO    VS_CIS_CLIENT_ID\r
+  FROM    person   \r
+  WHERE   person.cjamspid = VL_CLIENT_ID\r
+  AND     person.activeflag  = 1;  \r
+  \r
+  EXCEPTION WHEN OTHERS THEN \r
+  VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+  VS_MESSAGE :=  'SELECT CIS_CLIENT_ID FAILED FOR TB_CLIENT'  ;\r
+  RETURN;\r
+    END ;\r
+   \r
+ -- Generate records for record type 01\r
+    VS_RECORD_TYPE := '01';\r
+ IF  VS_RECORD_TYPE = '01' THEN\r
+  VL_RECORD_SEQUENCE := VL_RECORD_SEQUENCE + 1 ;\r
+  IF VS_TRANSACTION_TYPE_CD = '15' THEN -- #12329\r
+\r
+   BEGIN   \r
+   \r
+    SELECT  *\r
+    INTO    VS_PLACEMENT_STRUCTURE_ID,\r
+      VL_PLACEMENT_START_DATE,\r
+      VL_PLACEMENT_END_DATE,\r
+      VS_PLACEMENT_NAME,\r
+      VS_LONG_TERM_CF_INDICATOR,\r
+      --   VL_LTCF_ADMISSION_DATE,VL_LTCF_DISCHARGE_DATE,\r
+      VL_PROVIDER_ID,\r
+      VL_PLACEMENT_CASE_ID\r
+    FROM\r
+     (SELECT   'S',\r
+        to_char(TBS.SUBSIDY_START_DT,'yyyymmdd')::integer,\r
+        to_char(TBS.SUBSIDY_END_DT,'yyyymmdd')::integer,      \r
+        (SELECT\r
+         CASE   WHEN LENGTH(RTRIM(PROVIDER_NM)) > 0 THEN PROVIDER_NM\r
+          ELSE\r
+          COALESCE(PROVIDER_FIRST_NM || ' ','')  ||\r
+          COALESCE(PROVIDER_MIDDLE_NM || ' ','') ||\r
+          COALESCE(PROVIDER_LAST_NM,'')\r
+         END\r
+        FROM TB_PROVIDER\r
+        WHERE PROVIDER_ID = TB_GUARDIAN_SUBSIDY.PROVIDER_ID AND DELETE_SW = 'N'),\r
+        '',\r
+        TB_GUARDIAN_SUBSIDY.PROVIDER_ID,\r
+        TB_GUARDIAN_SUBSIDY.CASE_ID\r
+       /*  FROM     TB_GUARDIAN_SUBSIDY\r
+     WHERE    CLIENT_ID = VL_CLIENT_ID AND     \r
+        SUBSIDY_START_DT IS NOT NULL AND     \r
+        SUBSIDY_END_DT IS NOT NULL AND     \r
+        --CHECK_LIST_APPROVAL_STATUS_CD = '3047'  AND    -- coulumn doesnt exist in dev db  \r
+        SUSBSIDY_APPROVAL_STATUS_CD = '3047' AND     \r
+        DELETE_SW = 'N'\r
+     ORDER BY SUBSIDY_START_DT DESC, GUARDIAN_SUBSIDY_ID DESC ) AS A\r
+     LIMIT 1 ;-- */ \r
+    FROM    TB_GUARDIAN_SUBSIDY TBS , TB_GUARDIAN_SUBSIDY_DELETE TGSD\r
+    WHERE   TBS.CLIENT_ID = VL_CLIENT_ID\r
+      and     TGSD.case_id = TBS.case_id\r
+      AND     TBS.SUBSIDY_START_DT IS NOT NULL\r
+      AND     TBS.SUBSIDY_END_DT IS NOT NULL\r
+      AND     TGSD.CHECK_LIST_APPROVAL_STATUS_CD = '3047'\r
+      AND     TBS.SUSBSIDY_APPROVAL_STATUS_CD = '3047'\r
+      AND     TBS.DELETE_SW = 'N'\r
+    ORDER BY TBS.SUBSIDY_START_DT DESC, TBS.GUARDIAN_SUBSIDY_ID DESC ) AS A \r
+    LIMIT 1; \r
+       \r
+    EXCEPTION WHEN OTHERS THEN\r
+\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR GUARDIAN SUBSIDY '||SQLERRM  ;\r
+    RETURN ;\r
+   END;\r
+   \r
+   VL_LTCF_ADMISSION_DATE := NULL; -- #12329 02/19/07\r
+   VL_LTCF_DISCHARGE_DATE := NULL; -- #12329 02/19/07\r
+\r
+  ELSIF VS_TRANSACTION_TYPE_CD <> '70' AND VS_TRANSACTION_TYPE_CD <>'15' THEN -- #12329 \r
+   BEGIN\r
+    SELECT  *\r
+    INTO    VS_PLACEMENT_STRUCTURE_ID,\r
+      VL_PLACEMENT_START_DATE,\r
+      VL_PLACEMENT_END_DATE,\r
+      VS_PLACEMENT_NAME,\r
+      VS_LONG_TERM_CF_INDICATOR,\r
+      VL_LTCF_ADMISSION_DATE,\r
+      VL_LTCF_DISCHARGE_DATE,\r
+      VL_PROVIDER_ID,\r
+      VL_PLACEMENT_CASE_ID\r
+    FROM\r
+     (SELECT  \r
+      CASE WHEN PLACEMENT_STRUCTURE_ID = 501 THEN 'A'\r
+        WHEN PLACEMENT_STRUCTURE_ID = 8 THEN 'K'\r
+       ELSE 'F'\r
+      END,\r
+      to_char(ENTRY_DT,'yyyymmdd')::integer,\r
+      to_char(EXIT_DT,'yyyymmdd')::integer,\r
+      (SELECT\r
+        CASE   WHEN LENGTH(RTRIM(PROVIDER_NM)) > 0 THEN PROVIDER_NM\r
+        ELSE\r
+         COALESCE(PROVIDER_FIRST_NM || ' ','')  ||\r
+         COALESCE(PROVIDER_MIDDLE_NM || ' ','') ||\r
+         COALESCE(PROVIDER_LAST_NM,'')\r
+        END\r
+      FROM  TB_PROVIDER\r
+      WHERE  PROVIDER_ID = TB_PLACEMENT.PROVIDER_ID AND DELETE_SW = 'N'),\r
+      CASE WHEN PLACEMENT_STRUCTURE_ID = 76 THEN 'Y'\r
+       ELSE 'N'\r
+      END,\r
+      CASE  WHEN PLACEMENT_STRUCTURE_ID = 76\r
+        THEN to_char(ENTRY_DT,'yyyymmdd')::integer\r
+      END,\r
+      CASE WHEN PLACEMENT_STRUCTURE_ID = 76\r
+        THEN to_char(EXIT_DT,'yyyymmdd')::integer\r
+      END,\r
+      TB_PLACEMENT.PROVIDER_ID,\r
+      TB_PLACEMENT.CASE_ID\r
+     FROM    TB_PLACEMENT\r
+     WHERE   CLIENT_ID = VL_CLIENT_ID\r
+       AND     EXIT_DT IS NULL\r
+       AND     ENTRY_DT IS NOT NULL\r
+       AND     PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+       AND     APPROVAL_STATUS_CD = '3047'\r
+       AND     DELETE_SW = 'N'\r
+     ORDER BY ENTRY_DT DESC, PLACEMENT_ID DESC) AS A\r
+     LIMIT 1 ;\r
+   \r
+\r
+    EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR TB_PLACEMENT '||SQLERRM  ;\r
+    RETURN ;\r
+   END;\r
+  END IF; \r
+  \r
+  IF VS_TRANSACTION_TYPE_CD = '70' THEN\r
+   BEGIN \r
+    SELECT *\r
+    INTO    VS_PLACEMENT_STRUCTURE_ID,\r
+      VL_PLACEMENT_START_DATE,\r
+      VL_PLACEMENT_END_DATE,\r
+      VS_PLACEMENT_NAME,\r
+      VS_LONG_TERM_CF_INDICATOR,\r
+      VL_LTCF_ADMISSION_DATE,\r
+      VL_LTCF_DISCHARGE_DATE,\r
+      VL_PROVIDER_ID,\r
+      VL_PLACEMENT_CASE_ID\r
+    FROM\r
+    (SELECT  CASE    WHEN PLACEMENT_STRUCTURE_ID = 501 THEN 'A'\r
+      WHEN PLACEMENT_STRUCTURE_ID = 8 THEN 'K'\r
+      ELSE 'F'\r
+      END,\r
+      to_char(ENTRY_DT,'yyyymmdd')::integer,\r
+      to_char(EXIT_DT,'yyyymmdd')::integer,\r
+       \r
+    (SELECT\r
+    CASE   WHEN LENGTH(RTRIM(PROVIDER_NM)) > 0 THEN PROVIDER_NM\r
+    ELSE\r
+      COALESCE(PROVIDER_FIRST_NM || ' ','')  ||\r
+      COALESCE(PROVIDER_MIDDLE_NM || ' ','') ||\r
+      COALESCE(PROVIDER_LAST_NM,'')\r
+    END\r
+    FROM TB_PROVIDER\r
+    WHERE PROVIDER_ID = TB_PLACEMENT.PROVIDER_ID AND DELETE_SW = 'N'),\r
+    CASE WHEN PLACEMENT_STRUCTURE_ID = 76 THEN 'Y'\r
+        ELSE 'N'\r
+      END,\r
+      CASE WHEN PLACEMENT_STRUCTURE_ID = 76\r
+        THEN to_char(ENTRY_DT,'yyyymmdd')::integer\r
+        \r
+      END,\r
+      CASE WHEN PLACEMENT_STRUCTURE_ID = 76 THEN \r
+      to_char(EXIT_DT,'yyyymmdd')::integer\r
+        \r
+      END,\r
+      TB_PLACEMENT.PROVIDER_ID,\r
+      TB_PLACEMENT.CASE_ID\r
+    FROM    TB_PLACEMENT\r
+    WHERE   CLIENT_ID = VL_CLIENT_ID\r
+    AND     EXIT_DT IS NOT NULL\r
+    AND     ENTRY_DT IS NOT NULL\r
+    AND     PLACEMENT_STRUCTURE_ID IS NOT NULL\r
+    AND     DELETE_SW = 'N'\r
+    ORDER BY ENTRY_DT DESC , PLACEMENT_ID DESC) AS A\r
+    LIMIT 1 ;\r
+\r
+    EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR TB_PLACEMENT '||SQLERRM  ;\r
+    RETURN ;\r
+   END;\r
+   \r
+  END IF;\r
+\r
+  --SET VL_TRANSACTION_DATE = INTEGER(SUBSTRING(CHAR(DATE(VD_TRANSACTION_TS)),7,4)||SUBSTRING(CHAR(DATE(VD_TRANSACTION_TS)),1,2)||SUBSTRING(CHAR(DATE(VD_TRANSACTION_TS)),4,2));\r
+  BEGIN\r
+   select f_prim_county(VL_PLACEMENT_CASE_ID,'NULL') \r
+    into V_PRIMARY_COUNTY_CD ;\r
+   /* -- old code \r
+   SELECT f_prim_county_interface(VL_PLACEMENT_CASE_ID::varchar)\r
+    INTO V_PRIMARY_COUNTY_CD;\r
+   */\r
+       \r
+   VS_PRIMARY_COUNTY_CD := CASE WHEN  V_PRIMARY_COUNTY_CD = '1427' THEN '01' -- Allegany\r
+           WHEN V_PRIMARY_COUNTY_CD = '1428' THEN '02'     -- Anne Arundel\r
+           WHEN V_PRIMARY_COUNTY_CD = '1430' THEN '03'     -- Baltimore County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1431' THEN '04'     -- Calvert County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1432' THEN '05'     -- Caroline County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1433' THEN '06'     -- Carroll County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1434' THEN '07'     -- Cecil County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1435' THEN '08'     -- Charles County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1436' THEN '09'     -- Dorchester County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1437' THEN '10'     -- Frederick County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1438' THEN '11'     -- Garrett County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1439' THEN '12'     -- Harford County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1440' THEN '13'     -- Howard County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1441' THEN '14'     -- Kent County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1442' THEN '15'     -- Montgomery County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1443' THEN '16'     -- Prince Georges County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1444' THEN '17'     -- Queen Annes County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1446' THEN '18'     -- St. Marys County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1445' THEN '19'     -- Somerset County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1447' THEN '20'     -- Talbot County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1448' THEN '21'     -- Washington County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1449' THEN '22'     -- Wicomico County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1450' THEN '23'     -- Worcester County\r
+           WHEN V_PRIMARY_COUNTY_CD = '1429' THEN '30'     -- Baltimore City\r
+           WHEN V_PRIMARY_COUNTY_CD = '3824' THEN '00'     -- DHR/SSA\r
+           END  ;\r
+  \r
+   service_case_id = (SELECT servicecaseid \r
+        from servicecase where servicecasenumber = VL_PLACEMENT_CASE_ID::varchar);\r
+   \r
+   \r
+   -- Get Primary Casewroker\r
+   select ca.toworkeridno\r
+    into sec_id\r
+    from caseassignment ca,\r
+     userprofile up \r
+   where ca.toworkeridno = up.securityusersid\r
+    and ca.objectid = service_case_id\r
+    and lower(ca.responsibilitytypekey) = 'family'\r
+    and ca.activeflag = 1\r
+    and up.activeflag = 1\r
+    and ca.enddate is null\r
+   order by ca.insertedon desc\r
+   limit 1 ;\r
+   \r
+   /* -- old code\r
+   SELECT routing.tosecurityusersid into sec_id\r
+   FROM  routing \r
+   WHERE ((routing.objectid = service_case_id::varchar) ) and \r
+   routing.activeflag=1 and routing.eventcode= 'SRVC';\r
+   */\r
+   \r
+   IF sec_id is null THEN\r
+    -- Get Child Casewroker\r
+    select ca.toworkeridno\r
+     into sec_id\r
+     from caseassignment ca,\r
+      userprofile up \r
+    where ca.toworkeridno = up.securityusersid\r
+     and ca.objectid = service_case_id\r
+     and ca.old_id::bigint = VL_CLIENT_ID\r
+     and lower(ca.responsibilitytypekey) = 'child'\r
+     and ca.activeflag = 1\r
+     and up.activeflag = 1\r
+     and ca.enddate is null\r
+    order by ca.insertedon desc\r
+    limit 1 ;\r
+   END IF;\r
+   \r
+   IF sec_id is null THEN\r
+    -- Get LDSS Director\r
+    select up.securityusersid\r
+     into sec_id\r
+     from team t\r
+      join teammember tm on tm.teamid = t.teamid and tm.activeflag = 1\r
+      join teammemberassignment tma on tma.teammemberid = tm.teammemberid and tma.activeflag = 1\r
+      join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag = 1\r
+      join rolemapping rm on rm.principalid::int = mu.id and rm.activeflag = 1\r
+      join county c on c.countyid::character varying = t.countyid\r
+      join userresource ur on ur.userid = mu.id and ur.activeflag = 1\r
+      join role r on r.id = rm.roleid::int and r.activeflag = 1\r
+      join userprofile up on up.securityusersid = mu.securityusersid and up.activeflag = 1\r
+     where ur.permissiongroupid = '57a390b8-3387-428a-97a8-0b8559fd1f1e'    \r
+      and lower(tm.description) like '%director%'\r
+      and btrim(c.statecountycode) = btrim(V_PRIMARY_COUNTY_CD)\r
+    order by (case when tm.description = 'LDSS Director' then 1 else 2 end) \r
+    limit 1;\r
+   END IF;\r
+   \r
+   --#GET Staff Telephone Number & Name\r
+   SELECT right( regexp_replace (upn.phonenumber::varchar, '[- ]+','','g')::varchar, 10) as phonenumber,\r
+    substring(COALESCE(up.firstname || ' ','') || COALESCE(up.lastname,''),1,50)\r
+   INTO VS_WORKER_PHONE,\r
+    VS_WORKER_NAME\r
+   FROM userprofile up \r
+    left outer join userprofilephonenumber upn on upn.securityusersid = up.securityusersid\r
+     and upn.activeflag = 1\r
+   WHERE up.securityusersid = sec_id::character varying\r
+    and up.activeflag = 1\r
+   ORDER BY upn.insertedon desc\r
+   limit 1 ;\r
+   \r
+   IF length(VS_WORKER_PHONE) = 10 THEN\r
+    -- Valid Value\r
+   ELSE\r
+    VS_WORKER_PHONE:= '0000000000';\r
+   END IF;\r
+   \r
+   /* -- old code  \r
+   SELECT  upn.phonenumber,\r
+     COALESCE(up.firstname || ' ','') || COALESCE(up.lastname,'')\r
+   INTO VS_WORKER_PHONE,\r
+     VS_WORKER_NAME\r
+   FROM  userprofile up, \r
+     userprofilephonenumber upn, \r
+     securityusers scu, \r
+     userprofileaddress upa\r
+   WHERE  up.securityusersid = upn.securityusersid\r
+     and scu.securityusersid = up.securityusersid\r
+     and upa.securityusersid = up.securityusersid\r
+     and upa.securityusersid=sec_id::character varying\r
+     AND up.activeflag = 1\r
+     and upa.activeflag = 1\r
+     and scu.activeflag = 1\r
+     AND upn.activeflag = 1\r
+   ORDER BY upa.county ASC \r
+   LIMIT 1 ;\r
+   */\r
+  end;     \r
+   \r
+\r
+  BEGIN \r
+   SELECT  person.cisclientid,\r
+    substring(COALESCE(person.lastname,''), 1, 20),\r
+    substring(COALESCE(person.firstname,''), 1, 20),\r
+    COALESCE(substring(btrim(person.middlename), 1, 10),''),\r
+    -- CIDM-2203\r
+    substring((select value_text \r
+     from referencevalues rf  \r
+    where rf.referencetypeid = 302\r
+     and rf.activeflag = 1 \r
+     and rf.value_text not in ('Ret.')\r
+     and rf.ref_key = person.suffix ),1,5\r
+    ) as suffix,\r
+    -- SUBSTRING(F_PLVALUE(person.suffix,214),1,5), -- changed from name_suffix  #26062019\r
+    --alias.ssn :: INTEGER,\r
+    --person.ssnno, -- table changed \r
+    ( CASE WHEN (personidentifier.personidentifiervalue ~ '^([0-9]+[.]?[0-9]*|[.][0-9]+)$') = false then \r
+     NULL \r
+      ELSE \r
+     personidentifier.personidentifiervalue::integer \r
+      END ),\r
+    -- personidentifier.personidentifiervalue:: integer,\r
+    to_char(person.dob,'yyyymmdd')::integer,\r
+    ( CASE WHEN person.gendertypekey = '1281' THEN 'F' -- IF DATA COMES AS CHESSIE CODES\r
+     WHEN person.gendertypekey = 'F' THEN 'F'\r
+     WHEN person.gendertypekey = '1282' THEN 'M' -- IF DATA COMES AS CHESSIE CODES\r
+     WHEN person.gendertypekey = 'M' THEN 'M'\r
+     ELSE 'U' \r
+    END) as gendertypekey,\r
+    ( CASE WHEN person.racetypekey LIKE '%WH%' THEN '1806'\r
+     WHEN  person.racetypekey LIKE '%AI%' THEN '1803'\r
+     WHEN  person.racetypekey LIKE '%AN%' THEN '1802'\r
+     WHEN  person.racetypekey LIKE '%BA%' THEN '1801'\r
+     WHEN  person.racetypekey LIKE '%AS%' THEN '6310'\r
+     WHEN  person.racetypekey LIKE '%PI%' THEN '6311'\r
+     ELSE '6312'\r
+    END ) as racetypekey\r
+   INTO    VS_CIS_CLIENT_ID,\r
+    VS_CLIENT_SURNAME,\r
+    VS_CLIENT_GIVENNAME,\r
+    VS_CLIENT_MIDDLENAME,\r
+    VS_CLIENT_SUFFIX,\r
+    VL_SSN_NO,\r
+    VL_DOB_DT,\r
+    VS_CLIENT_GENDER,\r
+    VS_CLIENT_RACE\r
+   FROM person LEFT OUTER JOIN personidentifier ON person.personid = personidentifier.personid \r
+    AND personidentifier.activeflag = 1 \r
+    AND personidentifier.personidentifiertypekey = 'SSN'  \r
+   WHERE person.cjamspid = VL_CLIENT_ID \r
+    AND person.activeflag = 1;\r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+   VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+   VS_MESSAGE := 'SELECT  FAILED FOR TB_CLIENT' ||SQLERRM  ;\r
+   RETURN;\r
+  END;\r
+  \r
+  ---GAYATHRI RAJUKMAR - DECLINED RACE MAPPED TO UNKNOWN -2010-04-14\r
+  IF  (LTRIM(RTRIM(VS_CLIENT_RACE)) = '3004' OR LTRIM(RTRIM(VS_CLIENT_RACE)) = '6314' ) THEN\r
+   VS_CLIENT_RACE := '6312';\r
+  ELSIF LTRIM(RTRIM(VS_CLIENT_RACE)) = 'DC' THEN\r
+   VS_CLIENT_RACE := '6312';\r
+  END IF;\r
+  \r
+  BEGIN  \r
+   SELECT  *\r
+    INTO    VS_CLIENT_MARITAL_STATUS\r
+   FROM\r
+     (SELECT  \r
+       /* case  \r
+        when personmaritalstatus.statustypekey = '88' then '88'  \r
+        when personmaritalstatus.statustypekey = '99' then '99'  \r
+        when personmaritalstatus.statustypekey = 'UK' then '7791'  \r
+        when personmaritalstatus.statustypekey = 'WD' then '3673'  \r
+        when personmaritalstatus.statustypekey = 'DV' then '1568'  \r
+        when personmaritalstatus.statustypekey = 'LS' then '1570'  \r
+        when personmaritalstatus.statustypekey = 'LP' then 'LP'  \r
+        when personmaritalstatus.statustypekey = 'MR' then '1569'  \r
+        when personmaritalstatus.statustypekey = 'SG' then '1571'  \r
+        when personmaritalstatus.statustypekey = '' then '    '  \r
+        else personmaritalstatus.statustypekey  \r
+       end */\r
+       case  \r
+        when personmaritalstatus.statustypekey IN  ('88' , '99', 'LP', 'LTU') then '7791'  \r
+        when personmaritalstatus.statustypekey = 'UK' then '7791'  \r
+        when personmaritalstatus.statustypekey = 'WD' then '3673'  \r
+        when personmaritalstatus.statustypekey = 'DV' then '1568'  \r
+        when personmaritalstatus.statustypekey = 'LS' then '1570'  \r
+        when personmaritalstatus.statustypekey = 'MR' then '1569'  \r
+        when personmaritalstatus.statustypekey = 'SG' then '1571' \r
+        when personmaritalstatus.statustypekey = '1568' then '1568'  \r
+        when personmaritalstatus.statustypekey = '1569' then '1569'  \r
+        when personmaritalstatus.statustypekey = '1570' then '1570'  \r
+        when personmaritalstatus.statustypekey = '1571' then '1571'\r
+        when personmaritalstatus.statustypekey = '3673' then '3673'\r
+        when personmaritalstatus.statustypekey = '7791' then '7791'\r
+        when personmaritalstatus.statustypekey = '' then '    '  \r
+        else '7791'  \r
+      end\r
+     FROM    personmaritalstatus, person  \r
+     WHERE   personmaritalstatus.personid = person.personid\r
+       and person.cjamspid =  VL_CLIENT_ID\r
+       AND     personmaritalstatus.activeflag = 1\r
+     ORDER BY personmaritalstatus.startdate DESC  \r
+    --,personmaritalstatus.old_id DESC\r
+    ) AS A\r
+   LIMIT 1 ;\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+   VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+   VS_MESSAGE := 'SELECT  FAILED FOR personmaritalstatus' ||SQLERRM ;\r
+   RETURN;\r
+  END;\r
+  \r
+  BEGIN \r
+   SELECT  *\r
+   INTO  VS_AKA_LAST_NM\r
+   FROM\r
+     ( SELECT  substring(COALESCE(alias.lastname,''), 1, 20)\r
+      FROM   alias, person\r
+      WHERE  alias.personid = person.personid\r
+        and person.cjamspid =  VL_CLIENT_ID\r
+        AND alias.activeflag = 1\r
+        AND alias.akatypetypekey in( '2553' ,'MN') --  check with sai team \r
+      ORDER BY alias.insertedon DESC\r
+      --, alias.old_id DESC\r
+     ) AS A\r
+   LIMIT 1 ;\r
+  \r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR alias '||SQLERRM  ;\r
+    RETURN;\r
+  END;\r
+  \r
+  BEGIN \r
+   SELECT *\r
+   INTO    VS_CLIENT_BIRTH_HOSPITAL,\r
+     VS_CLIENT_BIRTH_CITY,\r
+     VS_CLIENT_BIRTH_STATE\r
+   FROM\r
+     ( SELECT  hospitalname,\r
+        cityname,\r
+        statetypekey    \r
+      FROM  clientunder5yearsinfo, person\r
+      WHERE  clientunder5yearsinfo.personid = person.personid\r
+        and person.cjamspid = VL_CLIENT_ID\r
+        AND clientunder5yearsinfo.activeflag = 1\r
+      ORDER BY clientunder5yearsinfo.insertedon DESC, clientunder5yearsinfo.old_id DESC) AS A\r
+   LIMIT 1 ;\r
+  \r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR clientunder5yearsinfo '||SQLERRM  ;\r
+    RETURN;\r
+  END;\r
+  \r
+  BEGIN\r
+   SELECT  *\r
+   INTO  VS_CLIENT_RESIDENCY_STATUS\r
+   FROM\r
+     (SELECT CASE WHEN ADR_STATE_CD = 'MD' THEN 'Y'\r
+         WHEN ADR_STATE_CD IS NULL THEN ''\r
+         WHEN ADR_STATE_CD = '' THEN ''\r
+        ELSE 'N'\r
+       END\r
+     FROM    TB_PROVIDER_ADDRESSES\r
+     WHERE   PARENT_KEY_ID::INTEGER = VL_PROVIDER_ID\r
+       AND    ADR_END_DT IS NULL\r
+       AND    ADR_START_DT IS NOT NULL\r
+       AND    DELETE_SW = 'N'\r
+       AND    ADR_TYPE_CD = '3357'\r
+     ORDER BY ADR_START_DT DESC, ADDRESS_ID DESC) AS A\r
+   LIMIT 1 ;\r
+\r
+  \r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT RESIDENCY STATUS FAILED FOR TB_PROVIDER_ADDRESSES '||SQLERRM  ;\r
+    RETURN;\r
+  END; \r
+  \r
+  --- --#12329 added for no record for disability, the client_disabled should be 'N'\r
+  IF EXISTS(select 1 from personmedicalinfo, person \r
+     WHERE personmedicalinfo.personid = person.personid AND\r
+   person.cjamspid = VL_CLIENT_ID AND personmedicalinfo.activeflag = 1) THEN\r
+  \r
+  ELSE\r
+    VS_CLIENT_DISABLED := 'N';\r
+  END IF;\r
+  --- #12329\r
+    \r
+  BEGIN   \r
+   SELECT  * \r
+   INTO  VS_CLIENT_DISABLED,\r
+     VS_CLIENT_PHYSICAL_DISABILITY,\r
+     VS_CLIENT_MENTAL_DISABILITY,\r
+     VS_CLIENT_VISUAL_DISABILITY,\r
+     VS_CLIENT_HEARING_DISABILITY,\r
+     VS_CLIENT_MENTAL_RETARDATION,\r
+     VS_CLIENT_LEARNING_DISABILITY,\r
+     VS_CLIENT_COGNITIVE_DISABILITY,\r
+     VS_CLIENT_DEV_DELAY_DISABILITY,\r
+     VS_CLIENT_OTHER_DISABILITY\r
+   FROM\r
+     ( SELECT CASE  WHEN physicaldisabilitykey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN emotionaldisabilitykey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN visualdisabilitykey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN hearingdisabilitykey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN mentalretardationtypekey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN otherdisabilitykey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN learningdisabilitykey IN('1168','1169','1170') THEN 'Y'\r
+          WHEN physicaldisabilitykey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN emotionaldisabilitykey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN visualdisabilitykey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN hearingdisabilitykey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN mentalretardationtypekey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN otherdisabilitykey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN learningdisabilitykey IN('MLD','MOD','SEVR') THEN 'Y'\r
+          WHEN mentallyretarded =  'Y' THEN 'Y'\r
+          WHEN developmentallydelayedflag = 0 THEN 'Y'\r
+          ELSE 'N' \r
+        END,\r
+        CASE WHEN physicaldisabilitykey IN('1168','1169','1170') THEN 'PD'\r
+          WHEN physicaldisabilitykey IN('MLD','MOD','SEVR') THEN 'PD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN emotionaldisabilitykey IN('1168','1169','1170') THEN 'MD'\r
+          WHEN emotionaldisabilitykey IN('MLD','MOD','SEVR') THEN 'MD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN visualdisabilitykey IN('1168','1169','1170') THEN 'VD'\r
+          WHEN visualdisabilitykey IN('MLD','MOD','SEVR') THEN 'VD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN hearingdisabilitykey IN('1168','1169','1170') THEN 'HD'\r
+          WHEN hearingdisabilitykey IN('MLD','MOD','SEVR') THEN 'HD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN mentalretardationtypekey IN('1168','1169','1170') THEN 'MR'\r
+          WHEN mentalretardationtypekey IN('MLD','MOD','SEVR') THEN 'MR'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE WHEN learningdisabilitykey IN('1168','1169','1170') THEN 'LD'\r
+          WHEN learningdisabilitykey IN('MLD','MOD','SEVR') THEN 'LD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN mentallyretarded = 'Y' THEN 'CD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN developmentallydelayedflag = 0 THEN 'DD'\r
+          ELSE LPAD('',2)\r
+        END,\r
+        CASE  WHEN otherdisabilitykey IN('1168','1169','1170') THEN 'OD'\r
+          WHEN otherdisabilitykey IN('MLD','MOD','SEVR')THEN 'OD'\r
+          ELSE LPAD('',2)\r
+        END\r
+      FROM   personmedicalinfo, person\r
+      WHERE  personmedicalinfo.personid = person.personid\r
+        and person.cjamspid = VL_CLIENT_ID\r
+        AND   personmedicalinfo.activeflag = 1\r
+      ORDER BY personmedicalinfo.insertedon  DESC, personmedicalinfo.old_id  DESC) AS A\r
+      LIMIT 1 ;\r
+\r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR personmedicalinfo '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  BEGIN\r
+   \r
+   select  ( CASE WHEN COUNT(*) > 0 THEN \r
+      'Y'\r
+       ELSE \r
+      'N'\r
+       END \r
+     )\r
+    INTO VS_CLIENT_MEDICAL_INSURANCE\r
+   from personhealthinsurance phlt,\r
+    person pr\r
+   where phlt.personid = pr.personid \r
+    and pr.cjamspid = VL_CLIENT_ID\r
+    and phlt.activeflag = 1\r
+    and phlt.insurancetype <> 'HOWN'  -- 1371 - Homeowners Insurance\r
+    and phlt.caresauno IS NULL \r
+    and phlt.effectivedate IS NOT NULL  \r
+    and ( phlt.expirationdate IS NULL OR phlt.expirationdate > phlt.effectivedate );\r
+   /* \r
+   SELECT   CASE  WHEN COUNT(*) > 0 THEN 'Y'\r
+      ELSE 'N'\r
+      END\r
+   INTO     VS_CLIENT_MEDICAL_INSURANCE\r
+   FROM     personinsurance, person\r
+   WHERE    personinsurance.personid = person.personid \r
+      and    person.cjamspid =  VL_CLIENT_ID\r
+      AND     personinsurance.activeflag = 1\r
+      AND     personinsurance.typekey <> '1371' \r
+      AND     personinsurance.caresauno IS NULL  \r
+      AND     personinsurance.startdate IS NOT NULL  \r
+      AND     (personinsurance.enddate IS NULL  \r
+      OR      personinsurance.enddate > personinsurance.startdate);\r
+   */\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR personhealthinsurance '||SQLERRM  ;\r
+    RETURN ;\r
+  END ;  \r
+  \r
+  IF VS_TRANSACTION_TYPE_CD = '15' OR VS_PLACEMENT_STRUCTURE_ID ='S' THEN -- #12329\r
+   \r
+   CARES_OUT_COL38 := '';\r
+   CARES_OUT_COL39 := NULL::INTEGER;\r
+   CARES_OUT_COL40 := NULL::INTEGER;\r
+  ELSE\r
+   BEGIN\r
+    SELECT * INTO   CARES_OUT_COL38,\r
+        CARES_OUT_COL39,\r
+        CARES_OUT_COL40\r
+    FROM\r
+    (SELECT CASE WHEN btrim(ELIGIBILITY_STATUS_CD) IN ('2912','2913','3597','3598') THEN 'F'\r
+     WHEN btrim(ELIGIBILITY_STATUS_CD) = '2914' THEN 'S'\r
+     WHEN btrim(ELIGIBILITY_STATUS_CD) = '2909' THEN 'P'\r
+     WHEN btrim(ELIGIBILITY_STATUS_CD) = '2910' THEN 'U'\r
+     WHEN btrim(ELIGIBILITY_STATUS_CD) = '2911' THEN 'V'\r
+    END,\r
+    to_char(START_DT,'yyyymmdd')::INTEGER,\r
+    CASE WHEN btrim(ELIGIBILITY_STATUS_CD) IN ('2912','2913','3597','3598')\r
+      THEN to_char(START_DT+ Interval '6 months','yyyymmdd')::INTEGER\r
+      END\r
+    FROM TB_CLIENT_ELIGIBILITY\r
+    WHERE TB_CLIENT_ELIGIBILITY.CLIENT_ID = VL_CLIENT_ID\r
+    --  Incident #7739\r
+    --     AND TB_CLIENT_ELIGIBILITY.ELIGIBILITY_TYPE_CD = '2931'\r
+     AND btrim(TB_CLIENT_ELIGIBILITY.ELIGIBILITY_TYPE_CD) IN ('2931','2934')\r
+     AND TB_CLIENT_ELIGIBILITY.START_DT IS NOT NULL\r
+    --    AND TB_CLIENT_ELIGIBILITY.END_DT IS NULL -- #7739 04/18/07\r
+     AND TB_CLIENT_ELIGIBILITY.DELETE_SW = 'N'\r
+    ORDER BY TB_CLIENT_ELIGIBILITY.START_DT DESC, TB_CLIENT_ELIGIBILITY.ELIGIBILITY_ID DESC) AS A\r
+    LIMIT 1 ;\r
+  \r
+    EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT  FAILED FOR TB_CLIENT_ELIGIBILITY '||SQLERRM  ;\r
+     RETURN ;\r
+   END;\r
+  END IF;\r
+  \r
+  IF VS_TRANSACTION_TYPE_CD = '10' THEN\r
+   VL_TRANSACTION_DATE := VL_PLACEMENT_START_DATE;\r
+  ELSIF VS_TRANSACTION_TYPE_CD = '70' THEN\r
+   VL_TRANSACTION_DATE := VL_PLACEMENT_END_DATE;\r
+  ELSIF VS_TRANSACTION_TYPE_CD = '20' THEN\r
+   VL_TRANSACTION_DATE := CARES_OUT_COL39;\r
+  ELSIF VS_TRANSACTION_TYPE_CD = '30' THEN\r
+   VL_TRANSACTION_DATE := CARES_OUT_COL40;\r
+  ELSIF VS_TRANSACTION_TYPE_CD = '40' THEN\r
+   BEGIN   \r
+    SELECT to_char(PAYMENT_DT,'yyyymmdd')::INTEGER\r
+     \r
+     INTO VL_TRANSACTION_DATE\r
+    FROM TB_PAYMENT_HEADER\r
+    WHERE PAYMENT_ID = VL_OTHER_ID\r
+    AND DELETE_SW = 'N';\r
+\r
+    EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT PAYMENT_DT FAILED FOR TABLE PAYMENT_HEADER '||SQLERRM  ;\r
+     RETURN ;\r
+   END;\r
+\r
+  ELSE\r
+   VL_TRANSACTION_DATE := to_char(VD_TRANSACTION_TS::DATE,'yyyymmdd')::INTEGER ;\r
+\r
+  END IF;\r
+  \r
+  BEGIN \r
+   SELECT  to_char(PH.PAYMENT_DT,'yyyymmdd')::INTEGER,\r
+    SUM((PD.FINAL_AMOUNT_NO)::DECIMAL(10,2))\r
+   INTO CARES_OUT_COL41,\r
+     CARES_OUT_COL42\r
+    FROM TB_PAYMENT_HEADER PH, TB_PAYMENT_DETAIL PD\r
+    WHERE PD.CLIENT_ID = VL_CLIENT_ID\r
+    AND PD.PAYMENT_ID = PH.PAYMENT_ID\r
+    AND PH.PAYMENT_TYPE_CD = '6'\r
+    AND PH.PAYMENT_DT IS NOT NULL\r
+    AND PH.DELETE_SW = 'N'\r
+    AND PD.DELETE_SW = 'N'\r
+    AND PD.PAYMENT_ID = (SELECT MAX(A.PAYMENT_ID)\r
+     FROM TB_PAYMENT_DETAIL A, TB_PAYMENT_HEADER B\r
+     WHERE A.CLIENT_ID = VL_CLIENT_ID\r
+     AND A.PAYMENT_ID = B.PAYMENT_ID\r
+     AND B.PAYMENT_TYPE_CD = '6'\r
+     AND B.PAYMENT_DT IS NOT NULL\r
+     AND A.DELETE_SW = 'N'\r
+     AND B.DELETE_SW = 'N')\r
+    GROUP BY PH.PAYMENT_DT;\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT  FAILED FOR TB_PAYMENT_DETAIL '||SQLERRM ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  CARES_OUT_COL42_CONVERT := LTRIM(RTRIM((CARES_OUT_COL42::VARCHAR))) ;    \r
+  CARES_OUT_COL42_CONVERT := SUBSTRING('00000000000',1,11 - LENGTH(CARES_OUT_COL42_CONVERT)) || CARES_OUT_COL42_CONVERT ;\r
+  BEGIN \r
+   SELECT *\r
+   INTO CARES_OUT_COL43,\r
+     VL_PRIMARY_CAREGIVER_ID\r
+   FROM\r
+   (SELECT substring(COALESCE(TC.firstname || ' ','') || COALESCE(TC.lastname,''), 1, 50),\r
+       TR.primarycaregiverid\r
+   FROM  intakeservreqchildremoval TR, person TC, intakeservicerequestactor TSA\r
+   WHERE TR.intakeservicerequestactorid = TSA.intakeservicerequestactorid\r
+   and TSA.personid = TC.personid\r
+   and TC.cjamspid = VL_CLIENT_ID\r
+   AND TR.primarycaregiverid = TC.cjamspid\r
+   AND TR.activeflag = 1\r
+   AND TC.activeflag = 1\r
+   and TSA.activeflag = 1\r
+   ORDER BY TR.removaldate DESC , TR.removalid desc) AS A\r
+   LIMIT 1 ;\r
+     \r
+  \r
+   EXCEPTION WHEN OTHERS THEN    \r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT PRIMARY CAREGIVER FAILED FOR TB_REMOVAL '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  BEGIN \r
+   SELECT *\r
+   INTO CARES_OUT_COL44,\r
+     CARES_OUT_COL45,\r
+     CARES_OUT_COL46,\r
+     CARES_OUT_COL47,\r
+     CARES_OUT_COL48,\r
+     CARES_OUT_COL49,\r
+     CARES_OUT_COL50,\r
+     CARES_OUT_COL51,\r
+     CARES_OUT_COL52\r
+    FROM     \r
+   (SELECT SUBSTRING(F_PLVALUE(personaddresstypekey,69),1,3), -- column changed #26062019\r
+       SUBSTRING(address,'(^[0-9]+)'), -- ADR_STREET_NO\r
+       TRIM(substring(address,'([[:alpha:]\\s]+)')),\r
+       adrstreetsuffixtypekey,\r
+       SUBSTRING(F_PLVALUE(personaddresstypekey,69),1,3), -- column changed #26062019\r
+       adrunitno,\r
+       city,\r
+       state,\r
+       SUBSTRING(COALESCE(CAST(zipcode as VARCHAR),'00000'),1,5) || SUBSTRING(COALESCE(CAST(adrzip4no as VARCHAR),'0000'),1,4):: INTEGER\r
+   FROM personaddress\r
+   WHERE -- CIDM-2203\r
+    -- old_id::INTEGER = VL_PRIMARY_CAREGIVER_ID\r
+    personid = (select p.personid \r
+        from person p \r
+          where p.cjamspid = VL_PRIMARY_CAREGIVER_ID \r
+        and p.activeflag = 1\r
+         )\r
+    AND  personadrenddate IS NULL\r
+    AND  personadrstartdate IS NOT NULL\r
+    AND  activeflag = 1 \r
+    AND  adrdefaultflag = 1 -- 0\r
+   ORDER BY personadrstartdate DESC, old_id desc) AS A\r
+   LIMIT 1 ;\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT PRIMARY CAREGIVER ADDRESS FAILED FOR TB_CLIENT_ADDRESSES '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  -- Provider Location Address\r
+  BEGIN \r
+   SELECT *\r
+   INTO CARES_OUT_COL53,\r
+     CARES_OUT_COL54,\r
+     CARES_OUT_COL55,\r
+     CARES_OUT_COL56,\r
+     CARES_OUT_COL57,\r
+     CARES_OUT_COL58,\r
+     CARES_OUT_COL59,\r
+     CARES_OUT_COL60,\r
+     CARES_OUT_COL61\r
+   FROM\r
+   (SELECT SUBSTRING(F_PLVALUE(ADR_PRE_DIR_CD,69),1,3),\r
+       SUBSTRING(ADR_STREET_TX,1,9), -- ADR_STREET_NO\r
+       ADR_STREET_NM,\r
+       ADR_STREET_SUFFIX_CD,\r
+       SUBSTRING(F_PLVALUE(ADR_POST_DIR_CD,69),1,3),\r
+       ADR_UNIT_NO_TX,\r
+       ADR_CITY_NM,\r
+       ADR_STATE_CD,\r
+       (SUBSTRING(COALESCE((ADR_ZIP5_NO::VARCHAR),'00000'),1,5) || SUBSTRING(COALESCE((ADR_ZIP4_NO::VARCHAR),'0000'),1,4))::INTEGER\r
+   FROM   TB_PROVIDER_ADDRESSES\r
+    WHERE  PARENT_KEY_ID::INTEGER = VL_PROVIDER_ID\r
+   AND    ADR_END_DT IS NULL\r
+   AND    ADR_START_DT IS NOT NULL\r
+   AND    DELETE_SW = 'N'\r
+   AND    ADR_TYPE_CD = '3357'\r
+   ORDER BY ADR_START_DT DESC, ADDRESS_ID DESC) AS A\r
+   LIMIT 1 ;\r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT PROVIDER LOCATION ADDRESS FAILED FOR TB_PROVIDER_ADDRESSES '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  BEGIN \r
+   -- Provider Info \r
+   SELECT ADR_WORK_PHONE_TX,\r
+       PROVIDER_NM,\r
+       PROVIDER_FIRST_NM,\r
+       PROVIDER_MIDDLE_NM,\r
+       PROVIDER_LAST_NM ,\r
+       ADM_WORK_PHONE_TX,\r
+       PROVIDER_SUFFIX_CD\r
+   INTO  CARES_OUT_COL62,\r
+      LS_temp_PROVIDER_NM,\r
+      LS_temp_PROV_FIRST_NM,\r
+      LS_temp_PROV_MIDDLE_NM,\r
+      LS_temp_PROV_LAST_NM,\r
+      CARES_OUT_COL73,\r
+      LS_temp_PROV_SUFFIX\r
+   FROM TB_PROVIDER\r
+   WHERE PROVIDER_ID = VL_PROVIDER_ID\r
+   AND DELETE_SW = 'N';\r
+\r
+   CARES_OUT_COL63 := CASE  WHEN LENGTH(RTRIM(LS_temp_PROVIDER_NM)) > 0 THEN -- #12329\r
+       LS_temp_PROVIDER_NM\r
+   ELSE\r
+      COALESCE(LS_temp_PROV_FIRST_NM || ' ','')  ||  COALESCE(LS_temp_PROV_MIDDLE_NM || ' ','') ||\r
+           COALESCE(LS_temp_PROV_LAST_NM,'') \r
+   END ;\r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT PROVIDER INFO FAILED FOR TB_PROVIDER '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+\r
+  BEGIN\r
+   -- New Code to get Provider Address\r
+   SELECT PAY_TO_AFFILIATE_CD\r
+   INTO VS_PAY_TO_AFFILIATE_CD\r
+   FROM TB_PROVIDER\r
+   WHERE PROVIDER_ID = VL_PROVIDER_ID\r
+   AND DELETE_SW = 'N';      \r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT PAY_TO_AFFILIATE_CD FAILED FOR TB_PROVIDER ' ||SQLERRM ;\r
+    RETURN;\r
+  END ;  \r
+  \r
+    IF VS_PAY_TO_AFFILIATE_CD IN ('3366') THEN -- For LDSS\r
+   VS_ALTERNATE_ADR_TYPE_CD := '3357';\r
+   VL_TEMP_PROVIDER_ID := VL_PROVIDER_ID;\r
+\r
+  ELSIF VS_PAY_TO_AFFILIATE_CD IN ('3367') THEN -- For Private Department\r
+   VS_ALTERNATE_ADR_TYPE_CD := '3356';\r
+   VL_TEMP_PROVIDER_ID := VL_PROVIDER_ID;\r
+\r
+  ELSIF VS_PAY_TO_AFFILIATE_CD IN ('3368') THEN\r
+      \r
+   BEGIN\r
+    SELECT DISTINCT TB_PROVIDER.AFFILIATE_PROVIDER_ID\r
+     INTO VL_AFFILIATE_PROVIDER_ID\r
+    FROM  TB_PROVIDER\r
+    WHERE  TB_PROVIDER.PROVIDER_ID  = VL_PROVIDER_ID\r
+     AND TB_PROVIDER.DELETE_SW  = 'N';\r
+  \r
+    EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT AFFILIATE_PROVIDER_ID FAILED FOR TB_PROVIDER '||SQLERRM  ;\r
+     RETURN;\r
+   END ;\r
+\r
+   IF  VL_AFFILIATE_PROVIDER_ID > 0 THEN\r
+    BEGIN    \r
+     SELECT PAY_TO_AFFILIATE_CD\r
+      INTO VS_PAY_TO_AFFILIATE_CD_1\r
+     FROM TB_PROVIDER\r
+     WHERE PROVIDER_ID = VL_AFFILIATE_PROVIDER_ID\r
+     AND DELETE_SW = 'N';      \r
+   \r
+     EXCEPTION WHEN OTHERS THEN\r
+      VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+      VS_MESSAGE := 'SELECT PAY_TO_AFFILIATE_CD FAILED FOR AFFILIATE ORGANIZATION '||SQLERRM  ;\r
+      RETURN;\r
+    END ;\r
+  \r
+    IF VS_PAY_TO_AFFILIATE_CD_1 IN ('3366') THEN -- For LDSS\r
+     VS_ALTERNATE_ADR_TYPE_CD := '3357';\r
+     VL_TEMP_PROVIDER_ID := VL_AFFILIATE_PROVIDER_ID;\r
+    ELSIF VS_PAY_TO_AFFILIATE_CD_1 IN ('3367') THEN -- For Private Department\r
+     VS_ALTERNATE_ADR_TYPE_CD := '3356';\r
+     VL_TEMP_PROVIDER_ID := VL_AFFILIATE_PROVIDER_ID;\r
+    ELSE\r
+     VS_ALTERNATE_ADR_TYPE_CD := LPAD('',4);\r
+    END IF;\r
+   END IF;\r
+  ELSE\r
+   VS_ALTERNATE_ADR_TYPE_CD := LPAD('',4);\r
+  END IF;\r
+  \r
+  BEGIN \r
+   SELECT *\r
+    INTO CARES_OUT_COL64,\r
+     CARES_OUT_COL65,\r
+     CARES_OUT_COL66,\r
+     CARES_OUT_COL67,\r
+     CARES_OUT_COL68,\r
+     CARES_OUT_COL69,\r
+     CARES_OUT_COL70,\r
+     CARES_OUT_COL71,\r
+     CARES_OUT_COL72\r
+   FROM\r
+   (SELECT SUBSTRING(F_PLVALUE(ADR_PRE_DIR_CD,69),1,3),\r
+       SUBSTRING(ADR_STREET_TX,1,9), -- ADR_STREET_NO\r
+       ADR_STREET_NM,\r
+       ADR_STREET_SUFFIX_CD,\r
+       SUBSTRING(F_PLVALUE(ADR_POST_DIR_CD,69),1,3),\r
+       ADR_UNIT_NO_TX,\r
+       ADR_CITY_NM,\r
+       ADR_STATE_CD,\r
+       (SUBSTRING(COALESCE((ADR_ZIP5_NO::VARCHAR),'00000'),1,5) || SUBSTRING(COALESCE((ADR_ZIP4_NO::VARCHAR),'0000'),1,4))::INTEGER\r
+   FROM   TB_PROVIDER_ADDRESSES\r
+    WHERE  PARENT_KEY_ID::INTEGER = VL_TEMP_PROVIDER_ID\r
+   AND    ADR_END_DT IS NULL\r
+   AND    ADR_START_DT IS NOT NULL\r
+   AND    DELETE_SW = 'N'\r
+   AND    ADR_TYPE_CD = VS_ALTERNATE_ADR_TYPE_CD\r
+   ORDER BY  ADR_START_DT DESC, ADDRESS_ID DESC) AS A\r
+   LIMIT 1 ;\r
+  \r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT PROVIDER MAILING ADDRESS FAILED FOR TB_PROVIDER_ADDRESSES '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  -- Coding to start from here  CARES_OUT_COL74 to  CARES_OUT_COL88\r
+  IF VS_PLACEMENT_STRUCTURE_ID = 'S' THEN -- #12329\r
+    CARES_OUT_COL74 := LS_temp_PROV_LAST_NM;\r
+    CARES_OUT_COL75 := LS_temp_PROV_FIRST_NM ;\r
+    CARES_OUT_COL76 := LS_temp_PROV_MIDDLE_NM;\r
+    CARES_OUT_COL77 := LS_temp_PROV_SUFFIX;\r
+    CARES_OUT_COL78 := CARES_OUT_COL53;\r
+    CARES_OUT_COL79 := CARES_OUT_COL54;\r
+    CARES_OUT_COL80 := CARES_OUT_COL55;\r
+    CARES_OUT_COL81 := CARES_OUT_COL56;\r
+    CARES_OUT_COL82 := CARES_OUT_COL57;\r
+    CARES_OUT_COL83 := CARES_OUT_COL58;\r
+    CARES_OUT_COL84 := CARES_OUT_COL59;\r
+    CARES_OUT_COL85 := CARES_OUT_COL60;\r
+    CARES_OUT_COL86 := CARES_OUT_COL61;\r
+    CARES_OUT_COL87 := CARES_OUT_COL62;\r
+    CARES_OUT_COL88 := 'W';\r
+  \r
+  ELSIF VS_PLACEMENT_STRUCTURE_ID IN ('F','K') THEN\r
+   \r
+   BEGIN\r
+    SELECT  substring(UP.lastname, 1, 20),\r
+      substring(UP.firstname, 1 ,20),\r
+      substring(UP.middlename, 1, 10),\r
+      SUBSTRING(UP.displayname,1,5), --- changed the column from name_suffix #26062019\r
+      UPP.phonenumber\r
+    INTO CARES_OUT_COL74,\r
+     CARES_OUT_COL75,\r
+     CARES_OUT_COL76,\r
+     CARES_OUT_COL77,\r
+     CARES_OUT_COL87\r
+    FROM userprofile UP, userprofilephonenumber UPP ,muser m\r
+    where UP.securityusersid = UPP.securityusersid\r
+    and m.securityusersid = UP.securityusersid\r
+    and m.id::varchar = VL_STAFF_ID\r
+    AND UP.activeflag = 1\r
+    and UPP.activeflag = 1\r
+    and m.activeflag = 1;\r
+  \r
+    EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT STAFF INFO FAILED FOR TB_STAFF '||SQLERRM  ;\r
+     RETURN;\r
+   END;\r
+   \r
+   BEGIN \r
+    SELECT *\r
+    INTO CARES_OUT_COL78,\r
+      CARES_OUT_COL79,\r
+      CARES_OUT_COL80,\r
+      CARES_OUT_COL81,\r
+      CARES_OUT_COL82,\r
+      CARES_OUT_COL83,\r
+      CARES_OUT_COL84,\r
+      CARES_OUT_COL85,\r
+      CARES_OUT_COL86\r
+    FROM\r
+    ( SELECT SUBSTRING(F_PLVALUE(adrpredirtypekey,69),1,3),\r
+       SUBSTRING(UPA.address,'(^[0-9]+)'), -- ADR_STREET_NO\r
+       TRIM(substring(UPA.address,'([[:alpha:]\\s]+)')),\r
+       UPA.adrstreetsuffixtypekey,\r
+       SUBSTRING(F_PLVALUE(UPA.adrpostdirtypekey,69),1,3),\r
+       UPA.adrunitno,\r
+       UPA.city,\r
+       UPA.state,\r
+       SUBSTRING(COALESCE(CAST(UPA.zipcode as VARCHAR),'00000'),1,5) || SUBSTRING(COALESCE(CAST(UPA.zipcodeplus as VARCHAR),'0000'),1,4):: INTEGER \r
+     FROM  userprofileaddress UPA, \r
+       securityusers UP, \r
+       userprofilephonenumber UPP\r
+     where  UPA.securityusersid = UP.securityusersid\r
+       and UPP.securityusersid = UP.securityusersid\r
+       and UP.securityusersid  = VL_STAFF_ID\r
+       AND UP.activeflag = 1\r
+       and UPP.activeflag = 1\r
+       and UPA.activeflag = 1\r
+       AND adrdefaultflag = 1\r
+    ORDER BY UPA.insertedon DESC, UPA.old_id DESC) AS A\r
+    LIMIT 1 ;\r
+  \r
+    EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT STAFF ADDRESS FAILED FOR TB_STAFF_ADDRESS '||SQLERRM  ;\r
+     RETURN;\r
+   END ;\r
+   \r
+   CARES_OUT_COL88 := 'W';\r
+  \r
+  ELSIF VS_PLACEMENT_STRUCTURE_ID IN ('A') THEN\r
+   BEGIN  \r
+     /*    SELECT TB_ADOPTION.ADOPTIVE_FATHER_ID,\r
+     TB_ADOPTION.ADOPTIVE_MOTHER_ID\r
+    INTO VL_ADOPTIVE_FATHER_ID,\r
+     VL_ADOPTIVE_MOTHER_ID\r
+     FROM TB_ADOPTION, servicecase\r
+      WHERE   servicecase.servicecasenumber = VL_PLACEMENT_CASE_ID\r
+       -- AND TB_CASE.CASE_TYPE_CD =  '3333'\r
+      AND TB_ADOPTION.CASE_ID :: varchar = servicecase.servicecasenumber\r
+     AND TB_ADOPTION.DELETE_SW = 'N'\r
+     AND servicecase.activeflag = 1;-- */\r
+    SELECT PPT.cjamspid,\r
+      PP.cjamspid\r
+    INTO  VL_ADOPTIVE_FATHER_ID,\r
+      VL_ADOPTIVE_MOTHER_ID\r
+    FROM  person PP, \r
+      adoptioncase AC, \r
+      servicecase SC, \r
+      intakeservicerequest ISR, \r
+      intakeservicerequestactor ISA, \r
+      person PPT\r
+    WHERE  AC.adoptioncasenumber = VL_PLACEMENT_CASE_ID\r
+      --  AND TB_CASE.CASE_TYPE_CD =  '3333'\r
+      AND SC.servicecaseid = AC.servicecaseid\r
+      AND ISR.intakeserviceid = ISA.intakeserviceid\r
+      AND ISR.servicecaseid = SC.servicecaseid\r
+      AND ISA.personid = PP.personid\r
+      AND ISA.personid = PPT.personid\r
+      AND PPT.gendertypekey IN ('M')\r
+      AND PP.gendertypekey IN ('F')\r
+      AND SC.activeflag = 1\r
+      AND AC.activeflag = 1\r
+      AND ISA.personid IN ( select intakeservicerequestactor.personid \r
+            from  intakeservicerequestactor, \r
+              actorrelationship \r
+            where  actorrelationship.intakeserviceid = intakeservicerequestactor.intakeserviceid \r
+              AND actorrelationship.relationshiptypekey IN ('adoptiveparent', 'fosterparent','mother', 'father'));\r
+\r
+    EXCEPTION WHEN OTHERS THEN\r
+     VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+     VS_MESSAGE := 'SELECT ADOPTIVE INFO FAILED FOR TB_ADOPTION '||SQLERRM  ;\r
+     RETURN;\r
+   END ;\r
+  \r
+   IF  VL_ADOPTIVE_FATHER_ID > 0 THEN\r
+    \r
+    BEGIN   \r
+      SELECT lastname,\r
+       firstname,\r
+       middlename,\r
+       SUBSTRING(suffixkey,1,5),\r
+       SUBSTRING(F_PLVALUE(adrpredirkey,69),1,3),--column changed #26062019\r
+       SUBSTRING(adrstreet,1,9), -- ADR_STREET_NO\r
+       adrstreetname,\r
+       adrstreetsuffixkey,\r
+       SUBSTRING(F_PLVALUE(adrpostdirkey,69),1,3),--column changed #26062019\r
+       adrunitno,\r
+       adrcityname,\r
+       adrstatekey,\r
+       SUBSTRING(COALESCE(cast(adrzip5no as varchar),'00000'),1,5) || SUBSTRING(COALESCE(cast(adrzip4no as varchar),'0000'),1,4):: INTEGER, -- column changed #26062019\r
+       adrhomephone\r
+     INTO    CARES_OUT_COL74,\r
+       CARES_OUT_COL75,\r
+       CARES_OUT_COL76,\r
+       CARES_OUT_COL77,\r
+       CARES_OUT_COL78,\r
+       CARES_OUT_COL79,\r
+       CARES_OUT_COL80,\r
+       CARES_OUT_COL81,\r
+       CARES_OUT_COL82,\r
+       CARES_OUT_COL83,\r
+       CARES_OUT_COL84,\r
+       CARES_OUT_COL85,\r
+       CARES_OUT_COL86,\r
+       CARES_OUT_COL87\r
+     FROM  provapprovalperson\r
+     WHERE  provapprovalperson.old_id::INTEGER = VL_ADOPTIVE_FATHER_ID\r
+       AND   provapprovalperson.activeflag = 1;\r
+\r
+     EXCEPTION WHEN OTHERS THEN\r
+      VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+      VS_MESSAGE := 'SELECT INFO FAILED FOR TB_PROV_APPROVAL_PERSON '||SQLERRM  ;\r
+      RETURN;\r
+    END ;\r
+\r
+   ELSE\r
+    BEGIN\r
+     SELECT lastname,\r
+       firstname,\r
+       middlename,\r
+       SUBSTRING(suffixkey,1,5),\r
+       SUBSTRING(F_PLVALUE(adrpredirkey,69),1,3),--column changed #26062019\r
+       SUBSTRING(adrstreet,1,9), -- ADR_STREET_NO\r
+       adrstreetname,\r
+       adrstreetsuffixkey,\r
+       SUBSTRING(F_PLVALUE(adrpostdirkey,69),1,3),--column changed #26062019\r
+       adrunitno,\r
+       adrcityname,\r
+       adrstatekey,\r
+       SUBSTRING(COALESCE(cast(adrzip5no as varchar),'00000'),1,5) || SUBSTRING(COALESCE(cast(adrzip4no as varchar),'0000'),1,4):: INTEGER,---column changed #26062019\r
+       adrhomephone\r
+     INTO    CARES_OUT_COL74,\r
+       CARES_OUT_COL75,\r
+       CARES_OUT_COL76,\r
+       CARES_OUT_COL77,\r
+       CARES_OUT_COL78,\r
+       CARES_OUT_COL79,\r
+       CARES_OUT_COL80,\r
+       CARES_OUT_COL81,\r
+       CARES_OUT_COL82,\r
+       CARES_OUT_COL83,\r
+       CARES_OUT_COL84,\r
+       CARES_OUT_COL85,\r
+       CARES_OUT_COL86,\r
+       CARES_OUT_COL87\r
+     FROM  provapprovalperson\r
+     WHERE   provapprovalperson.old_id::INTEGER = VL_ADOPTIVE_MOTHER_ID\r
+       AND   provapprovalperson.activeflag = 1;\r
+  \r
+     EXCEPTION WHEN OTHERS THEN\r
+      VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+      VS_MESSAGE := 'SELECT INFO FAILED FOR TB_PROV_APPROVAL_PERSON '||SQLERRM  ;\r
+      RETURN;\r
+    END ;\r
+   END IF;\r
+  \r
+   CARES_OUT_COL88 := 'P';\r
+  END IF;\r
+  \r
+  BEGIN \r
+   -- CARES_OUT_COL89 to  CARES_OUT_COL93\r
+   SELECT  CASE WHEN primarycitizenshiptypekey = '3474' THEN 'Y'\r
+       WHEN seccitizenshiptypekey = '3474' THEN 'Y'\r
+       WHEN primarycitizenshiptypekey = 'US' THEN 'Y'\r
+       WHEN seccitizenshiptypekey = 'US' THEN 'Y'\r
+       WHEN primarycitizenshiptypekey = 'USA' THEN 'Y'\r
+       WHEN seccitizenshiptypekey = 'USA' THEN 'Y'\r
+       WHEN primarycitizenshiptypekey = '' THEN ''\r
+       WHEN primarycitizenshiptypekey IS NULL THEN ''\r
+       ELSE 'N'\r
+     END,\r
+     citizenalenagetypekey,\r
+     citizenalenagetypekey,\r
+     F_PLVALUE(primarycitizenshiptypekey,50),\r
+     alienregistrationtext \r
+   INTO  CARES_OUT_COL89,\r
+     CARES_OUT_COL90,\r
+     CARES_OUT_COL91,\r
+     CARES_OUT_COL92,\r
+     CARES_OUT_COL93\r
+   FROM  person\r
+   WHERE   person.cjamspid =  VL_CLIENT_ID\r
+     AND person.activeflag = 1  ;\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT CLIENT INFO FAILED FOR TB_CLIENT '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  BEGIN \r
+   -- CARES_OUT_COL94 to  CARES_OUT_COL107\r
+   SELECT *\r
+   INTO CARES_OUT_COL94,\r
+     CARES_OUT_COL95,\r
+     CARES_OUT_COL96,\r
+     CARES_OUT_COL97,\r
+     CARES_OUT_COL98,\r
+     CARES_OUT_COL99,\r
+     CARES_OUT_COL100,\r
+     CARES_OUT_COL101,\r
+     CARES_OUT_COL102,\r
+     CARES_OUT_COL103,\r
+     CARES_OUT_COL104,\r
+     CARES_OUT_COL105,\r
+     CARES_OUT_COL106,\r
+     CARES_OUT_COL107\r
+   FROM\r
+   (/* SELECT CASE WHEN statustypekey = '10220' THEN 'Y'\r
+      WHEN statustypekey IS NULL THEN ' '\r
+      WHEN statustypekey = '' THEN ' '\r
+      ELSE 'N'\r
+       END,\r
+       statustypekey,\r
+       currentgradetypekey,\r
+       lastgradetypekey,\r
+       educationname,\r
+       SUBSTRING(F_PLVALUE(adrpredirtypekey,69),1,3),\r
+       SUBSTRING(adrstreet,1,9), -- ADR_STREET_NO\r
+       adrstreetname,\r
+       adrstreetsuffixtypekey,\r
+       SUBSTRING(F_PLVALUE(adrpostdirtypekey,69),1,3),\r
+       adrunitno,\r
+       adrcityname,\r
+       statecode,\r
+       SUBSTRING(COALESCE(CAST(adrzip5no AS VARCHAR),'00000'),1,5) || SUBSTRING(COALESCE(CAST(adrzip4no AS VARCHAR),'0000'),1,4) :: INTEGER\r
+     FROM personeducation, person\r
+     WHERE personeducation.personid = person.personid\r
+     and person.cjamspid = VL_CLIENT_ID\r
+     AND  personeducation.activeflag = 1\r
+     ORDER BY personeducation.effectivedate DESC, personeducation.old_id DESC */\r
+   SELECT CASE WHEN statustypekey IN ('10220', 'CEN') THEN 'Y'\r
+      WHEN statustypekey IS NULL THEN ' '\r
+      WHEN statustypekey = '' THEN ' '\r
+      ELSE 'N'\r
+       END,\r
+      CASE WHEN statustypekey = 'CEN' THEN '10220' \r
+       WHEN statustypekey = 'DRPO' THEN '1206'\r
+       WHEN statustypekey = 'EXPL' THEN '1207'\r
+       WHEN statustypekey = 'GRDD' THEN '1208'\r
+       WHEN statustypekey = 'PMT' THEN '33473'\r
+       WHEN statustypekey = 'SUSP' THEN '7818'\r
+       WHEN statustypekey = 'TDFCP' THEN '33475'\r
+       WHEN statustypekey = 'TNFD' THEN '33471'\r
+       WHEN statustypekey = 'UNKO' THEN '7819'\r
+       WHEN statustypekey = 'WDW' THEN '33472'\r
+       WHEN statustypekey = 'RGD' THEN '33474'\r
+       WHEN statustypekey = '' THEN '     '\r
+       END,\r
+     CASE WHEN currentgradetypekey = 'PSHS' THEN '1291' \r
+       WHEN currentgradetypekey = 'KDGN' THEN '1292'\r
+       WHEN currentgradetypekey = 'GDO' THEN '3370'\r
+       WHEN currentgradetypekey = 'GDTW' THEN '3371'\r
+       WHEN currentgradetypekey = 'GDTH' THEN '3372'\r
+       WHEN currentgradetypekey = 'GDFO' THEN '3373'\r
+       WHEN currentgradetypekey = 'GDFI' THEN '3374'\r
+       WHEN currentgradetypekey = 'GDSI' THEN '7807'\r
+       WHEN currentgradetypekey = 'GDSE' THEN '7808'\r
+       WHEN currentgradetypekey = 'GDEI' THEN '12860'\r
+       WHEN currentgradetypekey = 'GDNI' THEN '12861'\r
+       WHEN currentgradetypekey = 'GDTE' THEN '12862'\r
+       WHEN currentgradetypekey = 'GDEL' THEN '12863'\r
+       WHEN currentgradetypekey = 'GDTWL' THEN '12864'\r
+       WHEN currentgradetypekey = 'PSET' THEN '13053'\r
+       WHEN currentgradetypekey = 'COL' THEN '13052'\r
+       WHEN currentgradetypekey = 'UNK' THEN '1289'\r
+       WHEN currentgradetypekey = 'NIS' THEN '1290'\r
+       WHEN currentgradetypekey = '7809' THEN '7809'\r
+       WHEN currentgradetypekey = '7810' THEN '7810'\r
+       WHEN currentgradetypekey = '' THEN '     '\r
+       ELSE '1289'\r
+      -- ELSE currentgradetypekey\r
+       END,\r
+    CASE   WHEN lastgradetypekey = 'PSHS' THEN '1291' \r
+       WHEN lastgradetypekey = 'KDGN' THEN '1292'\r
+       WHEN lastgradetypekey = 'GDO' THEN '3370'\r
+       WHEN lastgradetypekey = 'GDTW' THEN '3371'\r
+       WHEN lastgradetypekey = 'GDTH' THEN '3372'\r
+       WHEN lastgradetypekey = 'GDFO' THEN '3373'\r
+       WHEN lastgradetypekey = 'GDFI' THEN '3374'\r
+       WHEN lastgradetypekey = 'GDSI' THEN '7807'\r
+       WHEN lastgradetypekey = 'GDSE' THEN '7808'\r
+       WHEN lastgradetypekey = 'GDEI' THEN '12860'\r
+       WHEN lastgradetypekey = 'GDNI' THEN '12861'\r
+       WHEN lastgradetypekey = 'GDTE' THEN '12862'\r
+       WHEN lastgradetypekey = 'GDEL' THEN '12863'\r
+       WHEN lastgradetypekey = 'GDTWL' THEN '12864'\r
+       WHEN lastgradetypekey = 'PSET' THEN '13053'\r
+       WHEN lastgradetypekey = 'COL' THEN '13052'\r
+       WHEN lastgradetypekey = 'UNK' THEN '1289'\r
+       WHEN lastgradetypekey = 'NIS' THEN '1290'\r
+       WHEN lastgradetypekey = '7809' THEN '7809'\r
+       WHEN lastgradetypekey = '7810' THEN '7810'\r
+       WHEN lastgradetypekey = '' THEN '0'\r
+       ELSE '1289'\r
+       --ELSE lastgradetypekey\r
+       END,\r
+       SUBSTRING(educationname,1,50) as educationname,\r
+       SUBSTRING(F_PLVALUE(adrpredirtypekey,69),1,3),\r
+       SUBSTRING(adrstreet,1,9), -- ADR_STREET_NO\r
+       adrstreetname,\r
+       adrstreetsuffixtypekey,\r
+       SUBSTRING(F_PLVALUE(adrpostdirtypekey,69),1,3),\r
+       adrunitno,\r
+       adrcityname,\r
+       statecode,\r
+       SUBSTRING(COALESCE(CAST(adrzip5no AS VARCHAR),'00000'),1,5) || SUBSTRING(COALESCE(CAST(adrzip4no AS VARCHAR),'0000'),1,4) :: INTEGER\r
+   FROM  personeducation, person\r
+   WHERE  personeducation.personid = person.personid\r
+     and person.cjamspid = VL_CLIENT_ID\r
+     AND  personeducation.activeflag = 1\r
+   ORDER BY personeducation.effectivedate DESC, personeducation.old_id DESC) AS A\r
+   LIMIT 1 ;\r
+  \r
+   EXCEPTION WHEN OTHERS THEN \r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'SELECT FAILED FOR TB_CLIENT_EDUCATION '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+  --- #17248 - 04.10.08 CHECK PHONE NOS FOR SPACES\r
+  IF btrim(VS_WORKER_PHONE) = '' OR VS_WORKER_PHONE IS NULL THEN\r
+   VS_WORKER_PHONE := '0000000000';\r
+  END IF;\r
+  \r
+  IF btrim(CARES_OUT_COL62) = '' OR CARES_OUT_COL62 IS NULL THEN\r
+   CARES_OUT_COL62 := '0000000000';\r
+  END IF;\r
+  \r
+  IF btrim(CARES_OUT_COL73) = '' OR CARES_OUT_COL73 IS NULL THEN\r
+   CARES_OUT_COL73 := '0000000000';\r
+  END IF;\r
+  \r
+  IF btrim(CARES_OUT_COL87) = '' OR CARES_OUT_COL87 IS NULL THEN\r
+   CARES_OUT_COL87 := '0000000000';\r
+  END IF;\r
+\r
+  -- Set Interface Data\r
+  BEGIN  \r
+   INSERT INTO TB_CARES_OUTBOUND_INTERFACE\r
+   ( CARES_RECORD_ID,\r
+    STATUS_CD,\r
+    BATCH_SEQ_NO,\r
+    TRANSACTION_SEQ_NO,\r
+    TRANSACTION_TYPE_CD,\r
+    CIS_CLIENT_ID,\r
+    RECORD_TYPE_CD,\r
+    TRANSACTION_TS,\r
+    RECORD_SEQ_NO,\r
+    CARES_OUT_COL1,\r
+    CARES_OUT_COL2,\r
+    CARES_OUT_COL3,\r
+    CARES_OUT_COL4,\r
+    CARES_OUT_COL5,\r
+    CARES_OUT_COL6,\r
+    CARES_OUT_COL7,\r
+    CARES_OUT_COL8,\r
+    CARES_OUT_COL9,\r
+    CARES_OUT_COL10,\r
+    CARES_OUT_COL11,\r
+    CARES_OUT_COL12,\r
+    CARES_OUT_COL13,\r
+    CARES_OUT_COL14,\r
+    CARES_OUT_COL15,\r
+    CARES_OUT_COL16,\r
+    CARES_OUT_COL17,\r
+    CARES_OUT_COL18,\r
+    CARES_OUT_COL19,\r
+    CARES_OUT_COL20,\r
+    CARES_OUT_COL21,\r
+    CARES_OUT_COL22,\r
+    CARES_OUT_COL23,\r
+    CARES_OUT_COL24,\r
+    CARES_OUT_COL25,\r
+    CARES_OUT_COL26,\r
+    CARES_OUT_COL27,\r
+    CARES_OUT_COL28,\r
+    CARES_OUT_COL29,\r
+    CARES_OUT_COL30,\r
+    CARES_OUT_COL31,\r
+    CARES_OUT_COL32,\r
+    CARES_OUT_COL33,\r
+    CARES_OUT_COL34,\r
+    CARES_OUT_COL35,\r
+    CARES_OUT_COL36,\r
+    CARES_OUT_COL37,\r
+    CARES_OUT_COL38,\r
+    CARES_OUT_COL39,\r
+    CARES_OUT_COL40,\r
+    CARES_OUT_COL41,\r
+    CARES_OUT_COL42,\r
+    CARES_OUT_COL43,\r
+    CARES_OUT_COL44,\r
+    CARES_OUT_COL45,\r
+    CARES_OUT_COL46,\r
+    CARES_OUT_COL47,\r
+    CARES_OUT_COL48,\r
+    CARES_OUT_COL49,\r
+    CARES_OUT_COL50,\r
+    CARES_OUT_COL51,\r
+    CARES_OUT_COL52,\r
+    CARES_OUT_COL53,\r
+    CARES_OUT_COL54,\r
+    CARES_OUT_COL55,\r
+    CARES_OUT_COL56,\r
+    CARES_OUT_COL57,\r
+    CARES_OUT_COL58,\r
+    CARES_OUT_COL59,\r
+    CARES_OUT_COL60,\r
+    CARES_OUT_COL61,\r
+    CARES_OUT_COL62,\r
+    CARES_OUT_COL63, \r
+    CARES_OUT_COL64,\r
+    CARES_OUT_COL65,\r
+    CARES_OUT_COL66,\r
+    CARES_OUT_COL67,\r
+    CARES_OUT_COL68,\r
+    CARES_OUT_COL69,\r
+    CARES_OUT_COL70,\r
+    CARES_OUT_COL71,\r
+    CARES_OUT_COL72,\r
+    CARES_OUT_COL73,\r
+    CARES_OUT_COL74,\r
+    CARES_OUT_COL75,\r
+    CARES_OUT_COL76,\r
+    CARES_OUT_COL77,\r
+    CARES_OUT_COL78,\r
+    CARES_OUT_COL79,\r
+    CARES_OUT_COL80,\r
+    CARES_OUT_COL81,\r
+    CARES_OUT_COL82,\r
+    CARES_OUT_COL83,\r
+    CARES_OUT_COL84,\r
+    CARES_OUT_COL85,\r
+    CARES_OUT_COL86,\r
+    CARES_OUT_COL87,\r
+    CARES_OUT_COL88,\r
+    CARES_OUT_COL89,\r
+    CARES_OUT_COL90,\r
+    CARES_OUT_COL91,\r
+    CARES_OUT_COL92,\r
+    CARES_OUT_COL93,\r
+    CARES_OUT_COL94,\r
+    CARES_OUT_COL95,\r
+    CARES_OUT_COL96,\r
+    CARES_OUT_COL97,\r
+    CARES_OUT_COL98,\r
+    CARES_OUT_COL99,\r
+    CARES_OUT_COL100,\r
+    CARES_OUT_COL101,\r
+    CARES_OUT_COL102,\r
+    CARES_OUT_COL103,\r
+    CARES_OUT_COL104,\r
+    CARES_OUT_COL105,\r
+    CARES_OUT_COL106,\r
+    CARES_OUT_COL107)\r
+   SELECT\r
+    NEXTVAL ('SQ_CARES_OUTBOUND_INTERFACE'),\r
+    '000',\r
+    '',\r
+    CASE WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 1 THEN '0000'||VS_TRANSACTION_SEQUENCE\r
+      WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 2 THEN '000'||VS_TRANSACTION_SEQUENCE\r
+      WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 3 THEN '00'||VS_TRANSACTION_SEQUENCE\r
+      WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 4 THEN '0'||VS_TRANSACTION_SEQUENCE\r
+      WHEN LENGTH(VS_TRANSACTION_SEQUENCE) = 5 THEN VS_TRANSACTION_SEQUENCE\r
+    END,\r
+    VS_TRANSACTION_TYPE_CD,\r
+    COALESCE(SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)),'000000000'),\r
+    '01',\r
+    VD_TRANSACTION_TS,\r
+    '001',\r
+    COALESCE(CAST(VL_TRANSACTION_DATE AS VARCHAR),'00000000'),\r
+    VS_PLACEMENT_STRUCTURE_ID,\r
+    VS_PRIMARY_COUNTY_CD,\r
+    VS_WORKER_NAME,\r
+    COALESCE(VS_WORKER_PHONE,'0000000000'),\r
+    -- right ( regexp_replace(VS_WORKER_PHONE::varchar, '[- ]+','','g')::varchar, 10),\r
+    COALESCE(SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(VS_CIS_CLIENT_ID)))) || LTRIM(RTRIM(VS_CIS_CLIENT_ID)),'000000000'),\r
+    VS_CLIENT_SURNAME,\r
+    VS_CLIENT_GIVENNAME,\r
+    VS_CLIENT_MIDDLENAME,\r
+    VS_CLIENT_SUFFIX,\r
+    VS_AKA_LAST_NM,\r
+    COALESCE(SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM((VL_SSN_NO))))) || LTRIM(RTRIM((VL_SSN_NO ))),'000000000'),\r
+    COALESCE(CAST(VL_DOB_DT AS VARCHAR),'00000000'),\r
+    VS_CLIENT_GENDER,\r
+    VS_CLIENT_RACE,\r
+    COALESCE(CAST(VL_PLACEMENT_START_DATE AS VARCHAR),'00000000'),\r
+    COALESCE(CAST(VL_PLACEMENT_END_DATE AS VARCHAR),'00000000'),\r
+    VS_PLACEMENT_NAME,\r
+    VS_LONG_TERM_CF_INDICATOR,\r
+      COALESCE(CAST(VL_LTCF_ADMISSION_DATE AS VARCHAR),'00000000'),\r
+      COALESCE(CAST(VL_LTCF_DISCHARGE_DATE AS VARCHAR),'00000000'),\r
+    VS_CLIENT_BIRTH_HOSPITAL,\r
+    VS_CLIENT_BIRTH_CITY,\r
+    VS_CLIENT_BIRTH_STATE,\r
+    VS_CLIENT_MARITAL_STATUS,\r
+    VS_CLIENT_RESIDENCY_STATUS,\r
+    VS_CLIENT_DISABLED,\r
+    VS_CLIENT_PHYSICAL_DISABILITY,\r
+    VS_CLIENT_MENTAL_DISABILITY,\r
+    VS_CLIENT_VISUAL_DISABILITY,\r
+    VS_CLIENT_HEARING_DISABILITY,\r
+    VS_CLIENT_MENTAL_RETARDATION,\r
+    VS_CLIENT_LEARNING_DISABILITY,\r
+    VS_CLIENT_COGNITIVE_DISABILITY,\r
+    VS_CLIENT_DEV_DELAY_DISABILITY,\r
+    VS_CLIENT_OTHER_DISABILITY,\r
+    VS_CLIENT_MEDICAL_INSURANCE,\r
+    CARES_OUT_COL38,\r
+    COALESCE(CAST(CARES_OUT_COL39 AS VARCHAR),'00000000'),\r
+    COALESCE(CAST(CARES_OUT_COL40 AS VARCHAR),'00000000'),\r
+      COALESCE(CAST(CARES_OUT_COL41 AS VARCHAR),'00000000'),\r
+      CASE WHEN (CARES_OUT_COL42_CONVERT = '' OR LENGTH(CARES_OUT_COL42_CONVERT) <= 0) THEN '00000000.00'\r
+         --  WHEN LENGTH(CARES_OUT_COL42_CONVERT) <= 0 THEN '00000000.00'\r
+        ELSE COALESCE(CAST(CARES_OUT_COL42_CONVERT AS VARCHAR),'00000000.00')\r
+      END,\r
+      CARES_OUT_COL43,\r
+      CARES_OUT_COL44,\r
+      CARES_OUT_COL45,\r
+      CARES_OUT_COL46,\r
+      CARES_OUT_COL47,\r
+      CARES_OUT_COL48,\r
+      CARES_OUT_COL49,\r
+      CARES_OUT_COL50,\r
+      CARES_OUT_COL51,\r
+      CASE WHEN (CARES_OUT_COL52 = 0 OR CARES_OUT_COL52 IS NULL) THEN '000000000'\r
+      --     WHEN CARES_OUT_COL52 IS NULL THEN '000000000'\r
+        ELSE SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(CAST(CARES_OUT_COL52 AS VARCHAR))))) || LTRIM(RTRIM(CAST(CARES_OUT_COL52 AS VARCHAR)))\r
+      END,\r
+      CARES_OUT_COL53,\r
+      CARES_OUT_COL54,\r
+      CARES_OUT_COL55,\r
+      CARES_OUT_COL56,\r
+      CARES_OUT_COL57,\r
+      CARES_OUT_COL58,\r
+      CARES_OUT_COL59,\r
+      CARES_OUT_COL60,\r
+      CASE WHEN (CARES_OUT_COL61 = 0 OR CARES_OUT_COL61 IS NULL) THEN '000000000'\r
+        --WHEN CARES_OUT_COL61 IS NULL THEN '000000000'\r
+        ELSE SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(CAST(CARES_OUT_COL61 AS VARCHAR))))) || LTRIM(RTRIM(CAST(CARES_OUT_COL61 AS VARCHAR)))\r
+      END,\r
+        -- CARES_OUT_COL62,\r
+      right ( regexp_replace(CARES_OUT_COL62::varchar, '[- ]+','', 'g')::varchar, 10),\r
+      substring(CARES_OUT_COL63,1,50), \r
+      CARES_OUT_COL64,\r
+      CARES_OUT_COL65,\r
+      CARES_OUT_COL66,\r
+      CARES_OUT_COL67,\r
+      CARES_OUT_COL68,\r
+      CARES_OUT_COL69,\r
+      CARES_OUT_COL70,\r
+      CARES_OUT_COL71,\r
+      CASE WHEN (CARES_OUT_COL72 = 0 OR CARES_OUT_COL72 IS NULL) THEN '000000000'\r
+        --WHEN CARES_OUT_COL72 IS NULL THEN '000000000'\r
+        ELSE SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(CAST(CARES_OUT_COL72 AS VARCHAR))))) || LTRIM(RTRIM(CAST(CARES_OUT_COL72 AS VARCHAR)))\r
+      END,\r
+      CARES_OUT_COL73,\r
+      CARES_OUT_COL74,\r
+      CARES_OUT_COL75,\r
+      CARES_OUT_COL76,\r
+      CARES_OUT_COL77,\r
+      CARES_OUT_COL78,\r
+      CARES_OUT_COL79,\r
+      CARES_OUT_COL80,\r
+      CARES_OUT_COL81,\r
+      CARES_OUT_COL82,\r
+      CARES_OUT_COL83,\r
+      CARES_OUT_COL84,\r
+      CARES_OUT_COL85,\r
+      CASE WHEN (CARES_OUT_COL86 = 0 OR CARES_OUT_COL86 IS NULL) THEN '000000000'\r
+        --WHEN CARES_OUT_COL86 IS NULL THEN '000000000'\r
+        ELSE SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(CAST(CARES_OUT_COL86 AS VARCHAR))))) || LTRIM(RTRIM(CAST(CARES_OUT_COL86 AS VARCHAR)))\r
+      END,\r
+      CARES_OUT_COL87,\r
+      CARES_OUT_COL88,\r
+      CARES_OUT_COL89,\r
+      CARES_OUT_COL90,\r
+      CARES_OUT_COL91,\r
+      CARES_OUT_COL92,\r
+      CARES_OUT_COL93 ,\r
+      CARES_OUT_COL94,\r
+      CARES_OUT_COL95,\r
+      CARES_OUT_COL96,\r
+      CAST(CARES_OUT_COL97 AS VARCHAR),\r
+      CARES_OUT_COL98,\r
+      CARES_OUT_COL99,\r
+      CARES_OUT_COL100,\r
+      CARES_OUT_COL101,\r
+      CARES_OUT_COL102,\r
+      CARES_OUT_COL103,\r
+      CARES_OUT_COL104,\r
+      CARES_OUT_COL105,\r
+      CARES_OUT_COL106,\r
+      CASE WHEN (CARES_OUT_COL107 = 0 OR CARES_OUT_COL107 IS NULL) THEN '000000000'\r
+        --WHEN CARES_OUT_COL107 IS NULL THEN '000000000'\r
+        ELSE SUBSTRING('000000000',1,9 - LENGTH(LTRIM(RTRIM(CAST(CARES_OUT_COL107 AS VARCHAR))))) || LTRIM(RTRIM(CAST(CARES_OUT_COL107 AS VARCHAR)))\r
+      END\r
+      ;\r
+\r
+    --RAISE NOTICE 'INSERT IN GEN DATA 01 SUCCESSFUL';\r
+\r
+   EXCEPTION WHEN OTHERS THEN\r
+    VL_OUTPUT_SQLCODE  :=  SQLSTATE;\r
+    VS_MESSAGE := 'INSERT INTO TB_CARES_OUTBOUND_INTERFACE FAILED '||SQLERRM  ;\r
+    RETURN;\r
+  END ;\r
+  \r
+ END IF; \r
+END \r
+;\r
+$function$
+

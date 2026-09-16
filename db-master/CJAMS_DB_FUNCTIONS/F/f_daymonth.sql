@@ -1,0 +1,42 @@
+ CREATE OR REPLACE FUNCTION public.f_daymonth(var_dt date, as_day_sw character varying, as_type character varying)                                                                            
+  RETURNS date                                                                                                                                                                                
+  LANGUAGE plpgsql                                                                                                                                                                            
+ AS $function$                                                                                                                                                                                
+                                                                                                                                                                                              
+ DECLARE                                                                                                                                                                                      
+     declare var_year integer;                                                                                                                                                                
+         declare var_month integer;                                                                                                                                                           
+         declare var_year_minus1month integer;                                                                                                                                                
+         declare var_month_minus1month integer;                                                                                                                                               
+         declare var_year_plus1month integer;                                                                                                                                                 
+         declare var_month_plus1month integer;                                                                                                                                                
+ BEGIN                                                                                                                                                                                        
+ SELECT date_part('YEAR', var_dt) INTO var_year;                                                                                                                                              
+ SELECT date_part('MONTH', var_dt) INTO var_month;                                                                                                                                            
+ SELECT date_part('YEAR', var_dt - INTERVAL '1 month') INTO var_year_minus1month;                                                                                                             
+ SELECT date_part('MONTH', var_dt - INTERVAL '1 month') INTO var_month_minus1month;                                                                                                           
+ SELECT date_part('YEAR', var_dt + INTERVAL '1 month') INTO var_year_plus1month;                                                                                                              
+ SELECT date_part('MONTH', var_dt + INTERVAL '1 month') INTO var_month_plus1month;                                                                                                            
+                                                                                                                                                                                              
+  IF AS_DAY_SW = 'L' OR AS_DAY_SW = 'l' THEN                                                                                                                                                  
+                                                                                                                                                                                              
+         IF AS_TYPE = 'C' or AS_TYPE = 'c' then                                                                                                                                               
+                 return date( var_year_plus1month || case when var_month_plus1month < 10 then '-0' || var_month_plus1month else '-' || var_month_plus1month end  || '-01') - INTERVAL '1 DAY';
+         ELSE                                                                                                                                                                                 
+                 return date( var_year || case when var_month < 10 then '-0' || var_month else '-'|| var_month end  || '-01') - INTERVAL '1 DAY';                                             
+         END IF;                                                                                                                                                                              
+    ELSE                                                                                                                                                                                      
+         IF AS_TYPE = 'C' or AS_TYPE = 'c' then                                                                                                                                               
+                                                                                                                                                                                              
+                 return date(var_year || case when var_month < 10 then '-0' || var_month else '-' || var_month end  || '-01') ;                                                               
+         ELSE                                                                                                                                                                                 
+                                                                                                                                                                                              
+                 return date( var_year_minus1month || case when var_month_minus1month < 10 then '-0' || var_month_minus1month else '-' || var_month_minus1month end  || '-01') ;              
+         END IF;                                                                                                                                                                              
+                                                                                                                                                                                              
+    END IF;                                                                                                                                                                                   
+                                                                                                                                                                                              
+ END                                                                                                                                                                                          
+                                                                                                                                                                                              
+ $function$                                                                                                                                                                                   
+

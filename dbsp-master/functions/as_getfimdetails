@@ -1,0 +1,66 @@
+CREATE OR REPLACE FUNCTION as_getfimdetails(l_intakeserviceid uuid, l_page integer, l_limit integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+v_fimdetails json;
+_offset  integer;
+
+BEGIN 
+
+_offset := (l_page - 1) * l_limit;  
+
+  SELECT Json_agg(fim) into v_fimdetails from 
+  (SELECT MR.intakeserviceid, 
+         MR.meetingdate, 
+         MR.meetingtypekey, 
+         MR.persontype, 
+         MR.personname, 
+         MR.meetingdescription, 
+         MR.meetingcomments, 
+         MR.isfollowupmeeting, 
+         MR.parentmeetingid, 
+         MR.iscompleted, 
+         (SELECT Json_agg(actor) 
+   FROM  (SELECT mra.meetingrecordingid, 
+          mra.personid,
+          p.firstname,
+          p.lastname,
+          isra.actorid,
+          at.actortype,
+          at.typedescription 
+          FROM   meetingrecordingactor mra inner join person p on p.personid = mra.personid
+          inner join intakeservicerequestactor isra on  isra.intakeservicerequestactorid = mra.intakeservicerequestactorid
+          inner join actortype at on at.actortype = isra.intakeservicerequestpersontypekey
+          WHERE  mra.meetingrecordingid = MR.meetingrecordingid 
+          AND mra.activeflag = 1)actor) :: json AS recordingactor, 
+         (SELECT Json_agg(participant) 
+   FROM  (SELECT participanttype, 
+          participantkey, 
+          participantroledesc, 
+          firstname, 
+          lastname, 
+          emailid, 
+          personid, 
+          isinvited, 
+          isattended, 
+          isaccpted 
+          FROM   meetingparticipants 
+          WHERE  meetingrecordingid = MR.meetingrecordingid 
+          AND activeflag = 1)participant) :: json AS participants, 
+         (SELECT Json_agg(fimtype) 
+   FROM  (SELECT familymeetingtypekey, 
+          familymeetingsubtypekey 
+          FROM   meetingfimdetails 
+          WHERE  meetingrecordingid = MR.meetingrecordingid 
+          AND activeflag = 1)fimtype) :: json AS fimdetails 
+  FROM   meetingrecording MR where MR.intakeserviceid = l_intakeserviceid 
+  LIMIT l_limit OFFSET _offset) fim ;
+
+
+RETURN v_fimdetails;
+END
+
+$function$
+

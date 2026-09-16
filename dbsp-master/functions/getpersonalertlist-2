@@ -1,0 +1,56 @@
+CREATE OR REPLACE FUNCTION getpersonalertlist(v_personid uuid, pagenumber bigint, pagesize bigint, v_activeflag integer, v_securityuserid character varying, v_nolimit boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, updatedpid bigint, createdpid bigint, updatedname text, createdname text, alertid uuid, alerttype character varying, status character varying, startdatetime timestamp without time zone, enddatetime timestamp without time zone, notes text, personalertid uuid, createdid character varying, updatedid character varying, description character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+   v_pageoffset   INT;
+   v_pagenumber   INT;
+BEGIN
+   IF COALESCE (pagesize, 0) < 1
+   THEN
+      pagesize := 10;
+   END IF;
+
+   IF COALESCE (pagenumber, 0) < 1
+   THEN
+      pagenumber := 1;
+   END IF;
+
+   v_pagenumber := pagenumber - 1;
+   v_pageoffset = v_pagenumber * pagesize;
+
+   RETURN QUERY
+        SELECT count (1) OVER () AS totalcount,
+               up.cjamspid AS updatedpid,
+               up1.cjamspid AS createdpid,
+               CONCAT (up.firstname, ' ', up.lastname) AS updatedname,
+               CONCAT (up1.firstname, ' ', up1.lastname) AS createdname,
+               pa.alertid,
+               pa.alerttype,
+               pa.status,
+               pa.startdatetime,
+               pa.enddatetime,
+               pa.notes,
+               pa.personalertid,
+               pa.insertedby AS createdid,
+               pa.updatedby AS updatedid,
+               pat.typedescription AS description
+          FROM personalert pa
+               LEFT JOIN personalerttype pat
+                  ON pa.alerttype = pat.personalerttypekey
+               LEFT JOIN person p ON p.personid = pa.personid
+               LEFT JOIN userprofile up ON pa.updatedby = up.securityusersid
+               LEFT JOIN userprofile up1 ON pa.insertedby = up1.securityusersid
+         WHERE     pa.personid = v_personid
+               AND CASE
+                      WHEN pa.status = 'Active' THEN pa.activeflag = 1
+                      WHEN pa.status = 'Inactive' THEN pa.activeflag = 0
+                   END
+      ORDER BY pa.insertedon
+         LIMIT CASE WHEN v_nolimit = FALSE THEN pagesize END
+        OFFSET CASE WHEN v_nolimit = FALSE THEN v_pageoffset END;
+END;
+$function$
+

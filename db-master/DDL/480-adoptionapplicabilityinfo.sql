@@ -1,0 +1,3 @@
+ALTER TABLE cjams.adoptionapplicabilityinfo RENAME COLUMN isthechildasiblingtoachildwhoqualifiesasanapplicablechildbyage TO issiblingtochildwhoqualifiesasapplchildbyage;
+ALTER TABLE cjams.adoptionapplicabilityinfo RENAME COLUMN dateoffirstcourtorderwithbestinterestorctwfindingifconvertedtoc TO dtof1stcowithbiorctwfindingifconvtocina;
+

@@ -1,0 +1,76 @@
+ CREATE OR REPLACE FUNCTION public.send_appointment_notification(eventcode character varying, v_intakenumber character varying, fromuserid character varying, assigneduserid character varying)
+  RETURNS text                                                                                                                                                                                 
+  LANGUAGE plpgsql                                                                                                                                                                             
+ AS $function$                                                                                                                                                                                 
+                                                                                                                                                                                               
+ DECLARE                                                                                                                                                                                       
+                                                                                                                                                                                               
+ v_fromusername character varying;                                                                                                                                                             
+ v_tousername character varying;                                                                                                                                                               
+ v_notifystatus  character varying;                                                                                                                                                            
+ v_date timestamp without time zone;                                                                                                                                                           
+ v_intakejson json;                                                                                                                                                                            
+ v_data json;                                                                                                                                                                                  
+ arr_appointments json;                                                                                                                                                                        
+ i json;                                                                                                                                                                                       
+ ischanged bool;                                                                                                                                                                               
+ notify_touserid character varying;                                                                                                                                                            
+ schedule_touserid character varying;                                                                                                                                                          
+ schedule_name character varying;                                                                                                                                                              
+ v_preintakeuserid character varying;                                                                                                                                                          
+ appmntDate character varying;                                                                                                                                                                 
+                                                                                                                                                                                               
+ BEGIN                                                                                                                                                                                         
+ v_date:= now() at time zone 'utc';                                                                                                                                                            
+                                                                                                                                                                                               
+ ischanged:= true;                                                                                                                                                                             
+                                                                                                                                                                                               
+ select jsondata into v_intakejson from intakedastaging where intakenumber = v_intakenumber and activeflag = 1 and teamtypekey = 'CW';                                                                                
+                                                                                                                                                                                               
+ arr_appointments := v_intakejson ->> 'appointments';                                                                                                                                          
+                                                                                                                                                                                               
+  -- Notification for Interviews                                                                                                                                                               
+                                                                                                                                                                                               
+         FOR i IN SELECT * FROM json_array_elements(arr_appointments)                                                                                                                          
+         LOOP                                                                                                                                                                                  
+                 If i ->> 'status' = 'Scheduled' Then                                                                                                                                          
+                         ischanged = i ->> 'ischanged';                                                                                                                                        
+                         ischanged = true;                                                                                                                                                     
+                          If eventcode = 'AN' OR ischanged Then                                                                                                                                
+                                 If eventcode = 'AN' Then                                                                                                                                      
+                                         notify_touserid:= assigneduserid;                                                                                                                     
+                                 Else                                                                                                                                                          
+                                         notify_touserid:= fromuserid;                                                                                                                         
+                                 End If;                                                                                                                                                       
+                                 appmntDate:= i ->> 'appointmentDate';                                                                                                                         
+                                                                                                                                                                                               
+                                 SELECT send_notification into v_notifystatus from send_notification(notify_touserid,fromuserid,notify_touserid,                                               
+                                 'System', 'High', 'New Appointment has been scheduled.' ,                                                                                                     
+                                 'New Appointment has been scheduled to you for Intake - '||v_intakenumber ||' on '|| appmntDate || '.' ,                                                      
+                                 v_intakenumber);                                                                                                                                              
+                                                                                                                                                                                               
+                                 Select fromsecurityusersid into v_preintakeuserid From routing where fromroleid = 'JSSW' And objectid  = v_intakenumber order by insertedon desc limit 1;     
+                                                                                                                                                                                               
+                                 notify_touserid:= v_preintakeuserid;                                                                                                                          
+                                 If eventcode = 'AN' Then                                                                                                                                      
+                                         schedule_touserid:= assigneduserid;                                                                                                                   
+                                 Else                                                                                                                                                          
+                                         schedule_touserid:= fromuserid;                                                                                                                       
+                                 End If;                                                                                                                                                       
+                                                                                                                                                                                               
+                                 Select displayname into schedule_name from UserProfile where securityusersid = schedule_touserid and activeflag = 1;                                          
+                                                                                                                                                                                               
+                                 SELECT send_notification into v_notifystatus from send_notification(notify_touserid,fromuserid,notify_touserid,                                               
+                                         'System', 'Low', 'New Appointment has been scheduled.' ,                                                                                              
+                                         'New Appointment has been scheduled to ' || schedule_name || ' for Intake - '||v_intakenumber ||' on '|| appmntDate || '.' ,                          
+                                         v_intakenumber);                                                                                                                                      
+                         End If;                                                                                                                                                               
+                 End If;                                                                                                                                                                       
+         End LOOP;                                                                                                                                                                             
+                                                                                                                                                                                               
+         Return 'Success';                                                                                                                                                                     
+                                                                                                                                                                                               
+ END;                                                                                                                                                                                          
+                                                                                                                                                                                               
+ $function$                                                                                                                                                                                    
+

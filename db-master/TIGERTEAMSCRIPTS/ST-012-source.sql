@@ -1,0 +1,1 @@
+ALTER TABLE cjams.progressnote ADD uploadedfile json NULL;

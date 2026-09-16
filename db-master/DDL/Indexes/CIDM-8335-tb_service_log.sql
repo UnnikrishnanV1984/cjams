@@ -1,0 +1,1 @@
+Create index Xie1_tb_service_log on tb_service_log(case_id,client_id,delete_sw);

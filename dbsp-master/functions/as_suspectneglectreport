@@ -1,0 +1,109 @@
+CREATE OR REPLACE FUNCTION as_suspectneglectreport(i_intakenumber character varying, i_intakeserviceid uuid, i_caseworkerid character varying)
+ RETURNS TABLE(currentdate character varying, youthname character varying, youthpid character varying, dateofbirth character varying, race character varying, address character varying, youthage character varying, parentguaridanname character varying, relationship character varying, parentaddress character varying, provider_name character varying, cw_name character varying, complaintsource character varying, complaintsname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_intakeserviceid character varying;
+parentguaridanname character varying;
+relationship character varying;
+parentaddress character varying;
+records integer;
+
+BEGIN
+
+select count(*) into records from intakeservicerequest where (intakeserviceid =i_intakeserviceid or intakenumber=i_intakenumber);
+
+
+ 
+select  
+ cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying),
+ cast(ac.relationshiptypekey as character varying),
+ CAST(pa.address||' '||pa.zipcode||' '||pa.city||' '||pa.state||' '||pa.country as character varying)
+  into parentguaridanname,relationship,parentaddress
+from intakeservicerequest INTSR 
+ join intakeservicerequestactor isra  on INTSR.intakeserviceid=isra.intakeserviceid
+left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+join actor a on a.actorid = isra.actorid and a.activeflag =1
+join person p on p.personid = a.personid and p.activeflag = 1
+left join (select ph.phoneextension,ph.phonenumber,ph.personid from personphonenumber ph left join personphonetype pp on ph.personphonetypekey = pp.personphonetypekey and ph.activeflag =1 and pp.activeflag =1 order by pp.sequencenumber limit 1)pph on pph.personid = p.personid 
+left join (select ad.* from personaddress ad left join personaddresstype pat on ad.personaddresstypekey = pat.personaddresstypekey and pat.activeflag = 1 and ad.activeflag = 1 order by pat.sequencenumber limit 1)pa on pa.personid = p.personid 
+left join (select e.* from personemail e left join personemailtype pet on e.personemailtypekey = pet.personemailtypekey and e.activeflag =1 and pet.activeflag =1 order by pet.sequencenumber limit 1)pe on pe.personid = p.personid 
+join (select 1 as seq,'father' as relation union 
+  select 2 as seq,'mother' as relation union
+  select 3 as seq,'fosterparent' as relation union 
+  select 4 as seq,'stepparent' as relation union
+  select 5 as seq,'adoptiveparent' as relation union 
+  select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey 
+ where  (INTSR.intakeserviceid =NULL or INTSR.intakeserviceid =i_intakeserviceid) or
+                (INTSR.intakenumber =NULL or INTSR.intakenumber=i_intakenumber) 
+order by rel.seq limit 1;
+
+if (records>=1) then
+RETURN QUERY    
+ (
+ select distinct 
+      CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+      cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+         cast(p.cjamspid as character varying) as youthpid,
+   cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as dateofbirth,
+   (select distinct typedescription from racetype where racetypekey=p.racetypekey) as race,
+   CAST(pa.address||' '||pa.zipcode||' '||pa.city||' '||pa.state||' '||pa.country as character varying) as address,
+   cast(age(now()::date,p.dob) as character varying) as youthage,
+   parentguaridanname,relationship,parentaddress,
+   cast(pr.providername as character varying)  as provider_name,
+   cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = i_caseworkerid) as character varying) as  cw_name,
+   cast((select distinct description from evaluationsourceagency where evaluationsourcetypekey=es.evaluationsourcekey) as character varying)  as complaintsource,
+         cast(es.lastname ||' '|| es.firstname as character varying) as complaintsname
+  from intakeservicerequestevaluation inve
+             join intakeservicerequest INTSR on INTSR.intakenumber=inve.intakenumber and INTSR.activeflag=1
+             join intakeservicerequestactor INSRA on INSRA.intakeserviceid=INTSR.intakeserviceid and INSRA.activeflag=1 and INSRA.intakeservicerequestpersontypekey='Youth' 
+             join actor ACC on ACC.actorid=INSRA.actorid and ACC.activeflag=1 
+             join person p on ACC.personid=p.personid and p.activeflag=1
+             left join evaluationsource es on es.evaluationsourceid=inve.evaluationsourceid and es.activeflag=1
+     left join placement pl on INTSR.intakeserviceid =pl.intakeserviceid and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+     left join personaddress pa on pa.personid=p.personid and pa.activeflag=1 
+ where    (INTSR.intakeserviceid =NULL or INTSR.intakeserviceid =i_intakeserviceid) or
+                (INTSR.intakenumber =NULL or INTSR.intakenumber=i_intakenumber) );
+    
+else
+RETURN QUERY    
+ ( 
+ select 
+        CAST(to_char(now(),'MM/DD/YYYY') as character varying) as currentdate,
+     cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   as youthname,
+           cast(coalesce(obj->>'cjamspid','') as character varying) as youthid,
+     cast(obj->>'Dob' as character varying) as DOB,
+      cast((select distinct typedescription from racetype where racetypekey=cast(coalesce(obj->>'race','') as character varying)) as character varying) as race,
+   CAST(coalesce(obj->>'Address','')||' '||coalesce(obj->>'zipcode','')||' '||coalesce(obj->>'city','')||' '||coalesce(obj->>'state','')||' '||coalesce(obj->>'country','') as character varying) as address,
+           cast(age(now()::date,TO_DATE(obj->>'Dob', 'mm-dd-yyyy')) as character varying) as youthage,
+   cast((select cast(INITCAP(TRIM(coalesce(obj->>'Lastname',''))|| CASE WHEN (obj->>'suffix' is not null and obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(obj->>'suffix','')) || ', ' ||TRIM(coalesce(obj->>'Firstname',''))) as  character varying)   
+                       from intakedastaging ida , jsonb_array_elements(ida.jsondata->'persons') obj
+                       where ida.activeflag=1  and obj->>'Role' ='Others'  and (obj->>'relationshiptorakey' ='father' or obj->>'relationshiptorakey' ='mother') and ida.intakenumber=i_intakenumber)  as character varying) as parentguaridanname,
+      cast((select obj->>'relationshiptorakey' 
+                       from intakedastaging ida , jsonb_array_elements(ida.jsondata->'persons') obj
+                       where ida.activeflag=1  and obj->>'Role' ='Others'  and  ida.intakenumber=i_intakenumber)  as character varying) as relationship,
+  cast((select coalesce(obj->>'Address','')||' '||coalesce(obj->>'zipcode','')||' '||coalesce(obj->>'city','')||' '||coalesce(obj->>'state','')||' '||coalesce(obj->>'country','') 
+                       from intakedastaging ida , jsonb_array_elements(ida.jsondata->'persons') obj
+                       where ida.activeflag=1  and obj->>'Role' ='Others'  and  ida.intakenumber=i_intakenumber)  as character varying) as parentaddress,
+         cast(pr.providername as character varying)  as provider_name,
+   cast((select distinct up.lastname||', '||up.firstname from userprofile up where securityusersid = i_caseworkerid) as character varying) as  cw_name,
+   cast((select distinct description from evaluationsourceagency where evaluationsourcetypekey=es.evaluationsourcekey) as character varying)  as complaintsource,
+         cast(es.lastname ||' '|| es.firstname as character varying) as complaintsname
+     from
+ intakedastaging ida
+  left join placement pl on ida.intakenumber =pl.intakenumber and pl.activeflag=1
+             left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1 
+   left join intakeservicerequestevaluation inve on inve.intakenumber=ida.intakenumber and inve.activeflag=1
+                left join evaluationsource es on es.evaluationsourceid=inve.evaluationsourceid and es.activeflag=1
+  , jsonb_array_elements(ida.jsondata->'persons') obj 
+  where  ida.activeflag=1  and obj->>'Role' ='Youth'   and
+          (ida.intakenumber=i_intakenumber)  and obj->>'cjamspid' is not null
+     limit 1
+     
+);
+end if;  
+END;
+$function$
+

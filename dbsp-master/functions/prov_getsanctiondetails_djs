@@ -1,0 +1,86 @@
+CREATE OR REPLACE FUNCTION prov_getsanctiondetails_djs(v_sanction_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+declare
+
+v_details json;
+v_staff json;
+v_license_signature json;
+v_exit_conf_details json;
+begin 
+
+
+select json_agg(a) into v_details from (select ta.*,tb.provider_nm,tb1.provider_nm as provider_name_org,ps.first_nm,ps.last_nm, tpl.license_issue_dt, TO_CHAR(tpl.license_issue_dt, 'MONTH') AS "licenseIssueMnth",
+tpl.license_expiry_dt,TO_CHAR(tpl.license_expiry_dt, 'MONTH') AS "licenseExpiryMnth",prvdec.decisiondate,prvdec.decisiondate + interval '20 days' as effective_date_suspension,
+TO_CHAR(prvdec.decisiondate, 'MONTH') AS "decisionMonth",trim(tbpad.adr_street_tx) as adr_street_tx,
+    trim(tbpad.adr_street_nm) as adr_street_nm,trim(tbpad.adr_street_suffix_cd) as adr_street_suffix_cd,trim(tbpad.adr_city_nm) as adr_city_nm,trim(tbpad.adr_state_cd) as adr_state_cd,trim(tbpad.adr_zip5_no::character VARYING) as adr_zip5_no,
+tpl.license_no,(cast((trim(tbpad.adr_street_tx) 
+    ||' ' ||trim(tbpad.adr_street_nm) || ' '||trim(tbpad.adr_street_suffix_cd) ||'<br> ' ||trim(tbpad.adr_city_nm) ||', ' ||trim(tbpad.adr_state_cd) ||'-' || trim(tbpad.adr_zip5_no::character VARYING)) AS character VARYING)) AS address,
+prvdec2.decisiondate as send_to_provider_dt from tb_provider_sanctions ta
+left join tb_provider_licensing tpl on tpl.site_id = ta.site_id and tpl.active_sw = 'Y'
+left join tb_provider tb on tb.provider_id = tpl.site_id
+left join tb_provider tb1 on tb1.provider_id = ta.provider_id
+left join providerstaffconfig p2 on p2.object_id = tpl.site_id
+join providerstaff ps on ps.employee_type = 'Program Administrator' and ps.delete_sw = 'N' and ps.provider_staff_id = p2.provider_staff_id 
+left join tb_provider_decision prvdec on prvdec.objectid = ta.sanction_no 
+and prvdec.decisionid  in (select decisionid from tb_provider_decision where 
+objectid = ta.sanction_no  and status in ('Rejected','Approved','Denied') order by decisiondate desc limit 1)
+left join tb_provider_decision prvdec2 on prvdec2.objectid = ta.sanction_no 
+and prvdec2.decisionid  in (select decisionid from tb_provider_decision where 
+objectid = ta.sanction_no  and status in ('Sent to Provider') order by prvdec2.decisiondate desc limit 1)
+left join tb_provider_addresses tbpad on tbpad.parent_key_id = ta.site_id :: character varying and tbpad.delete_sw ='N' 
+where ta.sanction_no = v_sanction_id and ta.delete_sw = 'N')a;
+
+select jsonb_agg(a) into v_staff from ( 
+select m.username,m.email,p.address, p.city, p.state, p.zipcode,(select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3)
+ || '-' || SUBSTRING(phonenumber::text,7,4) from userprofilephonenumber u 
+where  u.securityusersid in (select toworkeridno from providerassignment where objectid = (select site_id from tb_provider_sanctions ta 
+ where ta.sanction_no = v_sanction_id and ta.delete_sw = 'N' limit 1) and activeflag = '1'  order by startdate desc limit 1)) as 
+phonenumber,r.name from muser m left join userprofilephonenumber u 
+on u.securityusersid =m.securityusersid left join userprofileaddress p on 
+p.securityusersid = m.securityusersid join rolemapping r2 on r2.principalid = m.id and r2.activeflag = '1' and r2.teamtypekey not in ('CW','ASPROV','AS')
+  join role r on r.id = r2.roleid
+ where   m.securityusersid in (select toworkeridno from providerassignment where objectid = (select site_id from tb_provider_sanctions ta 
+ where ta.sanction_no = v_sanction_id and ta.delete_sw = 'N' limit 1)
+ and activeflag = '1'  order by startdate desc limit 1)
+)a;
+
+select json_agg(exit_conf_details) into v_exit_conf_details from (select  distinct tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,prq.displayorder,
+                    (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                    (case when tp.provider_nm is null then (select * from prov_get_formatted_applicantaddresses(pv.applicant_id))  else (select * from prov_get_formatted_addresses(tp.provider_id)) end) as site_address,
+                    (case when tp.provider_id::character varying is null then pv.applicant_id else tp.provider_id::character varying end) as site_id,
+                    pv.reference_value_id,
+                    pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency, pv.referencetype, pv.reference_id, 
+                    pv.violation_id, pv.deficiency_number, mec.cap_number_djs, pv.comments, pv.isdraft, pv.cap_status, pv.cap_status_description, 
+                    pv.planofcorrection, pv.personresponsible, pv.title, pv.disputecomarcitation, pv.targetdate, pv.isdispute, pv.isacknowledged, 
+                    pv.isnotificationsent, pv.duedate, pv.cap_needed, pv.cap_resolved, pv.rationale, 
+                    mec.exit_conf_number,  mec.summary,  mec.program_changes,  mec.exit_dt,  mec.ec_comments,  mec.rationale_comments, 
+                    mec.ec_status , mec.ec_isacknowledged, mec.ec_isnotificationsent, mec.ec_prv_signimage, mec.ec_prv_signdate, mec.cap_submitted_by,  
+                    mec.cap_submitted_dt, mec.cap_created_dt, mec.provider_id, 
+                    prq.type_of_regulation, prq.object_id as question_object_id, prq.object_type as question_object_type, prq.question_comments,
+                    psv.sanction_no,
+                    psv.comments as sanction_comments,
+                    pv.adhoc_regulation_sw
+              from  prov_violation pv
+                  inner join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+                  left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+                  left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+                  left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+                  left join tb_provider tp                      on tp.provider_id = pv.site_id and tp.delete_sw = 'N'
+                  left join prov_monitoring mm                  on mm.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and mm.delete_sw = 'N'   
+                  left join prov_sanctioned_violation psv       on psv.violation_id = pv.violation_id and psv.delete_sw = 'N' 
+                  where  pv.delete_sw = 'N'
+                      and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+                      and (case when pv.referencetype = 'Monitoring' then mm.delete_sw = 'N' else true end)
+                      and psv.sanction_no = v_sanction_id)exit_conf_details;
+
+select jsonb_agg(a) into v_license_signature from (
+select * from tb_provider_decision ta where ta.objectid = v_sanction_id and ta.activeflag = 1 
+and ta.status in ('Rejected','Approved','Denied')
+)a; 
+
+return (json_build_object('details',v_details,'staff',v_staff,'license_signature',v_license_signature,'exit_conf_details',v_exit_conf_details));
+END;
+$function$
+

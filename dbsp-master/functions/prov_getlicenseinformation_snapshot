@@ -1,0 +1,47 @@
+CREATE OR REPLACE FUNCTION prov_getlicenseinformation_snapshot(v_programid character varying, v_skip integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE l_program json;
+BEGIN 
+SELECT json_agg(program) INTO l_program FROM(
+ select tp.provider_nm,tc.provider_id,tcp.*,
+  ts.service_id, ts.service_nm, tps.provider_service_id,
+        (select json_agg(s) from (
+   SELECT cps.site_id, tp.provider_nm as site_name,tpa.*,
+   (select * from prov_get_formatted_addresses(cps.site_id)) as site_address,
+   (select json_agg(l) from (
+     SELECT tpa.children_no as licensed_beds_no, tpl.license_no, tpl.license_level, tpl.license_type, tpl.license_application_id, tpl.license_status_cd, tpl.license_issue_dt, tpl.license_expiry_dt, tpl.licensing_agency_cd
+     FROM tb_provider_licensing tpl 
+     left join tb_prov_accomodation tpa 
+     on tpa.license_application_id = tpl.license_application_id
+     where tpl.site_id = cps.site_id 
+     and tpl.delete_sw = 'N' and tpl.active_sw = 'Y'
+     ) l ) as licenses
+   FROM tb_prov_program_sites_snapshot cps 
+   INNER JOIN tb_provider tp on tp.provider_id = cps.site_id 
+     and tp.delete_sw = 'N'
+   LEFT JOIN tb_provider_addresses tpa on tpa.parent_key_id = cps.site_id and tpa.delete_sw='N' and tpa.adr_default_sw ='Y' and tpa.adr_type_cd = 3357
+   where cps.program_id = tcp.program_id
+     and cps.delete_sw='N'
+    ) s ) as site_list,
+  (select json_agg(x) from (
+   select * 
+   from  tb_contract_program_history tcph 
+   where tcph.program_id = v_programid) x) as history
+  from tb_contract_program_snapshot tcp 
+  left join tb_provider_services_snapshot tps on tcp.program_id = tps.program_id and tps.delete_sw='N' and tps.service_status!='Expired'
+  left join tb_services ts on ts.service_id = tps.service_id and ts.structure_service_cd = 'P' and ts.delete_sw = 'N'
+  inner join tb_provider_contracts tc on tc.contract_id = tcp.contract_id 
+  inner join tb_provider tp on tp.provider_id = tc.provider_id
+  where tcp.program_id=v_programid
+  order by ts.structure_service_cd nulls last, tps.update_ts::timestamp desc nulls last limit 1
+) AS program;
+
+RETURN l_program; 
+ 
+END;
+
+$function$
+

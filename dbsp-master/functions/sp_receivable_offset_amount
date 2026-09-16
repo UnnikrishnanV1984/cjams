@@ -1,0 +1,319 @@
+CREATE OR REPLACE FUNCTION sp_receivable_offset_amount(al_offset_amt numeric, al_provider_id bigint, al_payment_id bigint, OUT al_sqlcode integer)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Stored Procedure to Offset Amount against the Fostercare Payments\r
+\r
+-- Revision(s)\r
+-- 03/12/2021 Vineet Tirodkar - Modifications to update the audit columns of AR tables (CDM-8396)\r
+------------------------------------------------------------------------\r
+-- Declare variables\r
+DECLARE sqlcode_tmp INT DEFAULT 0;\r
+ vd_total_receivable decimal(10,2);\r
+ vl_row_cnt INT DEFAULT 0;\r
+ vl_counter INT DEFAULT 0;\r
+ vs_collection_status_cd CHAR(5);\r
+ vl_array_cnt INT DEFAULT 0;\r
+ vd_collected_amt decimal(10,2);\r
+ vd_receivable_bal_amt decimal(10,2);\r
+ vl_rcvbl_liquidation_id BIGINT DEFAULT 0;\r
+ vl_receivable_detail_id INT DEFAULT 0;\r
+ vl_payment_detail_id INT DEFAULT 0;\r
+ vl_receivable_id BIGINT DEFAULT 0;\r
+ vd_amount_no decimal(10,2);\r
+ vd_receivable_balance_no decimal(10,2);\r
+ vs_approval_status_cd CHAR(5);\r
+ vs_payment_method_cd CHAR(5);\r
+ vs_rcvbl_liquidation_id VARCHAR(40) DEFAULT 'RCVBL_LIQUIDATION_ID';\r
+ vs_sq_name VARCHAR(40) DEFAULT 'sq_receivable_liquidation';\r
+ --DECLARE not_found CONDITION FOR SQLSTATE '02000';--\r
+ vs_sq_name1 VARCHAR(40) DEFAULT 'sq_receivable_offset';\r
+ vl_offset_id BIGINT DEFAULT 0;\r
+ vs_sq_off VARCHAR(40) DEFAULT 'OFF';\r
+ vl_transaction_amt decimal(10,2);\r
+ vl_sqlcode INT DEFAULT 0;\r
+ DECLARE SQLCODE INTEGER DEFAULT 0;\r
+\r
+-- Declare a CURSOR\r
+DECLARE cursor_detail CURSOR FOR\r
+ SELECT A.RECEIVABLE_DETAIL_ID,\r
+  A.PAYMENT_DETAIL_ID,\r
+  A.RECEIVABLE_ID,\r
+  A.AMOUNT_NO,\r
+  A.RECEIVABLE_BALANCE_NO,\r
+  A.APPROVAL_STATUS_CD\r
+ FROM tb_RECEIVABLE_DETAIL A,\r
+  tb_RECEIVABLE_HEADER B,\r
+  tb_PAYMENT_DETAIL C\r
+ WHERE A.RECEIVABLE_ID = B.RECEIVABLE_ID\r
+  AND A.PAYMENT_DETAIL_ID = C.PAYMENT_DETAIL_ID\r
+  AND A.DELETE_SW = 'N'\r
+  AND B.DELETE_SW = 'N'\r
+  AND C.DELETE_SW = 'N'     \r
+  AND ((A.MANUAL_SW = 'N')\r
+  OR \r
+  (A.MANUAL_SW = 'Y' AND A.APPROVAL_STATUS_CD = '3047')\r
+  )\r
+  AND B.PROVIDER_ID = al_provider_id\r
+  AND C.SUBSIDY_AGREEMENT_ID IS NULL -- Excluding A/R for GAP & Adoption Subsidy \r
+ ORDER BY A.RECEIVABLE_DETAIL_ID ;\r
+ \r
+BEGIN      \r
+\r
+ vl_transaction_amt := al_offset_amt;  \r
+    \r
+ -- Insert Into tb_RECEIVABLE_OFFSET\r
+ -- Generate Key ID\r
+ -- CALL CHESSIE_MASK_FIN.sp_nextid( vs_sq_name1,vl_offset_id ); -- generating new id\r
+ SELECT SP_nextid(vs_sq_name1::character varying) into vl_offset_id;\r
+\r
+ IF vl_offset_id <> -1 THEN\r
+  INSERT INTO tb_RECEIVABLE_OFFSET\r
+   ( OFFSET_ID,\r
+    OFFSET_DT,\r
+    OFFSET_AMOUNT_NO,\r
+    PAYMENT_ID,\r
+    CREATE_TS,\r
+    CREATE_USER_ID,\r
+    UPDATE_TS,\r
+    UPDATE_USER_ID,\r
+    DELETE_SW \r
+   )\r
+  VALUES \r
+   (  vl_offset_id,\r
+    CURRENT_DATE,\r
+    al_offset_amt,\r
+    al_payment_id ,\r
+    CURRENT_TIMESTAMP,\r
+    'finance',\r
+    CURRENT_TIMESTAMP,\r
+    'finance',\r
+    'N' \r
+   );\r
+\r
+  IF SQLCODE <> 0 THEN\r
+   al_sqlcode := SQLCODE;\r
+  ELSE\r
+   al_sqlcode := 0;\r
+  END IF;\r
+ ELSE\r
+  al_sqlcode := -1;\r
+ END IF;\r
+\r
+ IF al_sqlcode = 0 THEN\r
+  -- Cursor left open for client application\r
+  OPEN cursor_detail;\r
+   --fetch_loop:\r
+\r
+   SELECT COUNT(*)\r
+    INTO vl_row_cnt\r
+   FROM tb_RECEIVABLE_DETAIL A,\r
+    tb_RECEIVABLE_HEADER B,\r
+    tb_PAYMENT_DETAIL C\r
+   WHERE A.RECEIVABLE_ID = B.RECEIVABLE_ID\r
+    AND A.PAYMENT_DETAIL_ID = C.PAYMENT_DETAIL_ID\r
+    AND A.DELETE_SW = 'N'\r
+    AND B.DELETE_SW = 'N'\r
+    AND C.DELETE_SW = 'N'     \r
+    AND ((A.MANUAL_SW = 'N')\r
+    OR \r
+    (A.MANUAL_SW = 'Y'AND A.APPROVAL_STATUS_CD = '3047')\r
+    )\r
+    AND B.PROVIDER_ID = al_provider_id\r
+    AND C.SUBSIDY_AGREEMENT_ID IS NULL  -- Excluding A/R for GAP & Adoption Subsidy\r
+   ;\r
+  \r
+  --Loop Start Here\r
+  WHILE (vl_row_cnt > vl_counter)     LOOP\r
+   -- Fetch Rows\r
+   -- LOOP\r
+   FETCH  cursor_detail \r
+    INTO vl_receivable_detail_id,\r
+     vl_payment_detail_id,\r
+     vl_receivable_id,\r
+     vd_amount_no,\r
+     vd_receivable_balance_no,\r
+     vs_approval_status_cd;\r
+\r
+   SELECT B.COLLECTION_STATUS_CD\r
+    INTO vs_collection_status_cd\r
+   FROM tb_RECEIVABLE_DETAIL A,\r
+    tb_RECEIVABLE_COLLECTION_STATUS B\r
+   WHERE A.RECEIVABLE_DETAIL_ID = B.RECEIVABLE_DETAIL_ID\r
+    AND B.RECEIVABLE_DETAIL_ID = vl_receivable_detail_id\r
+    AND B.ACTIVE_SW = 'Y'\r
+    AND B.DELETE_SW = 'N'\r
+    AND ((A.MANUAL_SW = 'N')\r
+    OR \r
+    (A.MANUAL_SW = 'Y' AND A.APPROVAL_STATUS_CD = '3047')\r
+    ) ;\r
+  \r
+   IF SQLCODE <> 0 THEN\r
+    al_sqlcode := SQLCODE;\r
+   ELSE\r
+    al_sqlcode := 0;\r
+   END IF;\r
+\r
+   -- # 18623 / CIS-18123 II\r
+   -- IF  al_sqlcode = 0  AND vs_collection_status_cd = '779' THEN\r
+   IF al_sqlcode = 0  AND vs_collection_status_cd <> '775' THEN\r
+    --Payment Procedure for each Child\r
+    IF vd_receivable_balance_no > 0 AND al_offset_amt > 0 THEN\r
+\r
+     CASE WHEN al_offset_amt > vd_receivable_balance_no THEN\r
+      -- Payment Greater Then Receivable Balance\r
+      al_offset_amt := al_offset_amt - vd_receivable_balance_no;\r
+      vd_collected_amt := vd_receivable_balance_no;\r
+      vd_receivable_bal_amt := 0;\r
+     WHEN al_offset_amt = vd_receivable_balance_no THEN\r
+      -- Payment equal Then Receivable Balance\r
+      al_offset_amt := 0;\r
+      vd_receivable_bal_amt := 0;\r
+      vd_collected_amt := vd_receivable_balance_no;\r
+     WHEN al_offset_amt < vd_receivable_balance_no THEN\r
+      -- Payment Less Then Receivable Balance\r
+      vd_collected_amt := al_offset_amt;\r
+      vd_receivable_bal_amt := vd_receivable_balance_no - al_offset_amt;\r
+      al_offset_amt := 0;\r
+     END CASE;\r
+\r
+     --Update each child balance amount\r
+     UPDATE tb_RECEIVABLE_DETAIL\r
+      SET RECEIVABLE_BALANCE_NO = vd_receivable_bal_amt,\r
+       update_ts = current_timestamp,\r
+       update_user_id = 'finance'\r
+     WHERE RECEIVABLE_DETAIL_ID = vl_receivable_detail_id;\r
+\r
+\r
+     IF SQLCODE <> 0 THEN\r
+      al_sqlcode := SQLCODE;\r
+     ELSE\r
+      al_sqlcode := 0;\r
+     END IF;\r
+\r
+     IF al_sqlcode = 0 THEN\r
+      -- Status Changed to PIF\r
+      IF vd_receivable_bal_amt = 0 THEN\r
+       UPDATE tb_RECEIVABLE_DETAIL\r
+        SET RECEIVABLE_STATUS_CD = '20',\r
+         update_ts = current_timestamp,\r
+         update_user_id = 'finance'\r
+       WHERE RECEIVABLE_DETAIL_ID = vl_receivable_detail_id;\r
+\r
+       IF SQLCODE <> 0 THEN\r
+        al_sqlcode := SQLCODE;\r
+       ELSE\r
+        al_sqlcode := 0;\r
+       END IF;\r
+      END IF;\r
+\r
+      IF al_sqlcode = 0 THEN\r
+       -- Generate Key ID\r
+       -- CALL  sp_nextid (vs_sq_name,vl_rcvbl_liquidation_id ); -- generating new id\r
+       SELECT SP_nextid(vs_sq_name::character varying) into vl_rcvbl_liquidation_id;\r
+\r
+       IF vl_rcvbl_liquidation_id <> -1 THEN\r
+        -- Insert a Row in tb_RECEIVABLE_LIQUIDATION\r
+        INSERT INTO tb_RECEIVABLE_LIQUIDATION\r
+        ( RCVBL_LIQUIDATION_ID,\r
+         COLLECTED_AMOUNT_NO,\r
+         RECEIVABLE_DETAIL_ID,\r
+         OFFSET_ID,\r
+         CREATE_TS,\r
+         CREATE_USER_ID,\r
+         UPDATE_TS,\r
+         UPDATE_USER_ID,\r
+         DELETE_SW\r
+        )\r
+        VALUES\r
+        (   vl_rcvbl_liquidation_id,\r
+         vd_collected_amt,\r
+         vl_receivable_detail_id,\r
+         vl_offset_id,\r
+         CURRENT_TIMESTAMP,\r
+         'finance',\r
+         CURRENT_TIMESTAMP,\r
+         'finance',\r
+         'N'\r
+        );\r
+                \r
+        IF SQLCODE <> 0 THEN\r
+         al_sqlcode := SQLCODE;\r
+         -- ROLLBACK;--\r
+        ELSE\r
+         al_sqlcode := 0;\r
+         -- COMMIT;--\r
+        END IF;\r
+       ELSE\r
+        al_sqlcode := -1;\r
+       END IF;\r
+      END IF;\r
+     END IF;\r
+    END IF;\r
+   END IF;\r
+    \r
+   vl_counter := vl_counter + 1;\r
+   -- END LOOP fetch_loop;--\r
+   -- Loop Ends\r
+  END LOOP;\r
+\r
+  --Sum all balance\r
+  SELECT SUM(A.RECEIVABLE_BALANCE_NO)\r
+   INTO vd_total_receivable\r
+  FROM tb_RECEIVABLE_DETAIL A,\r
+   tb_RECEIVABLE_COLLECTION_STATUS B\r
+  WHERE A.RECEIVABLE_DETAIL_ID = B.RECEIVABLE_DETAIL_ID\r
+   AND A.RECEIVABLE_ID = vl_receivable_id\r
+   AND B.ACTIVE_SW = 'Y'\r
+   AND B.DELETE_SW = 'N'\r
+   AND A.DELETE_SW = 'N'\r
+   AND A.RECEIVABLE_STATUS_CD IN ('19','22')\r
+   AND ((A.MANUAL_SW = 'N')\r
+   OR \r
+   (A.MANUAL_SW = 'Y' AND A.APPROVAL_STATUS_CD = '3047')\r
+   );\r
+\r
+  IF SQLCODE <> 0 THEN\r
+   al_sqlcode := SQLCODE;\r
+  ELSE\r
+   al_sqlcode := 0;\r
+  END IF;\r
+\r
+  IF al_sqlcode = 0 THEN\r
+   --Update the blance\r
+   UPDATE tb_RECEIVABLE_HEADER\r
+    SET BALANCE_NO = vd_total_receivable,\r
+     update_ts = current_timestamp,\r
+     update_user_id = 'finance'\r
+   WHERE RECEIVABLE_ID = vl_receivable_id;\r
+\r
+  IF SQLCODE <> 0 THEN\r
+   al_sqlcode := SQLCODE;\r
+  ELSE\r
+   al_sqlcode := 0;\r
+  END IF;\r
+ END IF;\r
+  \r
+ -- Call Sp to Update Payment Plan - CIS-18124\r
+ --  SELECT CHESSIE_MASK_FIN.SP_PAYMENT_PLAN_UPDATE ( vl_receivable_id,\r
+ --                      vs_sq_off,  \r
+ --                      vl_transaction_amt,   \r
+ --                      vl_sqlcode\r
+ --                     );--\r
+          \r
+ al_sqlcode := vl_sqlcode;\r
+\r
+ /* COMMIT; */\r
+\r
+ CLOSE cursor_detail;\r
+END IF;\r
+  \r
+--RETURN  al_sqlcode;--\r
+\r
+END \r
+;\r
+\r
+$function$
+

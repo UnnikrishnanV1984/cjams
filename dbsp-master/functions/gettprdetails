@@ -1,0 +1,46 @@
+CREATE OR REPLACE FUNCTION gettprdetails(v_servicecaseid uuid, v_clientid character varying)
+ RETURNS TABLE(tprdetailsid uuid, tprrecommendationid uuid, intakeservicerequestactorid uuid, serveddate timestamp without time zone, servicetypekey character varying, servicetypedescription character varying, terminationtypekey character varying, isappealed integer, isdssappealed integer, appealdate timestamp without time zone, appealdecisiontypekey character varying, decisiondate timestamp without time zone, reason character varying, singleparent boolean, parentname character varying, actortype character varying, relationship character varying, isgranted boolean, isdenied boolean, tprdecisiondate timestamp without time zone, old_id character varying, relationshiptypekey character varying)
+ LANGUAGE plpgsql
+AS $function$     
+
+BEGIN
+
+ RETURN QUERY 
+ WITH childtpr AS(
+  SELECT DISTINCT ira.personid
+  FROM   permanencyplan pp
+      INNER JOIN intakeservicerequestactor ira ON ira.intakeservicerequestactorid = pp.intakeservicerequestactorid
+  WHERE  pp.servicecaseid = v_servicecaseid 
+ )
+ SELECT  td.tprdetailsid,td.tprrecommendationid,td.intakeservicerequestactorid,td.serveddate,td.servicetypekey,st.servicetypedescription,td.terminationtypekey,td.isappealed,
+   td.isdssappealed,td.appealdate,td.appealdecisiontypekey,td.decisiondate,td.reason,
+   td.singleparent,
+   ( p.firstname || ' '||p.lastname):: character varying parentname,at.actortype,at.typedescription,td.isgranted,td.isdenied,td.tprdecisiondate,td.old_id,td.relationshiptypekey
+ FROM  tprdetails td
+   INNER JOIN tprrecommendation tpr ON tpr.tprrecommendationid = td.tprrecommendationid
+    and 
+     case when coalesce(v_clientid, '') <> '' 
+      then
+       tpr.intakeservicerequestactorid in 
+       (select i.intakeservicerequestactorid from intakeservicerequestactor i 
+       where i.personid = v_clientid::uuid)
+      else 1 = 1 
+     end
+   INNER JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid = td.intakeservicerequestactorid 
+   INNER JOIN intakeservicerequestactor isra1 ON isra1.intakeservicerequestactorid = tpr.intakeservicerequestactorid 
+   INNER JOIN person p ON p.personid=isra.personid AND p.activeflag=1
+   INNER JOIN childtpr cp ON cp.personid = isra1.personid
+   LEFT JOIN servicetype st ON st.servicetypekey=td.servicetypekey AND st.activeflag=1
+   LEFT JOIN actortype at on at.actortype = isra.intakeservicerequestpersontypekey
+ WHERE (td.servicecaseid = v_servicecaseid 
+     OR td.servicecaseid = (SELECT  biologicalcaseid
+        FROM  biologicaladoptionlink bio
+          INNER JOIN adoptionplanning ap ON ap.adoptionplanningid = bio.preadoptivecaseid
+        WHERE  ap.servicecaseid = v_servicecaseid 
+     )) 
+     AND td.activeflag=1;
+
+END;
+
+ $function$
+

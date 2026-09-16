@@ -1,0 +1,6 @@
+update intakeservreqchildremoval set primarycaregiveradd = '1 Glyndale Ct ,Reisterstown MD 21136',
+updatedby = 'CDM-14123',updatedon = now(), 
+"comments"  = ' On April 11, 2019, Baltimore County Department of Social Services received a report alleging concerns for him due to his mothers, Laura Bueno’s mental health history, violent tendencies and developmental delays. While giving birth to him, hospital staff had to contact the Behavioral Health Emergency Response Team due to Ms. Bueno becoming aggressive and dangerous. Brian was also born with significant medical issues.
+
+On April 12, 2019, the Department initiated a Safety Plan placing Brian in the care of his maternal aunt, Stephanie Moore, due to the imminent risk for the infant while in his mother’s care. Brian was discharged to Mrs. Moore and her spouse under a Safety Plan after being discharged from Mt. Washington Hospital’s NICU on June 12, 2019. Due to Ms. Beuno and Mr. Carnes not being cooperative with the Department’s efforts to engage them in services, in January 2020, the Department submitted a non-emergency petition to the courts asking Brian to be found a Child In Need of Assistance. Due to COVID-19 the hearing was postponed and set for June 30, 2020. At that time he was formally removed and placed in Formal Kinship care.'
+where removalid = 200083;

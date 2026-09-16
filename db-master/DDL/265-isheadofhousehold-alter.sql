@@ -1,0 +1,1 @@
+ALTER TABLE intakeservicerequestactor ADD column if not exists isheadofhousehold bool null;

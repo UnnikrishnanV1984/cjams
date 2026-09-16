@@ -1,0 +1,99 @@
+CREATE OR REPLACE FUNCTION usersservicerequestfolders(userid character varying, page integer, pagelimit integer, v_foldertypekey character varying, searchkey character varying)
+ RETURNS TABLE(totalcount bigint, groupnumber character varying, intakeserviceid uuid, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, displayname character varying, county character varying, duedate timestamp without time zone, status character varying, accepteddate timestamp without time zone, routedon timestamp without time zone, personcjamspid bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+DECLARE v_pageoffset int;
+v_pagenumber int;
+searchstring character varying(1000);
+l_actiontype character varying;
+ 
+DECLARE totalcount integer;
+ 
+ 
+BEGIN
+ 
+v_pagenumber := (page-1)*   10;
+   
+        -- DJS Folder wise case display
+        searchstring:= coalesce(searchstring,'');
+        if (v_foldertypekey!='' or v_foldertypekey!=null) then
+ searchstring:= coalesce(searchstring,'')|| ' AND lower(cast( coalesce(ISR.foldertypekey,'''') as  character varying)) = '''||lower(v_foldertypekey)||''' ';
+        end if;
+        
+        if (searchkey!='' or searchkey!=null) then
+ searchstring:= coalesce(searchstring,'')|| ' AND (CASE WHEN '''||lower(searchkey)||''' is NOT NULL THEN (lower(cast( coalesce(PN.old_id,'''') as  character varying)) = '''||lower(searchkey)||''' or PN.cjamspid = '''||lower(searchkey)||''') ELSE TRUE end)';
+        end if; 
+        
+ RETURN QUERY
+     execute ' 
+    SELECT count(1)   over(),
+            (SELECT  ISG.groupnumber 
+            from  intakeservicerequestgroup as ISG 
+            INNER JOIN intakeservicerequestgroupdetails as ISGD on ISG.groupid=ISGD.groupid 
+            WHERE ISGD.intakeserviceid  =ISR.intakeserviceid  
+            limit 1
+            ),
+            ISR.intakeserviceid,ISR.servicerequestnumber,
+            (SELECT itsrt.intakeservreqtypekey 
+             FROM intakeservicerequesttype as itsrt
+            WHERE itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid
+            AND itsrt.activeflag =1  limit 1),
+            (SELECT srst.classkey FROM servicerequestsubtype as srst
+            WHERE srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+             AND srst.activeflag =1  limit 1),
+            ISR.reporteddate, 
+   --cast(INITCAP(TRIM(PN.lastname)|| '', '' ||TRIM(PN.firstname)) as  character varying),
+   (SELECT getreportername FROM getreportername(''servicerequest'',ISR.intakeserviceid::character varying, ''reporter'')),
+            (SELECT pa.county FROM personaddress pa 
+            WHERE pa.personid = ar.personid
+            and pa.activeflag =1
+            AND  personaddresstypekey=''C'' limit 1) ,
+            (SELECT  CASE 
+                     WHEN ISR.TargetCompleteDate is null  then CAST(ISR.ReportedDate as date) + CAST(src.DueDateOffset as integer)
+                     ELSE ISR.TargetCompleteDate  END  
+            FROM  ServiceRequestTypeConfig  as src 
+            WHERE  src.intakeservreqtypeid = isr.IntakeServReqTypeId 
+            AND src.servicerequestsubtypeid = isr.IntakeServiceRequestClassId 
+            and src.activeflag =1
+            limit 1
+            ) as duedate,
+   CAST(CASE ISR.isaccepted            
+             WHEN  false THEN ''Rejected'' 
+             WHEN  true THEN ''Assigned'' 
+             ELSE ''Pending'' 
+             END   AS character varying) AS status,
+       ISR.accepteddate ,
+             ISR.routedon,
+    (SELECT getreportercjamspid FROM getreportercjamspid(''servicerequest'',ISR.intakeserviceid::character varying, ''reporter''))
+    FROM intakeservicerequest as ISR 
+    JOIN (select intakeserviceid, max(actorid::character varying) ::uuid actorid
+     FROM intakeservicerequestactor  
+     WHERE intakeservicerequestpersontypekey in (''CLI'', ''RC'',''RA'', ''Youth'' ,''2085'') 
+        AND activeflag =1 group by intakeserviceid )as ISRA 
+        ON ISRA.intakeserviceid=ISR.intakeserviceid 
+         
+    JOIN actor as AR
+        ON AR.actorid=ISRA.actorid AND AR.activeflag = 1
+     
+    JOIN person as PN 
+        ON PN.personid=AR.personid AND PN.activeflag = 1 
+    JOIN intakedastatus as IDAS 
+        ON IDAS.intakenumber=ISR.intakenumber and IDAS.activeflag=1 --and  (IDAS.clwstatus is null or IDAS.clwstatus in(4,6))
+     '
+      
+     ' WHERE   ISR.intakeserreqstatustypeid NOT IN (select intakeserreqstatustypeid from intakeserreqstatustype where lower(intakeserreqstatustypekey) in (''closed'',''cancelled'',''completed''))
+       '|| searchstring ||' AND  ISR.Intakeserviceid:: character varying in (select objectid from routing R
+       where R.tosecurityusersid =  '''||userid||''' and R.activeflag =1  )
+       --where R.tosecurityusersid =  ''a64159be-bfe3-4364-bef6-b6cb8754b65a'' and R.activeflag =1  )
+       
+       
+     order by   coalesce(ISR.routedon, ISR.updatedon) desc  LIMIT 10  OFFSET ' || v_pagenumber ;
+
+END; 
+
+
+$function$
+

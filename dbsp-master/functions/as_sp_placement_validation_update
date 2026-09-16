@@ -1,0 +1,1120 @@
+CREATE OR REPLACE FUNCTION as_sp_placement_validation_update(al_placement_id bigint, ad_placement_start_dt date, ad_placement_exit_dt date, as_update_sw character, OUT as_auto_valid_success_sw character, OUT al_auto_validation_log_id bigint)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- NEW PLACEMENT ENTERED, or existing placement change
+-- 12/12/2006 change the logic from last 6 months to 10 months
+-- 04/18/2007 Vineet Triodkar - Change in logic to get Start Dt and End Dt for the Validation
+--            and to update TB_PLACEMENT_VALIDATION column VALIDATION_STATUS_CD to "NO"
+-- 01/14/2008 Vineet Triodkar - Change in logic to Insert/Update Placement Validations for previous months.
+--                              Also change the logic from last 10 months to 12 months.
+-- 09/29/2008 Vineet Tirodkar - Change in logic to Insert/Update additional Placement Validation records within first 60 Days
+--            for placement structure ID is 13 ('Emergency Foster Home Care') - CIS-17815
+-- 09/30/2008 Vineet Tirodkar - New condition for entry / exit date change 
+-- 10/16/2008 Vineet Tirodkar 
+--      Changes to delete placement validation records with 'VALIDATION_START_DT' before Nov 1 2008. CIS-18129  
+-- 01/27/2009 Vineet Tirodkar 
+--      Changes to delete placement validation records with 'VALIDATION_START_DT' before Jan 1 2009. CIS-18129 II
+-- 04/22/2009 Vineet Tirodkar - Changes NOT to Update 'UPDATE_TS' of TB_PLACEMENT_VALIDATION to avoid Under_Over SP run.
+-- 10/01/2009 Vineet Tirodkar - Change the logic from last 12 months to 24 months  CIS-19279
+-- 06/09/2015 Vineet Tirodkar - PRJ-04753 - Fiscal-Related Enhancements - Phase I
+--   To Modify SP name as SP_PLACEMENT_VALIDATION_UPDATE (old name: SP_LATE_VALIDATION_CREATION)
+--   To add new input & output parameters for placement auto-validation process.(BDSD Req# 6.11)
+--   To retire the restriction of 24 months for placement validation records updates and the new limit is 
+--      either entire impacted placement period or max up to the MD CHESSIE Finance Go-Live date of January 2009.(BDSD Req # 4)
+------------------------------------------------------------------------
+--P1: BEGIN
+
+DECLARE SQLCODE INT DEFAULT 0;
+
+DECLARE vd_ori_placement_start_dt DATE;
+DECLARE vd_ori_placement_end_dt DATE;
+DECLARE vd_placement_validation_change_st_dt DATE;
+DECLARE vd_placement_validation_change_ed_dt DATE;
+DECLARE vd_validation_month_start_dt DATE;
+DECLARE vd_validation_month_end_dt DATE;
+DECLARE vd_current_month_end_dt DATE;
+DECLARE vd_curr_placement_entry_dt DATE;
+DECLARE vd_curr_placement_exit_dt DATE;
+DECLARE vd_curr_vald_start_dt DATE;
+DECLARE vd_curr_vald_end_dt DATE;
+DECLARE vd_firstday_plc_entry_month DATE;
+DECLARE vd_firstday_plc_exit_month DATE;
+DECLARE vd_finance_golive_dt DATE;
+DECLARE vd_min_change_dt DATE;  
+
+DECLARE vl_sqlcode INT DEFAULT 0;
+DECLARE vl_validation_month INT DEFAULT NULL;
+DECLARE vl_validation_year INT DEFAULT NULL;
+DECLARE vl_counter INT DEFAULT NULL;
+DECLARE vl_placement_validation_id BIGINT DEFAULT NULL;
+DECLARE vl_max_validation_id BIGINT DEFAULT NULL;
+DECLARE vl_months INTEGER; 
+DECLARE vl_loop_cnt INTEGER; 
+DECLARE vl_event_id BIGINT; 
+DECLARE vl_entity_id BIGINT; 
+DECLARE vl_updtd_plc_vald_id BIGINT;
+DECLARE vl_auto_validation_log_id BIGINT;
+DECLARE vl_auto_valid_count INTEGER;
+DECLARE vl_provider_id BIGINT;
+DECLARE vl_client_id BIGINT;
+DECLARE vl_contract_program_id BIGINT;
+DECLARE vl_case_id BIGINT;
+DECLARE vl_tickler_cnt INT DEFAULT 0;
+DECLARE vl_placement_structure_id BIGINT DEFAULT NULL;
+DECLARE vl_no_of_nights INTEGER;
+DECLARE vl_error_cnt INTEGER;
+
+DECLARE vs_placement_validation_id VARCHAR(50) DEFAULT 'sq_placement_validation';
+DECLARE vs_auto_validation_log_id VARCHAR(50) DEFAULT 'sq_placement_auto_validation_log';
+
+DECLARE vs_vald_status_cd VARCHAR(5);
+DECLARE ls_placement_validate CHAR(1) DEFAULT 'N';
+DECLARE vs_min_change_dt VARCHAR(10);
+DECLARE vs_current_dt VARCHAR(10);
+DECLARE vs_change_type VARCHAR(5);
+DECLARE vs_entity_type_cd VARCHAR(5);
+DECLARE vs_plc_vld_impacted VARCHAR(1);
+DECLARE vs_error VARCHAR(3000);
+DECLARE vs_auto_valid_success_sw CHAR(1); 
+DECLARE vs_auto_valid_errors VARCHAR(3000);
+DECLARE vs_first_call_errors VARCHAR(3000);
+DECLARE vs_final_first_call_errors VARCHAR(3000);
+DECLARE vs_error_reasons VARCHAR(3000) DEFAULT '';
+DECLARE vs_first_call_Failed CHAR(1) DEFAULT 'N';
+DECLARE vs_insert_updt_sw CHAR(1);
+DECLARE vs_first_autovalid_call CHAR(1) DEFAULT 'N';
+DECLARE vs_first_call CHAR(1) DEFAULT 'N';
+DECLARE vs_sql_stmt VARCHAR(3000);
+
+--DECLARE Cur_auto_validation CURSOR WITH HOLD FOR s;
+ DECLARE Cur_auto_validation REFCURSOR;--
+
+/*DECLARE  GLOBAL TEMPORARY TABLE Temp_placement_validation
+  ( INSERT_UPDT_SW CHAR(1),
+ PLACEMENT_VALIDATION_ID INTEGER,
+    START_DT DATE,
+    END_DT DATE,
+    AUTO_VALID_SW CHAR(1),
+ REASONS VARCHAR(3000)
+  ) WITH REPLACE ;*/
+BEGIN  
+DROP TABLE IF EXISTS Temp_placement_validation;
+CREATE TEMP TABLE IF NOT EXISTS Temp_placement_validation
+  ( INSERT_UPDT_SW CHAR(1),
+ PLACEMENT_VALIDATION_ID INTEGER,
+    START_DT DATE,
+    END_DT DATE,
+    AUTO_VALID_SW CHAR(1),
+ REASONS VARCHAR(3000),
+ CREATE_TS TIMESTAMP, 
+ CREATE_USER_ID VARCHAR(50),
+ UPDATE_TS TIMESTAMP,
+ UPDATE_USER_ID VARCHAR(50)
+  ) ;
+IF ad_placement_exit_dt = '1900-01-01' THEN
+  ad_placement_exit_dt := NULL;
+END IF;
+  
+ vd_ori_placement_start_dt  := ad_placement_start_dt;
+ vd_ori_placement_end_dt := ad_placement_exit_dt;
+
+-- PRJ-04753
+-- Identify the minimum placement validation start date (month) i.e. either placement entry date or finance Go-Live date 
+ vd_finance_golive_dt := DATE('2009-01-01'); -- MD CHESSIE Finance Go-Live date
+
+IF ad_placement_start_dt < vd_finance_golive_dt THEN
+     vd_min_change_dt := vd_finance_golive_dt;  
+  RAISE NOTICE 'if>>>>>>>>vd_min_change_dt %',vd_min_change_dt;
+
+ELSE
+     vd_min_change_dt := ad_placement_start_dt;
+  RAISE NOTICE 'else >>>>>>>>vd_min_change_dt %',vd_min_change_dt;
+
+END IF;
+   
+-- Calculate the total number of impacted months (placement period).
+ vs_current_dt := RTRIM(TO_CHAR(CURRENT_DATE,'YYYY-MM-DD'));
+ vs_min_change_dt := RTRIM(TO_CHAR(vd_min_change_dt,'YYYY-MM-DD'));
+
+--
+-- SELECT TIMESTAMPDIFF('Month', TO_CHAR(TO_TIMESTAMP(vs_current_dt || ' 00:00:00.0' , 'YYYY-MM-DD HH:MI:SS') - TO_TIMESTAMP(vs_min_change_dt || ' 00:00:00.0' , 'YYYY-MM-DD HH:MI:SS'),'YYYY-MM-DD'),now()) 
+--       INTO vl_months;
+      
+    /* SELECT date_part('month',age(vs_current_dt :: date, vs_min_change_dt :: date)) :: integer
+      INTO vl_months;*/
+   
+  SELECT ((DATE_PART('year', CURRENT_DATE::date) - DATE_PART('year', vs_min_change_dt::date)) * 12 +
+              (DATE_PART('month', CURRENT_DATE::date) - DATE_PART('month', vs_min_change_dt::date))) INTO vl_months;
+--FROM SYSIBM.SYSDUMMY1;
+RAISE NOTICE 'if>>>>>>>>vl_months %',vl_months;
+ vl_loop_cnt := vl_months; --//actual code is vl_loop_cnt = vl_months + 2;
+-- PRJ-04753 
+
+IF ad_placement_exit_dt is NOT NULL THEN
+ /*SELECT ( DATE(SUBSTR(CHAR(CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS,ISO),1,8)||'01')),
+        ( CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS ),
+     ( CURRENT DATE + 1 month - DAY(CURRENT DATE) DAYS),
+     ( DATE(SUBSTR(CHAR(ad_placement_start_dt,ISO),1,8)||'01')),
+     ( DATE(SUBSTR(CHAR(ad_placement_exit_dt,ISO),1,8)||'01'))
+ INTO vd_placement_validation_change_st_dt,
+   vd_placement_validation_change_ed_dt,
+   vd_current_month_end_dt,
+   vd_firstday_plc_entry_month,
+   vd_firstday_plc_exit_month
+ FROM sysibm.sysdummy1;*/
+ SELECT --( DATE(SUBSTR(CHAR(CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS,ISO),1,8)||'01')),
+    (date_trunc('month', now()) - interval '1 month' * vl_months - interval '1 month')::date,
+       -- ( CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS ),
+       (date_trunc('month', now())::date - interval '1 month' * (vl_months -1)),
+    -- ( CURRENT DATE + 1 month - DAY(CURRENT DATE) DAYS),
+    ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date,
+    -- ( DATE(SUBSTR(CHAR(ad_placement_start_dt,ISO),1,8)||'01')),
+     (date_trunc('month', ad_placement_start_dt))::date,
+    -- ( DATE(SUBSTR(CHAR(ad_placement_exit_dt,ISO),1,8)||'01'))
+    (date_trunc('month', ad_placement_exit_dt))::date
+
+ INTO vd_placement_validation_change_st_dt,
+   vd_placement_validation_change_ed_dt,
+   vd_current_month_end_dt,
+   vd_firstday_plc_entry_month,
+   vd_firstday_plc_exit_month;
+   
+ RAISE NOTICE '>>If>>>vd_placement_validation_change_st_dt>>>>>>>>>>>> %',vd_placement_validation_change_st_dt;
+ RAISE NOTICE '>>If>>>vd_placement_validation_change_ed_dt>>>>>>>>>>>> %',vd_placement_validation_change_ed_dt;
+ RAISE NOTICE '>>If>>>vd_current_month_end_dt>>>>>>>>>>>> %',vd_current_month_end_dt;
+ RAISE NOTICE '>>If>>>vd_firstday_plc_entry_month>>>>>>>>>>>> %',vd_firstday_plc_entry_month;
+ RAISE NOTICE '>>If>>>vd_firstday_plc_exit_month>>>>>>>>>>>> %',vd_firstday_plc_exit_month;
+
+ --FROM sysibm.sysdummy1;
+ELSE
+ /*SELECT ( DATE(SUBSTR(CHAR(CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS,ISO),1,8)||'01')),
+     ( CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS ),
+     ( CURRENT DATE + 1 month - DAY(CURRENT DATE) DAYS),
+     ( DATE(SUBSTR(CHAR(ad_placement_start_dt,ISO),1,8)||'01'))
+ INTO vd_placement_validation_change_st_dt,
+   vd_placement_validation_change_ed_dt,
+   vd_current_month_end_dt,
+   vd_firstday_plc_entry_month
+ FROM sysibm.sysdummy1;*/
+ SELECT --( DATE(SUBSTR(CHAR(CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS,ISO),1,8)||'01')),
+     --(date_trunc('month', now()) - interval '1 month' * vl_months - interval '1 month')::date,
+    (date_trunc('month', now()) - (interval '1 month' * vl_months)  )::date,
+    -- ( CURRENT DATE - vl_months month  -  DAY(CURRENT DATE) DAYS ),
+        --(date_trunc('month', now())::date - interval '1 month' * (vl_months -1)),
+     (date_trunc('month', now()- (interval '1 month' * (vl_months -1)))::date-1 ),
+
+    -- ( CURRENT DATE + 1 month - DAY(CURRENT DATE) DAYS),
+      ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date,
+
+     --( DATE(SUBSTR(CHAR(ad_placement_start_dt,ISO),1,8)||'01'))
+        (date_trunc('month', ad_placement_start_dt))::date
+
+ INTO vd_placement_validation_change_st_dt,
+   vd_placement_validation_change_ed_dt,
+   vd_current_month_end_dt,
+   vd_firstday_plc_entry_month;
+ --FROM sysibm.sysdummy1;
+ RAISE NOTICE '>>If>>>vd_placement_validation_change_st_dt>>>>>>>>>>>> %',vd_placement_validation_change_st_dt;
+ RAISE NOTICE '>>If>>>vd_placement_validation_change_ed_dt>>>>>>>>>>>> %',vd_placement_validation_change_ed_dt;
+ RAISE NOTICE '>>If>>>vd_current_month_end_dt>>>>>>>>>>>> %',vd_current_month_end_dt;
+ RAISE NOTICE '>>If>>>vd_firstday_plc_entry_month>>>>>>>>>>>> %',vd_firstday_plc_entry_month;
+  vd_firstday_plc_exit_month := CURRENT_DATE;
+END IF;
+
+-- vl_validation_month := MONTH(vd_placement_validation_change_st_dt);
+-- vl_validation_year := YEAR(vd_placement_validation_change_st_dt);
+
+ SELECT EXTRACT(MONTH FROM  vd_placement_validation_change_st_dt) into vl_validation_month; 
+ SELECT EXTRACT(year FROM  vd_placement_validation_change_st_dt) into vl_validation_year; 
+
+ RAISE NOTICE '>>If>>>vl_validation_month>>>>>>>>>>>> %',vl_validation_month;
+ RAISE NOTICE '>>If>>>vl_validation_year>>>>>>>>>>>> %',vl_validation_year;
+
+SELECT PLACEMENT_STRUCTURE_ID,
+       PROVIDER_ID,
+    CLIENT_ID,
+    CONTRACT_PROGRAM_ID,
+    CASE_ID
+    INTO vl_placement_structure_id,
+      vl_provider_id,
+   vl_client_id,
+   vl_contract_program_id,
+   vl_case_id
+FROM TB_PLACEMENT
+WHERE PLACEMENT_ID = al_placement_id 
+ AND DELETE_SW = 'N';
+        
+
+IF vl_placement_structure_id = 8 OR vl_placement_structure_id = 76 THEN
+ -- CHESSIE is NOT generating payments for following Placement Structures 
+ -- 8 - Formal Kinship Care and 76 - Residential Treatment Centers
+ -- NO NEED CREATE PLACMENT VALIDATION RECORD
+  as_auto_valid_success_sw := 'Y';
+  al_auto_validation_log_id := NULL; 
+
+ RAISE NOTICE '>>If>>>vl_placement_structure_id>>>>>>>>>>>> %',vl_placement_structure_id;
+ RAISE NOTICE '>>If>>>vl_provider_id>>>>>>>>>>>> %',vl_provider_id;
+ RAISE NOTICE '>>If>>>vl_client_id>>>>>>>>>>>> %',vl_client_id;
+ RAISE NOTICE '>>If>>>vl_contract_program_id>>>>>>>>>>>> %',vl_contract_program_id; 
+ RAISE NOTICE '>>If>>>vl_case_id>>>>>>>>>>>> %',vl_case_id; 
+ 
+--ELSEIF MONTH(ad_placement_start_dt) = MONTH(CURRENT_DATE) AND YEAR(ad_placement_start_dt) = YEAR(CURRENT_DATE) THEN
+ELSEIF EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  CURRENT_DATE)
+AND EXTRACT(YEAR FROM  ad_placement_start_dt) = EXTRACT(YEAR FROM  CURRENT_DATE) THEN
+        
+    -- PLACMENT ENTRY DATE IS IN THIS MONTH -- NO NEED CREATE PLACMENT VALIDATION RECORD
+raise notice 'line 269---ELSEIF>>>> %', EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  CURRENT_DATE);
+as_auto_valid_success_sw := 'Y';
+  al_auto_validation_log_id := NULL;
+ELSE
+ -- Placement Auto-validation - START
+raise notice 'line 274>>>>>>>>>else---ELSEIF>> %', (EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  ad_placement_exit_dt) and
+  EXTRACT(YEAR FROM  ad_placement_start_dt) = EXTRACT(YEAR FROM  ad_placement_exit_dt));
+  vl_counter := 1;
+ --LOOP_LABEL:
+ <<LOOP_LABEL>>
+ --WHILE vl_counter < vl_loop_cnt
+ loop EXIT WHEN vl_counter > vl_loop_cnt ;
+
+ --DO EXTRACT(YEAR FROM  ad_placement_exit_dt)
+  IF EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  ad_placement_exit_dt) and
+  EXTRACT(YEAR FROM  ad_placement_start_dt) = EXTRACT(YEAR FROM  ad_placement_exit_dt) THEN
+  raise notice 'line no 284--->  %', EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  ad_placement_exit_dt);
+   -- PLACEMENT CREATED FOR ONLY ONE MONTH
+
+   -- get the first and last day for the validation month
+   /*SELECT ( DATE(SUBSTR(CHAR(ad_placement_start_dt + 1 month  -  DAY(ad_placement_start_dt) DAYS,ISO),1,8)||'01')),
+       ( DATE(SUBSTR(CHAR(ad_placement_start_dt + 1 month  -  DAY(ad_placement_start_dt) DAYS,ISO),1,8)*/
+--     SELECT --( DATE(SUBSTR(CHAR(ad_placement_start_dt + 1 month  -  DAY(ad_placement_start_dt) DAYS,ISO),1,8)||'01')),
+--        (date_trunc('month', ad_placement_start_dt) + interval '1 month' - interval '1 month')::date,
+--     -- ( DATE(SUBSTR(CHAR(ad_placement_start_dt + 1 month  -  DAY(ad_placement_start_dt) DAYS,ISO),1,8)
+--          ((date_trunc('month', ad_placement_start_dt) + interval '1 month' - interval '1 month')::date
+--     ||
+--     (CASE WHEN Month(ad_placement_start_dt) in ( 1,3,5,7,8,10,12) THEN
+--       '31'
+--      WHEN Month(ad_placement_start_dt) in (4,6,9,11) THEN
+--       '30'
+--      ELSE
+--     (CASE WHEN MOD(Year(ad_placement_start_dt), 4) <> 0 THEN
+--       '28'
+--      ELSE
+--       '29'  
+--      END )
+--      END)
+--     -- )
+--    )
+--   INTO   vd_validation_month_start_dt,
+--       vd_validation_month_end_dt;
+      --SELECT EXTRACT(MONTH FROM  ad_placement_start_dt) into vl_validation_month; 
+       SELECT --( DATE(SUBSTR(CHAR(ad_placement_start_dt + 1 month  -  DAY(ad_placement_start_dt) DAYS,ISO),1,8)||'01')),
+        (date_trunc('month', ad_placement_start_dt))::date,
+     -- ( DATE(SUBSTR(CHAR(ad_placement_start_dt + 1 month  -  DAY(ad_placement_start_dt) DAYS,ISO),1,8)
+            (date_trunc('month', ad_placement_start_dt) + interval '1 month' - interval '1 day')::date
+   INTO   vd_validation_month_start_dt,
+       vd_validation_month_end_dt;
+   --FROM sysibm.sysdummy1;
+raise notice 'line no vd_validation_month_start_dt NEW---> %', vd_validation_month_start_dt;
+raise notice 'line no vd_validation_month_end_dt NEW---> %', vd_validation_month_end_dt;
+   --- START
+    vl_updtd_plc_vald_id := NULL;
+    vs_plc_vld_impacted := 'N';
+   --EXTRACT(YEAR FROM  ad_placement_start_dt)
+   SELECT MAX(PLACEMENT_VALIDATION_ID)
+       INTO vl_max_validation_id
+   FROM TB_PLACEMENT_VALIDATION
+   WHERE EXTRACT(MONTH FROM  VALIDATION_START_DT) = EXTRACT(MONTH FROM  ad_placement_start_dt) 
+    AND EXTRACT(YEAR FROM  VALIDATION_START_DT) = EXTRACT(YEAR FROM  ad_placement_start_dt) 
+    AND PLACEMENT_ID =  al_placement_id 
+    AND DELETE_SW = 'N';
+raise notice 'insert---11111> %', vl_max_validation_id;
+   IF vl_max_validation_id IS NULL OR vl_max_validation_id = 0 THEN -- CREATE A NEW VALIDATION RECORD (2)
+    -- Placement Auto-validation
+     vs_auto_valid_success_sw := NULL;
+     vs_auto_valid_errors := NULL;
+     vs_first_call_errors := NULL;
+ raise notice 'insert22222222222---> %', vs_first_call;   
+    IF as_update_sw = 'P' THEN -- Placement Creation 
+      vs_auto_valid_success_sw := 'Y';
+    ELSE
+     IF vs_first_autovalid_call = 'N' THEN
+       vs_first_call := 'Y';
+       vs_first_autovalid_call := 'Y';
+     ELSE
+       vs_first_call := 'N';
+     END IF;
+    
+     SELECT a.as_auto_valid_success_sw,a.as_auto_valid_errors,a.as_first_call_errors,a.al_sqlcode,a.as_error from  SP_PLACEMENT_AUTO_VALIDATION ( al_placement_id,
+                ad_placement_start_dt,
+                ad_placement_exit_dt,   
+                vd_validation_month_start_dt,
+                vd_validation_month_end_dt,
+                vs_first_call,
+                as_update_sw) a into
+                vs_auto_valid_success_sw,
+                vs_auto_valid_errors,
+                vs_first_call_errors,
+                vl_sqlcode,
+                vs_error;
+     
+     IF vl_sqlcode < 0 THEN
+      IF vs_error is NULL OR vs_error = '' THEN
+          vs_error := 'SP_PLACEMENT_AUTO_VALIDATION failed';
+      END IF;
+     END IF;
+     
+     IF vs_first_call = 'Y' AND vs_auto_valid_success_sw = 'N' 
+      AND vs_first_call_errors is NOT NULL AND RTRIM(LTRIM(vs_first_call_errors)) <> '' THEN
+        vs_first_call_Failed := 'Y';
+        vs_final_first_call_errors := vs_first_call_errors;
+     END IF;
+    END IF;
+    raise notice 'insert---> %', vs_first_call;
+    -- Insert into Temp table  
+      INSERT INTO Temp_placement_validation
+        (   INSERT_UPDT_SW,
+         PLACEMENT_VALIDATION_ID,
+         START_DT,
+         END_DT,
+         AUTO_VALID_SW,
+         REASONS,
+          CREATE_TS, 
+            CREATE_USER_ID,
+            UPDATE_TS,
+            UPDATE_USER_ID
+        ) 
+      VALUES ( 'I',
+         NULL,
+         vd_validation_month_start_dt,
+         vd_validation_month_end_dt,
+         vs_auto_valid_success_sw,
+         vs_auto_valid_errors,
+         CURRENT_TIMESTAMP,
+         'finance',
+         CURRENT_TIMESTAMP,
+         'finance'
+        );
+    
+   ELSE
+   raise notice 'line no 405--->ELSE--->IF EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  ad_placement_exit_dt) and';
+
+     vs_plc_vld_impacted := 'N';
+    
+    SELECT TB_PLACEMENT_VALIDATION.PLACEMENT_ENTRY_DT,
+        TB_PLACEMENT_VALIDATION.PLACEMENT_EXIT_DT,
+        TB_PLACEMENT_VALIDATION.VALIDATION_START_DT,
+        TB_PLACEMENT_VALIDATION.VALIDATION_END_DT,
+        TB_PLACEMENT_VALIDATION.VALIDATION_STATUS_CD
+    INTO vd_curr_placement_entry_dt,
+        vd_curr_placement_exit_dt,
+        vd_curr_vald_start_dt,
+        vd_curr_vald_end_dt,
+        vs_vald_status_cd 
+    FROM TB_PLACEMENT_VALIDATION
+    WHERE TB_PLACEMENT_VALIDATION.PLACEMENT_VALIDATION_ID = vl_max_validation_id ;
+    -- EXTRACT(YEAR FROM  vd_ori_placement_end_dt)
+    IF vd_curr_placement_exit_dt is NULL AND vd_ori_placement_end_dt  is NOT  NULL THEN
+     if EXTRACT(MONTH FROM  vd_curr_vald_start_dt) = EXTRACT(MONTH FROM  vd_ori_placement_end_dt)
+     AND EXTRACT(YEAR FROM  vd_curr_vald_start_dt) = EXTRACT(YEAR FROM  vd_ori_placement_end_dt) THEN
+       vs_vald_status_cd  :=  '1749';
+       vs_plc_vld_impacted := 'Y';
+     END IF;
+    END IF; 
+    
+    IF vd_curr_placement_entry_dt <> vd_ori_placement_start_dt AND 
+    EXTRACT(MONTH FROM  vd_curr_vald_start_dt) = EXTRACT(MONTH FROM  vd_ori_placement_start_dt)
+    AND  EXTRACT(YEAR FROM  vd_curr_vald_start_dt)  = EXTRACT(YEAR FROM  vd_ori_placement_start_dt) THEN
+      vs_vald_status_cd  :=  '1749';
+      vs_plc_vld_impacted := 'Y';
+    END IF;
+    --EXTRACT(YEAR FROM  vd_ori_placement_end_dt)
+    IF vd_curr_placement_exit_dt <> vd_ori_placement_end_dt and
+    EXTRACT(MONTH FROM  vd_curr_vald_end_dt) = EXTRACT(MONTH FROM  vd_ori_placement_end_dt)  AND 
+    EXTRACT(YEAR FROM  vd_curr_vald_end_dt) = EXTRACT(YEAR FROM  vd_ori_placement_end_dt) THEN
+      vs_vald_status_cd  :=  '1749';
+      vs_plc_vld_impacted := 'Y';
+    END IF;
+    
+    IF vs_plc_vld_impacted = 'Y' THEN
+     -- Placement Auto-validation
+      vs_auto_valid_success_sw := NULL;
+      vs_auto_valid_errors := NULL;
+      vs_first_call_errors := NULL;
+     
+     IF as_update_sw = 'P' THEN -- Placement Creation 
+       vs_auto_valid_success_sw := 'Y';
+     ELSE
+      IF vs_first_autovalid_call = 'N' THEN
+        vs_first_call := 'Y';
+        vs_first_autovalid_call := 'Y';
+      ELSE
+        vs_first_call := 'N';
+      END IF;
+
+      SELECT a.as_auto_valid_success_sw,a.as_auto_valid_errors,a.as_first_call_errors,a.al_sqlcode,a.as_error from SP_PLACEMENT_AUTO_VALIDATION ( al_placement_id,
+                 ad_placement_start_dt,
+                 ad_placement_exit_dt,   
+                 vd_validation_month_start_dt,
+                 vd_validation_month_end_dt,
+                 vs_first_call,
+                 as_update_sw) a into
+                 vs_auto_valid_success_sw,
+                 vs_auto_valid_errors,
+                 vs_first_call_errors,
+                 vl_sqlcode,
+                 vs_error;
+      
+      IF vl_sqlcode < 0 THEN
+       IF vs_error is NULL OR vs_error = '' THEN
+           vs_error := 'SP_PLACEMENT_AUTO_VALIDATION failed';
+       END IF;
+      END IF;
+      
+      IF vs_first_call = 'Y' AND vs_auto_valid_success_sw = 'N' 
+       AND vs_first_call_errors is NOT NULL AND RTRIM(LTRIM(vs_first_call_errors)) <> '' THEN
+         vs_first_call_Failed := 'Y';
+         vs_final_first_call_errors := vs_first_call_errors;
+      END IF;
+     END IF;
+     
+     -- Insert into Temp table  
+      INSERT INTO Temp_placement_validation
+        (   INSERT_UPDT_SW,
+         PLACEMENT_VALIDATION_ID,
+         START_DT,
+         END_DT,
+         AUTO_VALID_SW,
+         REASONS,
+          CREATE_TS, 
+            CREATE_USER_ID,
+            UPDATE_TS,
+            UPDATE_USER_ID
+        ) 
+      VALUES ( 'U',
+         vl_max_validation_id,
+         vd_validation_month_start_dt,
+         vd_validation_month_end_dt,
+         vs_auto_valid_success_sw,
+         vs_auto_valid_errors,
+         CURRENT_TIMESTAMP,
+         'finance',
+         CURRENT_TIMESTAMP,
+         'finance'
+        );
+    END IF;
+   END IF; 
+
+   --LEAVE LOOP_LABEL;
+   EXIT LOOP_LABEL;
+  ELSE
+  raise notice 'line no 508--->IF>> %',EXTRACT(MONTH FROM  ad_placement_start_dt) = EXTRACT(MONTH FROM  ad_placement_exit_dt);
+
+    ls_placement_validate := 'N'; -- INITIAL VALUE 
+   IF vd_placement_validation_change_st_dt >= vd_firstday_plc_entry_month AND vd_placement_validation_change_st_dt <= vd_firstday_plc_exit_month THEN
+     ls_placement_validate := 'Y';
+   raise notice 'line no 513--->';
+   END IF;
+
+   IF ls_placement_validate = 'Y' THEN
+      -- get the first and last day for the validation month
+    /*SELECT ( DATE(SUBSTR(CHAR(vd_placement_validation_change_st_dt + 1 month  -  DAY(vd_placement_validation_change_st_dt) DAYS,ISO),1,8)||'01')),
+        ( DATE(SUBSTR(CHAR(vd_placement_validation_change_st_dt + 1 month  -  DAY(vd_placement_validation_change_st_dt) DAYS,ISO),1,8)*/
+    SELECT --( DATE(SUBSTR(CHAR(vd_placement_validation_change_st_dt + 1 month  -  DAY(vd_placement_validation_change_st_dt) DAYS,ISO),1,8)||'01')),
+            (date_trunc('month', vd_placement_validation_change_st_dt))::date,
+
+        --( DATE(SUBSTR(CHAR(vd_placement_validation_change_st_dt + 1 month  -  DAY(vd_placement_validation_change_st_dt) DAYS,ISO),1,8)         
+             ((date_trunc('month', vd_placement_validation_change_st_dt) + interval '1 month' - interval '1 day')::date
+
+--      ||
+--      --EXTRACT(YEAR FROM  vd_placement_validation_change_st_dt)
+--        (CASE WHEN EXTRACT(MONTH FROM  vd_placement_validation_change_st_dt) :: integer in ( 1,3,5,7,8,10,12) THEN
+--         '31'
+--         WHEN EXTRACT(MONTH FROM  vd_placement_validation_change_st_dt) :: integer in (4,6,9,11) THEN
+--         '30'
+--         ELSE
+--       (CASE WHEN MOD(EXTRACT(YEAR FROM  vd_placement_validation_change_st_dt) :: integer, 4) <> 0 THEN
+--         '28'
+--        ELSE
+--         '29'  
+--        END )
+--         END)
+        -- )
+      )
+    INTO vd_validation_month_start_dt,
+      vd_validation_month_end_dt;
+    --   vd_validation_month_start_dt := '2018-03-01';
+    --  vd_validation_month_end_dt := '2019-03-31';
+    --FROM sysibm.sysdummy1;
+raise notice '544=>>>>>>>>>>>>>vd_validation_month_start_dt %',vd_validation_month_start_dt;
+raise notice '545>>>>>>>>>>>>>>vd_validation_month_end_dt %',vd_validation_month_end_dt;
+
+     vl_updtd_plc_vald_id := NULL;
+     vs_plc_vld_impacted := NULL;
+    
+    SELECT MAX(PLACEMENT_VALIDATION_ID)
+     INTO vl_max_validation_id
+      FROM TB_PLACEMENT_VALIDATION
+      --EXTRACT(MONTH FROM  vd_placement_validation_change_st_dt)
+    WHERE EXTRACT(MONTH FROM  VALIDATION_START_DT) =  EXTRACT(MONTH FROM  vd_placement_validation_change_st_dt) AND
+      EXTRACT(YEAR FROM  VALIDATION_START_DT) =  EXTRACT(YEAR FROM  vd_placement_validation_change_st_dt) AND
+       PLACEMENT_ID =  al_placement_id AND
+       DELETE_SW = 'N';
+raise notice 'insert---3876378428> %', vl_max_validation_id;
+    IF vl_max_validation_id IS NULL OR vl_max_validation_id = 0 THEN -- CREATE A NEW VALIDATION RECORD (2)
+     -- Placement Auto-validation
+      vs_auto_valid_success_sw := NULL;
+      vs_auto_valid_errors := NULL;
+      vs_first_call_errors := NULL;
+     IF as_update_sw = 'P' THEN -- Placement Creation 
+       vs_auto_valid_success_sw := 'Y';
+     ELSE     
+      IF vs_first_autovalid_call = 'N' THEN
+        vs_first_call := 'Y';
+        vs_first_autovalid_call := 'Y';
+      ELSE
+        vs_first_call := 'N';
+      END IF;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>al_placement_id %',al_placement_id;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>ad_placement_start_dt %',ad_placement_start_dt;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>ad_placement_exit_dt %',ad_placement_exit_dt;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>vd_validation_month_start_dt %',vd_validation_month_start_dt;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>vd_validation_month_end_dt %',vd_validation_month_end_dt;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>vs_first_call %',vs_first_call;
+     raise notice 'line 575===>before SP_PLACEMENT_AUTO_VALIDATION>>>>as_update_sw %',as_update_sw;
+
+      SELECT a.as_auto_valid_success_sw,a.as_auto_valid_errors,a.as_first_call_errors,a.al_sqlcode,a.as_error from SP_PLACEMENT_AUTO_VALIDATION ( al_placement_id,
+                 ad_placement_start_dt,
+                 ad_placement_exit_dt,   
+                 vd_validation_month_start_dt,
+                 vd_validation_month_end_dt,
+                 vs_first_call,
+                 as_update_sw) a into
+                 vs_auto_valid_success_sw,
+                 vs_auto_valid_errors,
+                 vs_first_call_errors,
+                 vl_sqlcode,
+                 vs_error;
+       raise notice 'line 595===>output SP_PLACEMENT_AUTO_VALIDATION>>>>vs_auto_valid_success_sw %',vs_auto_valid_success_sw;
+     raise notice 'line 575===>output vs_auto_valid_errors>>>>vs_auto_valid_errors %',vs_auto_valid_errors;
+     raise notice 'line 575===>output vs_first_call_errors>>>>vs_first_call_errors %',vs_first_call_errors;
+     raise notice 'line 575===>output vl_sqlcode>>>>vd_validation_month_start_dt %',vl_sqlcode;
+     raise notice 'line 599===>output vs_error>>>>vd_validation_month_end_dt %',vs_error;
+
+      IF vl_sqlcode < 0 THEN
+       IF vs_error is NULL OR vs_error = '' THEN
+           vs_error := 'SP_PLACEMENT_AUTO_VALIDATION failed';
+       END IF;
+      END IF;
+      
+      IF vs_first_call = 'Y' AND vs_auto_valid_success_sw = 'N' 
+       AND vs_first_call_errors is NOT NULL AND RTRIM(LTRIM(vs_first_call_errors)) <> '' THEN
+         vs_first_call_Failed := 'Y';
+         vs_final_first_call_errors := vs_first_call_errors;
+      END IF;
+     END IF;
+     -- raise notice '613=>';
+     -- Insert into Temp table  
+      INSERT INTO Temp_placement_validation
+        (   INSERT_UPDT_SW,
+         PLACEMENT_VALIDATION_ID,
+         START_DT,
+         END_DT,
+         AUTO_VALID_SW,
+         REASONS,
+          CREATE_TS, 
+            CREATE_USER_ID,
+            UPDATE_TS,
+            UPDATE_USER_ID
+        ) 
+      VALUES ( 'I',
+         NULL,
+         vd_validation_month_start_dt,
+         vd_validation_month_end_dt,
+         vs_auto_valid_success_sw,
+         vs_auto_valid_errors,
+         CURRENT_TIMESTAMP,
+         'finance',
+         CURRENT_TIMESTAMP,
+         'finance'
+        ); 
+     
+    ELSE
+     SELECT TB_PLACEMENT_VALIDATION.PLACEMENT_ENTRY_DT,
+      TB_PLACEMENT_VALIDATION.PLACEMENT_EXIT_DT,
+      TB_PLACEMENT_VALIDATION.VALIDATION_START_DT,
+      TB_PLACEMENT_VALIDATION.VALIDATION_END_DT,
+      TB_PLACEMENT_VALIDATION.VALIDATION_STATUS_CD
+     INTO vd_curr_placement_entry_dt,
+      vd_curr_placement_exit_dt,
+      vd_curr_vald_start_dt,
+      vd_curr_vald_end_dt,
+      vs_vald_status_cd 
+     FROM TB_PLACEMENT_VALIDATION
+     WHERE TB_PLACEMENT_VALIDATION.PLACEMENT_VALIDATION_ID = vl_max_validation_id;
+ 
+     IF vd_curr_placement_exit_dt is NULL AND vd_ori_placement_end_dt  is NOT  NULL THEN
+      if EXTRACT(MONTH FROM  vd_curr_vald_start_dt) =EXTRACT(MONTH FROM  vd_ori_placement_end_dt)
+      AND EXTRACT(YEAR FROM  vd_curr_vald_start_dt) = EXTRACT(YEAR FROM  vd_ori_placement_end_dt) THEN
+        vs_vald_status_cd  :=  '1749';
+        vs_plc_vld_impacted := 'Y';
+      END IF;
+     END IF; 
+--EXTRACT(YEAR FROM  vd_ori_placement_start_dt)
+     IF vd_curr_placement_entry_dt <> vd_ori_placement_start_dt and
+     EXTRACT(MONTH FROM  vd_curr_vald_start_dt) = EXTRACT(MONTH FROM  vd_ori_placement_start_dt)  AND 
+     EXTRACT(YEAR FROM  vd_curr_vald_start_dt) = EXTRACT(YEAR FROM  vd_ori_placement_start_dt) THEN
+       vs_vald_status_cd  :=  '1749';
+       vs_plc_vld_impacted := 'Y';
+     END IF;
+     
+     IF vd_curr_placement_exit_dt <> vd_ori_placement_end_dt and
+     EXTRACT(MONTH FROM  vd_curr_vald_end_dt) = EXTRACT(MONTH FROM  vd_ori_placement_end_dt)
+     AND  EXTRACT(YEAR FROM  vd_curr_vald_end_dt) = EXTRACT(YEAR FROM  vd_ori_placement_end_dt) THEN
+       vs_vald_status_cd  :=  '1749';
+       vs_plc_vld_impacted := 'Y';
+     END IF;
+     
+     -- New condition for entry / exit date change
+     IF vd_curr_placement_entry_dt <> vd_ori_placement_start_dt and
+     EXTRACT(MONTH FROM  vd_curr_vald_start_dt) = EXTRACT(MONTH FROM  vd_curr_placement_entry_dt)  and
+     EXTRACT(YEAR FROM  vd_curr_vald_start_dt) = EXTRACT(YEAR FROM  vd_curr_placement_entry_dt) THEN
+       vs_vald_status_cd  :=  '1749';
+       vs_plc_vld_impacted := 'Y';
+     END IF;
+     --EXTRACT(YEAR FROM  vd_curr_placement_exit_dt)
+     IF vd_curr_placement_exit_dt <> vd_ori_placement_end_dt and
+     EXTRACT(MONTH FROM  vd_curr_vald_end_dt) = EXTRACT(MONTH FROM  vd_curr_placement_exit_dt)  
+     AND  EXTRACT(YEAR FROM  vd_curr_vald_end_dt) = EXTRACT(YEAR FROM  vd_curr_placement_exit_dt) THEN
+       vs_vald_status_cd  :=  '1749';
+       vs_plc_vld_impacted := 'Y';
+     END IF;
+     -- New condition for entry / exit date change
+     
+     -- CIS-17815 Emergency Foster Home Care 
+     IF vl_placement_structure_id  = 13 AND vd_curr_placement_entry_dt <> vd_ori_placement_start_dt THEN
+       vl_no_of_nights := NULL; -- INITIAL VALUE
+     
+--      SELECT DAYS(vd_curr_vald_start_dt) - DAYS(vd_curr_placement_entry_dt)
+--       INTO vl_no_of_nights
+--      FROM SYSIBM.SYSDUMMY1 ;
+    
+    SELECT (vd_curr_vald_start_dt::date - vd_curr_placement_entry_dt ::date) :: integer
+       INTO vl_no_of_nights;
+      --FROM SYSIBM.SYSDUMMY1 ;
+    
+      IF vl_no_of_nights <= 60 THEN
+        vs_vald_status_cd  :=  '1749';
+        vs_plc_vld_impacted := 'Y';
+      END IF;
+     END IF;
+     -- CIS-17815 Emergency Foster Home Care 
+   
+     
+     IF vs_plc_vld_impacted = 'Y' THEN
+      -- Placement Auto-validation
+       vs_auto_valid_success_sw := NULL;
+       vs_auto_valid_errors := NULL;
+       vs_first_call_errors := NULL;
+      
+      IF as_update_sw = 'P' THEN -- Placement Creation 
+        vs_auto_valid_success_sw := 'Y';
+      ELSE
+       IF vs_first_autovalid_call = 'N' THEN
+         vs_first_call := 'Y';
+         vs_first_autovalid_call := 'Y';
+       ELSE
+         vs_first_call := 'N';
+       END IF;
+       
+       SELECT a.as_auto_valid_success_sw,a.as_auto_valid_errors,a.as_first_call_errors,a.al_sqlcode,a.as_error from SP_PLACEMENT_AUTO_VALIDATION ( al_placement_id,
+                  ad_placement_start_dt,
+                  ad_placement_exit_dt,   
+                  vd_curr_vald_start_dt,
+                  vd_curr_vald_end_dt,
+                  vs_first_call,
+                  as_update_sw) a into
+                  vs_auto_valid_success_sw,
+                  vs_auto_valid_errors,
+                  vs_first_call_errors,
+                  vl_sqlcode,
+                  vs_error;
+       
+       IF vl_sqlcode < 0 THEN
+        IF vs_error is NULL OR vs_error = '' THEN
+            vs_error := 'SP_PLACEMENT_AUTO_VALIDATION failed';
+        END IF;
+       END IF;
+       
+       IF vs_first_call = 'Y' AND vs_auto_valid_success_sw = 'N' 
+        AND vs_first_call_errors is NOT NULL AND RTRIM(LTRIM(vs_first_call_errors)) <> '' THEN
+          vs_first_call_Failed := 'Y';
+          vs_final_first_call_errors := vs_first_call_errors;
+       END IF;
+      END IF;
+      
+      -- Insert into Temp table  
+      INSERT INTO Temp_placement_validation
+        (   INSERT_UPDT_SW,
+         PLACEMENT_VALIDATION_ID,
+         START_DT,
+         END_DT,
+         AUTO_VALID_SW,
+         REASONS,
+          CREATE_TS, 
+            CREATE_USER_ID,
+            UPDATE_TS,
+            UPDATE_USER_ID
+        ) 
+      VALUES ( 'U',
+         vl_max_validation_id,
+         vd_curr_vald_start_dt,
+         vd_curr_vald_end_dt,
+         vs_auto_valid_success_sw,
+         vs_auto_valid_errors,
+         CURRENT_TIMESTAMP,
+         'finance',
+         CURRENT_TIMESTAMP,
+         'finance'
+        ); 
+     END IF;
+    END IF;
+   END IF;
+    vd_placement_validation_change_st_dt := vd_placement_validation_change_st_dt + interval '1 MONTH';
+    vl_counter := vl_counter + 1;
+  END IF;
+ --END WHILE;
+ END LOOP;
+ -- Placement Auto-validation - END
+
+ -- Auto-Validation Verification - START
+ SELECT COUNT(*)
+  INTO vl_auto_valid_count
+ --FROM Temp_placement_validation TABLE
+ FROM Temp_placement_validation
+ WHERE COALESCE(AUTO_VALID_SW , '') <> 'Y';
+
+ raise notice '3333==> vl_auto_valid_count %',vl_auto_valid_count;
+       
+ IF vl_auto_valid_count = 0 THEN
+  -- Pass
+   as_auto_valid_success_sw := 'Y';
+   al_auto_validation_log_id := NULL;
+  
+  -- Placement Validation Updates - START
+  IF as_update_sw = 'Y' OR as_update_sw = 'P' THEN
+--   UPDATE TB_PLACEMENT 
+--    SET PLACEMENT_CHANGE_DT = CURRENT_DATE
+--   WHERE PLACEMENT_ID = al_placement_id
+--    AND DELETE_SW = 'N';
+
+   
+   /* vs_SQL_STMT := ' SELECT INSERT_UPDT_SW, '||
+         '  PLACEMENT_VALIDATION_ID, '||
+         '  START_DT, '||
+         '  END_DT, '||
+         '  AUTO_VALID_SW, '||
+         '  REASONS '||
+         ' FROM Temp_placement_validation TABLE '||
+         ' ORDER BY START_DT ';*/
+       
+  -- PREPARE s FROM vs_SQL_STMT;
+     OPEN Cur_auto_validation FOR 
+      SELECT INSERT_UPDT_SW,PLACEMENT_VALIDATION_ID,START_DT,END_DT,AUTO_VALID_SW,REASONS 
+      FROM --Temp_placement_validation TABLE 
+      Temp_placement_validation  
+    ORDER BY START_DT;
+ 
+   --OPEN Cur_auto_validation;
+   <<Cur_auto_validation_no_data>>
+   LOOP
+   FETCH Cur_auto_validation INTO vs_insert_updt_sw, 
+          vl_placement_validation_id, 
+          vd_validation_month_start_dt,
+          vd_validation_month_end_dt,
+          vs_auto_valid_success_sw,
+          vs_auto_valid_errors;
+  
+   EXIT Cur_auto_validation_no_data WHEN NOT FOUND;
+    --WHILE (SQLCODE = 0)
+     --DO
+      
+     IF vs_insert_updt_sw = 'I' AND vl_placement_validation_id IS NULL THEN
+      SELECT SP_NEXTID(vs_placement_validation_id) into vl_placement_validation_id;
+      raise notice '822==> vs_insert_updt_sw %',vs_insert_updt_sw;
+      raise notice '823==> vl_placement_validation_id %',vl_placement_validation_id;
+      raise notice '824==> vd_validation_month_start_dt %',vd_validation_month_start_dt;
+      raise notice '825==> vd_validation_month_end_dt %',vd_validation_month_end_dt;
+      raise notice '826==> vs_auto_valid_success_sw %',vs_auto_valid_success_sw;
+      raise notice '827==> vs_auto_valid_errors %',vs_auto_valid_errors;
+      raise notice '888==> vl_placement_validation_id %',vl_placement_validation_id;
+      INSERT INTO TB_PLACEMENT_VALIDATION
+      (
+         PLACEMENT_VALIDATION_ID,               PLACEMENT_ID,
+         PLACEMENT_ENTRY_DT,                    PLACEMENT_EXIT_DT,
+         VALIDATION_STATUS_CD,                  COMMENT_TX,
+         VALIDATION_START_DT,                   VALIDATION_END_DT,
+         CREATE_TS,                             CREATE_USER_ID,
+         UPDATE_TS,                             UPDATE_USER_ID,
+         DELETE_SW
+      )
+       VALUES
+      (
+         vl_placement_validation_id,              al_placement_id,
+         vd_ori_placement_start_dt,               vd_ori_placement_end_dt,
+         vs_vald_status_cd,                       NULL,
+         vd_validation_month_start_dt,            vd_validation_month_end_dt,
+         CURRENT_TIMESTAMP,                      'finance',
+         CURRENT_TIMESTAMP,                      'finance',
+         'N'
+      );
+     ELSE
+      UPDATE TB_PLACEMENT_VALIDATION
+      SET PLACEMENT_ENTRY_DT = vd_ori_placement_start_dt,
+       PLACEMENT_EXIT_DT = vd_ori_placement_end_dt,
+       VALIDATION_STATUS_CD = vs_vald_status_cd,
+       UPDATE_USER_ID = 'finance',
+       UPDATE_TS = CURRENT_TIMESTAMP
+      WHERE PLACEMENT_VALIDATION_ID = vl_placement_validation_id
+       AND DELETE_SW = 'N';
+     END IF;
+     
+     -- PRJ-04753 - Fiscal Audit Trail - START
+     IF as_update_sw = 'Y' THEN -- Placement Change 
+      -- Picklist Type ID 10041 
+       vl_event_id := NULL; 
+      -- 1001 Placement Changes (EVENT)
+       vs_change_type := '1001';
+      -- 1006 Placement Validation (ENTITY)
+       vs_entity_type_cd := '1006' ;
+       vl_entity_id := vl_placement_validation_id;
+
+      SELECT a.as_error,a.al_sqlcode from SP_FISCAL_AUDIT_TRAIL ( 'SP_PLACEMENT_VALIDATION_UPDATE'
+               , vs_change_type
+               , vl_event_id
+               , vs_entity_type_cd
+               , vl_entity_id) a INTO
+               vs_error
+               , vl_sqlcode;
+               
+      IF vl_sqlcode <> 0 THEN
+       IF vs_error is NULL OR vs_error = '' THEN
+           vs_error := 'SP_FISCAL_AUDIT_TRAIL failed';
+       END IF;
+      END IF;
+     END IF; 
+     -- PRJ-04753 - Fiscal Audit Trail - END 
+     
+     -- Reset
+      vs_insert_updt_sw := NULL;
+      vl_placement_validation_id := NULL;
+      vd_validation_month_start_dt := NULL;
+      vd_validation_month_end_dt := NULL;
+      vs_auto_valid_success_sw := NULL;
+      vs_auto_valid_errors := NULL;
+   --  FETCH Cur_auto_validation INTO vs_insert_updt_sw, 
+   --          vl_placement_validation_id, 
+   --          vd_validation_month_start_dt,
+   --          vd_validation_month_end_dt,
+   --          vs_auto_valid_success_sw,
+   --          vs_auto_valid_errors;
+    raise notice 'After Cursor  ---vd_validation_month_start_dt------>>> %',vd_validation_month_start_dt;
+    raise notice 'After Cursor  ----vd_validation_month_end_dt----->>> %',vd_validation_month_end_dt;
+    --END WHILE;
+    END LOOP;
+   CLOSE Cur_auto_validation;
+   raise notice 'After Cursor  <<<<---------------------------------------------------->>> %',vd_validation_month_end_dt;
+   -- Update Placement Entry & Exit date in TB_PLACEMENT_VALIDATION for all valid Placement Validation Records
+   UPDATE TB_PLACEMENT_VALIDATION
+   SET PLACEMENT_ENTRY_DT = vd_ori_placement_start_dt,
+    PLACEMENT_EXIT_DT = vd_ori_placement_end_dt
+   WHERE PLACEMENT_ID = al_placement_id
+    AND DELETE_SW = 'N';
+    
+   
+   -- Delete placement validation records with 'VALIDATION_START_DT' before Nov 1 2008.
+   -- CIS-18129
+   -- Delete placement validation records with 'VALIDATION_START_DT' before Jan 1 2009.
+   -- CIS-18129 II
+   DELETE FROM TB_PLACEMENT_VALIDATION
+   WHERE PLACEMENT_ID = al_placement_id
+    AND DELETE_SW = 'N'
+    AND VALIDATION_START_DT < DATE('2009-01-01') ;
+
+    
+   -- Tickler Activities - START
+   IF as_update_sw = 'Y' THEN -- Placement Change 
+    -- Remove following ticklers after Placement Auto-validation
+    -- 48  - The Child's placement information is incorrect
+    -- 49  - The Child's placement information may be incorrect. Correct so that the provider can be paid.
+    UPDATE TB_TICKLERS
+     SET DELETE_SW = 'Y'
+    WHERE ENTITY_TYPE_CD = '2953' 
+     AND ENTITY_KEY_ID = vl_provider_id  
+     AND CLIENT_ID = vl_client_id 
+     AND SYSTEM_TICKLER_ID IN ( 48, 49 )
+     AND DELETE_SW = 'N';
+   
+    -- 408 - Contract and/or License for ^Provider Name^ is renewed/relicensed/extended.
+    IF vl_contract_program_id is NULL AND vl_contract_program_id > 0 THEN
+    -- SET vl_tickler_cnt = 0;
+     SELECT COUNT(*)
+      INTO vl_tickler_cnt
+     FROM TB_TICKLERS  
+     WHERE ENTITY_TYPE_CD = '2953'  
+      AND ENTITY_KEY_ID = vl_provider_id  
+      AND DELETE_SW = 'N' 
+      AND SYSTEM_TICKLER_ID = 408 
+      AND CLIENT_ID = vl_client_id 
+      AND ENTITY_ID1 = vl_contract_program_id ;
+
+     IF vl_tickler_cnt > 0 THEN
+      UPDATE TB_TICKLERS
+       SET DELETE_SW = 'Y'
+      WHERE ENTITY_TYPE_CD = '2953' 
+       AND ENTITY_KEY_ID = vl_provider_id  
+       AND CLIENT_ID = vl_client_id 
+       AND SYSTEM_TICKLER_ID = 408
+       AND ENTITY_ID1 = vl_contract_program_id
+       AND DELETE_SW = 'N';
+     END IF;      
+    END IF;
+    
+    -- 410 - Provider information has been corrected; please validate the placement of ^Client Nm^  (^Client ID^). 
+    vl_tickler_cnt = 0;
+    SELECT COUNT(*)
+     INTO vl_tickler_cnt
+    FROM TB_TICKLERS  
+    WHERE ENTITY_TYPE_CD = '2952'  
+     AND ENTITY_KEY_ID = vl_case_id  
+     AND DELETE_SW = 'N' 
+     AND SYSTEM_TICKLER_ID = 410 
+     AND CLIENT_ID = vl_client_id 
+     AND ENTITY_ID1 = vl_provider_id;
+    
+    IF vl_tickler_cnt > 0 THEN
+     UPDATE TB_TICKLERS
+      SET DELETE_SW = 'Y'
+     WHERE ENTITY_TYPE_CD = '2952'  
+      AND ENTITY_KEY_ID = vl_case_id  
+      AND DELETE_SW = 'N' 
+      AND SYSTEM_TICKLER_ID = 410 
+      AND CLIENT_ID = vl_client_id 
+      AND ENTITY_ID1 = vl_provider_id;
+    END IF;      
+   END IF; 
+   -- Tickler Activities - END 
+   -- Placement Validation Updates - END
+  END IF; 
+ ELSE
+  -- Fail
+    
+  IF vs_first_call_Failed = 'Y' THEN
+   UPDATE Temp_placement_validation 
+    SET AUTO_VALID_SW = 'N';
+  END IF;
+  
+   vl_error_cnt := 1;
+   as_auto_valid_success_sw := 'N';
+  -- Get Next Auto_validation_log_id
+ -- SELECT SP_NEXTID ( vs_auto_validation_log_id) INTO vl_auto_validation_log_id;
+ --  al_auto_validation_log_id := vl_auto_validation_log_id;
+  
+   vs_error_reasons := '';
+  
+   /*vs_SQL_STMT := ' SELECT INSERT_UPDT_SW, '||
+        '  PLACEMENT_VALIDATION_ID, '||
+        '   START_DT, '||
+        '  END_DT, '||
+        '  AUTO_VALID_SW, '||
+        '  COALESCE(REASONS, '''') AS REASONS '||
+        ' FROM Temp_placement_validation TABLE '||
+         ' WHERE START_DT >= DATE(''2009-01-01'') '||
+        ' ORDER BY START_DT ';*/
+        
+        -- ' WHERE COALESCE(AUTO_VALID_SW,'''') <> ''Y'' '||   
+        
+  --PREPARE s FROM vs_SQL_STMT;
+  
+   --OPEN Cur_auto_validation;
+    OPEN Cur_auto_validation FOR 
+    SELECT INSERT_UPDT_SW,PLACEMENT_VALIDATION_ID,START_DT,END_DT,AUTO_VALID_SW,COALESCE(REASONS, '''') AS REASONS 
+    FROM Temp_placement_validation --TABLE 
+     WHERE START_DT >= DATE('2009-01-01') 
+   ORDER BY START_DT;
+ raise notice 'Cur_auto_validation--vd_validation_month_start_dt-> %',vd_validation_month_start_dt;
+    raise notice 'Cur_auto_validation--vd_validation_month_end_dt-> %',vd_validation_month_end_dt;
+   --OPEN Cur_auto_validation;
+   <<Cur_auto_validation_no_data_1>>
+   LOOP
+   FETCH Cur_auto_validation INTO  vs_insert_updt_sw, 
+           vl_placement_validation_id, 
+           vd_validation_month_start_dt,
+           vd_validation_month_end_dt,
+           vs_auto_valid_success_sw,
+           vs_auto_valid_errors;
+   EXIT Cur_auto_validation_no_data_1 WHEN NOT FOUND;
+   
+   --WHILE (SQLCODE = 0)
+   -- DO
+    
+    
+    IF vs_first_call_Failed = 'Y' THEN
+     IF vs_final_first_call_errors is NOT NULL AND RTRIM(LTRIM(vs_final_first_call_errors)) <> '' THEN
+       vs_error_reasons := vs_final_first_call_errors ;
+     END IF; 
+     IF vs_auto_valid_errors is NOT NULL AND RTRIM(LTRIM(vs_auto_valid_errors)) <> '' THEN
+       vs_error_reasons := vs_error_reasons || ' ' || CHR(13) || COALESCE(vs_auto_valid_errors,'') ;
+     END IF; 
+    ELSE
+      vs_error_reasons := COALESCE(vs_auto_valid_errors,'') ;
+    END IF; 
+    raise notice 'Cur_auto_validation--vl_auto_validation_log_id-> %',vl_auto_validation_log_id;
+    INSERT INTO  TB_PLACEMENT_AUTO_VALIDATION_LOG  
+       ( PLACEMENT_ID,   
+         INSERT_UPDT_SW,   
+         PLACEMENT_VALIDATION_ID,   
+         VALIDATION_START_DT,   
+         VALIDATION_END_DT,   
+         AUTO_VALID_SW,   
+         ERROR_REASONS )  
+    VALUES (   al_placement_id,   
+         vs_insert_updt_sw,   
+         vl_placement_validation_id,   
+         vd_validation_month_start_dt,   
+         vd_validation_month_end_dt,   
+         vs_auto_valid_success_sw,   
+         vs_error_reasons )  ;
+
+    
+     vl_error_cnt := vl_error_cnt + 1; 
+    -- Reset
+     vs_insert_updt_sw := NULL; 
+     vl_placement_validation_id := NULL;
+     vd_validation_month_start_dt := NULL;
+     vd_validation_month_end_dt := NULL;
+     vs_auto_valid_success_sw := NULL;
+     vs_auto_valid_errors := NULL;
+     vs_error_reasons := '';
+   
+   
+    FETCH Cur_auto_validation INTO  vs_insert_updt_sw, 
+           vl_placement_validation_id, 
+           vd_validation_month_start_dt,
+           vd_validation_month_end_dt,
+           vs_auto_valid_success_sw,
+           vs_auto_valid_errors;
+   --END WHILE;
+   END LOOP;
+   CLOSE Cur_auto_validation;
+   
+ END IF;
+ -- Auto-Validation Verification - END
+END IF;
+
+END;
+
+$function$
+

@@ -1,0 +1,83 @@
+CREATE OR REPLACE FUNCTION as_f_prim_county_new(al_entity_key_id bigint, adt_start_dt timestamp without time zone, adt_end_dt timestamp without time zone)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+VS_COUNTY_CD VARCHAR;
+vd_end_dt date;
+Vl_case_cd character varying;
+vl_entity_type_cd character varying;
+AL_SERVICE_CASE int4;
+AL_ADOPTION_CASE int4;
+ AL_SERVICE_CASE_ID         UUID;
+ AL_ADOPTION_CASE_ID        UUID;
+ CASE_ID           UUID;
+ 
+BEGIN
+
+ --- CASE ID
+ SELECT servicecaseid 
+ INTO AL_SERVICE_CASE_ID
+ FROM servicecase 
+ WHERE servicecasenumber = al_entity_key_id:: VARCHAR AND activeflag = 1;
+
+ SELECT adoptioncaseid
+ INTO AL_ADOPTION_CASE_ID
+ FROM adoptioncase
+ WHERE adoptioncasenumber = al_entity_key_id:: VARCHAR AND activeflag = 1;
+
+ IF AL_SERVICE_CASE_ID IS NOT NULL
+ THEN
+  CASE_ID = AL_SERVICE_CASE_ID;
+ ELSE 
+  CASE_ID = AL_ADOPTION_CASE_ID; 
+ END IF;
+
+ SELECT count(*) 
+ INTO AL_SERVICE_CASE
+ FROM servicecase 
+ WHERE servicecaseid = AL_SERVICE_CASE_ID AND activeflag = 1;
+
+ SELECT count(*)
+ INTO AL_ADOPTION_CASE
+ FROM adoptioncase
+ WHERE adoptioncaseid = AL_ADOPTION_CASE_ID AND activeflag = 1;
+
+ IF AL_SERVICE_CASE = 1
+ THEN
+  vl_case_cd = 'servicecase';
+ ELSE 
+  vl_case_cd = 'adoptioncase'; 
+ END IF; 
+ 
+ IF vl_case_cd = 'adoptioncase' THEN
+     vl_entity_type_cd ='adoptioncase';
+ ELSE
+     vl_entity_type_cd ='servicecase'; 
+ END IF; 
+ 
+ VS_COUNTY_CD = 
+ (SELECT COUNTY_CODE 
+     from (SELECT row_number() over() as num
+                , te.from_county_cd AS COUNTY_CODE
+                , te.assignment_id AS ASSIGNMENT_ID
+             from (select c.countyname as from_county_cd, ca.caseassignmentid as assignment_id
+       from caseassignment ca, team t, county c
+       where ca.fromteamid = t.teamid AND 
+        c.countyid = t.countyid::uuid AND
+        ca.responsibilitytypekey = 'family' AND
+        ca.objectid = CASE_ID AND 
+        ca.startdate <= adt_end_dt AND
+        ca.objecttypekey = vl_entity_type_cd AND 
+        ca.enddate >= adt_start_dt OR ca.enddate IS NULL AND
+        ca.activeflag = 1
+            ) as te 
+    ) as rty where num = 1);
+
+RETURN VS_COUNTY_CD;
+
+END;
+
+ $function$
+

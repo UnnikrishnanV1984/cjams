@@ -1,0 +1,126 @@
+-- FUNCTION: cjams.fn_clnt_ins()
+
+-- DROP FUNCTION cjams.fn_clnt_ins();
+
+-- DROP TRIGGER tr_clnt_ins ON person;
+
+CREATE OR REPLACE FUNCTION cjams.fn_clnt_ins()
+    RETURNS trigger
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE NOT LEAKPROOF 
+AS $BODY$
+
+DECLARE VS_FORMATTED_FIRST_NM             VARCHAR(20);--
+DECLARE VS_FORMATTED_MIDDLE_NM            VARCHAR(20);--
+DECLARE VS_FORMATTED_LAST_NM              VARCHAR(20);--
+DECLARE VS_FIRST_NM_SOUNDEX               CHAR(4);--
+DECLARE VS_LAST_NM_SOUNDEX                CHAR(4);--
+BEGIN
+IF NEW.citizenalenageflag IS NOT NULL THEN
+ 
+	INSERT INTO caresoutboundtrigger
+	( fk_id,
+                    transactionon,
+                    transactiontypekey,
+                    statusflag,
+                    activeflag)
+	VALUES
+                    (NEW.cjamspid,
+                     CURRENT_TIMESTAMP,
+                     '62',
+                     'N',
+                     1);--
+
+END IF;   --
+/*
+IF NEW.activeflag = 1 THEN
+
+ VS_FORMATTED_FIRST_NM := UPPER(REPLACE(REPLACE(REPLACE(REPLACE(NEW.firstname,'-',' '),',',''),'.',''),'''',''));--
+ VS_FORMATTED_MIDDLE_NM := UPPER(REPLACE(REPLACE(REPLACE(REPLACE(NEW.middlename,'-',' '),',',''),'.',''),'''',''));--
+ VS_FORMATTED_LAST_NM := UPPER(REPLACE(REPLACE(REPLACE(REPLACE(NEW.lastname,'-',' '),',',''),'.',''),'''',''));--
+ VS_FIRST_NM_SOUNDEX := soundex(substring(VS_FORMATTED_FIRST_NM,1,5));--
+ VS_LAST_NM_SOUNDEX := soundex(substring(VS_FORMATTED_LAST_NM,1,5));--
+
+   INSERT INTO TB_SEARCH_CLIENT ( CLIENT_ID,
+                               CIS_CLIENT_ID,
+		 	       PREFIX_CD, 
+                      	       FIRST_NM,
+                	       MIDDLE_NM,
+                 	       LAST_NM,
+                	       SUFFIX_CD,
+                   	       FORMATTED_FIRST_NM,
+                	       FORMATTED_LAST_NM,
+                      	       FORMATTED_MIDDLE_NM,
+                               LAST_NM_SOUNDEX,
+                  	       FIRST_NM_SOUNDEX,
+                               LNM_SOUNDEX,
+                  	       FNM_SOUNDEX,
+                               GENDER_CD,
+                               SSN_NO,
+                               DOB_DT,
+                               PRIMARY_RACE_CD,
+                               HIPANIC_SW,
+                               APPROXIMATE_AGE_NO,
+                               CREATE_USER_ID,
+                               CREATE_TS,
+                               UPDATE_USER_ID,
+                               UPDATE_TS,
+                               DELETE_SW)
+                      VALUES ( NEW.cjamspid,
+                               NEW.cisclientid,
+		 	       NEW.salutation, 
+                      	       NEW.firstname,
+                	       NEW.middlename,
+                 	       NEW.lastname,
+                	       NEW.suffix,
+                   	       VS_FORMATTED_FIRST_NM,
+                	       VS_FORMATTED_LAST_NM,
+                	       VS_FORMATTED_MIDDLE_NM,
+                               VS_LAST_NM_SOUNDEX,
+                  	       VS_FIRST_NM_SOUNDEX,  
+                               NEW.lastnamesoundex,
+                  	       NEW.firstnamesoundex,
+                               NEW.gendertypekey,
+                               NULL,
+                               NEW.dob,
+                               NEW.racetypekey,
+                               NEW.ethnicgrouptypekey,
+                               NEW.approximateageno,
+                               NEW.insertedby,
+                               NEW.insertedon,
+                               NEW.updatedby,
+                               NEW.updatedon,
+                               'N');--
+
+update 	TB_SEARCH_CLIENT A SET  SSN_NO = B.personidentifiervalue::Integer
+FROM personidentifier B,person C
+WHERE B.personid=C.personid and
+ B.personidentifiertypekey = 'SSN' 
+and A.client_id = C.cjamspid and A.client_id=NEW.cjamspid;			   
+
+   IF (VS_FORMATTED_FIRST_NM IS NOT NULL) AND (LENGTH(RTRIM(VS_FORMATTED_FIRST_NM)) > 0) THEN       
+      IF NOT EXISTS ( SELECT FORMATTED_FIRST_NM FROM TB_DISTINCT_CLIENT_FNMS WHERE
+                      FORMATTED_FIRST_NM = VS_FORMATTED_FIRST_NM) THEN
+         INSERT INTO TB_DISTINCT_CLIENT_FNMS (FORMATTED_FIRST_NM,FIRST_NM_SOUNDEX)
+         VALUES (VS_FORMATTED_FIRST_NM,VS_FIRST_NM_SOUNDEX);--
+      END IF;--
+   END IF;--
+ 
+   IF (VS_FORMATTED_LAST_NM IS NOT NULL) AND (LENGTH(RTRIM(VS_FORMATTED_LAST_NM)) > 0) THEN       
+       IF NOT EXISTS ( SELECT FORMATTED_LAST_NM FROM TB_DISTINCT_CLIENT_LNMS WHERE
+                      FORMATTED_LAST_NM = VS_FORMATTED_LAST_NM) THEN
+          INSERT INTO TB_DISTINCT_CLIENT_LNMS (FORMATTED_LAST_NM,LAST_NM_SOUNDEX)
+          VALUES (VS_FORMATTED_LAST_NM,VS_LAST_NM_SOUNDEX);--
+       END IF;--
+   END IF;--
+
+END IF;-- */
+return new;
+END;
+$BODY$;
+
+CREATE TRIGGER tr_clnt_ins 
+AFTER INSERT ON person
+FOR EACH ROW 
+EXECUTE PROCEDURE fn_clnt_ins();

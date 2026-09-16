@@ -1,0 +1,74 @@
+CREATE OR REPLACE FUNCTION prov_midyrgetnoncompliancecurrent(v_monitoring_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ v_provider_id character varying;
+ v_prgram character varying;
+
+ begin
+  
+ SELECT JSON_AGG(pla) INTO jsondata FROM (select x.*,
+                        (select json_agg(a) from (select count(1) over() as count,
+                         ps.first_nm,ps.last_nm,
+                         hh.first_nm as hh_first_nm,hh.last_nm as hh_last_nm,hh.provider_id as hh_provider_id,
+                         p.firstname,p.lastname,
+                         tpa.program_type,
+                         pmrd.monitoring_record_value,pmrd.monitoring_record_data_id, pmrd.findings, 
+                         prq1.record_question_id, prq1.record_id, prq1.question, prq1.question_hint, prq1.question_type, prq1.question_data_type, prq1.question_options,
+                         coalesce (tp.provider_nm, tpa.program_name) as provider_nm,
+                         coalesce (tp.provider_id::character varying, pm1.applicant_id) as site_id
+                      from prov_monitoring_record_site pm1 
+                      inner join prov_monitoring_record_data pmrd   on pm1.monitoring_record_site_id = pmrd.monitoring_record_site_id 
+                      inner join prov_record_question prq1        on prq1.record_question_id = pmrd.record_question_id and prq1.delete_sw = 'N'
+                      left join tb_provider_applicant tpa         on tpa.applicant_id = pm1.applicant_id   and tpa.delete_sw = 'N'
+                      left join tb_provider tp                    on tp.provider_id = pm1.site_id
+                      left join providerstaff ps                  on provider_staff_id::character varying = pm1.objectid and ps.delete_sw = 'N'
+                     left join person p                          on (case when pm1.objectid = 'null' then p.personid = '00000000-0000-0000-0000-000000000000' else p.personid  = pm1.objectid :: uuid end) and pm1.objecttype != 'Parent' and p.activeflag = 1
+       left join tb_prov_cpa_adop_person hh        on (hh.provider_cpa_adop_person_id = pm1.objectid and pm1.objecttype = 'Parent')
+  
+    where  
+                          pm1.monitoring_id =x.monitoring_id and pm1.delete_sw = 'N'
+                          and (pm1.site_id::character varying = x.site_id or pm1.applicant_id = x.site_id)
+                          and prq1.record_question_id = x.record_question_id 
+                          and pmrd.monitoring_record_value =  'Non-Compliance'
+                      order by pmrd.monitoring_record_value desc) a) as findings 
+         from (
+     select distinct tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,
+                        (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+                        (case when tp.provider_id::character varying is null then pm.applicant_id else tp.provider_id::character varying end) as site_id,
+                        pm.monitoring_id,
+                        pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+                        pv.reference_value_id,
+                        pv.reference_id,
+                        pv.violation_id,
+                        pv.cap_number,
+                        pv.comments,
+                        pv.isdraft,
+                        pv.cap_status,
+                        pv.cap_status_description,
+                        pv.planofcorrection,
+                        pv.disputecomarcitation,
+                        pv.targetdate,
+                        pv.isdispute,
+                        pv.isacknowledged,
+      pv.create_ts
+                    from prov_record_question prq 
+                    inner join prov_monitoring_record_data pmrd on prq.record_question_id = pmrd.record_question_id 
+                    inner join prov_monitoring_record_site pm on pm.monitoring_record_site_id = pmrd.monitoring_record_site_id
+                    inner join prov_violation pv                 on pv.record_question_id = pmrd.record_question_id and (pv.site_id = pm.site_id or pv.applicant_id = pm.applicant_id ) and pv.reference_value_id = pm.monitoring_id
+                    inner join prov_record pr on pr.record_id = pm.record_id and pr.delete_sw ='N' 
+                    left join tb_provider_applicant tpa         on tpa.applicant_id = pm.applicant_id   and tpa.delete_sw = 'N'
+                    left join tb_provider tp                    on tp.provider_id = pm.site_id
+                    where pr.module_name ='Record' and  pmrd.monitoring_record_value = 'Non-Compliance'
+                        and pm.monitoring_id =v_monitoring_id and pm.delete_sw = 'N'
+                    order by prq.question, pr.records_type) x
+  
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

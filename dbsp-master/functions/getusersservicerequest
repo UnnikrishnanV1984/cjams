@@ -1,0 +1,104 @@
+CREATE OR REPLACE FUNCTION getusersservicerequest(userid character varying, page integer, pagelimit integer, searchval character varying, searchcol character varying, actiontype character varying, v_foldertypekey character varying, v_status character varying)
+ RETURNS TABLE(totalcount bigint, groupnumber character varying, intakeserviceid uuid, legalguardian json, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, displayname character varying, county character varying, duedate timestamp without time zone, status character varying, accepteddate timestamp without time zone, routedon timestamp without time zone, isfatality integer, ismaltreatment integer, approvaldate timestamp without time zone, foldertype character varying, fatalityinfo json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE  v_pageoffset  int;
+
+v_pagenumber  int;
+
+l_actiontype  character  varying;
+ 
+
+BEGIN
+
+    v_pagenumber  :=  (page-1)*      10;
+
+    l_actiontype:=actiontype;
+
+    CREATE TEMP TABLE   tmp_status ( statustypeid uuid);
+
+    IF  (searchcol!='servicerequestnumber')  THEN  searchval:='';  END IF;
+
+    IF (v_status IN ('pending','inprogress')) THEN 
+         INSERT INTO tmp_status(statustypeid)
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND LOWER(intakeserreqstatustypekey) NOT IN  ('closed', 'cancelled','completed');
+    ELSIF(v_status='closed') THEN 
+        INSERT INTO tmp_status(statustypeid)
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE  activeflag =1  AND  LOWER(intakeserreqstatustypekey) IN  ('closed');
+    ELSE
+         INSERT INTO tmp_status (statustypeid)       
+        SELECT intakeserreqstatustypeid  FROM  intakeserreqstatustype  WHERE   activeflag =1  AND LOWER(intakeserreqstatustypekey) NOT IN  ('cancelled','completed');
+    END IF; 
+
+    RETURN  QUERY
+
+    SELECT 
+        count(1) over(),  
+        '':: character varying, 
+        ISR.intakeserviceid, 
+        (select getcasepersonname as legalguardian from getcasepersonname ('servicerequest',ISR.intakeserviceid::character varying)),
+        ISR.servicerequestnumber, 
+        (SELECT  itsrt.intakeservreqtypekey FROM  intakeservicerequesttype  as  itsrt
+        WHERE  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid AND  itsrt.activeflag  =1 limit  1), 
+        (SELECT  srst.classkey  FROM  servicerequestsubtype  as  srst WHERE  srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+        AND  srst.activeflag  =1    limit  1), 
+        ISR.reporteddate,  
+        cast(INITCAP(TRIM(PN.lastname)||  ',  '  ||TRIM(PN.firstname))  as    character  varying), 
+        /*(SELECT  pa.county  FROM  personaddress  pa WHERE  pa.personid  =  pn.personid and  pa.activeflag  =1 AND personaddresstypekey='C'  limit  1)  */
+         '':: character varying, 
+         (SELECT 
+            CASE WHEN ISR.TargetCompleteDate is null then CAST(ISR.ReportedDate as date) + CAST(src.DueDateOffset as integer)
+                ELSE  ISR.TargetCompleteDate    
+            END   
+        FROM ServiceRequestTypeConfig as src  
+        WHERE src.intakeservreqtypeid=isr.IntakeServReqTypeId AND src.servicerequestsubtypeid= isr.IntakeServiceRequestClassId and src.activeflag=1 limit 1
+        )   duedate, 
+        CAST(CASE ISR.isaccepted WHEN    false  THEN  'Rejected' WHEN    true  THEN  'Assigned' ELSE  'Pending' END
+             AS  character  varying)  AS  status, 
+        ISR.accepteddate, 
+        ISR.routedon, 
+        COALESCE(childfatality.childfatality,0), 
+        CASE  COALESCE((
+            SELECT  COUNT(1) 
+                FROM  investigationallegation  ia 
+                INNER  JOIN  investigation  i  ON  i.investigationid=  ia.investigationid  AND  i.activeflag=1 AND  I.intakeserviceid  =  ISR.intakeserviceid  
+            WHERE  ia.activeflag=1  AND  COALESCE(ia.isproviderinvolved,0)  =1),0)
+        WHEN  0  THEN  0  ELSE  1  END,    
+        ISR.insertedon AS approvaldate,
+        (SELECT ft.description FROM foldertype ft WHERE ft.foldertypekey = ISR.foldertypekey AND ft.activeflag = 1 LIMIT 1) AS foldertype,
+        COALESCE(childfatality.fatalityinfo,NULL)::json
+    FROM  intakeservicerequest  as  ISR  
+        INNER JOIN tmp_status ts ON ts.statustypeid =ISR.intakeserreqstatustypeid
+        INNER JOIN  (SELECT  intakeservicerequestactor.intakeserviceid,  MAX(intakeservicerequestactor.personid::character  varying)  ::uuid  personid
+                      FROM  intakeservicerequestactor  
+                      WHERE  intakeservicerequestpersontypekey  IN  ('CLI','CHILD','BIOCHILD','OTHERCHILD','RC','RA','Youth','2085','PA')  
+                      AND  activeflag  =1  GROUP  by  intakeservicerequestactor.intakeserviceid  )as  ISRA  
+                ON  ISRA.intakeserviceid=ISR.intakeserviceid   
+        LEFT  JOIN  person  as  PN  ON  PN.personid=ISRA.personid  AND  PN.activeflag  =  1  
+        LEFT JOIN ( SELECT  israc1.intakeserviceid , 1 childfatality,  json_agg(json_build_object(
+                     'personname',(COALESCE(prs.firstname,'')||' '||COALESCE(prs.lastname,'')) ,
+                    'Dateofbirth', prs.dob,
+                     'Dateofdeath',prs.dateofdeath) ) fatalityinfo
+                    FROM  intakeservicerequestactor  israc1
+                    INNER  JOIN  person  prs    ON  prs.personid  =israc1.personid  AND    prs.activeflag  =1
+                        AND  prs.dateofdeath  IS  NOT NULL  AND  EXTRACT(year  FROM  age(now(),prs.dob))<= 18
+                    WHERE  israc1.activeflag  =1  GROUP BY israc1.intakeserviceid
+                 )  childfatality ON  childfatality.intakeserviceid =ISR.intakeserviceid         
+        LEFT  JOIN  intakedastatus  as  IDAS ON  IDAS.intakenumber=ISR.intakenumber  and  IDAS.activeflag=1
+    WHERE   ISR.activeflag=1   
+    AND     ISR.Intakeserviceid::  character  varying  in  (SELECT  objectid  FROM  routing  R
+                    WHERE  R.tosecurityusersid  =  userid AND  R.activeflag  =1    )
+    AND  LOWER(ISR.servicerequestnumber)  LIKE   '%' ||   LOWER(searchval)  ||  '%'                  
+    AND  LOWER(  COALESCE(ISR.actiontype,'') )  =   LOWER(l_actiontype)
+    AND  LOWER(CAST(  COALESCE(ISR.foldertypekey,'')  as    character  varying))  =  LOWER( COALESCE(v_foldertypekey,'')) 
+    ORDER  BY COALESCE(ISR.routedon,  ISR.updatedon)  DESC LIMIT  10 OFFSET    v_pagenumber  ;
+    
+    DROP TABLE IF EXISTS tmp_status;
+    
+END;
+
+
+$function$
+

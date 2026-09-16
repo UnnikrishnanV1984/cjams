@@ -1,0 +1,52 @@
+CREATE OR REPLACE FUNCTION rstnchangeformlist(restitutionno integer, skip integer, pagesize integer)
+ RETURNS TABLE(createddate timestamp without time zone, changeformreasontypes json, restitutionamount numeric, previousbalance numeric, newbalance numeric, waivedamount numeric, additionalamount numeric, liableperson character varying, changeformreason character varying, status character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+ v_restitutionno int;
+ v_pageoffset int;
+    v_liPageSize int;
+
+BEGIN
+
+ v_restitutionno := restitutionno; 
+ v_liPageSize := pagesize;
+ v_pageoffset := skip;
+
+ 
+RETURN QUERY
+   
+select isrr.insertedon as createddate
+, (select json_agg(rv.value_text) from restitutionchangeformreasonconfig rcfrc join
+ referencevalues rv on rv.ref_key = rcfrc.changeformreasontypekey join referencetype rt on rt.referencetypeid = rv.referencetypeid  
+ where rcfrc.intakeserreqrestitutionid = isrr.intakeserreqrestitutionid and rcfrc.activeflag = 1) as  changeformreasontypes
+, case
+ when isrr.approvestatus = 'RSTPND' then coalesce(isrr.payment, 0)
+ else (coalesce(isrr.payment, 0) + coalesce(isrr.waivedamount, 0) - coalesce(isrr.additionalamount, 0))
+ end as restitutionamount,
+case
+ when isrr.approvestatus = 'RSTPND' then (coalesce(isrr.payment, 0) - coalesce(isrr.paidamount,0))
+ else (coalesce(isrr.payment, 0) - coalesce(isrr.paidamount,0) + coalesce(isrr.waivedamount,0) - coalesce(isrr.additionalamount))
+ end as previousbalance,
+case
+ when isrr.approvestatus = 'RSTPND' then coalesce(coalesce(isrr.payment, 0) - coalesce(isrr.waivedamount, 0) + coalesce(isrr.additionalamount, 0) - coalesce(isrr.paidamount,0))
+ else (coalesce(isrr.payment, 0) - coalesce(isrr.paidamount,0))
+ end as newbalance,
+isrr.waivedamount as waivedamount,
+isrr.additionalamount as additionalamount,
+cast(p.firstname || ' ' || p.lastname as character varying) as liableperson,
+isrr.changeformreason, 
+(select rv.description from referencevalues rv join referencetype rt on rt.referencetypeid = rv.referencetypeid where rv.ref_key = isrr.approvestatus and rv.activeflag = 1 and rt.activeflag = 1 and rt.tablename = 'RestitutionApprStatusType') as status
+from intakeserreqrestitution isrr 
+join person p on p.personid = isrr.liablepersonid
+join routing r on r.objectid = isrr.intakeserreqrestitutionid::varchar and r.routingstatustypeid = 46 
+where isrr.restitutionno = v_restitutionno --AND isrr.activeflag = 1
+ORDER BY isrr.insertedon desc
+LIMIT v_liPageSize OFFSET v_pageoffset; 
+
+END;
+
+$function$
+

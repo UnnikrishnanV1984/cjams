@@ -1,0 +1,1 @@
+UPDATE routing SET routingstatustypeid = 16 WHERE routingid='610bd8a9-2cbf-488c-aace-a7d445436281'

@@ -1,0 +1,7 @@
+CREATE INDEX xie3_tprdetails ON cjams.tprdetails USING btree (intakeservicerequestactorid);
+create index Xie2_intakeservreqchildremoval on intakeservreqchildremoval(intakeservicerequestactorid);
+create index Xie1_caseclosureparticipant on caseclosureparticipant(intakeservicerequestactorid);
+create index Xie1_adoptionemotionaldetails on adoptionemotionaldetails(intakeservicerequestactorid);
+create index Xie2_adoptionplanning on adoptionplanning(intakeservicerequestactorid);
+create index Xie1_meetingrecordingactor on meetingrecordingactor(intakeservicerequestactorid);
+create index Xie1_investigationfindingtypeperson on investigationfindingtypeperson(intakeservicerequestactorid);

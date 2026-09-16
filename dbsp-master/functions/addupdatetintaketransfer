@@ -1,0 +1,370 @@
+CREATE OR REPLACE FUNCTION addupdatetintaketransfer(intaketransferdata json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 04/07/2022 
+
+-- Stored Procedure to Insert/Update the Intake Transfer data (B-128967/CIDM-4372)
+
+-- Revision(s)
+------------------------------------------------------------------------  
+DECLARE
+ v_intaketransferdata json;
+ v_intaketransferid uuid;
+ v_teamid uuid;
+ s_insertedby character varying; 
+ 
+ v_intakenumber character varying; 
+ v_approvalstatus character varying; 
+ v_worker_fullname character varying; 
+ v_receivingcountyid character varying; 
+ 
+BEGIN 
+ v_intaketransferdata := intaketransferdata;
+ v_approvalstatus := (v_intaketransferdata->>'approvalstatus')::character varying ;
+ 
+ v_intakenumber := (v_intaketransferdata->>'intakenumber')::character varying;
+ 
+ RAISE NOTICE 'v_intakenumber1%',v_intakenumber;
+
+ select tm.teamid 
+  into v_teamid
+ from teammemberassignment tma 
+  inner join teammember tm on tm.teammemberid = tma.teammemberid 
+   and tm.activeflag = 1
+ where tma.securityusersid = (v_intaketransferdata->>'approvedby')::character varying
+  and tma.activeflag = 1 ;
+
+ IF ( LENGTH(v_intaketransferdata->>'intaketransferid') > 1 ) THEN 
+  -- Update
+  v_intaketransferid := (v_intaketransferdata->>'intaketransferid')::uuid ;
+  
+  UPDATE intaketransfers
+  SET  
+   receivingcountyid = (v_intaketransferdata->>'receivingcountyid')::uuid,
+   --approvedby = (case when v_approvalstatus = '16' then (v_intaketransferdata->>'approvedby')::uuid else null end),
+   approvedby =(v_intaketransferdata->>'approvedby')::uuid,   
+   receivingcountysupervisor = (v_intaketransferdata->>'receivingcountysupervisor')::uuid, 
+   receivingcountyworker = (v_intaketransferdata->>'receivingcountyworker')::uuid, 
+   transferreason = (v_intaketransferdata->>'transferreason')::text,
+   rejectionreason = (v_intaketransferdata->>'rejectionreason')::text,
+   approvalstatus = (case when v_approvalstatus = '16' or v_approvalstatus = '18' then
+        'Approved'
+         when v_approvalstatus = '17' then 
+        'Rejected'
+         end), 
+   approvedon = (case when v_approvalstatus = '16' then now()  else approvedon end), 
+   --approvedon = now(),
+   updatedby = (v_intaketransferdata->>'updatedby')::uuid,
+   updatedon = now() 
+  WHERE intaketransferid = v_intaketransferid ; 
+
+ ELSE
+  -- Insert
+  INSERT INTO intaketransfers
+   ( intaketransferid, 
+    intakenumber,
+    transferdate, 
+    sendingcountyid, 
+    receivingcountyid, 
+    requestedby, 
+    approvedby, 
+    receivingcountysupervisor, 
+    receivingcountyworker, 
+    transferreason, 
+    rejectionreason, 
+    approvalstatus, 
+    approvedon, 
+    insertedby, 
+    insertedon, 
+    updatedby, 
+    updatedon, 
+    activeflag
+   )
+  VALUES
+   ( gen_random_uuid(), 
+    (v_intaketransferdata->>'intakenumber')::character varying,
+    now(),
+    --(v_intaketransferdata->>'transferdate')::timestamp, 
+    (v_intaketransferdata->>'sendingcountyid')::uuid,
+    (v_intaketransferdata->>'receivingcountyid')::uuid,
+    (v_intaketransferdata->>'requestedby')::uuid,
+    NULL, -- (v_intaketransferdata->>'approvedby')::uuid,
+    (v_intaketransferdata->>'receivingcountysupervisor')::uuid,
+    (v_intaketransferdata->>'receivingcountyworker')::uuid,
+    (v_intaketransferdata->>'transferreason')::text,
+    (v_intaketransferdata->>'rejectionreason')::text,
+    'Review', --(v_intaketransferdata->>'approvalstatus')::character varying,
+    NULL, -- (v_intaketransferdata->>'approvedon')::timestamp, 
+    (v_intaketransferdata->>'requestedby')::uuid,
+    now(), 
+    (v_intaketransferdata->>'updatedby')::uuid,
+    now(), 
+    1
+   ) RETURNING "intaketransferid" INTO  v_intaketransferid; 
+  
+ END IF;
+ 
+ RAISE NOTICE 'v_intakenumber%',v_intakenumber;
+ -- Insert into Routing (Supervisor Approval request) 
+ IF btrim(v_approvalstatus) = '15' THEN -- Review
+  INSERT INTO routing
+   ( routingid, 
+    eventcode, 
+    fromsecurityusersid, 
+    tosecurityusersid, 
+    teamid, 
+    fromroleid, 
+    toroleid, 
+    objectid, 
+    routingstatustypeid, 
+    activeflag, 
+    insertedby, 
+    insertedon, 
+    updatedby, 
+    updatedon, 
+    isreviewrequest, 
+    remarks, 
+    old_id, 
+    routeddescription, 
+    servicerequestnumber, 
+    objecttypekey, 
+    old_from_id, 
+    old_to_id, 
+    principaltype, 
+    actiondatetime, 
+    etl_userid, 
+    etl_load_date, 
+    entityid, 
+    reassignnotes
+   )
+  VALUES
+   ( gen_random_uuid(), 
+    'INTTRF',-- 'Intake Transfer Review' 
+    (v_intaketransferdata->>'requestedby')::uuid, 
+    (v_intaketransferdata->>'approvedby')::uuid, -- ??
+    v_teamid, 
+    'CWIW', 
+    'CWSP', 
+    v_intaketransferid::character varying,  
+    15, -- Review  
+    1, 
+    (v_intaketransferdata->>'insertedby')::uuid, 
+    now(), 
+    (v_intaketransferdata->>'updatedby')::uuid,
+    now(), 
+    true, 
+    'Forwarded to Supervisor', 
+    NULL, 
+    'Intake Transfer Review Request', 
+    v_intakenumber::character varying, 
+    'Intake', 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL
+   );
+   
+ ELSEIF btrim(v_approvalstatus) = '17' THEN -- Rejected 
+  update routing
+  set activeflag = 0,
+   updatedby = (v_intaketransferdata->>'approvedby')::uuid, -- ??
+   updatedon = now()
+  where objectid = v_intaketransferid::character varying 
+   and eventcode = 'INTTRF'
+   and activeflag = 1 ;
+   
+  INSERT INTO routing
+   ( routingid, 
+    eventcode, 
+    fromsecurityusersid, 
+    tosecurityusersid, 
+    teamid, 
+    fromroleid, 
+    toroleid, 
+    objectid, 
+    routingstatustypeid, 
+    activeflag, 
+    insertedby, 
+    insertedon, 
+    updatedby, 
+    updatedon, 
+    isreviewrequest, 
+    remarks, 
+    old_id, 
+    routeddescription, 
+    servicerequestnumber, 
+    objecttypekey, 
+    old_from_id, 
+    old_to_id, 
+    principaltype, 
+    actiondatetime, 
+    etl_userid, 
+    etl_load_date, 
+    entityid, 
+    reassignnotes
+   )
+  VALUES
+   ( gen_random_uuid(), 
+    'INTTRF',-- 'Intake Transfer Review' 
+    (v_intaketransferdata->>'requestedby')::uuid, 
+    (v_intaketransferdata->>'approvedby')::uuid, -- ??
+    v_teamid, 
+    'CWIW', 
+    'CWSP', 
+    v_intaketransferid::character varying,  
+    17, -- Rejected
+    1, 
+    (v_intaketransferdata->>'insertedby')::uuid, 
+    now(), 
+    (v_intaketransferdata->>'updatedby')::uuid,
+    now(), 
+    true, 
+    'Forwarded to Supervisor', 
+    NULL, 
+    'Intake Transfer Review Request Rejected', 
+    v_intakenumber::character varying, 
+    'Intake', 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL
+   ); 
+   
+  
+ ELSEIF btrim(v_approvalstatus) = '16' THEN -- Approved
+  update routing
+  set activeflag = 0,
+   updatedby = (v_intaketransferdata->>'approvedby')::uuid, -- ??
+   updatedon = now()
+  where objectid = v_intaketransferid::character varying 
+   and eventcode = 'INTTRF'
+   and activeflag = 1 ;
+   
+  INSERT INTO routing
+   ( routingid, 
+    eventcode, 
+    fromsecurityusersid, 
+    tosecurityusersid, 
+    teamid, 
+    fromroleid, 
+    toroleid, 
+    objectid, 
+    routingstatustypeid, 
+    activeflag, 
+    insertedby, 
+    insertedon, 
+    updatedby, 
+    updatedon, 
+    isreviewrequest, 
+    remarks, 
+    old_id, 
+    routeddescription, 
+    servicerequestnumber, 
+    objecttypekey, 
+    old_from_id, 
+    old_to_id, 
+    principaltype, 
+    actiondatetime, 
+    etl_userid, 
+    etl_load_date, 
+    entityid, 
+    reassignnotes
+   )
+  VALUES
+   ( gen_random_uuid(), 
+    'INTTRF',-- 'Intake Transfer Review' 
+    (v_intaketransferdata->>'requestedby')::uuid, 
+    (v_intaketransferdata->>'approvedby')::uuid, -- ??
+    v_teamid, 
+    'CWIW', 
+    'CWSP', 
+    v_intaketransferid::character varying,  
+    16, -- Approved
+    1, 
+    (v_intaketransferdata->>'insertedby')::uuid, 
+    now(), 
+    (v_intaketransferdata->>'updatedby')::uuid,
+    now(), 
+    true, 
+    'Forwarded to Supervisor', 
+    NULL, 
+    'Intake Transfer Review Request Approved', 
+    v_intakenumber::character varying, 
+    'Intake', 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL, 
+    NULL
+   ); 
+   
+  -- Update County 
+  v_receivingcountyid := (v_intaketransferdata->>'receivingcountyid')::character varying;
+  
+  raise notice 'v_receivingcountyid % ' , v_receivingcountyid ;
+
+  update intakedastaging 
+   SET jsondata = jsonb_set(jsondata::jsonb, '{General,countyid}', concat('"',v_receivingcountyid,'"')::jsonb, true) -- jsonb_set(jsondata, '{General}', '{"Author": ' || v_worker_fullname  || '}' ::jsonb)
+  where intakenumber = (v_intaketransferdata->>'intakenumber')::character varying
+   and activeflag = 1; 
+
+ ELSEIF btrim(v_approvalstatus) = '18' THEN -- assign    
+  
+  RAISE NOTICE  '(v_approvalstatus) = 18';
+  
+  -- RAISE NOTICE 'v_intakenumber%',v_intakenumber;
+  
+  select insertedby
+   into s_insertedby 
+  from intakedastatus 
+  where  intakenumber  = (v_intaketransferdata->>'intakenumber')::character varying;
+   
+  RAISE NOTICE 's_insertedby%',s_insertedby; 
+  
+  update intakedastatus
+  set priorinsertedby = s_insertedby, 
+   intakeuser = (v_intaketransferdata->>'receivingcountyworker')::uuid, 
+   insertedby =  (v_intaketransferdata->>'receivingcountyworker')::uuid, 
+   updatedby =(v_intaketransferdata->>'updatedby'):: uuid,
+   updatedon = now()
+  where intakenumber  = (v_intaketransferdata->>'intakenumber')::character varying;   
+   
+  -- Update Author
+  select fullname 
+   into v_worker_fullname
+  from userprofile 
+  where securityusersid  = (v_intaketransferdata->>'receivingcountyworker')::character varying ;
+
+  raise notice 'v_worker_fullname % ' , v_worker_fullname ;
+
+  update intakedastaging 
+   set jsondata = jsonb_set(jsondata::jsonb, '{General,Author}', concat('"',v_worker_fullname,'"')::jsonb, true) -- jsonb_set(jsondata, '{General}', '{"Author": ' || v_worker_fullname  || '}' ::jsonb) 
+  where intakenumber = (v_intaketransferdata->>'intakenumber')::character varying
+   and activeflag = 1;
+
+   update IntakeDAStatus set intakeuser = v_worker_fullname 
+  where intakenumber::character varying = (v_intaketransferdata->>'intakenumber')::character varying 
+   and activeflag = 1;
+   
+ END IF;
+
+    return 'Success';
+END;
+
+$function$
+

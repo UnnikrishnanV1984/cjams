@@ -1,0 +1,734 @@
+CREATE OR REPLACE FUNCTION sp_payment_detail_insert(al_placement_id bigint, al_payment_header_id bigint, al_service_id bigint, ad_start_dt date, ad_end_dt date, adc_gross_amount numeric, al_unit_no integer, as_unit_type character varying, adc_per_diem_rate numeric, as_type_cd character, as_rate_type character varying, al_linked_pymnt_hdr_id bigint, al_reference_payment_detail_id bigint, vs_change_type character varying, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Description: To Create Payment Detail data.\r
+\r
+-- Revisions:\r
+-- 09/25/2020 Vineet Tirodkar - Changes to trim and compare Eligibility Status Code - CDM-4684\r
+-- 01/31/2022 Vineet Tirodkar - Changes for new Placement Structure 525 - CfE Placement (CIDM-4204/B-123939)\r
+------------------------------------------------------------------------------------------------\r
+DECLARE vl_pay_detail_id BIGINT DEFAULT 0;\r
+ vl_pay_category_id BIGINT DEFAULT 0;\r
+ vl_elig_count_ind INT DEFAULT 0;\r
+\r
+ vs_pay_detail_id VARCHAR(50) DEFAULT 'SQ_PAYMENT_DETAIL';\r
+ vs_pay_category_id VARCHAR(50) DEFAULT 'SQ_PAYMENT_CATEGORY';\r
+ vs_elig_type_cd VARCHAR(5) DEFAULT '2931';\r
+ vl_count INT DEFAULT 0;\r
+ vl_sqlcode INT DEFAULT 0;\r
+\r
+ vl_placement_structure_id BIGINT DEFAULT 0;\r
+ vl_rate_structure_id BIGINT DEFAULT 0;\r
+ vl_org_id BIGINT DEFAULT 0;\r
+ vl_event_id BIGINT; \r
+ vl_cnt INTEGER;\r
+\r
+ vl_client_id BIGINT DEFAULT 0;\r
+ vl_case_id BIGINT DEFAULT 0;\r
+\r
+ vs_county_cd VARCHAR(5) DEFAULT NULL;\r
+ vs_fiscalCat VARCHAR(5) DEFAULT NULL;\r
+ vs_entity_type_cd VARCHAR(5);\r
+ vs_payment_type_cd VARCHAR(5) DEFAULT NULL;\r
+\r
+ vs_insert_flag CHAR(1) DEFAULT NULL;\r
+ vl_age_of_client INT DEFAULT 0;\r
+\r
+ vd_previous_month_start_dt DATE;\r
+ vd_previous_month_end_dt DATE;\r
+ vd_current_month_end_dt DATE;\r
+\r
+ vs_note_tx VARCHAR(500);\r
+\r
+ vs_lic_agency VARCHAR(5);\r
+ vs_lic_agency_cd VARCHAR(5);\r
+ vl_provider_id BIGINT DEFAULT 0;\r
+ vl_program_id BIGINT DEFAULT 0; \r
+ SQLCODE INTEGER DEFAULT 0;\r
+ vs_message_text VARCHAR(3000) DEFAULT '';\r
+ vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_PAYMENT_DETAIL_INSERT';\r
+BEGIN\r
+\r
+ --DECLARE CONTINUE HANDLER FOR SQLEXCEPTION\r
+ BEGIN\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;--\r
+  EXCEPTION WHEN OTHERS THEN\r
+  -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--\r
+  GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;\r
+  vl_sqlcode := -1 ;--\r
+  as_error := COALESCE(as_error ,'') || ( CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--\r
+  as_error := COALESCE(as_error ,'') || '::RO ' || 'Placement id/ Payment id' || ' :: ' || COALESCE(to_char(al_placement_id),'') || '/' || COALESCE(to_char(al_payment_header_id),'');--\r
+  as_error := as_error || COALESCE(vs_message_text ,'');--\r
+ END;--\r
+\r
+ vs_insert_flag := 'N';--\r
+\r
+ IF al_linked_pymnt_hdr_id = 0 THEN\r
+  al_linked_pymnt_hdr_id := NULL;--\r
+  al_reference_payment_detail_id := NULL;--\r
+ END IF;--\r
+\r
+ -- get the last month start date and end date\r
+ SELECT (date_trunc('month', now()) - interval '1 month')::date,\r
+     (date_trunc('month', now())::date - 1)::date,\r
+     ((date_trunc('month', now()) + interval '1 month')- interval '1 Day')::date\r
+ INTO    vd_previous_month_start_dt,\r
+   vd_previous_month_end_dt,\r
+   vd_current_month_end_dt;\r
+ --FROM sysibm.sysdummy1;--\r
+\r
+ vs_lic_agency := ''; -- INITIAL VALUE\r
+\r
+ IF as_type_cd = 'G' THEN -- subsidized guardianship\r
+    SELECT CLIENT_ID, f_prim_county (CASE_ID,'NULL',CLIENT_ID,'CLIENT'), CASE_ID\r
+   INTO vl_client_id,vs_county_cd,vl_case_id\r
+    FROM TB_GUARDIAN_SUBSIDY\r
+    WHERE GUARDIAN_SUBSIDY_ID = al_placement_id;--\r
+\r
+    vl_placement_structure_id := 503; -- ADOPTION SUBSIDY\r
+    vs_elig_type_cd := '2935';  -- SUB G (CIS-18887)\r
+\r
+ ELSE\r
+\r
+  IF as_type_cd = 'A' THEN  -- adoption subsidy\r
+   SELECT TA.CLIENT_ID, f_prim_county (TA.CASE_ID,'NULL',TA.CLIENT_ID,'CLIENT'), TA.CASE_ID\r
+    INTO vl_client_id,vs_county_cd,vl_case_id\r
+     FROM TB_ADOPTION TA\r
+   WHERE TA.ADOPTION_ID = al_placement_id;--\r
+\r
+   vl_placement_structure_id := 501; -- ADOPTION SUBSIDY\r
+   vs_elig_type_cd := '2934';--\r
+  ELSE\r
+   SELECT P.PLACEMENT_STRUCTURE_ID,\r
+       P.CLIENT_ID,\r
+       f_prim_county (P.CASE_ID,'NULL',P.CLIENT_ID,'CLIENT'),\r
+       P.CASE_ID,\r
+       P.RATE_STRUCTURE_ID,\r
+       P.PROVIDER_ORGANIZATION_ID,\r
+       P.PROVIDER_ID,\r
+       P.CONTRACT_PROGRAM_ID\r
+      INTO vl_placement_structure_id,\r
+     vl_client_id,\r
+     vs_county_cd,\r
+     vl_case_id,\r
+     vl_rate_structure_id,\r
+     vl_org_id,\r
+     vl_provider_id,\r
+     vl_program_id  \r
+     FROM TB_PLACEMENT P\r
+   WHERE  P.PLACEMENT_ID = al_placement_id;--\r
+\r
+   IF vl_org_id IS NULL OR vl_org_id = 0 THEN -- chessie_mask PROVIDER\r
+    vl_placement_structure_id :=  vl_rate_structure_id;--\r
+   END IF;--\r
+\r
+   -- CIS-19489\r
+   IF vl_program_id is NULL THEN\r
+      vl_program_id := 0;--\r
+   END IF;--\r
+\r
+   IF vl_program_id > 0  AND ad_start_dt > DATE('2010-01-31') THEN\r
+    -- SET vs_lic_agency_cd = NULL; -- INITIAL VALUE\r
+\r
+    SELECT LTRIM(RTRIM(LICENSING_AGENCY_CD))\r
+     INTO vs_lic_agency_cd\r
+    FROM TB_PROVIDER_LICENSING\r
+    WHERE SITE_ID = vl_provider_id\r
+     AND PROVIDER_ID = vl_org_id\r
+     AND LICENSE_ISSUE_DT <= ad_start_dt\r
+     AND LICENSE_EXPIRY_DT >= ad_end_dt\r
+     AND DELETE_SW = 'N'\r
+    ORDER BY LICENSE_APPLICATION_ID DESC\r
+    FETCH FIRST ROW ONLY ;--\r
+\r
+    IF vs_lic_agency_cd is NULL THEN\r
+     vs_lic_agency_cd := '';--\r
+    END IF;--\r
+    IF vs_lic_agency_cd = '8147' THEN  -- OOS\r
+     vs_lic_agency := 'OOS';--\r
+    END IF;--\r
+   END IF;--\r
+  END IF;--\r
+ END IF;--\r
+\r
+ IF al_service_id = 71 THEN -- EMERGENCY BED RETAINER FEE\r
+  vs_county_cd := NULL; -- INITIAL VALUE\r
+  vl_placement_structure_id := 71;--\r
+  vl_client_id := NULL;--\r
+  vl_case_id := NULL;--\r
+\r
+  SELECT COUNTY_CD INTO vs_county_cd\r
+   FROM TB_PROVIDER,TB_PAYMENT_HEADER\r
+  WHERE TB_PROVIDER.PROVIDER_ID = TB_PAYMENT_HEADER.PROVIDER_ID AND\r
+     TB_PAYMENT_HEADER.PAYMENT_ID = al_payment_header_id;--\r
+ END IF;--\r
+\r
+ -- Verify Client is Eligible Reimbursable or not\r
+ SELECT COUNT(1)\r
+  INTO vl_elig_count_ind\r
+ FROM TB_CLIENT_ELIGIBILITY\r
+ WHERE CLIENT_ID = vl_client_id \r
+  AND CASE_ID = vl_case_id \r
+  AND btrim(ELIGIBILITY_STATUS_CD) = '2913' -- Eligible Reimbursable\r
+  AND btrim(ELIGIBILITY_TYPE_CD) = vs_elig_type_cd \r
+  AND DELETE_SW = 'N' \r
+  AND start_dt <= ad_end_dt and (end_dt >= ad_start_dt or end_dt is null);\r
+\r
+ -- commented CIS-18887\r
+ --IF as_type_cd = 'G' THEN\r
+ --    SET vl_elig_count_ind = 0 ; -- ALWAYS STATE FUNDS\r
+ --END IF;--\r
+ -- CIS 18887\r
+\r
+ -- Get Client's Age\r
+ -- PRJ-03767 - Calculate Age as of Service End Date \r
+ vl_age_of_client := 0; -- INITIAL VALUE\r
+ SELECT F_AGE(dob::DATE, ad_end_dt)\r
+  INTO vl_age_of_client\r
+ FROM person\r
+ WHERE cjamspid = vl_client_id\r
+  AND activeflag = 1;--\r
+\r
+ IF vl_age_of_client IS NULL THEN\r
+    vl_age_of_client := 0;--\r
+ END IF;--\r
+\r
+ -- Get the fiscal category code\r
+ IF vl_placement_structure_id = 1 AND vl_age_of_client >= 16 AND vl_age_of_client <= 18 THEN\r
+    -- CIS-19489\r
+    IF ad_end_dt <= DATE('2010-01-31') THEN\r
+   IF vl_elig_count_ind > 0 THEN -- IV-E Eligible Client\r
+   vs_fiscalCat := '5117'; -- SILA Housing (16yr - 18yr) IV-E Eligible\r
+   ELSE -- Not IV-E Eligible Client\r
+   vs_fiscalCat := '5118'; -- SILA Housing (16yr - 18yr) Non IV-E Eligible\r
+   END IF;--\r
+    ELSE\r
+   IF vs_lic_agency = 'OOS' AND vl_elig_count_ind > 0 THEN -- IV-E Eligible Client\r
+   vs_fiscalCat := '2178'; -- Out of State Group Care\r
+   ELSEIF vs_lic_agency = 'OOS' THEN\r
+   vs_fiscalCat := '7178'; -- Out of State Group Care\r
+   ELSEIF vl_elig_count_ind > 0 THEN  -- IV-E Eligible Client\r
+   vs_fiscalCat := '2177'; -- In State Group Care\r
+   ELSE -- Not IV-E Eligible Client\r
+   vs_fiscalCat := '7177'; -- In State Group Care\r
+   END IF;--\r
+    END IF;--\r
+    -- CIS-19489\r
+ ELSEIF vl_placement_structure_id = 1 AND vl_age_of_client > 18 AND vl_age_of_client <= 21 then\r
+    -- CIS-19489\r
+    IF ad_end_dt <= DATE('2010-01-31') THEN\r
+    vs_fiscalCat := '5119'; -- SILA Housing (18yr - 21yr) State's custody\r
+    ELSE\r
+    IF vs_lic_agency = 'OOS' THEN\r
+   vs_fiscalCat := '7178'; -- Out of State Group Care\r
+    ELSE\r
+   vs_fiscalCat := '7177'; -- In State Group Care \r
+    END IF;--\r
+    END IF;--\r
+    -- CIS-19489\r
+ ELSEIF vl_placement_structure_id = 525 THEN -- (CIDM-4204/B-123939)\r
+  vs_fiscalCat = '4185'; -- 'Differential Board Rate' (CfE)\r
+ ELSEIF vl_elig_count_ind > 0 THEN -- IV-E Eligible Client\r
+  IF vl_placement_structure_id = 13 THEN -- CIS-17815  \r
+   SELECT FISCAL_CATEGORY_CD\r
+    INTO vs_fiscalCat \r
+   FROM TB_PLACEMENT_STRU_CATEGORY_LINK, TB_FISCAL_CATEGORY_MASTER\r
+   WHERE TB_PLACEMENT_STRU_CATEGORY_LINK.SERVICE_ID = al_service_id AND\r
+    TB_PLACEMENT_STRU_CATEGORY_LINK.FISCAL_CATEGORY_ID = TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_ID AND\r
+    TB_FISCAL_CATEGORY_MASTER.ELIGIBILITY_CD = '3951' AND\r
+    TB_PLACEMENT_STRU_CATEGORY_LINK.DELETE_SW = 'N' AND\r
+    TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N' ;--\r
+  ELSE\r
+   -- CIS-19489\r
+   IF vs_lic_agency = 'OOS' AND ad_start_dt > DATE('2010-01-31') THEN\r
+    vs_fiscalCat := '2178'; -- Out of State Group Care\r
+   ELSE\r
+    SELECT FISCAL_CATEGORY_CD\r
+     INTO vs_fiscalCat \r
+    FROM TB_PLACEMENT_STRU_CATEGORY_LINK, TB_FISCAL_CATEGORY_MASTER\r
+    WHERE TB_PLACEMENT_STRU_CATEGORY_LINK.SERVICE_ID = vl_placement_structure_id AND\r
+     TB_PLACEMENT_STRU_CATEGORY_LINK.FISCAL_CATEGORY_ID = TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_ID AND\r
+     TB_FISCAL_CATEGORY_MASTER.ELIGIBILITY_CD = '3951' AND\r
+     TB_PLACEMENT_STRU_CATEGORY_LINK.DELETE_SW = 'N' AND\r
+     TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N' ;--\r
+   END IF;--\r
+  END IF;--\r
+ ELSEIF vl_elig_count_ind = 0 THEN -- Not IV-E Eligible Client\r
+  IF vl_placement_structure_id = 13 THEN -- CIS-17815 \r
+     SELECT FISCAL_CATEGORY_CD\r
+      INTO vs_fiscalCat \r
+    FROM TB_PLACEMENT_STRU_CATEGORY_LINK, TB_FISCAL_CATEGORY_MASTER\r
+     WHERE TB_PLACEMENT_STRU_CATEGORY_LINK.SERVICE_ID = al_service_id AND\r
+     TB_PLACEMENT_STRU_CATEGORY_LINK.FISCAL_CATEGORY_ID = TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_ID AND\r
+     TB_FISCAL_CATEGORY_MASTER.ELIGIBILITY_CD = '3952' AND\r
+     TB_PLACEMENT_STRU_CATEGORY_LINK.DELETE_SW = 'N' AND\r
+     TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N' ;--\r
+  ELSE\r
+   -- CIS-19489\r
+   IF vs_lic_agency = 'OOS' AND ad_start_dt > DATE('2010-01-31') THEN\r
+      vs_fiscalCat := '7178'; -- Out of State Group Care\r
+   ELSE\r
+     SELECT FISCAL_CATEGORY_CD\r
+     INTO vs_fiscalCat \r
+      FROM TB_PLACEMENT_STRU_CATEGORY_LINK, TB_FISCAL_CATEGORY_MASTER\r
+     WHERE TB_PLACEMENT_STRU_CATEGORY_LINK.SERVICE_ID = vl_placement_structure_id AND\r
+     TB_PLACEMENT_STRU_CATEGORY_LINK.FISCAL_CATEGORY_ID = TB_FISCAL_CATEGORY_MASTER.FISCAL_CATEGORY_ID AND\r
+     TB_FISCAL_CATEGORY_MASTER.ELIGIBILITY_CD = '3952' AND\r
+     TB_PLACEMENT_STRU_CATEGORY_LINK.DELETE_SW = 'N' AND\r
+     TB_FISCAL_CATEGORY_MASTER.DELETE_SW = 'N' ;--\r
+   END IF;--\r
+  END IF;--\r
+ END IF;--\r
+ --fiscal category code check end\r
+\r
+ IF as_type_cd = 'F' THEN      -- FINAL PAYMENT\r
+  IF al_service_id = 71 THEN -- EMERGENCY BED RETAINER FEE\r
+   SELECT COUNT(*)\r
+    INTO vl_count\r
+   FROM TB_PAYMENT_DETAIL\r
+   WHERE PAYMENT_ID = al_payment_header_id AND\r
+      DRAFT_RATE_TYPE_CD = as_rate_type AND\r
+      DELETE_SW = 'N';--\r
+  ELSE\r
+     IF vl_placement_structure_id = 13 THEN -- CIS-17815\r
+      SELECT COUNT(*)\r
+       INTO vl_count\r
+    FROM TB_PAYMENT_DETAIL\r
+       WHERE PLACEMENT_ID = al_placement_id\r
+      AND PAYMENT_ID = al_payment_header_id\r
+      AND DRAFT_RATE_TYPE_CD = as_rate_type\r
+      AND DELETE_SW = 'N'\r
+      AND DRAFT_SERVICE_ID = al_service_id ;--\r
+   ELSE\r
+      SELECT COUNT(*)\r
+       INTO vl_count\r
+    FROM TB_PAYMENT_DETAIL\r
+       WHERE PLACEMENT_ID = al_placement_id AND\r
+      PAYMENT_ID = al_payment_header_id AND\r
+      DRAFT_RATE_TYPE_CD = as_rate_type AND\r
+      DELETE_SW = 'N';--\r
+   END IF;--\r
+  END IF;--\r
+\r
+  IF vl_count > 0 THEN -- RECORD ALREADY EXIST NEED TO UPDATE THE FINAL INFO\r
+     IF al_service_id = 71 THEN -- EMERGENCY BED RETAINER FEE\r
+    UPDATE\r
+     TB_PAYMENT_DETAIL\r
+    SET FINAL_SERVICE_ID = vl_placement_structure_id,\r
+     FINAL_SERVICE_START_DT = ad_start_dt,\r
+     FINAL_SERVICE_END_DT = ad_end_dt,\r
+     FINAL_UNITS_NO = al_unit_no,\r
+     FINAL_AMOUNT_NO = adc_gross_amount,\r
+     FINAL_RATE_TYPE_CD = as_rate_type,\r
+     FINAL_UNIT_RATE_AMT = adc_per_diem_rate,\r
+     FINAL_UNIT_TYPE = as_unit_type,\r
+     FINAL_FISCAL_CATEGORY_CD = vs_fiscalCat,\r
+     UPDATE_TS = CURRENT_TIMESTAMP\r
+    WHERE PAYMENT_ID = al_payment_header_id AND\r
+     DRAFT_RATE_TYPE_CD = as_rate_type AND\r
+     DELETE_SW = 'N';--\r
+\r
+    al_sqlcode := SQLCODE;--\r
+    IF al_sqlcode < 0  THEN\r
+     as_error := 'Payment Detail: Error in updating FINAL PAYMENT Detail record (EMERGENCY BED RETAINER FEE)';--\r
+    END IF ;--\r
+   ELSEIF  vl_placement_structure_id = 13 THEN -- CIS-17815\r
+    IF al_service_id = 10 THEN\r
+     vs_note_tx := 'This child is in ''Emergency Foster Home Care'' for more than 60 days; CHESSIE has generated payments as per ''Regular Foster Care'' rate.';--\r
+    ELSE\r
+     vs_note_tx := NULL;--\r
+    END IF;--\r
+\r
+    UPDATE\r
+     TB_PAYMENT_DETAIL\r
+    SET FINAL_SERVICE_ID = al_service_id,\r
+     FINAL_SERVICE_START_DT = ad_start_dt,\r
+     FINAL_SERVICE_END_DT = ad_end_dt,\r
+     FINAL_UNITS_NO = al_unit_no,\r
+     FINAL_AMOUNT_NO = adc_gross_amount,\r
+     FINAL_RATE_TYPE_CD = as_rate_type,\r
+     FINAL_UNIT_RATE_AMT = adc_per_diem_rate,\r
+     FINAL_UNIT_TYPE = as_unit_type,\r
+     FINAL_FISCAL_CATEGORY_CD = vs_fiscalCat,\r
+     UPDATE_TS = CURRENT_TIMESTAMP,\r
+     NOTES_TX = vs_note_tx\r
+    WHERE PLACEMENT_ID =  al_placement_id\r
+     AND PAYMENT_ID = al_payment_header_id\r
+     AND DRAFT_RATE_TYPE_CD = as_rate_type\r
+     AND DELETE_SW = 'N'\r
+     AND DRAFT_SERVICE_ID = al_service_id ;--\r
+  \r
+    al_sqlcode := SQLCODE;--\r
+    IF al_sqlcode < 0  THEN\r
+     as_error := 'Payment Detail: Error in updating FINAL PAYMENT Detail record (Emergency Foster Home Care)';--\r
+    END IF ;--\r
+   ELSE\r
+    UPDATE\r
+     TB_PAYMENT_DETAIL\r
+     SET FINAL_SERVICE_ID = vl_placement_structure_id,\r
+     FINAL_SERVICE_START_DT = ad_start_dt,\r
+     FINAL_SERVICE_END_DT = ad_end_dt,\r
+     FINAL_UNITS_NO = al_unit_no,\r
+     FINAL_AMOUNT_NO = adc_gross_amount,\r
+     FINAL_RATE_TYPE_CD = as_rate_type,\r
+     FINAL_UNIT_RATE_AMT = adc_per_diem_rate,\r
+     FINAL_UNIT_TYPE = as_unit_type,\r
+     FINAL_FISCAL_CATEGORY_CD = vs_fiscalCat,\r
+     UPDATE_TS = CURRENT_TIMESTAMP\r
+    WHERE PLACEMENT_ID =  al_placement_id AND\r
+     PAYMENT_ID = al_payment_header_id AND\r
+     DRAFT_RATE_TYPE_CD = as_rate_type AND\r
+     DELETE_SW = 'N';--\r
+\r
+    al_sqlcode := SQLCODE;--\r
+    IF al_sqlcode < 0  THEN\r
+     as_error := 'Payment Detail: Error in updating FINAL PAYMENT Detail record';--\r
+    END IF ;--\r
+   END IF;--\r
+  ELSE\r
+   vs_insert_flag := 'Y';--\r
+   -- generating payment detail id\r
+   --SELECT CHESSIE_MASK_FIN.sp_nextid (vs_pay_detail_id, vl_pay_detail_id);--\r
+   --SELECT al_next_value from  sp_nextid( vs_pay_detail_id) into vl_pay_detail_id;\r
+   SELECT NEXTVAL('SQ_PAYMENT_DETAIL') into vl_pay_detail_id; \r
+   RAISE NOTICE '%  final payment details temp insert', as_type_cd;\r
+   \r
+   IF vl_placement_structure_id = 13 THEN -- CIS-17815\r
+    IF al_service_id = 10 THEN\r
+     vs_note_tx := 'This child is in ''Emergency Foster Home Care'' for more than 60 days; CHESSIE has generated payments as per ''Regular Foster Care'' rate.';--\r
+    ELSE\r
+     vs_note_tx := NULL;--\r
+    END IF;--\r
+     \r
+    INSERT INTO\r
+    TB_PAYMENT_DETAIL\r
+    (\r
+       PAYMENT_DETAIL_ID,              PAYMENT_ID,\r
+       COUNTY_CD,                      FINAL_AMOUNT_NO,\r
+       CLIENT_ID,                      FINAL_SERVICE_ID,\r
+       FINAL_SERVICE_START_DT,         FINAL_SERVICE_END_DT,\r
+       FINAL_UNITS_NO,                 FINAL_UNIT_TYPE,\r
+       FINAL_RATE_TYPE_CD,\r
+       PLACEMENT_ID,                   FINAL_UNIT_RATE_AMT,\r
+       CREATE_TS,                      CREATE_USER_ID,\r
+       UPDATE_TS,                      UPDATE_USER_ID,\r
+       DELETE_SW,                      FINAL_FISCAL_CATEGORY_CD,\r
+       CASE_ID,\r
+       REFERENCE_PAYMENT_DETAIL_ID,    LINKED_PYMNT_HDR_ID ,\r
+       NOTES_TX\r
+    )\r
+     VALUES\r
+    (\r
+       vl_pay_detail_id,            al_payment_header_id,\r
+       vs_county_cd,    \r
+     adc_gross_amount,\r
+       vl_client_id,                al_service_id,\r
+       ad_start_dt,                 ad_end_dt,\r
+       al_unit_no,                  as_unit_type,\r
+       as_rate_type,\r
+       al_placement_id,             adc_per_diem_rate,\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       'N',                         vs_fiscalCat,\r
+       vl_case_id,\r
+       al_reference_payment_detail_id, al_linked_pymnt_hdr_id,\r
+       vs_note_tx )  ;--\r
+  \r
+      al_sqlcode := SQLCODE;--\r
+      IF al_sqlcode <> 0  THEN\r
+      as_error := 'Payment Detail: Error in inserting FINAL PAYMENT Detail record (Emergency Foster Home Care)';--\r
+      END IF;--\r
+   ELSE\r
+    INSERT INTO\r
+    TB_PAYMENT_DETAIL\r
+    (\r
+       PAYMENT_DETAIL_ID,              PAYMENT_ID,\r
+       COUNTY_CD,                      FINAL_AMOUNT_NO,\r
+       CLIENT_ID,                      FINAL_SERVICE_ID,\r
+       FINAL_SERVICE_START_DT,         FINAL_SERVICE_END_DT,\r
+       FINAL_UNITS_NO,                 FINAL_UNIT_TYPE,\r
+       FINAL_RATE_TYPE_CD,\r
+       PLACEMENT_ID,                   FINAL_UNIT_RATE_AMT,\r
+       CREATE_TS,                      CREATE_USER_ID,\r
+       UPDATE_TS,                      UPDATE_USER_ID,\r
+       DELETE_SW,                      FINAL_FISCAL_CATEGORY_CD,\r
+       CASE_ID,\r
+       REFERENCE_PAYMENT_DETAIL_ID,    LINKED_PYMNT_HDR_ID\r
+    )\r
+     VALUES\r
+    (\r
+       vl_pay_detail_id,            al_payment_header_id,\r
+       vs_county_cd,      \r
+     adc_gross_amount,\r
+       vl_client_id,                vl_placement_structure_id,\r
+       ad_start_dt,                 ad_end_dt,\r
+       al_unit_no,                  as_unit_type,\r
+       as_rate_type,\r
+       al_placement_id,             adc_per_diem_rate,\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       'N',                         vs_fiscalCat,\r
+       vl_case_id,\r
+       al_reference_payment_detail_id, al_linked_pymnt_hdr_id )  ;--\r
+\r
+     al_sqlcode := SQLCODE;--\r
+     IF al_sqlcode <> 0  THEN\r
+      as_error := 'Payment Detail: Error in inserting FINAL PAYMENT Detail record';--\r
+     END IF;--\r
+   END IF;--\r
+  END IF;--\r
+ END IF;--\r
+\r
+ IF as_type_cd = 'D' THEN  -- DRAFT\r
+  RAISE NOTICE '%  draft payment details temp insert', as_type_cd;\r
+  vs_insert_flag := 'Y';--\r
+  -- generating payment detail id\r
+  --SELECT CHESSIE_MASK_FIN.sp_nextid (vs_pay_detail_id, vl_pay_detail_id);--\r
+  --SELECT al_next_value from  sp_nextid ( vs_pay_detail_id) into vl_pay_detail_id;\r
+           \r
+  SELECT NEXTVAL('SQ_PAYMENT_DETAIL') into vl_pay_detail_id;        \r
+  --SELECT al_next_value from  sp_nextid ( 'SQ_PAYMENT_DETAIL') into vl_pay_detail_id; \r
+  IF vl_placement_structure_id = 13 THEN -- CIS-17815\r
+   IF al_service_id = 10 THEN\r
+    vs_note_tx := 'This child is in ''Emergency Foster Home Care'' for more than 60 days; CHESSIE has generated payments as per ''Regular Foster Care'' rate.';--\r
+   ELSE\r
+    vs_note_tx := NULL;--\r
+   END IF;--\r
+   \r
+   INSERT INTO\r
+   --TB_PAYMENT_DETAIL_TEMP --//here--- removed temp table and used tb_PAYMENT_DETAIL--- Chandra\r
+   TB_PAYMENT_DETAIL\r
+   (\r
+      PAYMENT_DETAIL_ID,              PAYMENT_ID,\r
+      COUNTY_CD,                      DRAFT_AMOUNT_NO,\r
+      CLIENT_ID,                      DRAFT_SERVICE_ID,\r
+      DRAFT_SERVICE_START_DT,         DRAFT_SERVICE_END_DT,\r
+      DRAFT_UNITS_NO,                 DRAFT_UNIT_TYPE,\r
+      DRAFT_RATE_TYPE_CD,\r
+      PLACEMENT_ID,                   DRAFT_UNIT_RATE_AMT,\r
+      CREATE_TS,                      CREATE_USER_ID,\r
+      UPDATE_TS,                      UPDATE_USER_ID,\r
+      DELETE_SW,                      DRAFT_FISCAL_CATEGORY_CD,\r
+      CASE_ID,\r
+      REFERENCE_PAYMENT_DETAIL_ID,    LINKED_PYMNT_HDR_ID,\r
+      NOTES_TX\r
+   )\r
+    VALUES\r
+   (\r
+      vl_pay_detail_id,            al_payment_header_id,\r
+      vs_county_cd,                adc_gross_amount,\r
+      vl_client_id,                al_service_id,\r
+      ad_start_dt,                 ad_end_dt,\r
+      al_unit_no,                  as_unit_type,\r
+      as_rate_type,\r
+      al_placement_id,             adc_per_diem_rate,\r
+      CURRENT_TIMESTAMP,           'finance',\r
+      CURRENT_TIMESTAMP,           'finance',\r
+      'N',                         vs_fiscalCat,\r
+      vl_case_id,\r
+      al_reference_payment_detail_id, al_linked_pymnt_hdr_id,\r
+      vs_note_tx );--\r
+\r
+   al_sqlcode := SQLCODE;--\r
+   IF al_sqlcode <> 0  THEN\r
+    as_error := 'Payment Detail: Error in inserting DRAFT PAYMENT Detail record (Emergency Foster Home Care)';--\r
+   END IF ;--\r
+  ELSE\r
+   INSERT INTO\r
+      -- TB_PAYMENT_DETAIL_TEMP --//here--- removed temp table and used tb_PAYMENT_DETAIL--- Chandra\r
+      TB_PAYMENT_DETAIL\r
+    (\r
+       PAYMENT_DETAIL_ID,              PAYMENT_ID,\r
+       COUNTY_CD,                      DRAFT_AMOUNT_NO,\r
+       CLIENT_ID,                      DRAFT_SERVICE_ID,\r
+       DRAFT_SERVICE_START_DT,         DRAFT_SERVICE_END_DT,\r
+       DRAFT_UNITS_NO,                 DRAFT_UNIT_TYPE,\r
+       DRAFT_RATE_TYPE_CD,\r
+       PLACEMENT_ID,                   DRAFT_UNIT_RATE_AMT,\r
+       CREATE_TS,                      CREATE_USER_ID,\r
+       UPDATE_TS,                      UPDATE_USER_ID,\r
+       DELETE_SW,                      DRAFT_FISCAL_CATEGORY_CD,\r
+       CASE_ID,\r
+       REFERENCE_PAYMENT_DETAIL_ID,    LINKED_PYMNT_HDR_ID\r
+    )\r
+     VALUES\r
+    (\r
+       vl_pay_detail_id,            al_payment_header_id,\r
+       vs_county_cd,                adc_gross_amount,\r
+       vl_client_id,                vl_placement_structure_id,\r
+       ad_start_dt,                 ad_end_dt,\r
+       al_unit_no,                  as_unit_type,\r
+       as_rate_type,\r
+       al_placement_id,             adc_per_diem_rate,\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       'N',                         vs_fiscalCat,\r
+       vl_case_id,\r
+       al_reference_payment_detail_id, al_linked_pymnt_hdr_id );--\r
+  \r
+   al_sqlcode := SQLCODE;--\r
+   IF al_sqlcode <> 0  THEN\r
+    as_error := 'Payment Detail: Error in inserting DRAFT PAYMENT Detail record';--\r
+   END IF;--\r
+  END IF;--\r
+ END IF;--\r
+\r
+ IF as_type_cd = 'A' OR as_type_cd = 'G' THEN  -- adoption subsody / SUBSIDIZED GUARDIANSHIP\r
+  -- Check for System generated - 3294 Adjustments\r
+  RAISE NOTICE 'payment details insert SP>>>IF as_type_cd = A OR as_type_cd = G THEN';\r
+\r
+  SELECT PAYMENT_TYPE_CD\r
+   INTO vs_payment_type_cd\r
+  FROM TB_PAYMENT_HEADER\r
+  WHERE PAYMENT_ID = al_payment_header_id\r
+   AND DELETE_SW = 'N';--\r
+   \r
+  al_sqlcode := SQLCODE;--\r
+  IF al_sqlcode < 0  THEN\r
+   as_error := 'Adoption & GAP: Error in getting Payment Type cd for PAYMENT_ID: ' || LTRIM(RTRIM(TO_CHAR(al_payment_header_id)));--\r
+  END IF ;--\r
+ \r
+  vs_insert_flag := 'Y';--\r
+  -- generating payment detail id\r
+  --SELECT CHESSIE_MASK_FIN.sp_nextid (vs_pay_detail_id, vl_pay_detail_id);--\r
+  --SELECT NEXTVAL('SQ_PAYMENT_DETAIL') into vl_pay_detail_id; \r
+  --SELECT al_next_value from  sp_nextid ( 'SQ_PAYMENT_DETAIL') into vl_pay_detail_id; \r
+  SELECT NEXTVAL('SQ_PAYMENT_DETAIL') into vl_pay_detail_id; \r
+  IF vs_payment_type_cd = '3294' THEN\r
+   RAISE NOTICE '% adoption/gurartianship>>>insert TB_PAYMENT_DETAIL>>>if vs_payment_type_cd = 3294',vs_payment_type_cd;\r
+   INSERT INTO\r
+    TB_PAYMENT_DETAIL\r
+    (\r
+       PAYMENT_DETAIL_ID,              PAYMENT_ID,\r
+       COUNTY_CD,                      FINAL_AMOUNT_NO,\r
+       CLIENT_ID,                      FINAL_SERVICE_ID,\r
+       FINAL_SERVICE_START_DT,         FINAL_SERVICE_END_DT,\r
+       FINAL_UNITS_NO,                 FINAL_UNIT_TYPE,\r
+       FINAL_RATE_TYPE_CD,\r
+       SUBSIDY_AGREEMENT_ID,           FINAL_UNIT_RATE_AMT,\r
+       CREATE_TS,                      CREATE_USER_ID,\r
+       UPDATE_TS,                      UPDATE_USER_ID,\r
+       DELETE_SW,                      FINAL_FISCAL_CATEGORY_CD,\r
+       CASE_ID,\r
+       REFERENCE_PAYMENT_DETAIL_ID,    LINKED_PYMNT_HDR_ID\r
+    )\r
+     VALUES\r
+    (\r
+       vl_pay_detail_id,            al_payment_header_id,\r
+       vs_county_cd, \r
+     \r
+     adc_gross_amount,\r
+       vl_client_id,                vl_placement_structure_id,\r
+       ad_start_dt,                 ad_end_dt,\r
+       al_unit_no,                  as_unit_type,\r
+       as_rate_type,\r
+       al_placement_id,             adc_per_diem_rate,\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       CURRENT_TIMESTAMP,           'finance',\r
+       'N',                         vs_fiscalCat,\r
+       vl_case_id,\r
+       al_reference_payment_detail_id, al_linked_pymnt_hdr_id )  ;--\r
+\r
+    al_sqlcode := SQLCODE;--\r
+    IF al_sqlcode <> 0  THEN\r
+     as_error := 'Payment Detail: Error in inserting ADOPTION SUBSIDY/SUBSIDIZED GUARDIANSHIP ADJ PAYMENT Detail record';--\r
+    END IF;--\r
+  ELSE\r
+   RAISE NOTICE '% adoption/gurartianship>>>insert TB_PAYMENT_DETAIL_TEMP>>>vs_payment_type_cd = 3294 else part',vs_payment_type_cd;\r
+   /*Added by Chandra.\r
+   If payment_type_cd=7(Guardianship Assistance Program) \r
+   then FINAL_FISCAL_CATEGORY_CD=7185(Guardianship Subsidy=> from TB_FISCAL_CATEGORY_MASTER table) start*/\r
+   /*IF((select payment_type_cd,* from tb_payment_header where payment_id=al_payment_header_id and delete_sw='N')=7) THEN\r
+   RAISE NOTICE 'gurartianship>>>vs_fiscalCat set up';\r
+   vs_fiscalCat:='7185';\r
+   END IF;*/\r
+   /*Added by Chandra.\r
+   If payment_type_cd=7(Guardianship Assistance Program) \r
+   then FINAL_FISCAL_CATEGORY_CD=7185(Guardianship Subsidy=> from TB_FISCAL_CATEGORY_MASTER table) END*/\r
+   INSERT INTO\r
+   --TB_PAYMENT_DETAIL_TEMP--//here--- removed temp table and used tb_PAYMENT_DETAIL--- Chandra\r
+   TB_PAYMENT_DETAIL\r
+   (\r
+      PAYMENT_DETAIL_ID,              PAYMENT_ID,\r
+      COUNTY_CD,                      CLIENT_ID,\r
+      FINAL_SERVICE_ID,\r
+      FINAL_SERVICE_START_DT,         FINAL_SERVICE_END_DT,\r
+      FINAL_AMOUNT_NO,                SUBSIDY_AGREEMENT_ID,\r
+      FINAL_UNITS_NO,                 FINAL_UNIT_TYPE,\r
+      FINAL_RATE_TYPE_CD,             FINAL_UNIT_RATE_AMT,\r
+      CREATE_TS,                      CREATE_USER_ID,\r
+      UPDATE_TS,                      UPDATE_USER_ID,\r
+      DELETE_SW,                      FINAL_FISCAL_CATEGORY_CD,\r
+      CASE_ID,\r
+      REFERENCE_PAYMENT_DETAIL_ID,    LINKED_PYMNT_HDR_ID\r
+   )\r
+    VALUES\r
+   (\r
+      vl_pay_detail_id,            al_payment_header_id,\r
+      vs_county_cd,                vl_client_id,\r
+      vl_placement_structure_id,\r
+      ad_start_dt,                 ad_end_dt,\r
+      adc_gross_amount,            al_placement_id,\r
+      al_unit_no,                  as_unit_type,\r
+      as_rate_type,                adc_per_diem_rate,\r
+      CURRENT_TIMESTAMP,           'finance',\r
+      CURRENT_TIMESTAMP,           'finance',\r
+      'N',                         vs_fiscalCat,\r
+      vl_case_id,\r
+      al_reference_payment_detail_id, al_linked_pymnt_hdr_id );--\r
+\r
+   al_sqlcode := SQLCODE;--\r
+   IF al_sqlcode <> 0  THEN\r
+    as_error := 'Payment Detail: Error in inserting ADOPTION SUBSIDY/SUBSIDIZED GUARDIANSHIP PAYMENT Detail record';--\r
+   END IF;--\r
+  END IF; --\r
+ END IF;--\r
+\r
+ -- PRJ-04753 - Fiscal Audit Trail - Picklist Type ID 10041 \r
+ IF vs_change_type IS NOT NULL AND RTRIM(LTRIM(vs_change_type)) <> '' THEN\r
+  -- System generated - 3294 Adjustments\r
+  SELECT COUNT(*)\r
+   INTO vl_cnt\r
+  FROM TB_PAYMENT_HEADER\r
+  WHERE PAYMENT_ID = al_payment_header_id\r
+   AND COALESCE(MANUAL_SW, '') = 'N'\r
+   AND PAYMENT_TYPE_CD = '3294'\r
+   AND DELETE_SW = 'N';--\r
+  \r
+  al_sqlcode := SQLCODE;--\r
+  IF al_sqlcode < 0  THEN\r
+   as_error := 'Fiscal Audit Trail: Error in verifying Payment Type for PAYMENT_ID: ' || LTRIM(RTRIM(TO_CHAR(al_payment_header_id)));--\r
+  END IF ;--\r
+\r
+  IF vl_cnt > 0 THEN\r
+   vl_event_id := vl_pay_detail_id;--\r
+   -- 1008 Payment Adjustment\r
+   vs_entity_type_cd := '1008' ;--\r
+\r
+   SELECT a.as_error,a.al_sqlcode from SP_FISCAL_AUDIT_TRAIL ( 'SP_PAYMENT_DETAIL_INSERT'\r
+            , vs_change_type\r
+            , vl_event_id\r
+            , vs_entity_type_cd\r
+            , vl_pay_detail_id) a into\r
+            as_error\r
+            , vl_sqlcode;--\r
+            \r
+   IF vl_sqlcode <> 0 THEN\r
+    as_error := as_error;--\r
+    IF as_error is NULL OR as_error = '' THEN\r
+       as_error := 'Fiscal Audit Trail: SP_FISCAL_AUDIT_TRAIL failed';--\r
+    END IF;--\r
+   END IF;--\r
+  END IF;--\r
+ END IF;--\r
+\r
+ al_sqlcode := vl_sqlcode;--\r
+\r
+END \r
+;\r
+\r
+$function$
+

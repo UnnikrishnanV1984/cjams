@@ -1,0 +1,1 @@
+update referencevalues set activeflag = 0 where referencetypeid = 752 and value_text = 'noncps';

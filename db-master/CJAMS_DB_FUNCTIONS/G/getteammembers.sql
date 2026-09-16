@@ -1,0 +1,61 @@
+
+ DROP FUNCTION IF EXISTS cjams.getteammembers(in_teamid uuid, in_limit integer, in_skip integer);
+DROP FUNCTION IF EXISTS cjams.getteammembers(in_teamid uuid, in_limit integer, in_skip integer,in_email character varying);
+
+
+CREATE OR REPLACE FUNCTION cjams.getteammembers(in_teamid uuid, in_limit integer, in_skip integer, in_email character varying)
+ RETURNS TABLE(count bigint, id uuid, positioncode character varying, isexpired boolean, displayname character varying, isavailable boolean, userworkstatustypekey character varying, workstatustype character varying, roletype character varying, fullname character varying, lastname character varying, firstname character varying, orgname character varying, orgnumber character varying, lineno integer, coadate timestamp without time zone, effectivedate timestamp without time zone, expirationdate timestamp without time zone, rtfdate timestamp without time zone, roletypecode character varying, securityusersid character varying, email character varying, dob timestamp without time zone, gender character varying, phonenumber character varying, roletypename character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+   
+BEGIN
+
+    RETURN QUERY
+	
+SELECT 
+count(1) over(),
+tm.teammemberid as id, 
+tm.positioncode, 
+case when (tma.teammemberid IS  NULL OR tm.coadate < now()) THEN true ELSE false END AS isexpired,
+ up.displayname,
+ up.unavailableflag as isavailable, 
+ up.userworkstatustypekey
+,uwst.typedescription as workstatustype, 
+tmrt.roletypekey as roletype,
+ up.displayname as fullname,
+ up.lastname,
+ up.firstname,
+ up.orgname,
+ up.orgnumber,
+ tm.linenumber as lineno, 
+ tm.coadate,
+ tm.effectivedate,
+ tm.expirationdate, 
+ tm.rtfdate, 
+ rt.roletypecode,
+ tma.securityusersid,
+ up.email,
+ up.dob,
+ G.typedescription as gender,
+ upp.phonenumber,
+ r.description as roletypename
+FROM teammember tm 
+left JOIN teammemberassignment tma ON tma.teammemberid = tm.teammemberid  AND tma.activeflag = 1
+INNER JOIN userprofile up ON up.securityusersid = tma.securityusersid AND up.activeflag = 1
+LEFT JOIN userworkstatustype uwst ON uwst.userworkstatustypekey = up.userworkstatustypekey AND uwst.activeflag = 1
+LEFT JOIN teammemberroletype tmrt ON tmrt.roletypekey = tm.roletypekey AND tmrt.activeflag = 1
+LEFT JOIN role r ON r.roletypekey = tm.roletypekey AND r.activeflag =1
+LEFT JOIN roletype rt ON rt.shortname = r.name AND rt.activeflag =1
+LEFT JOIN userprofilephonenumber upp ON upp.securityusersid = up.securityusersid AND upp.activeflag =1
+left JOIN gendertype G on G.gendertypekey = up.gendertypekey
+WHERE tm.teamid = in_teamid
+AND tm.activeflag = 1    
+AND CASE WHEN length(in_email) > 0 THEN up.email = in_email ELSE TRUE END
+order by tm.positioncode
+LIMIT in_limit OFFSET in_skip;
+
+  END;
+
+$function$
+;

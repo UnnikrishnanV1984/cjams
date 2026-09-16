@@ -1,0 +1,1 @@
+ALTER TABLE cjams.progressnotedetail ADD IF NOT EXISTS isaddendum integer NULL DEFAULT 0;

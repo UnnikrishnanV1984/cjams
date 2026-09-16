@@ -1,0 +1,1 @@
+update routing set activeflag = 0, updatedby = 'CDM-12779', updatedon = now() where objectid in ('bf5fb4c2-f0fd-453e-beed-934d3fb170f7', '661519b0-192d-4ab9-a013-f3058dcda921');

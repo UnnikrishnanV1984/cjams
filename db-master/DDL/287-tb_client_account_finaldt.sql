@@ -1,0 +1,1 @@
+ALTER TABLE tb_client_account ADD COLUMN IF NOT EXISTS final_close_dt date ;

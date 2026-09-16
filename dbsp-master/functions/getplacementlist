@@ -1,0 +1,118 @@
+CREATE OR REPLACE FUNCTION getplacementlist(v_intakeserviceid uuid, pagenumber bigint, pagesize bigint, v_intakenumber character varying DEFAULT NULL::character varying)
+ RETURNS TABLE(totalcount bigint, iscourtexists boolean, ispermanencyexists boolean, exitreasontypekey character varying, iseligible boolean, childname character varying, cjamspid character varying, dob timestamp without time zone, gender character varying, placementtype character varying, providerunit character varying, placedatetime timestamp without time zone, placeenddatetime timestamp without time zone, jlocation character varying, jcounty character varying, certifiedad character varying, resourceworker character varying, parentorg character varying, detainer character varying, county character varying, countyid uuid, providername character varying, lrstatus character varying, placementadmissionclassificationtypedesc character varying, placementadmissionclassificationtypekey character varying, placementadmissiontypedesc character varying, placementadmissiontypekey character varying, placementprimaryapprovedalttypedesc character varying, placementprimaryapprovedalttypekey character varying, placementprimaryadmissionreasontypedesc character varying, placementprimaryadmissionreasontypekey character varying, placementadmissionauthorizationtypedesc character varying, placementadmissionauthorizationtypekey character varying, addate date, adtime time without time zone, releasedate date, placementinformation character varying, status character varying, placementid uuid, role character varying, providerinfo json, placementstatus text, exitreasontypekeydesc character varying, istempplacement boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset int;
+ v_pagenumber int;
+DECLARE 
+ totalcount integer;
+BEGIN
+    v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+  
+RETURN query
+
+SELECT 
+ COUNT(1)OVER(),
+(SELECT EXISTS(SELECT isrch.intakeservicerequestcourthearingid FROM intakeservicerequestcourthearing isrch WHERE (isrch.intakeserviceid=v_intakeserviceid OR isrch.intakenumber = v_intakenumber) AND isrch.hearingtypekey IN ('GAP','GRP') AND isrch.activeflag=1)) AS iscourtexists,
+    (SELECT EXISTS(SELECT pp.permanencyplanid FROM permanencyplan pp 
+        WHERE pp.intakeserviceid=v_intakeserviceid 
+        AND primarypermanencytype IN ('Reunification','Adoption') 
+        AND concurrentpermanencytype IN ('Reunification','Adoption') 
+        AND pp.activeflag=1)) AS ispermanencyexists,
+    pl.exitreasontypekey,
+ (select 
+ CASE
+  WHEN EXTRACT(YEAR from AGE(NOW(),ps.dob))<18 THEN true
+  ELSE false
+   END ) 
+   AS iseligible,
+    ( ps.firstname || ' '||ps.lastname):: character varying childname, 
+ ps.cjamspid :: character varying,
+    ps.dob,gt.typedescription AS gender,
+    pr.providercategorytypekey placementtype,pr.providerunit,
+    pl.startdatetime placedatetime,
+    pl.enddatetime placeenddatetime,pl.jlocation,pl.jcounty,pl.certifiedad,pl.resourceworker,pl.parentorg,pl.detainer, ctx.countyname as county,pl.county as countyid,
+ pr.providername,pl.lrstatus,
+ pac.description as placementadmissionclassificationtypedesc,pac.placementadmissionclassificationkey,
+ pat.description as placementadmissiontypedesc,pat.placementadmissiontypekey,
+ ppaa.description as placementprimaryapprovedalttypedesc,ppaa.placementprimaryapprovedalttypekey,
+ ppar.description as placementprimaryadmissionreasontypedesc, ppar.placementprimaryadmissionreasontypekey,
+ ppaat.description as placementadmissionauthorizationtypedesc, ppaat.placementadmissionauthorizationtypekey,
+ pl.addate,pl.adtime,pl.releasedate,
+    (coalesce(pr.providername:: character varying,'') || ','||coalesce(paddr.addressline1:: character varying,'') || ','||coalesce(paddr.city:: character varying,'') || ','||coalesce(paddr.state:: character varying,'') || ' '||
+    coalesce((SELECT pci.email FROM providercontactinfo pci 
+     WHERE pci.providerid=pl.providerid AND pci.activeflag=1 LIMIT 1 ):: character varying,'') ):: character varying 
+     AS placementinformation,
+    pl.statustypekey status,
+ pl.placementid,
+ isra.intakeservicerequestpersontypekey AS role,
+ json_build_object(
+            'providername', pr.providername,
+            'addressline1', paddr.addressline1,
+         'addressline2', paddr.addressline2,
+   'providerid', pr.providerid,
+   'providercode', pr.providercode,
+         'email', pci.email,
+         'work', null,
+         'fax', null,
+         'ext', pci.phoneextension,
+   'zipcode', ct.zipcode,
+         'county', ct.countyname,
+         'city', paddr.city,
+         'state', paddr.state,
+         'phonenumber',(SELECT json_agg(e) AS phonenumber FROM (
+                            SELECT pcio.phonenumber,
+                   pcio.providercontactinfotypekey FROM providercontactinfo pcio
+                            WHERE pcio.providerid=pr.providerid
+                            AND PCIO.providercontactinfotypekey IN ('F','P')
+                            AND pcio.activeflag =1
+                            GROUP BY pcio.phonenumber,pcio.providercontactinfotypekey
+                        ) e)
+    ) AS providerinfo,(case  when pl.enddatetime is null then 'Active' else 'Closed' end) as placementstatus,rfv.description as exitreasontypekeydesc,pl.istempplacement 
+ 
+FROM placement pl
+INNER JOIN provider pr 
+ ON pl.providerid = pr.providerid AND pr.activeflag=1
+LEFT JOIN provideraddress paddr 
+ ON pr.providerid = paddr.providerid AND paddr.activeflag=1
+    AND paddr.provideraddresstypekey ='L'
+LEFT JOIN intakeservicerequestactor isra 
+ ON isra.intakeservicerequestactorid = pl.intakeservicerequestactorid AND isra.activeflag=1
+LEFT JOIN person ps 
+ ON ps.personid = isra.personid AND ps.activeflag=1
+LEFT JOIN gendertype gt 
+ ON gt.gendertypekey = ps.gendertypekey AND gt.activeflag=1
+LEFT JOIN (select providerid, max(pci.email) email ,
+           max(pci.phoneextension)  phoneextension
+           FROM  providercontactinfo pci 
+           WHERE pci.activeflag =1 
+           and providercontactinfotypekey ='P'
+           group by providerid ) pci 
+ ON pci.providerid=pr.providerid  
+LEFT JOIN county ct 
+ ON ct.countyid = paddr.countyid AND ct.activeflag=1
+left join placementadmissiontype pat 
+    on pat.placementadmissiontypekey = pl.placementadmissiontypekey
+left join placementadmissionclassificationtype pac
+    on pac.placementadmissionclassificationkey = pl.placementadmissionclassificationkey
+left join placementprimaryapprovedalttype ppaa
+    on ppaa.placementprimaryapprovedalttypekey = pl.placementprimaryapprovedalttypekey
+left join placementprimaryadmissionreasontype ppar
+    on ppar.placementprimaryadmissionreasontypekey = pl.placementprimaryadmissionreasontypekey
+left join placementadmissionauthorizationtype ppaat
+    on ppaat.placementadmissionauthorizationtypekey = pl.placementadmissionauthorizationtypekey
+left join county ctx 
+     on ctx.countyid = pl.county
+left join referencetype rt on rt.tablename = 'plcmtrlsrsn' 
+left join referencevalues rfv on 
+     rfv.ref_key = pl.exitreasontypekey and rfv.activeflag = 1 and rt.referencetypeid = rfv.referencetypeid
+WHERE (pl.intakeserviceid=v_intakeserviceid OR pl.intakenumber = v_intakenumber) AND pl.activeflag=1
+ORDER BY placeenddatetime desc NULLS first
+LIMIT pagesize OFFSET v_pageoffset;
+END;
+
+$function$
+

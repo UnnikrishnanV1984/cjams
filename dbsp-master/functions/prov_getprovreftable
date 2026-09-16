@@ -1,0 +1,81 @@
+CREATE OR REPLACE FUNCTION prov_getprovreftable(updatedtlsobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE 
+v_applicantid character varying;
+v_referralid character varying;
+v_referraldata json;
+v_referraldecision text;
+v_address json;
+v_referralid_sort text;
+
+begin
+v_referralid := updatedtlsobj->>'referralnumber';
+v_applicantid := updatedtlsobj->>'applicantnumber';
+v_referraldecision:= updatedtlsobj->>'status';
+v_referralid_sort:= updatedtlsobj->>'sortorder';
+--raise notice 'reqobj:updatedtlsobj %', updatedtlsobj;
+--raise notice 'reqobj:v_referralid %', v_referralid;
+if (v_referralid is null) then
+ SELECT referral_id into v_referralid FROM tb_prov_ref_program_type where applicant_id=v_applicantid;
+end if;
+--raise notice 'reqobj:v_referralid %', v_referralid;
+--raise notice 'reqobj:v_applicantid %', v_applicantid;
+if v_referralid_sort != 'desc' then
+ select array_to_json(array_agg(row_to_json(t)))
+ from (
+ SELECT pr.provider_referral_id,pr.provider_id, pr.provider_referral_nm,pr.provider_referral_first_nm,pr.provider_referral_last_nm,pr.narrative,pr.is_son, pr.is_rfp, pr.is_taxid, pr.referral_status, pr.referral_decision, 
+  up.displayname AS author,pr.create_user_id,pr.provider_referral_med, pr.comments_tx,
+  pr.dob_dt, pr.tax_id_no, pr.adr_home_phone_tx, pr.adr_email_tx, pr.adr_cell_phone_tx, pr.parent_entity, pr.parent_entity_taxid, pr.corporation_entity, pr.corporation_entity_taxid, pr.provider_referral_program,pr.adr_fax_tx,pr.provider_category,
+  pr.referral_dt,pr.create_ts,
+  --pra.adr_city_nm,pra.adr_street_nm,(pra.adr_street_no)::int,(pra.adr_zip5_no)::int,pra.adr_state_cd, pra.adr_state_cd as state, pra.adr_county_cd,
+  --     (select value_text as county from referencevalues where   referencetypeid=306 and ref_key= pra.adr_county_cd limit 1 ), pra.adr_country_tx,
+  pr.provider_program_name,pr.agency,
+     (
+       select array_to_json(array_agg(row_to_json(d)))
+       from (
+         select distinct pt.program_type, pt.program_type_id from tb_prov_ref_program_type pt
+         where pt.referral_id = v_referralid
+       ) d
+     ) as provider_program_type,pr.state_funding_eligible,pr.accreditation,pr.profit, pr.is_taxid, pr.license_agency
+   from tb_provider_referral pr 
+ --  left join tb_provider_referral_addresses pra on pr.provider_referral_id = pra.parent_key_id 
+   left join userprofile up on up.securityusersid = pr.create_user_id
+   where  pr.provider_referral_id like '%' || v_referralid || '%' and (v_referraldecision IS NULL OR  v_referraldecision = '' OR pr.referral_decision = v_referraldecision)
+   order by pr.provider_referral_id asc
+ --  order by pr.create_ts desc
+ ) t into v_address;
+else
+ select array_to_json(array_agg(row_to_json(t)))
+ from (
+ SELECT pr.provider_referral_id, pr.provider_id,pr.provider_referral_nm,pr.provider_referral_first_nm,pr.provider_referral_last_nm,pr.narrative,pr.is_son, pr.is_rfp, pr.referral_status, pr.referral_decision, 
+  up.displayname AS author,pr.create_user_id,pr.provider_referral_med, pr.comments_tx,
+  pr.dob_dt, pr.tax_id_no, pr.adr_home_phone_tx, pr.adr_email_tx, pr.adr_cell_phone_tx, pr.parent_entity, pr.parent_entity_taxid, pr.corporation_entity, pr.corporation_entity_taxid, pr.provider_referral_program,pr.adr_fax_tx,pr.provider_category,
+  pr.referral_dt,pr.create_ts,
+  --pra.adr_city_nm,pra.adr_street_nm,(pra.adr_street_no)::int,(pra.adr_zip5_no)::int,pra.adr_state_cd,pra.adr_state_cd as state,pra.adr_county_cd,pra.adr_country_tx,
+  pr.provider_program_name,pr.agency,
+     (
+       select array_to_json(array_agg(row_to_json(d)))
+       from (
+         select distinct pt.program_type, pt.program_type_id from tb_prov_ref_program_type pt
+         where pt.referral_id = v_referralid
+       ) d
+     ) as provider_program_type,pr.state_funding_eligible,pr.accreditation,pr.profit, pr.is_taxid, pr.license_agency
+   from tb_provider_referral pr 
+   --left join tb_provider_referral_addresses pra on pr.provider_referral_id = pra.parent_key_id 
+   left join userprofile up on up.securityusersid = pr.create_user_id
+   where  pr.provider_referral_id like '%' || v_referralid || '%' and (v_referraldecision IS NULL OR  v_referraldecision = '' OR pr.referral_decision = v_referraldecision)
+   order by pr.provider_referral_id desc
+ --  order by pr.create_ts desc
+ ) t into v_address;
+end if;
+
+return v_address;
+
+end;
+
+$function$
+

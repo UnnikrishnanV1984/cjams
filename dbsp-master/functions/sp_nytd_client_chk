@@ -1,0 +1,278 @@
+CREATE OR REPLACE FUNCTION sp_nytd_client_chk(vi_client_id bigint, vd_run_dt date, OUT vs_report_type character)
+ RETURNS character
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+ loc_var char(1) default '';
+ loc_var1 char(1) default '';
+ loc_var2 char(1) default '';
+ vd_startdate date;
+ rec_count integer;
+ rec_count1 integer;
+ vd_enddate date;
+ vd_startdate_srv date;
+ vd_enddate_srv date;
+ vs_nytd_type varchar(6);
+ vi_report_period integer;
+ vi_fnyear integer;
+ vd_run_date date;
+ vi_age integer;
+ vi_pac_cnt integer;
+ vi_personid uuid;
+ VS_TMP varchar(1);
+ VS_EXISTS_CNT varchar(1);
+ 
+BEGIN
+ if vd_run_dt is null then
+  vd_run_date = now();
+ else
+  vd_run_date = vd_run_dt;
+ end if;
+
+ RAISE NOTICE '>>>>>>>>vd_run_date >>>> %',vd_run_date;
+ 
+ if (date_part('month', vd_run_date)::integer in (10,11,12,1,2,3)) then
+  if (date_part('month', vd_run_date)::integer in (1,2,3)) then
+   vd_startdate_srv =to_date('10/01/'||(date_part('year', vd_run_date)-1)::integer,'MM/DD/YYYY');
+   vd_enddate_srv = to_date('03/31/'||(date_part('year', vd_run_date))::integer,'MM/DD/YYYY');
+  else
+   vd_startdate_srv =to_date('10/01/'||(date_part('year', vd_run_date))::integer,'MM/DD/YYYY');
+   vd_enddate_srv = to_date('03/31/'||(date_part('year', vd_run_date)+1)::integer,'MM/DD/YYYY');
+  end if;
+ else
+  vd_startdate_srv =to_date('04/01/'||(date_part('year', vd_run_date))::integer,'MM/DD/YYYY');
+  vd_enddate_srv = to_date('09/30/'||(date_part('year', vd_run_date))::integer,'MM/DD/YYYY');
+ end if;
+ 
+ RAISE NOTICE '>>>>>>>>vd_startdate_srv >>>> %',vd_startdate_srv;
+ RAISE NOTICE '>>>>>>>>vd_enddate_srv >>>> %',vd_enddate_srv;
+
+ if (date_part('month', vd_run_date)::integer  in (10,11,12)) then
+  vd_startdate = vd_startdate_srv;
+  vd_enddate = vd_enddate_srv;
+  vi_fnyear = date_part('year', vd_enddate)::integer;
+  vs_nytd_type = '13056';
+  vi_report_period = ((date_part('year', vd_run_date)::integer+1)||'09')::integer;
+ else if (date_part('month', vd_run_date)::integer in (1,2,3,4,5,6,7,8,9)) then
+  vd_startdate = vd_startdate_srv;
+  vd_enddate = vd_enddate_srv;
+  vi_fnyear = date_part('year', vd_enddate)::integer;
+  vs_nytd_type = '13056';
+  -- Vineet 03/18/2020 -- variable not used anywhere else
+  -- vi_report_period = ((date_part('year', vd_run_date)::integer+1)||'09')::integer;
+  vi_report_period = ((date_part('year', vd_run_date)::integer)||'09')::integer;
+ end if;
+
+ end if; -- ??? Vineet 03/18/2020
+
+ RAISE NOTICE '>>>>>>>>vd_startdate >>>> %',vd_startdate;
+ RAISE NOTICE '>>>>>>>>vd_enddate >>>> %',vd_enddate;
+ RAISE NOTICE '>>>>>>>>vi_fnyear >>>> %',vi_fnyear;
+ RAISE NOTICE '>>>>>>>>vs_nytd_type >>>> %',vs_nytd_type;
+ RAISE NOTICE '>>>>>>>>vi_report_period >>>> %',vi_report_period;
+ 
+ -- vd_enddate = vd_run_date;
+ -- vd_enddate_srv = vd_run_date;
+
+ -- Get rec_count to check Follow-up
+ RAISE NOTICE '>>>>>>>>Get rec_count to check Follow-up >>>>';
+ 
+ select count(*) 
+  INTO rec_count 
+ FROM ( select distinct c.cjamspid 
+    from person c
+   where c.cjamspid = vi_client_id
+    and  ( ( f_age(c.dob::date,VD_startdate)=19 or f_age(c.dob::date,VD_enddate)=19 ) 
+      or 
+      (( f_age(c.dob::date,VD_startdate)=21 or f_age(c.dob::date,VD_enddate)=21 )) 
+     )
+    and c.activeflag=1
+    and (c.personid in ( select s.personid 
+          from personnytdsummary s 
+           join personnytddetail d on d.summaryid = s.summaryid
+           join nytddataelements e on e.elementid = d.elementid
+          where s.reporttypekey = '13056' -- Baseline
+          and s.activeflag = 1 
+          and s.validationflag = 1 
+          and e.old_id = 34  
+          and d.elementvalue = '13058'
+   )
+   ) ) B;
+
+ RAISE NOTICE '>>>>>>>>rec_count >>>> %',rec_count;
+ 
+ -- To check Follow-up
+ RAISE NOTICE '>>>>>>>>To check Follow-up >>>>';
+ -- Vineet 03/18/20020
+ -- if  vi_fnyear >= 2013 and (mod((vi_fnyear - 2013),3)=0 or mod((vi_fnyear - 2015),3)=0) and rec_count>1 then
+ if vi_fnyear >= 2013 
+  and (mod((vi_fnyear - 2013),3)=0 or mod((vi_fnyear - 2015),3)=0) and rec_count > 0 then
+   RAISE NOTICE '>>>>>>>>Follow-up is TRUE >>>>';
+   loc_var = 'F';
+ end if;
+ RAISE NOTICE '>>>>>>>>Follow-up  loc_var >>>> %',loc_var;
+ 
+ -- Get rec_count1 to check Baseline
+ RAISE NOTICE '>>>>>>>>Get rec_count1 to check Baseline >>>> ';
+ select count(*) 
+  into rec_count1 
+  from ( select distinct c.cjamspid 
+     from PERSONPROGRAMAREA cpa 
+      inner join person c on c.personid = cpa.personid
+       -- Vineet 03/18/2020
+       and cpa.programkey = 'OOH' -- 'IL' was wrong
+       and c.cjamspid = vi_client_id
+       and (  cpa.startdate <= vd_enddate 
+         and 
+         (cpa.enddate is null or cpa.enddate >= vd_startdate ) 
+        )
+    WHERE ( cpa.startdate <= (DOB + interval '17 year' +  interval '45 day') 
+      AND (enddate IS NULL OR enddate >= (DOB + interval '17 year') ) 
+       )
+     AND( ( (DOB + interval '17 year' +  interval '1 day') >=  VD_startdate 
+       AND (DOB + interval '17 year' +  interval '1 day') <=  VD_enddate 
+       )
+       OR 
+       ( (DOB + interval '17 year' +  interval '45 day') >=  VD_startdate 
+       AND (DOB + interval '17 year' +  interval '45 day') <=  VD_enddate
+       ) 
+      )
+     and cpa.activeflag = 1 and c.activeflag = 1
+     and (DOB + interval '17 year' +  interval '1 day') BETWEEN VD_startdate AND VD_enddate
+   ) A;
+
+ RAISE NOTICE '>>>>>>>>rec_count1 >>>> %',rec_count1;
+ 
+ -- To check Baseline
+ RAISE NOTICE '>>>>>>>>To check Baseline >>>>';
+ -- Vineet 03/18/20020
+ -- if loc_var <> 'F' and ( vi_fnyear >= 2011 and  (mod((vi_fnyear - 2011),3)=0) ) and rec_count1>1 
+ if loc_var <> 'F' 
+  and ( vi_fnyear >= 2011 and  (mod((vi_fnyear - 2011),3) = 0) ) and rec_count1 > 0 then
+   RAISE NOTICE '>>>>>>>>Baseline is TRUE >>>>';
+   loc_var1 = 'A';
+ end if;
+ RAISE NOTICE '>>>>>>>>Baseline loc_var1 >>>> %',loc_var1;
+ 
+ if loc_var1 = 'A'  then
+  loc_var = 'B';
+ end if;
+ RAISE NOTICE '>>>>>>>>Final Baseline loc_var >>>> %',loc_var;
+ 
+ -- To check served population
+ VI_AGE = (SELECT F_AGE(DOB::date,vd_run_dt) FROM person WHERE cjamspid = VI_CLIENT_ID AND activeflag = 1);
+ RAISE NOTICE '>>>>>>>>VI_AGE >>>> %',VI_AGE;
+ 
+ VI_PAC_CNT = ( SELECT COUNT(*) 
+     FROM PERSONPROGRAMAREA CPA 
+      JOIN servicecase CC ON CC.servicecaseid::varchar = CPA.objectid 
+      -- AND CC.CLIENT_ID = CPA.CLIENT_ID
+      join person p on CPA.personid = p.personid 
+       and p.activeflag=1
+       AND CC.activeflag = 1 
+       AND CPA.activeflag = 1 
+       --AND CC.activeflag = 1
+    WHERE p.cjamspid = VI_CLIENT_ID 
+     AND (CPA.enddate IS NULL OR CPA.enddate >= now())
+   );
+ 
+ RAISE NOTICE '>>>>>>>>VI_PAC_CNT >>>> %',VI_PAC_CNT; 
+ 
+ select personid into vi_personid from person where cjamspid=VI_CLIENT_ID;
+ RAISE NOTICE '>>>>>>>>vi_personid >>>> %',vi_personid; 
+ 
+ RAISE NOTICE '>>>>>>>> To check Served population >>>>';
+ IF (VI_AGE BETWEEN 14 AND 21) AND  VI_PAC_CNT > 0 THEN
+  RAISE NOTICE '>>>>>>>>Inside AGE between 14 AND 21 and VI_PAC_CNT > 0 >>>>'; 
+  IF LOC_VAR NOT IN ('F','A','B','C') THEN
+   RAISE NOTICE '>>>>>>>>Inside LOC_VAR NOT IN (F, A, B, C) >>>>'; 
+   
+   VS_TMP = F_NYTD_CLIENT_CHK_ELE20_33(vi_personid, vd_startdate_srv, vd_enddate_srv);
+   RAISE NOTICE '>>>>>>>>F_NYTD_CLIENT_CHK_ELE20_33 outcome >>>> %',VS_TMP; 
+   
+   SELECT CASE WHEN 
+    (
+     SELECT 1 FROM 
+     (
+      SELECT DISTINCT cjamspid 
+       FROM PERSONPROGRAMAREA CP, 
+        person p
+      WHERE p.personid=CP.personid 
+       and CP.personid in (select personid 
+             from person 
+            where cjamspid=VI_CLIENT_ID 
+             and activeflag=1
+            ) 
+       -- Vineet 03/18/2020     
+       AND CP.programkey = 'IL' -- 'OOH' was wrong
+       AND CP.startdate <= VD_enddate_SRV 
+       AND (CP.enddate IS NULL OR CP.enddate >= VD_startdate_SRV)
+       AND p.activeflag=1
+      UNION
+      SELECT DISTINCT SL.CLIENT_ID
+       FROM TB_SERVICE_LOG SL
+        INNER JOIN TB_PROVIDER_SERVICES PS ON SL.PROVIDER_SERVICE_ID = PS.PROVIDER_SERVICE_ID
+        INNER JOIN TB_SERVICES S ON PS.SERVICE_ID = S.SERVICE_ID 
+         AND PS.DELETE_SW = 'N' 
+         AND S.DELETE_SW = 'N'
+      WHERE SL.CLIENT_ID = VI_CLIENT_ID 
+       AND (S.SERVICE_ID::varchar  IN  (SELECT OLD_ID 
+                FROM nytdservices 
+                WHERE activeflag = 1)
+        )
+       AND SL.DELETE_SW = 'N' 
+       AND ( SL.start_dt <= VD_enddate_SRV 
+         AND (SL.end_dt IS NULL OR SL.end_dt >= VD_startdate_SRV ) 
+        )
+       UNION
+       SELECT DISTINCT SL.CLIENT_ID
+        FROM TB_SERVICE_LOG SL
+         INNER JOIN TB_SERVICES S ON SL.AGENCY_SERVICE_LDSS_ID = S.SERVICE_ID 
+          AND SL.DELETE_SW = 'N' 
+          AND S.DELETE_SW = 'N'
+       WHERE SL.CLIENT_ID = VI_CLIENT_ID 
+        AND (S.SERVICE_ID::varchar  IN  (SELECT OLD_ID 
+                 FROM nytdservices 
+                WHERE activeflag = 1)
+         )
+        AND (  SL.start_dt <= VD_enddate_SRV 
+          AND (SL.end_dt IS NULL OR SL.end_dt >= VD_startdate_SRV ) 
+         )             
+       UNION
+       SELECT DISTINCT person.cjamspid
+        FROM TB_PLACEMENT,person
+       WHERE TB_PLACEMENT.personid=person.personid 
+        and TB_PLACEMENT.DELETE_SW = 'N' 
+        and person.activeflag=1
+        AND ENTRY_DT <= VD_enddate_SRV
+        AND person.cjamspid =  VI_CLIENT_ID
+        AND ( EXIT_DT IS NULL OR EXIT_DT >= VD_startdate_SRV )
+        AND PLACEMENT_STRUCTURE_ID IN (1,73,75)
+     ) TAB
+    ) > 0 THEN 
+     'Y'
+    ELSE 
+     'N'
+    END 
+     INTO VS_EXISTS_CNT;
+    
+    RAISE NOTICE '>>>>>>>>Served VS_EXISTS_CNT  >>>> %',VS_EXISTS_CNT; 
+    
+    IF  VS_TMP = 'Y' AND VS_EXISTS_CNT = 'Y' THEN
+     RAISE NOTICE '>>>>>>>>Served is TRUE >>>>';
+     loc_var = 'S';
+    END IF;
+  end if;
+ END IF;
+
+ if loc_var not in ('F','S','B') then
+  RAISE NOTICE '>>>>>>>>In side loc_var not in (F, S, B)  >>>>';
+  loc_var = 'N';
+ end if;
+
+ vs_report_type = loc_var;
+ RAISE NOTICE '>>>>>>>>Final vs_report_type  >>>> %',vs_report_type; 
+END;
+$function$
+

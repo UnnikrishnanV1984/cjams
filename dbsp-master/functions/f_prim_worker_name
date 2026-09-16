@@ -1,0 +1,48 @@
+CREATE OR REPLACE FUNCTION f_prim_worker_name(ai_case_id bigint)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- Revision(s):
+-- 07/16/2021 - Vineet Tirodkar - Modifications for DB 10.8 upgrade - Order by & Distinct Issue - B-107196
+------------------------------------------------------------------------
+DECLARE
+
+ v_objectid UUID;
+ v_caseworkerid character varying;
+ v_workername character varying;
+
+BEGIN 
+
+ --- Service Case Id
+ SELECT servicecaseid 
+  INTO v_objectid
+ FROM servicecase 
+ WHERE servicecasenumber = ai_case_id::character varying AND activeflag = 1;
+
+ --- Adoption Case Id if not Service Case
+ IF v_objectid is null THEN
+  SELECT adoptioncaseid
+   INTO v_objectid
+  FROM adoptioncase
+  WHERE adoptioncasenumber = ai_case_id:: VARCHAR AND activeflag = 1;
+ END IF;
+
+ v_workername = 
+ (SELECT coalesce(u.fullname, concat(trim(firstname), ' ', trim(middlename || ' ' || lastname ))::CHARACTER VARYING)
+  FROM userprofile u 
+ WHERE u.securityusersid IN ( SELECT toworkeridno 
+         FROM caseassignment ca 
+         WHERE ca.activeflag = 1 
+         and ca.responsibilitytypekey = 'family' 
+         and ca.toworkeridno is not null 
+         and ca.objectid = v_objectid 
+        ORDER BY ca.enddate desc NULLS 
+        FIRST LIMIT 1 ) 
+ LIMIT 1 );
+
+RETURN v_workername;
+
+END;
+$function$
+

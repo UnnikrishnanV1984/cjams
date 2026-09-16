@@ -1,0 +1,1 @@
+UPDATE county SET statecountycode =trim(statecountycode);

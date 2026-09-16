@@ -1,0 +1,191 @@
+CREATE OR REPLACE FUNCTION prov_getsiteplacements(v_req json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+l_placements json;
+v_where json;
+ v_skip integer;
+  v_sortcol character varying;
+   v_sortorder character varying;
+   v_providerid character varying;
+v_status character varying;
+v_site_id character varying;
+v_client_id character varying;
+v_placementsource character varying;
+v_client_name character varying;
+
+BEGIN 
+
+v_skip = v_req->>'skip';
+v_sortcol = v_req->>'sort_column';
+v_sortorder = v_req->>'sort_order';
+
+v_where = v_req->>'where';
+
+v_providerid = v_where->>'provider_id';
+v_site_id = v_where->>'site_id';
+v_placementsource = v_where->>'placementsource';
+v_status = v_where->>'status';
+v_client_id = v_where->>'client_id';
+v_client_name = v_where->>'client_name';
+
+if v_placementsource = 'DHS' or v_placementsource is null then 
+
+    SELECT json_agg(placements) INTO l_placements FROM(
+        select count(1) over() as totalcount, pl.isvoided , pl.caseid , pl.servicecaseid,tp.provider_nm, pl.altproviderid as provider_id , pl.startdatetime as entry_dt,
+            pl.enddatetime as exit_dt,  p.firstname,p.lastname,p.dob,p.gendertypekey,p.cjamspid, pl.contractprogramid as contract_program_id,pl.personid
+        from placement pl 
+        inner join person p on  pl.personid = p.personid
+        inner join prov.tb_provider tp on tp.provider_id=pl.altproviderid 
+        where 
+        pl.activeflag = 1
+        and pl.altproviderid = v_site_id 
+        and (case when v_client_id is null then true else 
+            p.cjamspid like '%'||v_client_id||'%'
+        end )
+        and (case when v_client_name is null then true else 
+            trim(p.firstname) ilike '%'||v_client_name||'%' or
+            trim(p.lastname) ilike '%'||v_client_name||'%' or
+            trim(p.firstname)||' '||trim(p.lastname) ilike '%'||v_client_name||'%' or
+            trim(p.lastname)||','||trim(p.firstname) ilike '%'||v_client_name||'%' or
+            trim(p.lastname)||', '||trim(p.firstname) ilike '%'||v_client_name||'%' 
+        end )
+        and (case when v_status is null  or v_status = 'All' then true  
+                when v_status = 'Active' then (pl.enddatetime IS NULL or pl.enddatetime::date >= now()::date) and  (pl.isvoided is null or pl.isvoided = 0)
+                when v_status = 'Inactive' then (pl.enddatetime::date < now()::date) or  (pl.isvoided = 1)
+        end )
+        
+        order by 
+        (
+        case
+            v_sortorder
+            when 'asc' then
+            case v_sortcol
+            when 'entry_dt' then COALESCE(pl.startdatetime:: character varying,'')
+            when 'exit_dt' then COALESCE(pl.enddatetime:: character varying ,'')
+            end
+            else  NULL
+        end) ASC,
+        (
+        case
+            v_sortorder
+            when 'desc' then
+            case v_sortcol
+            when 'entry_dt' then COALESCE(pl.startdatetime:: character varying  ,'')
+            when 'exit_dt' then COALESCE(pl.enddatetime:: character varying ,'')
+            end
+            else  NULL
+        end ) DESC
+        limit 10 offset v_skip
+    ) AS placements;
+
+end if;
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+if v_placementsource = 'DJS' then 
+
+    SELECT json_agg(placements) INTO l_placements FROM(
+        select count(1) over() as totalcount, pl.lrstatus , pl.intakenumber as case_id, pl.servicecaseid, pl.altproviderid as provider_id,tp.provider_nm, pl.startdatetime as entry_dt
+        , pl.enddatetime as exit_dt,  p.firstname,p.lastname,p.dob,p.gendertypekey,p.cjamspid, pl.contractprogramid as contract_program_id
+   FROM djs_services.placement pl
+    JOIN djs_master.person p on pl.personid = p.personid 
+                join tb_provider tp on tp.provider_id=pl.altproviderid
+        where 
+        pl.activeflag='1' 
+        and pl.altproviderid = v_site_id 
+        and (case when v_client_id is null then true else 
+            p.cjamspid like '%'||v_client_id||'%'
+        end )
+        and (case when v_client_name is null then true else 
+            trim(p.firstname) ilike '%'||v_client_name||'%' or
+            trim(p.lastname) ilike '%'||v_client_name||'%' or
+            trim(p.firstname)||' '||trim(p.lastname) ilike '%'||v_client_name||'%' or
+            trim(p.lastname)||','||trim(p.firstname) ilike '%'||v_client_name||'%' or
+            trim(p.lastname)||', '||trim(p.firstname) ilike '%'||v_client_name||'%' 
+        end )
+        and (case when v_status is null  or v_status = 'All' then true  
+                when v_status = 'Active' then (pl.enddatetime IS NULL or pl.enddatetime::date >= now()::date)
+                when v_status = 'Inactive' then (pl.enddatetime::date < now()::date)
+        end )
+        
+        order by 
+        (
+        case
+            v_sortorder
+            when 'asc' then
+            case v_sortcol
+            when 'entry_dt' then COALESCE(pl.startdatetime:: character varying,'')
+            when 'exit_dt' then COALESCE(pl.enddatetime:: character varying ,'')
+            end
+            else  NULL
+        end) ASC,
+        (
+        case
+            v_sortorder
+            when 'desc' then
+            case v_sortcol
+            when 'entry_dt' then COALESCE(pl.startdatetime:: character varying  ,'')
+            when 'exit_dt' then COALESCE(pl.enddatetime:: character varying ,'')
+            end
+            else  NULL
+        end ) DESC
+        limit 10 offset v_skip
+    ) AS placements;
+
+end if;
+
+  ------------------DJS_SCHEMA_FOR_GOLIVE----------------------------------------
+if v_placementsource = 'Adhoc' then 
+
+    SELECT json_agg(placements) INTO l_placements FROM(
+        select count(1) over() as totalcount ,  pl.*,tp.provider_nm,pl.site_id as provider_nm,pl.gender as gendertypekey
+   FROM prov.prov_adhoc_site_placements pl
+            join tb_provider tp on tp.provider_id=pl.site_id
+        where 
+        pl.delete_sw='N' 
+        and pl.site_id = v_site_id 
+        and (case when v_client_name is null then true else 
+            trim(pl.firstname) ilike '%'||v_client_name||'%' or
+            trim(pl.lastname) ilike '%'||v_client_name||'%' or
+            trim(pl.firstname)||' '||trim(pl.lastname) ilike '%'||v_client_name||'%' or
+            trim(pl.lastname)||','||trim(pl.firstname) ilike '%'||v_client_name||'%' or
+            trim(pl.lastname)||', '||trim(pl.firstname) ilike '%'||v_client_name||'%' 
+        end )
+        and (case when v_status is null  or v_status = 'All' then true  
+                when v_status = 'Active' then (pl.exit_dt IS NULL or pl.exit_dt::date >= now()::date)
+                when v_status = 'Inactive' then (pl.exit_dt::date < now()::date)
+        end )
+        order by 
+        (
+        case
+            v_sortorder
+            when 'asc' then
+            case v_sortcol
+            when 'entry_dt' then COALESCE(pl.entry_dt:: character varying,'')
+            when 'exit_dt' then COALESCE(pl.exit_dt:: character varying ,'')
+            end
+            else  NULL
+        end) ASC,
+        (
+        case
+            v_sortorder
+            when 'desc' then
+            case v_sortcol
+            when 'entry_dt' then COALESCE(pl.entry_dt:: character varying,'')
+            when 'exit_dt' then COALESCE(pl.exit_dt:: character varying ,'')
+            end
+            else  NULL
+        end ) DESC
+        limit 10 offset v_skip
+    ) AS placements;
+
+end if;
+
+
+RETURN l_placements; 
+ 
+END;
+
+$function$
+

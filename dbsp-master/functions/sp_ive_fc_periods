@@ -1,0 +1,408 @@
+CREATE OR REPLACE FUNCTION sp_ive_fc_periods(al_client_id bigint, al_removal_id bigint)
+ RETURNS TABLE(key_id integer, sqnm_sw character varying, cmpnt character varying, start_dt timestamp without time zone, end_dt timestamp without time zone, num_of_days integer, reasonable_efforts_sw character, continue_contrary_sw character, vol_best_interest_sw character, plan_reasonable_sw character, removal_type character varying)
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE v_removal_dt     TIMESTAMP;
+    vd_anniversary_dt    TIMESTAMP;
+   vd_removal_type_cd   VARCHAR(5);
+   vs_removal_type   VARCHAR(50);
+   vd_18th_bday    TIMESTAMP;
+   vl_court_removal_id     INT DEFAULT 0;
+   vs_court_removal_sw   CHAR(1) DEFAULT NULL;
+   vl_court_removal_count  INT DEFAULT 0;
+   vd_21st_bday    TIMESTAMP;
+   vd_start_dt     TIMESTAMP;
+   vd_end_dt      TIMESTAMP;
+   v_Row_Num      INT :=1;
+   v_redet_cntr    INT :=1;
+   pl_rec      RECORD;
+   rm_rec      RECORD;
+   lv_rec      RECORD;
+   ct_rec      RECORD;
+   vd_pl_entry_Dt    DATE;
+   vd_pl_exit_dt    DATE;
+   vd_lv_start_dt    TIMESTAMP;
+   vd_lv_end_dt    TIMESTAMP;
+   v_pl_cntr     INT := 1;
+   v_lv_cntr     INT := 1;
+   v_ct_cntr     INT := 1;
+   v_sqnm_sw     VARCHAR(10);
+   v_key_id     INT;
+   vd_court_order_dt   TIMESTAMP;
+   vd_prev_court_order_dt  TIMESTAMP;
+   v_date_diff    INT  := 0;
+   v_primary_citizenship_cd  VARCHAR(10);
+   v_citizen_alienage_cd  VARCHAR(10);
+   v_safe_havens_baby_sw  CHAR(1);
+   vl_outcome_count   INT;
+   v_reasonable_efforts_sw CHAR(1); 
+   v_continue_contrary_sw  CHAR(1); 
+   v_vol_best_interest_sw  CHAR(1); 
+   v_rem_Type     VARCHAR(10);
+   vn_min_days    INT;
+   vn_max_days    INT;
+   v_ctw_crt_dt    TIMESTAMP;
+   v_repr_crt_dt    TIMESTAMP;
+   v_vol_best_interest_dt  TIMESTAMP;
+--   v_intakeserviceid   UUID;
+   v_personid     UUID;
+   v_return_dt    TIMESTAMP;
+
+BEGIN
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_IVE_Periods
+  ( KEY_ID      INTEGER,
+    SQNM_SW     VARCHAR(10),
+    CMPNT     VARCHAR(5),
+    START_DT     TIMESTAMP,
+    END_DT      TIMESTAMP,
+ num_of_days    INT,
+ reasonable_efforts_sw CHAR(1),
+    continue_contrary_sw CHAR(1),
+    vol_best_interest_sw CHAR(1),
+ plan_reasonable_sw  CHAR(1),
+    removal_type   VARCHAR(10)
+  ) 
+;
+
+SELECT ISRCR.removaldate, 
+     ISRCR.removaldate + interval '1 Year', 
+     ISRCR.returndate,
+    ISRCR.removaltypekey
+--     COALESCE(RT.picklistvaluetypekey,'2702') AS picklistvaluetypekey
+ INTO   v_removal_dt, vd_anniversary_dt, v_return_dt, vd_removal_type_cd 
+ FROM   intakeservreqchildremoval ISRCR 
+--   LEFT JOIN removaltype RT
+--   ON ISRCR.intakeservreqchildremovalid = RT.removalid
+--    AND RT.activeflag = 0
+ WHERE  ISRCR.old_id::BIGINT = al_removal_id
+;
+/*
+SELECT intakeserviceid
+  INTO v_intakeserviceid
+  FROM intakeservicerequest
+ WHERE old_id::BIGINT = al_case_id
+;
+*/
+--SELECT caseid
+--  INTO v_intakeserviceid
+-- FROM "case"
+--WHERE old_id::BIGINT = al_case_id
+-- ;
+SELECT PERSN.dob + interval '18 years', 
+    PERSN.dob + interval '21 years',
+    personid
+  INTO vd_18th_bday, vd_21st_bday,v_personid
+  FROM person PERSN 
+ WHERE PERSN.cjamspid = al_client_id
+   AND PERSN.activeflag = 0
+;
+ -- 2700 - Court Ordered
+ IF vd_removal_type_cd = '2700' THEN
+  v_rem_Type = 'CRT';
+ ELSE
+    -- 2702  - Time Limited Voluntary Placement
+    -- 12761 - Children with Disabilities Voluntary Placement
+    -- 2703 - Enhanced Aftercare Voluntary Placement
+    IF rtrim(vd_removal_type_cd) = '2702' OR rtrim(vd_removal_type_cd) = '12761' OR rtrim(vd_removal_type_cd) = '2703' THEN
+     v_rem_Type = 'VPA';
+    END IF;
+ END IF ;
+-- Check Removal is attached to Court Order - START
+
+SELECT COUNT(*)
+  INTO vl_court_removal_count
+  FROM intakeservicerequestcourtaction A
+ WHERE A.removalid = al_removal_id
+   AND A.activeflag = 0
+;
+IF vl_court_removal_count > 0 THEN 
+    vs_court_removal_sw = 'Y';
+    vl_court_removal_id  = al_removal_id;
+ELSE
+    vs_court_removal_sw = 'N';
+    vl_court_removal_id = 0; 
+END IF; 
+   
+ -- Check Removal is attached to Court Order - END
+SELECT MIN(TCO.courtorderdatetime)
+      ,'Y' AS reasonable_efforts_sw
+  INTO v_repr_crt_dt,v_reasonable_efforts_sw
+FROM intakeservicerequestcourthearing TCH
+   ,intakeservicerequestcourtaction TCO
+WHERE TCO.intakeservicerequestcourthearingid = TCH.intakeservicerequestcourthearingid
+  AND TCO.fk_id::BIGINT = al_client_id
+--  AND TCH.caseid = v_intakeserviceid 
+  AND (CASE WHEN vs_court_removal_sw = 'Y' 
+   THEN TCO.removalid
+   ELSE 0
+  END
+   ) = vl_court_removal_id 
+  AND TCO.activeflag = 0
+  AND TCH.activeflag = 0
+  AND TCO.courtorderdatetime >= v_removal_dt
+  AND TCO.reasonableeffortsflag = 1 -- Reasonable efforts to prevent removal
+  AND V_REM_TYPE = 'CRT'
+;
+
+SELECT MIN(TCO.courtorderdatetime)
+      ,'Y' AS continue_contrary_sw
+  INTO v_ctw_crt_dt,v_continue_contrary_sw
+FROM intakeservicerequestcourthearing TCH
+   ,intakeservicerequestcourtaction TCO
+WHERE TCO.intakeservicerequestcourthearingid = TCH.intakeservicerequestcourthearingid
+  AND TCO.fk_id::BIGINT = al_client_id
+--  AND TCH.caseid = v_intakeserviceid
+  AND (CASE WHEN vs_court_removal_sw = 'Y' 
+   THEN TCO.removalid
+   ELSE 0
+  END
+   ) = vl_court_removal_id 
+  AND TCO.activeflag = 0
+  AND TCH.activeflag = 0
+  AND TCO.courtorderdatetime >= v_removal_dt
+  AND TCO.continuecontraryflag = 1 -- Contrary to Welfare
+  AND V_REM_TYPE = 'CRT'
+;
+--RAISE NOTICE 'Court Date %, V_REM_TYPE %, v_intakeserviceid %, vs_court_removal_sw %, vl_court_removal_id %, v_removal_dt %', v_repr_crt_dt, V_REM_TYPE, v_intakeserviceid, vs_court_removal_sw, vl_court_removal_id, v_removal_dt;
+SELECT MIN(TCO.courtorderdatetime)
+      ,'Y' AS vol_best_interest_sw
+  INTO v_vol_best_interest_dt,v_vol_best_interest_sw
+FROM intakeservicerequestcourthearing TCH
+   ,intakeservicerequestcourtaction TCO
+WHERE TCO.intakeservicerequestcourthearingid = TCH.intakeservicerequestcourthearingid
+  AND TCO.fk_id::BIGINT = al_client_id
+--  AND TCH.caseid = v_intakeserviceid
+  AND (CASE WHEN vs_court_removal_sw = 'Y' 
+   THEN TCO.removalid
+   ELSE 0
+  END
+   ) = vl_court_removal_id 
+  AND TCO.activeflag = 0
+  AND TCH.activeflag = 0
+  AND TCO.courtorderdatetime >= v_removal_dt
+  AND TCO.volbestinterestflag = 1 -- VPA Best Interest
+  AND V_REM_TYPE = 'VPA'
+;
+-- Inserting Initial determination
+INSERT INTO Temp_IVE_Periods (KEY_ID,SQNM_SW,START_DT,END_DT,removal_type)
+SELECT v_Row_Num,'I', v_removal_dt,NULL::date,vs_removal_type
+;
+-- Initial Court Entry Begin
+-- For Court Order Removal Type
+ --RAISE NOTICE 'crt_Dt: %, case_id: %', v_repr_crt_dt, v_intakeserviceid;
+ IF  (v_repr_crt_dt  > v_removal_dt + Interval '60 Days'
+   AND V_REM_TYPE = 'CRT')
+ THEN vd_court_order_dt = v_repr_crt_dt;
+ --RAISE NOTICE 'Reasonable Efforts Date %', v_repr_crt_dt;
+ END IF;
+ IF (v_ctw_crt_dt > v_removal_dt + Interval '60 Days'
+   AND V_REM_TYPE = 'CRT')
+ THEN 
+  IF v_ctw_crt_dt < v_repr_crt_dt THEN 
+   vd_court_order_dt = v_repr_crt_dt;
+  ELSE 
+   vd_court_order_dt = v_ctw_crt_dt;
+  END IF;
+ END IF;
+   v_date_diff = DATE(vd_court_order_dt) - DATE(v_removal_dt + Interval '60 Days'); -- 60 days
+-- For VPA Removal Type
+    IF (v_vol_best_interest_dt > v_removal_dt + Interval '180 Days'
+  AND V_REM_TYPE = 'VPA')
+   THEN
+      vd_court_order_dt = v_vol_best_interest_dt;
+   v_date_diff = DATE(vd_court_order_dt) - DATE(v_removal_dt + Interval '180 Days') ;-- 180 days
+--   Raise Notice 'date_diff %, vd_court_order_dt %, v_vol_best_interest_dt %', v_Date_diff, vd_court_order_dt, v_vol_best_interest_dt;
+ END IF;
+Raise Notice 'date_diff %, vd_court_order_dt %, v_vol_best_interest_dt %', v_Date_diff, vd_court_order_dt, v_vol_best_interest_dt;
+ INSERT INTO Temp_IVE_Periods (KEY_ID,SQNM_SW,CMPNT,START_DT,END_DT,num_of_days,reasonable_efforts_sw,continue_contrary_sw,vol_best_interest_sw)
+SELECT 2,'R1E1','CT',vd_court_order_dt,NULL::date,v_date_diff,v_reasonable_efforts_sw,v_continue_contrary_sw,v_vol_best_interest_sw
+WHERE vd_court_order_dt IS NOT NULL
+;
+-- Initial Court Entry End
+vd_start_dt = v_removal_dt; --date(date_trunc('month',vd_anniversary_dt));
+vd_end_dt = (date_trunc('month',vd_start_dt) + interval '1 year') - interval '1 day';
+v_Row_Num = v_Row_Num + 1;
+
+WHILE (current_date > vd_end_dt) LOOP
+INSERT INTO Temp_IVE_Periods (KEY_ID,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'R'||v_redet_cntr,vd_start_dt,vd_end_dt)
+;
+--vd_start_dt = Date_Trunc('Month',vd_start_dt) + interval '1 year';
+--vd_end_dt =   Date_Trunc('Month',vd_end_dt) + interval '1 year'- interval '1 day';
+FOR pl_rec IN
+
+SELECT PL.ENTRY_DT,PL.EXIT_DT
+  FROM tb_placement PL
+ WHERE PL.removal_id = al_removal_id
+   AND PL.delete_sw = 'N'
+   AND (PL.VOID_SW = 'N' OR PL.VOID_SW IS NULL)
+   AND PL.ENTRY_DT IS NOT NULL
+   AND (PL.ENTRY_DT BETWEEN vd_start_dt AND vd_end_dt
+ OR PL.EXIT_DT BETWEEN vd_start_dt AND vd_end_dt
+    )
+ORDER BY 1,2
+LOOP
+  vd_pl_entry_dt = pl_rec.ENTRY_DT;
+  vd_pl_exit_dt = pl_rec.EXIT_DT;
+IF vd_pl_entry_dt  BETWEEN vd_start_dt AND vd_end_dt
+ AND vd_pl_exit_dt BETWEEN vd_start_dt AND vd_end_dt
+THEN 
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'PL','R'||v_redet_cntr||'E'||v_pl_cntr,vd_pl_entry_dt,vd_pl_exit_dt)
+;
+ELSIF vd_pl_entry_dt BETWEEN vd_start_dt AND vd_end_dt
+ AND vd_pl_exit_dt NOT BETWEEN vd_start_dt AND vd_end_dt
+THEN
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'PL','R'||v_redet_cntr||'E'||v_pl_cntr,vd_pl_entry_dt,vd_end_dt)
+;
+ELSIF vd_pl_entry_dt NOT BETWEEN vd_start_dt AND vd_end_dt
+ AND vd_pl_exit_dt BETWEEN vd_start_dt AND vd_end_dt
+THEN
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'PL','R'||v_redet_cntr||'E'||v_pl_cntr,vd_start_dt,vd_pl_exit_dt)
+;
+END IF;
+v_pl_cntr = v_pl_cntr + 1;
+END LOOP; -- End of placement logic
+-- Court event logic Begins
+ FOR ct_rec IN
+    SELECT TCO.courtorderdatetime AS COURT_ORDER_DT
+        ,CASE WHEN volbestinterestflag = 1 THEN 'Y' END AS vol_best_interest_sw
+     ,CASE WHEN planreasonableflag = 1 THEN 'Y' END AS plan_reasonable_sw
+       FROM intakeservicerequestcourthearing TCH
+     ,intakeservicerequestcourtaction TCO
+  WHERE TCO.intakeservicerequestcourthearingid = TCH.intakeservicerequestcourthearingid
+   AND TCO.fk_id::BIGINT = al_client_id
+--   AND TCH.caseid = v_intakeserviceid
+   AND (CASE WHEN vs_court_removal_sw = 'Y' 
+    THEN TCO.removalid
+    ELSE 0
+   END
+    ) = vl_court_removal_id 
+   AND TCO.activeflag = 0
+   AND TCH.activeflag = 0
+   AND TCO.courtorderdatetime BETWEEN vd_start_dt AND vd_end_dt
+   AND ((TCO.volbestinterestflag = 1  -- VPA Best Interest
+   AND v_rem_Type = 'VPA' AND TCO.courtorderdatetime > v_vol_best_interest_dt
+     )
+   OR (TCO.planreasonableflag = 1    -- Reasonable efforts for Permanency
+   AND v_rem_Type = 'CRT'
+   )
+    )
+  ORDER BY 1
+   LOOP  
+     vd_court_order_dt = ct_rec.COURT_ORDER_DT;
+  IF vd_prev_court_order_dt IS NULL THEN
+     IF v_rem_Type = 'CRT' THEN
+    vd_prev_court_order_dt = v_removal_dt + interval '60 days';
+  ELSIF v_rem_Type = 'VPA' THEN
+    vd_prev_court_order_dt = v_removal_dt;
+  END IF;
+  END IF;
+     v_Date_diff = 0;
+     v_date_diff = DATE(vd_court_order_dt) - DATE(vd_prev_court_order_dt);
+   IF v_date_diff > 365 THEN 
+     INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT,num_of_days,vol_best_interest_sw,plan_reasonable_sw 
+         )
+      VALUES (v_Row_Num,'CT','R'||v_redet_cntr||'E'||v_ct_cntr,vd_court_order_dt,NULL,v_date_diff
+     ,ct_rec.vol_best_interest_sw,ct_rec.plan_reasonable_sw 
+          )
+ ;
+     
+    v_ct_cntr = v_ct_cntr +1;
+ END IF;
+ vd_prev_court_order_dt = vd_court_order_dt;
+  END LOOP; -- End of Court related logic
+ 
+  -- Loop for Living Arrangement begins
+    FOR lv_rec IN
+ SELECT LA.livingstartdate,LA.livingenddate
+  FROM livingarrangement LA
+   JOIN livingarrangementtype LAT
+   ON LA.livingarrangementtypekey = LAT.livingarrangementtypekey
+ WHERE LA.personid = v_personid
+ AND LA.activeflag = 0
+ AND LAT.livingarrangementtypekey <> '32944'
+ --AND LA.placementid IS NULL
+ AND LA.livingstartdate >= v_removal_dt
+    AND (LA.livingstartdate BETWEEN vd_start_dt AND vd_end_dt
+      OR LA.livingenddate BETWEEN vd_start_dt AND vd_end_dt
+     )
+ORDER BY 1,2
+LOOP
+  vd_lv_start_dt = lv_rec.livingstartdate;
+  vd_lv_end_dt = lv_rec.livingenddate;
+IF vd_lv_start_dt  BETWEEN vd_start_dt AND vd_end_dt
+ AND vd_lv_end_dt BETWEEN vd_start_dt AND vd_end_dt
+THEN 
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'LV','R'||v_redet_cntr||'E'||v_lv_cntr,vd_lv_start_dt,vd_lv_end_dt)
+;
+ELSIF vd_lv_start_dt BETWEEN vd_start_dt AND vd_end_dt
+ AND vd_lv_end_dt NOT BETWEEN vd_start_dt AND vd_end_dt
+THEN
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'PL','R'||v_redet_cntr||'E'||v_lv_cntr,vd_lv_start_dt,vd_end_dt)
+;
+ELSIF vd_lv_start_dt NOT BETWEEN vd_start_dt AND vd_end_dt
+ AND vd_lv_end_dt BETWEEN vd_start_dt AND vd_end_dt
+THEN
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+VALUES (v_Row_Num,'PL','R'||v_redet_cntr||'E'||v_lv_cntr,vd_start_dt,vd_lv_end_dt)
+;
+END IF;
+v_lv_cntr = v_lv_cntr + 1;
+END LOOP;
+  -- Loop for Living Arrangement ends
+ 
+vd_start_dt = date_trunc('month',vd_start_dt) + interval '1 year';
+vd_end_dt =   vd_end_dt + interval '1 year';
+IF v_return_dt <= vd_end_dt THEN
+ vd_end_dt = v_return_dt;
+END IF;
+v_Row_Num = v_Row_Num+1;
+v_redet_cntr = v_redet_cntr+1;
+v_pl_cntr = 1;
+v_lv_cntr = 1;
+v_ct_cntr = 2;
+END LOOP;   -- End of removal logic
+ -- 18th/21st Birthday
+IF (vd_18th_bday < CURRENT_DATE) THEN
+v_Row_Num = (select MAX(A.key_id)+1 FROM Temp_IVE_Periods A);
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+SELECT DISTINCT v_Row_Num,'DM','18BDAY',vd_18th_bday,NULL::date
+;
+END IF;
+IF (vd_21st_bday < CURRENT_DATE) THEN
+v_Row_Num = (select MAX(A.key_id)+1 FROM Temp_IVE_Periods A);
+INSERT INTO Temp_IVE_Periods(KEY_ID,CMPNT,SQNM_SW,START_DT,END_DT)
+
+SELECT DISTINCT v_Row_Num,'DM','21BDAY',vd_21st_bday,NULL::date
+;
+END IF;
+
+RETURN QUERY 
+SELECT 
+ A.KEY_ID ,     
+ A.SQNM_SW ,    
+ A.CMPNT  ,   
+ date(A.START_DT) AS START_DT  ,   
+ date(A.END_DT) AS END_DT,    
+A.num_of_days ,   
+A.reasonable_efforts_sw, 
+ A.continue_contrary_sw, 
+ A.vol_best_interest_sw, 
+A.plan_reasonable_sw,  
+vd_removal_type_cd   
+FROM Temp_IVE_Periods A
+ORDER BY A.key_id, A.START_DT
+;
+DROP TABLE Temp_IVE_Periods
+;
+EXCEPTION WHEN OTHERS THEN
+RAISE NOTICE '% %', SQLSTATE, SQLERRM; 
+   END
+    $function$
+

@@ -1,0 +1,1 @@
+alter table intakeservicerequest ADD reporterphonenumberext VARCHAR(10);

@@ -1,0 +1,1 @@
+update permanencyplan set enddate = null, updatedby = 'CDM-25724', updatedon = now()  where permanencyplanid = '81fcddcf-af8a-4507-8364-2311253bd209';

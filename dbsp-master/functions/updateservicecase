@@ -1,0 +1,68 @@
+CREATE OR REPLACE FUNCTION updateservicecase(v_objectid uuid, v_securityusersid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$      
+
+DECLARE v_intakeserviceid uuid;
+ l_servicecaseid uuid;
+ l_response text;
+ l_count bigint;
+ l_exitdate timestamp without time zone;
+ l_record RECORD;
+
+ BEGIN
+ CREATE TEMP TABLE IF NOT EXISTS
+ Temp_insert_person_program_area (
+ personprogramid uuid
+ );
+
+    SELECT intakeserviceid, exitdate INTO v_intakeserviceid,l_exitdate FROM intakeservreqchildremoval 
+    WHERE intakeservreqchildremovalid =v_objectid;
+    IF (v_intakeserviceid IS NOT NULL ) THEN
+       UPDATE servicecase SET statustypekey ='OPEN',
+        updatedby = v_securityusersid,
+        updatedon = now() at time zone  'utc'
+        WHERE statustypekey IS NULL 
+        AND servicecaseid IN (SELECT servicecaseid FROM intakeservicerequest 
+                            WHERE intakeserviceid = v_intakeserviceid );
+       
+  SELECT servicecaseid INTO l_servicecaseid FROM  intakeservicerequest WHERE intakeserviceid = v_intakeserviceid;
+     END IF;
+
+ SELECT count(1) INTO l_count FROM routing WHERE eventcode ='SRVC' AND routingstatustypeid =2 AND routing.activeflag =1 AND routing.objectid =l_servicecaseid::character varying;
+ IF  (COALESCE(l_count,0) >0 ) THEN 
+  UPDATE routing SET  tosecurityusersid =v_securityusersid,
+       updatedby = v_securityusersid,
+       updatedon = now() at time zone  'utc'
+  WHERE eventcode ='SRVC' AND activeflag =1  AND routingstatustypeid =2 AND routing.objectid =l_servicecaseid::character varying;
+ ELSE
+  SELECT routingintake INTO l_response 
+        FROM routingintake(
+            l_servicecaseid:: character varying ,v_securityusersid,'SRVC',2,'Servicecase Created',v_securityusersid,
+            true,false,false, 'Servicecase Created','Servicecase Created', 
+            l_servicecaseid:: character varying,'' , 1);
+ END IF;
+
+ /*UPDATE PROGRAM AREA ACTIVEFLAG TO 1 AFTER SUPERVISOR APPROVAL*/
+ UPDATE personprogramarea SET activeflag=1 WHERE activeflag=2 AND objectid = l_servicecaseid:: character varying;
+
+ IF (l_exitdate IS NULL) THEN
+  WITH temp_ids AS (UPDATE personprogramarea SET startdate = now()::date, updatedby = v_securityusersid, updatedon = now() WHERE activeflag =1 AND enddate IS NULL AND lower(COALESCE(programkey,'')) <> 'ooh' AND objectid =l_servicecaseid:: character varying
+  RETURNING personprogramid)
+  INSERT INTO Temp_insert_person_program_area SELECT personprogramid from temp_ids;
+
+  FOR l_record IN (select * from Temp_insert_person_program_area)
+  LOOP
+  INSERT INTO auditlog(referenceid, logtypekey, description, metadata, insertedon, insertedby)
+  VALUES(l_record.personprogramid,'PRGMAREA','systemupdate11',
+     (SELECT row_to_json(personprogramarea) FROM personprogramarea WHERE personprogramid = l_record.personprogramid), now(), v_securityusersid);
+  END LOOP;
+
+  DROP TABLE Temp_insert_person_program_area;
+
+ END IF;
+
+    RETURN 'SUCCESS';
+END;
+ $function$
+

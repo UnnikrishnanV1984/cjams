@@ -1,0 +1,80 @@
+CREATE OR REPLACE FUNCTION cjams.getintaketransferlistbyintakeid(v_intakenumber character varying, pagenumber bigint, pagesize bigint)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$   
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 04/06/2022 
+
+-- Stored Procedure to get the Intake Transfer data (B-128967/CIDM-4372)
+
+-- Revision(s)
+------------------------------------------------------------------------     
+DECLARE   
+v_pageoffset  int;  
+v_pagenumber  int;  
+l_intaketransferlist json;
+
+BEGIN     
+	v_pagenumber := pagenumber - 1;
+	v_pageoffset := v_pagenumber * pagesize;
+     
+	select json_agg(e) 
+		into l_intaketransferlist 
+	from (	select intf.intaketransferid,
+				intf.intakenumber,
+				intf.transferdate,
+				intf.sendingcountyid,
+				(	select c.countyname 
+						from county c 
+					where c.countyid = intf.sendingcountyid
+				) as sendingcountyname,
+				intf.receivingcountyid,
+				(	select c.countyname 
+						from county c 
+					where c.countyid = intf.receivingcountyid
+				) as receivingcountyname,
+				intf.requestedby as requestoridrequestorid,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.requestedby::character varying 
+						and up.activeflag=1 
+				) as requestorname,
+				intf.approvedby as approverid,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.approvedby::character varying 
+						and up.activeflag=1 
+				) as approvername,
+				intf.receivingcountysupervisor as receivingcountysupid,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.receivingcountysupervisor::character varying 
+						and up.activeflag=1 
+				) as receivingcountysupname,
+				intf.receivingcountyworker,
+				(	select up.firstname || ' ' || up.lastname 
+						from userprofile up 
+					 where up.securityusersid = intf.receivingcountyworker::character varying 
+						and up.activeflag=1 
+				) as receivingcountyworkername,
+				intf.transferreason,
+				intf.rejectionreason,
+				intf.approvalstatus,
+				intf.approvedon
+			from cjams.intaketransfers intf
+			where intf.intakenumber::character varying = v_intakenumber
+				and intf.activeflag = 1
+			order by intf.insertedon desc
+			limit pagesize offset v_pageoffset 
+		)e ;
+	 
+		RETURN coalesce(l_intaketransferlist, '[]')::json;
+END;
+
+$function$
+;
+
+

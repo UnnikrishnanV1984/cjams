@@ -1,0 +1,1 @@
+update cjams.routing set activeflag = 0 where objectid in ('I202000561944', 'I202000362362', 'I2020005622647', 'I2020005622880', 'I202000561913', 'I202000161271', 'I202000562681') and routingstatustypeid = 1 and eventcode = 'INTR';

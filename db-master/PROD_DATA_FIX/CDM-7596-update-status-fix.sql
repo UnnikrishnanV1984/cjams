@@ -1,0 +1,1 @@
+update routing set routingstatustypeid = 8 where objectid = 'CW10177625' and routingid = 'a9a4f1cf-7a12-49ed-9a70-57ca4a836a31';

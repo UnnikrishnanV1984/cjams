@@ -1,0 +1,112 @@
+CREATE OR REPLACE FUNCTION f_prim_county(ai_entity1_id bigint, as_entity1_type character varying, ai_entity2_id bigint, as_entity2_type character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Description: To get primary responsible county of the case
+
+-- Revisions:
+-- Vineet Tirodkar 09/18/2020 Changes for Adult Services Cases
+-- Tanmay M (03/08/2021): A new overloaded version created with a third parameter
+------------------------------------------------------------------------------------------------
+DECLARE
+ v_intakeserviceid uuid;
+ v_case_id uuid;  
+ v_teamtypekey character varying;
+    v_case_count bigint;
+
+ v_result character varying;
+    
+BEGIN
+
+ if (coalesce(ai_entity2_id :: character varying,'') = '' OR coalesce(as_entity2_type :: character varying,'') = '') then
+ RAISE NOTICE 'ai_entity2_id %',ai_entity2_id;
+ 
+  v_result := null;
+
+ elsif (lower(ltrim(rtrim(as_entity2_type))) = 'client' and coalesce(ai_entity2_id :: character varying,'') <> '') then
+
+  if UPPER(ltrim(rtrim(as_entity1_type))) = 'NULL' then
+   --check for sevicecase
+   select sc.servicecaseid 
+    into v_case_id 
+   from servicecase sc 
+   where sc.servicecasenumber = ai_entity1_id::character varying;
+   
+   --if servicecase in not available, check for adoptioncase
+   if (coalesce(v_case_id :: character varying,'') = '' ) then
+    select ad.adoptioncaseid 
+     into v_case_id 
+    from adoptioncase ad 
+    where ad.adoptioncasenumber = ai_entity1_id::character varying;
+   end if;
+  end if;
+
+  RAISE NOTICE 'v_case_id %',v_case_id;
+
+  --ai_entity1_id has to be bigint for the below logic to work
+  if (coalesce(v_case_id :: character varying,'') = '' ) then
+   select count(1) 
+    into v_case_count 
+   from intakeservicerequest ins
+   where ins.servicerequestnumber = ai_entity1_id::character varying;
+
+   if(v_case_count > 0) then
+    select ins.servicecaseid, 
+      ins.intakeserviceid, 
+      ins.teamtypekey
+     into v_case_id, 
+      v_intakeserviceid,
+      v_teamtypekey     
+    from intakeservicerequest ins
+      where ins.servicerequestnumber = ai_entity1_id::character varying;
+   end if;
+   
+   if(coalesce(v_case_id :: character varying, '') = '' ) then 
+    v_case_id := v_intakeserviceid ;
+   end if;
+   
+  end if;
+
+  if coalesce(v_teamtypekey, '')  = '' then
+   v_teamtypekey = '';
+  end if;
+
+  RAISE NOTICE 'v_teamtypekey %',v_teamtypekey;
+
+
+  if btrim(v_teamtypekey) = 'AS' then
+
+   v_result := null;
+  else
+
+   select c.statecountycode into v_result
+   from caseassignment ca  
+       join caseassignmentactor cr on cr.caseassignmentid = ca.caseassignmentid 
+        and cr.activeflag  = 1
+       join intakeservicerequestactor isr on isr.intakeservicerequestactorid  = cr.intakeservicerequestactorid 
+        and isr.activeflag = 1
+    join county c on c.countyid:: character varying = ca.toldssid::character varying
+   where ca.objectid = v_case_id
+    and lower(ca.responsibilitytypekey) = 'child'
+    and ca.activeflag = 1
+    and ca.enddate is null
+    and isr.personid = (select personid from person where cjamspid = ai_entity2_id)
+   order by ca.insertedon desc
+   limit 1;
+  end if;
+
+ end if; 
+
+ if (btrim(coalesce(v_result :: character varying,'')) = '') then
+  select f_prim_county from f_prim_county(ai_entity1_id, as_entity1_type) into v_result;
+   
+ end if;
+
+ return v_result;
+ 
+END;
+
+$function$
+

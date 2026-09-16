@@ -1,0 +1,2 @@
+update cjams.ProgressNote set activeflag = 0, updatedon = now(), updatedby = 'CDM-18801'
+where progressnoteid in ('b3c4cd52-d926-4180-a90e-f532dced05d7','0e2aaac1-1691-4a36-b3fd-065fa8b0859f','3035b2fc-193d-415a-9ae5-3dd6f305bc31');

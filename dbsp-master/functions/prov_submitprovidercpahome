@@ -1,0 +1,110 @@
+CREATE OR REPLACE FUNCTION prov_submitprovidercpahome(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_prgstatus character varying;
+v_objectid character varying;
+v_subject character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_tousersid json;
+v_eventcode character varying;
+v_phase character varying;
+v_sign json;
+v_appstatus character varying;
+response json;
+v_type character varying;
+v_username CHARACTER VARYING;
+v_appstatustext CHARACTER VARYING;
+v_objectname CHARACTER VARYING;
+v_end_dt character varying;
+v_start_dt character varying;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_appstatus := objectls->>'status';
+v_username := objectls->>'username';
+v_objectname := objectls->>'objectname';
+v_objectid := objectls->>'objectid';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_phase := objectls->>'phase';
+v_sign := objectls->>'signature';
+
+---------------
+if v_eventcode = 'CPAHOME'
+then
+   v_type = 'CPA Home';
+else 
+   v_type = '';
+end if;
+---------------
+if v_appstatus = 'Incomplete'
+then
+   v_appstatustext = 'Saved as Draft';
+else 
+   if v_appstatus = 'Approved'
+   then
+      v_appstatustext = 'Approved';
+   end if;
+ 
+   if v_appstatus = 'Close'
+   then
+      v_appstatustext = 'Closed CPA Home';
+   end if;
+end if;
+
+
+v_subject := v_type||' "'||v_objectname||'" '|| v_appstatustext||' by ' ||v_username ;
+
+if(v_appstatus = 'Close') then 
+   v_end_dt = objectls->>'closure_date';   
+else 
+   v_end_dt = null;   
+end if;
+if(v_appstatus = 'Approved') then 
+   v_start_dt = objectls->>'closure_date'; 
+else
+   v_start_dt = null;
+end if;
+
+-- select json_agg(x)::json  into response from 
+--    (select mu.securityusersid as securityusersid 
+--    from team t 
+--    join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+--    join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 
+--    join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+--  join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+--    join role r on r.id = rm.roleid :: int and r.activeflag =1
+--  where  r.name in ('SSA_CONTRACT_PM','SSA_CONTRACT_ADM_SUP','SSA_CONTRACT_EXE') and mu.securityusersid != v_fromsecurityuserid
+--    ) as x ; 
+
+-- if v_appstatustext = 'Returned to worker' then
+--    response := (objectls->>'tosecurityusersid')::json;
+-- end if;
+
+   INSERT INTO tb_provider_decision
+      (decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+      toroleid,tosecurityusersid, signature)
+      VALUES(gen_random_uuid(),objectls->>'eventcode', v_fromsecurityuserid, objectls->>'fromroleid', v_objectid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+      now(), false, objectls->>'remarks', v_appstatus,  now(),null,null,  v_sign);
+
+
+   INSERT INTO cpastatusmanagement
+      (cpa_status_management_id, object_id, narrative, cpa_status,start_dt, end_dt, create_ts, create_user_id, update_ts, update_user_id, delete_sw)
+      VALUES(gen_random_uuid(), v_objectid, objectls->>'remarks',v_appstatustext,v_start_dt, v_end_dt , now(), v_fromsecurityuserid, now(), v_fromsecurityuserid, 'N');
+      
+
+--  FOR v_tousersid in select * from json_array_elements(response)
+--  loop
+--       SELECT prov_send_notification into v_success
+--       FROM  prov_send_notification(v_tousersid->>'securityusersid', v_fromsecurityuserid, v_tousersid->>'securityusersid', 'System', 'High', v_subject, v_subject, v_objectid,  false, false);
+--    end loop;
+
+RETURN response;
+end;
+$function$
+

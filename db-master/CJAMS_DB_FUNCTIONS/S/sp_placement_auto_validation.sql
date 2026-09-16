@@ -1,0 +1,954 @@
+Drop function if exists cjams.sp_placement_auto_validation(bigint, date, date, date, date, character, character);
+
+CREATE OR REPLACE FUNCTION cjams.sp_placement_auto_validation(al_placement_id bigint, ad_placement_entry_dt date, ad_placement_exit_dt date, ad_validation_start_dt date, ad_validation_end_dt date, as_first_call character, as_update_sw character, OUT as_auto_valid_success_sw character, OUT as_auto_valid_errors character varying, OUT as_first_call_errors character varying, OUT al_sqlcode integer, OUT as_error character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+----------------------------------------------------------------------------------------------
+-- Author          : Vineet Tirodkar
+-- Date            : 06/11/2015
+-- Description     : Stored Procedure to auto validate all impacted placement validation records 
+--					 due to retroactive placement date changes 
+
+-- Request #       : PRJ-04753 - Phase I of the 2014 MD CHESSIE Fiscal-Related Enhancements (BDSD Req # 6.16)
+-- Argument(s):
+-- 1) IN al_placement_id (Primary Key of TB_PLACEMENT)
+-- 2) IN ad_placement_entry_dt (Placement Entry Date)
+-- 3) IN ad_placement_exit_dt (Placement Exit Date)
+-- 4) IN ad_validation_start_dt (Placement Validation Start Date) 
+-- 5) IN ad_validation_end_dt (Placement Validation End Date) 
+-- 6) IN as_first_call (Indicator (Y/N) used for those edits which are required to be verified only once per placement)
+-- 7) IN as_update_sw (Indicator (Y/N) used for those edits which are required only with final call)
+-- 8) OUT as_auto_valid_success_sw (Y/N Indicator for Auto-validation success or failure)
+-- 9) OUT as_auto_valid_errors (Reason(s) preventing the placement Auto-validation) 
+-- 10) OUT al_sqlcode (SQL code for error handling)
+-- 11) OUT as_error (SQL error description for error handling) 
+														
+-- Revision:
+-- 01/28/2022 Vineet Tirodkar - To add validation rules for # 525 CfE Placement (CIDM-4204/B-123939)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+-- 10/04/2023 - Vineet Tirodkar - Modifications CfE Differential Board Rates Extension (CIDM-8046/B-178498)
+-- 11/18/2024 - Vineet Tirodkar - To add validation for new Kinship Paid & existing Restricted (Relative) Foster Care Placement structures (B-207876 / CIDM-9688)
+----------------------------------------------------------------------------------------------
+--P1: BEGIN
+DECLARE SQLCODE                 INT     DEFAULT 0;
+DECLARE SQLSTATE                CHAR(5) DEFAULT '00000';
+--DECLARE p_sp_error CONDITION    FOR     SQLSTATE '99999';
+ p_sp_error CHAR(5);--
+DECLARE vs_message_text         VARCHAR(3000) DEFAULT '';
+DECLARE vl_ret_status           INTEGER DEFAULT 0;
+DECLARE vs_Procedure_nm         VARCHAR(100) DEFAULT 'SP_PLACEMENT_AUTO_VALIDATION';
+
+DECLARE vs_user_id 				VARCHAR(10) DEFAULT 'finance';
+DECLARE vs_provider_nm			VARCHAR(200);	
+DECLARE vs_prov_checklist		VARCHAR(250);
+DECLARE vs_xml_args 			VARCHAR(2000);
+DECLARE vs_results 				VARCHAR(2000);
+DECLARE vs_license_check_failed CHAR(1);
+DECLARE vs_output				VARCHAR(100);	
+DECLARE vs_tag_value			VARCHAR(100);	
+DECLARE vs_msgtx				VARCHAR(100);	
+DECLARE vs_license_msg 			VARCHAR(2000);
+DECLARE vs_ha_app_status_cd		VARCHAR(5);	
+DECLARE vs_ha_revoke_app_status_cd		VARCHAR(5);	
+DECLARE vs_provider_category	VARCHAR(5);			
+DECLARE vs_ifc_success_sw		CHAR(1);	
+DECLARE vs_tfc_ifc_conversion_sw		CHAR(1);	
+DECLARE vs_service_start_dt		VARCHAR(10);
+DECLARE vs_service_end_dt		VARCHAR(10);
+DECLARE vs_placement_exit_dt	VARCHAR(10);
+
+DECLARE vl_case_id				BIGINT;
+DECLARE vl_client_id			BIGINT;
+DECLARE vl_provider_id			BIGINT;
+DECLARE vl_plc_strucure_id		BIGINT;
+DECLARE vl_rate_strucure_id		BIGINT;
+DECLARE vl_contract_program_id	BIGINT;
+DECLARE vl_prog_rate_id			BIGINT;
+DECLARE vl_outcode				INTEGER;
+DECLARE vl_client_age			INTEGER;
+DECLARE vl_msg_id1				INTEGER;
+DECLARE vl_msg_id2				INTEGER;
+DECLARE vl_msg_id3				INTEGER;
+DECLARE vl_msg_id4				INTEGER;
+DECLARE vl_efc_days				INTEGER;
+DECLARE vl_add_count			INTEGER;
+DECLARE vl_add_ret				INTEGER;
+DECLARE vl_month				INTEGER;
+DECLARE vl_year					INTEGER;
+DECLARE vl_ssa_app_cnt			INTEGER;
+	
+DECLARE vd_dob_dt				DATE;
+DECLARE vd_service_start_dt		DATE;
+DECLARE vd_service_end_dt		DATE;
+DECLARE vd_ha_revoke_dt	 		DATE;
+DECLARE vd_adr_start_dt	 		DATE;
+DECLARE vd_adr_end_dt	 		DATE;
+DECLARE vd_adr_last_end_dt 		DATE;
+DECLARE vd_16bday				DATE;
+DECLARE vd_21bday				DATE;
+DECLARE vd_4bday				DATE;
+DECLARE vd_18bday				DATE;
+
+DECLARE vd_cfe_diff_start_date 	DATE;
+DECLARE	vs_cfe_diff_start_date  character varying;
+DECLARE	vd_cfe_diff_end_date 	DATE;
+DECLARE	vs_cfe_diff_end_date    character varying;
+
+DECLARE vd_restricted_end_dt	DATE;
+DECLARE vd_kinship_start_dt		DATE;
+
+Cur_locn_add_slabs record;
+Cur_locn_add_slabs_refcur REFCURSOR;
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text = MESSAGE_TEXT;
+   begin
+	EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+   	GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+     al_sqlcode := -1 ;
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP) ||'::' || vs_Procedure_nm || '.' ;
+     as_error := COALESCE(as_error ,'') || '::RO ' || 'Placement ID' || ' :: ' || COALESCE((al_placement_id)::character varying,'');
+	 as_error := COALESCE(as_error ,'') || '::RO ' || 'Placement Validation Start Date' || ' :: ' || COALESCE(to_char(ad_validation_start_dt, 'mm/dd/yyy'),'');
+	 as_error := COALESCE(as_error ,'') || '::RO ' || 'Placement Validation End Date' || ' :: ' || COALESCE(to_char(ad_validation_end_dt, 'mm/dd/yyy'),'');
+	 as_error = as_error || COALESCE(vs_message_text ,'');
+	
+	SELECT cjams.SP_BATCH_ERROR_LOG (vs_Procedure_nm,
+                                     NULL,  
+                                     NULL,
+                                     NULL,
+                                     NULL,
+                                     NULL,
+                                     SQLCODE,
+                                     as_error,
+                                     vs_user_id,
+                                     vl_ret_status);
+     as_error := '';
+END;
+
+as_error := '';
+ as_auto_valid_success_sw := 'Y';
+ as_auto_valid_errors := '';
+ as_first_call_errors := '';
+
+-- Set Service Start & End dates for calculations
+IF ad_placement_entry_dt <= ad_validation_start_dt THEN
+	 vd_service_start_dt := ad_validation_start_dt;	
+ELSE
+	 vd_service_start_dt := ad_placement_entry_dt;	
+END IF;
+
+IF ad_placement_exit_dt >= ad_validation_end_dt OR ad_placement_exit_dt is NULL THEN
+	 vd_service_end_dt := ad_validation_end_dt;	
+ELSE
+	 vd_service_end_dt := ad_placement_exit_dt;	
+END IF;
+
+-- Get Placement Details - START
+SELECT CASE_ID,
+		CLIENT_ID,
+		PROVIDER_ID,
+		RTRIM(LTRIM(F_ENAME('2953', PROVIDER_ID))) AS PROVIDER_NAME,
+		F_PRVPCKLST_CAT(PROVIDER_ID,'PLACEMENT') AS PROVIDER_CATEGORY,
+		CONTRACT_PROGRAM_ID,
+		PLACEMENT_STRUCTURE_ID,
+		RATE_STRUCTURE_ID,
+		COALESCE(TFC_IFC_CONVERSION_SW,'N') AS TFC_IFC_CONVERSION_SW
+	INTO vl_case_id,
+		vl_client_id,
+		vl_provider_id,
+		vs_provider_nm,
+		vs_provider_category,
+		vl_contract_program_id,
+		vl_plc_strucure_id,
+		vl_rate_strucure_id,
+		vs_tfc_ifc_conversion_sw
+	FROM TB_PLACEMENT
+WHERE PLACEMENT_ID = al_placement_id
+	AND DELETE_SW = 'N';
+
+ al_sqlcode := SQLCODE;
+IF al_sqlcode < 0 THEN
+	 as_error := 'Error in getting Placement details for PLACEMENT_ID : ' || LTRIM(RTRIM((al_placement_id)::character varying));
+	--SIGNAL p_sp_error;
+END IF ;
+
+IF vl_contract_program_id IS NULL THEN
+	 vl_contract_program_id := 0;
+END IF;	
+-- Get Placement Details - START
+
+-- Get Client Details - START
+-- Calculate Age as of Service End Date
+SELECT dob,
+      -- date_part('day',AGE(dob, vd_service_end_dt)) :: integer
+	  -- VINEET 05/06/2020
+	  f_age(dob::DATE, vd_service_end_dt):: integer
+	INTO vd_dob_dt,
+		 vl_client_age
+FROM person
+WHERE cjamspid = vl_client_id
+	AND activeflag = 1 ;
+	
+ al_sqlcode := SQLCODE;
+IF al_sqlcode < 0 THEN
+	 as_error := 'Error in getting Client Details for CLIENT_ID : ' || LTRIM(RTRIM((vl_client_id)::character varying));
+	--SIGNAL p_sp_error;
+END IF ;
+
+IF vl_client_age is NULL THEN 
+	 vl_client_age := 0;
+END IF;	
+-- Get Client Details - END
+
+-- Placement Validation Edits - START
+-- Common Edits - START
+-- This edit is for the Provider; not required to call for each service month.
+raise notice 'SP_FINANCIAL_EDITS>>>>>>>>>. as_first_call >>>>>>> %',as_first_call;
+IF as_first_call = 'Y' THEN 
+	-- Provider Checklist  
+	/*CALL SP_FINANCIAL_EDITS ( vl_provider_id,
+									  vs_user_id,
+									  as_update_sw,	-- Tickler Activity
+									  vl_outcode);*/
+		raise notice 'beofre SP_FINANCIAL_EDITS >>>> vl_provider_id>>>>>> %',vl_provider_id;			  
+	SELECT SP_FINANCIAL_EDITS ( vl_provider_id,
+									  vs_user_id,
+									  as_update_sw) into	-- Tickler Activity
+									  vl_outcode;									  
+								  
+	-- Provider is missing one or more item from financial edit checklist
+	
+	IF vl_outcode = -1 THEN
+		SELECT SUBSTR(
+--			DECODE(COALESCE(PROVIDER_CATEGORY_SW,''), 'Y', '', ', ' || 'Provider Category' )
+--			||
+--			DECODE(COALESCE(TAX_ID_TYPE_SW,''), 'Y', '', ', ' || 'Tax ID Type (missing or invalid as N/A-Affiliate Tax ID)' )
+--			|| 
+--			DECODE(COALESCE(TAX_ID_SW,''), 'Y', '', ', ' || 'SSN/Tax ID (missing/invalid)' )
+--			||
+--			DECODE(COALESCE(MAIL_CODE_SW,''), 'Y', '', ', ' || 'Mail Code' )
+--			||
+--			DECODE(COALESCE(INDICATOR_1099_SW,''), 'Y', '', ', ' || '1099 Indicator' )
+--			||
+--			DECODE(COALESCE(SEND_PAYMENT_TO_SW,''), 'Y', '', ', ' || 'Send Payment To' )
+--			||
+--			DECODE(COALESCE(LOCAL_DEPARTMENT_SW,''), 'Y', '', ', ' || 'Local Department' )
+--			||
+--			DECODE(COALESCE(RESOURCE_WORKER_SW,''), 'Y', '', ', ' || 'Resource Worker' )
+--			||
+--			DECODE(COALESCE(LOCN_ADR_SW,''), 'Y', '', ', ' || 'Location Address' )
+--			||
+--			DECODE(COALESCE(PAY_ADR_SW,''), 'Y', '', ', ' || 'Payment Address' )
+
+	   case when COALESCE(PROVIDER_CATEGORY_SW,'') = 'Y' then '' else ','||'Provider Category'  end ||
+       case when COALESCE(TAX_ID_TYPE_SW,'') = 'Y' then '' else ','||'Tax ID Type (missing or invalid as N/A-Affiliate Tax ID)'  end ||
+       case when COALESCE(TAX_ID_SW,'') = 'Y' then '' else ','||'SSN/Tax ID (missing/invalid)' end ||
+       case when COALESCE(MAIL_CODE_SW,'') = 'Y' then '' else ','||'Mail Code'  end ||
+       case when COALESCE(INDICATOR_1099_SW,'') = 'Y' then '' else ','||'1099 Indicator'  end ||
+       case when COALESCE(SEND_PAYMENT_TO_SW,'') = 'Y' then '' else ','||'Send Payment To'  end ||
+       case when COALESCE(LOCAL_DEPARTMENT_SW,'') = 'Y' then '' else ','||'Local Department'  end ||
+       case when COALESCE(RESOURCE_WORKER_SW,'') = 'Y' then '' else ','||'Resource Worker'  end ||
+       case when COALESCE(LOCN_ADR_SW,'') = 'Y' then '' else ','||'Location Address'  end ||
+       case when COALESCE(PAY_ADR_SW,'') = 'Y' then '' else ','||'Payment Address'  end 
+			,2)
+		INTO vs_prov_checklist
+			FROM TB_PROVIDER_DETAILS_CHECKLIST
+		WHERE PROVIDER_ID = vl_provider_id
+			AND DELETE_SW = 'N';
+		
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_first_call_errors)) <> '' THEN
+			 as_first_call_errors := as_first_call_errors || ' ' || CHR(13) || 'The Provider is missing ' || vs_prov_checklist || '.';
+		ELSE
+			 as_first_call_errors := 'The Provider is missing ' || vs_prov_checklist || '.';		
+		END IF;	
+	END IF;								  
+	
+	-- Client DOB missing Check 	
+	IF vd_dob_dt IS NULL THEN
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_first_call_errors)) <> '' THEN
+			 as_first_call_errors := as_first_call_errors || ' ' || CHR(13) || 'Client is missing Date of Birth.';
+		ELSE
+			 as_first_call_errors := 'Client is missing Date of Birth.';
+		END IF;		
+	END IF;	
+END IF;
+
+-- Client Aged Out Check (cannot be >= 22 years as of service end date)
+IF vl_client_age >= 22 THEN	
+	 as_auto_valid_success_sw := 'N';
+	IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+		 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Client is 22 years old or more.';
+	ELSE
+		 as_auto_valid_errors := 'Client is 22 years old or more.';
+	END IF;	
+END IF;
+-- Common Edits - END
+
+-- Independent Living Residential Program Edits (Service ID: 1)- START 
+IF vl_plc_strucure_id = 1 THEN
+	--IF DAY(vd_dob_dt) = 29 AND MONTH(vd_dob_dt) = 2 THEN
+	IF date_part('DAY',vd_dob_dt::DATE) = 29 AND date_part('MONTH',vd_dob_dt::DATE) = 2 THEN
+		-- Calculate 16th Birthday
+		 vd_16bday := NULL;
+		--IF Mod(YEAR(vd_dob_dt) + 16 , 4) = 0  THEN
+		IF Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 16 , 4) = 0  THEN
+			--IF ( Mod(YEAR(vd_dob_dt) + 16 , 100) = 0  AND Mod(YEAR(vd_dob_dt) + 16 , 400) <> 0) THEN
+			IF ( Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 16 , 100) = 0  AND Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 16 , 400) <> 0) THEN
+				-- vd_16bday := DATE( RTRIM(CHAR(YEAR(vd_dob_dt)) + 16) || '-03-01');
+				 vd_16bday := DATE( RTRIM((date_part('YEAR',vd_dob_dt::DATE + interval '16 year'))) || '-03-01');
+			END IF;		
+		ELSE
+			-- vd_16bday := DATE( RTRIM(CHAR(YEAR(vd_dob_dt)) + 16) || '-03-01');
+			 vd_16bday := DATE( RTRIM(date_part('YEAR',vd_dob_dt::date + interval '16 year')) || '-03-01');
+
+		END IF;
+		
+		IF vd_16bday IS NULL THEN
+			 vd_16bday := vd_dob_dt + 16 years;
+		END IF;	
+		
+		-- Calculate 21st Birthday
+		 vd_21bday := NULL;
+		IF Mod(date_part('YEAR', vd_dob_dt::date)::integer + 21 , 4) = 0  THEN
+			IF ( Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 21 , 100) = 0  AND Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 21 , 400) <> 0) THEN
+				 --vd_21bday := DATE( RTRIM(CHAR(YEAR(vd_dob_dt) + 21)) || '-03-01');
+				 vd_21bday := DATE( RTRIM(date_part('YEAR',vd_dob_dt + interval '21 year')) || '-03-01');
+			END IF;		
+		ELSE
+			-- vd_21bday := DATE( RTRIM(CHAR(YEAR(vd_dob_dt) + 21)) || '-03-01');
+			vd_21bday := DATE( RTRIM(date_part('YEAR',vd_dob_dt + interval '21 year')) || '-03-01');
+		END IF;
+		IF vd_21bday IS NULL THEN
+			 vd_21bday := vd_dob_dt + 21 years;
+		END IF;	
+	ELSE
+		 vd_16bday := vd_dob_dt + interval '16 year';
+		 vd_21bday := vd_dob_dt + interval '21 year';
+	END IF;	
+
+	IF ad_validation_end_dt < vd_16bday OR ad_validation_start_dt >= vd_21bday THEN
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+			 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Independent Living Residential program is only applicable for clients between 16 years and 21 years of age.';
+		ELSE
+			 as_auto_valid_errors := 'Independent Living Residential program is only applicable for clients between 16 years and 21 years of age.';
+		END IF;
+	END IF;
+END IF;	
+-- Independent Living Residential Program Edits (Service ID: 1)- END
+
+-- CfE Placement Edits (Service ID: 525)- START 
+IF vl_plc_strucure_id = 525 THEN
+	
+	-- Get CfE Differential Board Rates End Date - CIDM-8046/B-178498
+	select start_dt,
+		btrim(To_char(start_dt, 'Month')) || ' ' || To_char(start_dt, 'DDth YYYY') as st_date,
+		end_dt,
+		btrim(To_char(end_dt, 'Month')) || ' ' || To_char(end_dt, 'DDth YYYY') as ed_date
+	into vd_cfe_diff_start_date,
+		vs_cfe_diff_start_date,
+		vd_cfe_diff_end_date,
+		vs_cfe_diff_end_date
+	from tb_fiscal_category_master 
+	where fiscal_category_id = 174
+		and delete_sw = 'N' ;
+	
+	IF date_part('DAY',vd_dob_dt::DATE) = 29 AND date_part('MONTH',vd_dob_dt::DATE) = 2 THEN
+		-- Calculate 4th Birthday
+		vd_4bday := NULL;
+		IF Mod(date_part('YEAR', vd_dob_dt::date)::integer + 4 , 4) = 0  THEN
+			IF ( Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 4 , 100) = 0  AND Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 4 , 400) <> 0) THEN
+				 vd_4bday := DATE( RTRIM(date_part('YEAR',vd_dob_dt + interval '4 year')) || '-03-01');
+			END IF;		
+		ELSE
+			vd_4bday := DATE( RTRIM(date_part('YEAR',vd_dob_dt + interval '4 year')) || '-03-01');
+		END IF;
+		IF vd_4bday IS NULL THEN
+			 vd_4bday := vd_dob_dt + 4 years;
+		END IF;	
+		
+		-- Calculate 18th Birthday
+		vd_18bday := NULL;
+		IF Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 18 , 4) = 0  THEN
+			IF ( Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 18 , 100) = 0  AND Mod(date_part('YEAR',vd_dob_dt::DATE)::integer + 18 , 400) <> 0) THEN
+				 vd_18bday := DATE( RTRIM((date_part('YEAR',vd_dob_dt::DATE + interval '18 year'))) || '-03-01');
+			END IF;		
+		ELSE
+			vd_18bday := DATE( RTRIM(date_part('YEAR',vd_dob_dt::date + interval '18 year')) || '-03-01');
+
+		END IF;
+		
+		IF vd_18bday IS NULL THEN
+		   vd_18bday := vd_dob_dt + 18 years;
+		END IF;	
+	ELSE
+		 vd_4bday := vd_dob_dt + interval '4 year';
+		 vd_18bday := vd_dob_dt + interval '18 year';
+	END IF;	
+	
+	-- Age/Service Period Validation
+	IF ad_validation_end_dt < vd_4bday 
+		OR ad_validation_start_dt >= vd_18bday 
+		OR ad_validation_end_dt > vd_18bday 
+		OR ad_placement_entry_dt < vd_cfe_diff_start_date::date 
+		OR ad_placement_exit_dt > vd_cfe_diff_end_date::date THEN
+		
+		as_auto_valid_success_sw := 'N';
+		
+		IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+			 -- as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'CfE Resource Home Placement is only applicable for clients between 4 years and 18 years of age and for the period between October 1, 2021 thru September 30, 2023.';
+			 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'CfE Resource Home Placement is only applicable for clients between 4 years and 18 years of age and for the period between ' || vs_cfe_diff_start_date || ' thru ' || vs_cfe_diff_end_date || '.';
+		ELSE
+			 -- as_auto_valid_errors := 'CfE Resource Home Placement is only applicable for clients between 4 years and 18 years of age and for the period between October 1, 2021 thru September 30, 2023.';
+			 as_auto_valid_errors := 'CfE Resource Home Placement is only applicable for clients between 4 years and 18 years of age and for the period between ' || vs_cfe_diff_start_date || ' thru ' || vs_cfe_diff_end_date || '.';
+		END IF;
+	END IF;
+END IF;	
+-- CfE Placement Edits (Service ID: 525)- END
+
+-- Kinship Paid & existing Restricted (Relative) Foster Care Edits (B-207876 / CIDM-9688) -- START
+IF vl_plc_strucure_id = 9 THEN -- Restricted (Relative) Foster Care
+	-- Placement can go upto max date
+	select settingvalue::date
+		into vd_restricted_end_dt
+	from cjams.settings 
+	where lower(settingname)= lower('KRD_enddate') 
+		and activeflag = 1 ;
+	
+	-- Placement can start on or after date only 
+	select settingvalue::date
+		into vd_kinship_start_dt
+	from cjams.settings 
+	where lower(settingname)= lower('KRD_startdate') 
+		and activeflag = 1 ;
+		
+	If vd_restricted_end_dt is not null and vd_kinship_start_dt is not null then
+		if ad_placement_exit_dt::date > vd_restricted_end_dt::date then
+			as_auto_valid_success_sw := 'N';
+			
+			IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+				as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) 
+					|| 'Restricted Relative placements are not valid later than '
+					|| RTRIM(TO_CHAR(vd_restricted_end_dt,'MM-DD-YYYY')) 
+					|| '. Please enter a valid placement exit date. A Kinship Home placement must be opened for the child for any dates on or after '
+					|| RTRIM(TO_CHAR(vd_kinship_start_dt,'MM-DD-YYYY')) || ' in order for the kinship caregiver to continue to receive payment.' ;
+			ELSE
+				as_auto_valid_errors := 'Restricted Relative placements are not valid later than '
+					|| RTRIM(TO_CHAR(vd_restricted_end_dt,'MM-DD-YYYY')) 
+					|| '. Please enter a valid placement exit date. A Kinship Home placement must be opened for the child for any dates on or after '
+					|| RTRIM(TO_CHAR(vd_kinship_start_dt,'MM-DD-YYYY')) || ' in order for the kinship caregiver to continue to receive payment.' ;
+				
+			END IF;
+		end if;
+	end if; 
+END IF;
+
+IF vl_plc_strucure_id = 530 THEN -- 530	Kinship
+	-- Placement can start on or after December 9th, 2024 only 
+	select settingvalue::date
+		into vd_kinship_start_dt
+	from cjams.settings 
+	where lower(settingname)= lower('KRD_startdate') 
+		and activeflag = 1 ;
+
+	If vd_kinship_start_dt is not null then
+		if ad_placement_entry_dt::date < vd_kinship_start_dt::date then
+			as_auto_valid_success_sw := 'N';
+			
+			IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+				as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) 
+					|| 'Kinship (Paid) Placements must be opened for the child for any dates on or after '
+					|| RTRIM(TO_CHAR(vd_kinship_start_dt,'MM-DD-YYYY')) || ' in order for the kinship caregiver to continue to receive payment.' ;
+			ELSE
+				as_auto_valid_errors := 'Kinship (Paid) Placements must be opened for the child for any dates on or after '
+					|| RTRIM(TO_CHAR(vd_kinship_start_dt,'MM-DD-YYYY')) || ' in order for the kinship caregiver to continue to receive payment.' ;
+			END IF;
+		end if;
+	end if; 	
+END IF;
+-- Kinship Paid & existing Restricted (Relative) Foster Care Edits (B-207876 / CIDM-9688) -- END
+
+-- Intermediate Foster Care Difficulty of Care (Service ID: 11409)- START
+IF vl_plc_strucure_id = 11409  AND vs_tfc_ifc_conversion_sw <> 'Y' THEN
+
+	SELECT a.al_year,a.al_month,a.as_success_sw,a.al_ssa_app_cnt,a.al_sqlcode,a.as_error from SP_IFC_SSA_APPROVAL_EDITS ( al_placement_id
+											, ad_placement_entry_dt
+											, ad_placement_exit_dt  
+											, vd_service_start_dt
+											, vd_service_end_dt) a INTO
+											 vl_year
+											, vl_month
+											, vs_ifc_success_sw 
+											, vl_ssa_app_cnt
+											, al_sqlcode
+											, as_error;
+	IF al_sqlcode < 0 THEN
+		 as_error := 'Error in SP_IFC_SSA_APPROVAL_EDITS call.';
+		--SIGNAL p_sp_error;
+	END IF ;
+	
+	--	Add 1; as TIMESTAMPDIFF function is returning 0 for the first month (placement entry month) and which is 1 in terms of placement validation
+	 vl_month := vl_month + 1;
+	
+	IF vl_month >= 14  OR vl_year > 1 THEN
+		IF vs_ifc_success_sw = 'N' THEN
+			 as_auto_valid_success_sw := 'N';
+			IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+				 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'The child has been in Intermediate Foster Care Difficulty of Care placement structure for more than 1 year. Without SSA approval the placement cannot be validated.';
+			ELSE
+				 as_auto_valid_errors := 'The child has been in Intermediate Foster Care Difficulty of Care placement structure for more than 1 year. Without SSA approval the placement cannot be validated.';
+			END IF;
+		END IF;
+	END IF;
+END IF;	
+-- Intermediate Foster Care Difficulty of Care (Service ID: 11409)- END
+
+-- Private Providers Edits - START
+IF vl_contract_program_id > 0 THEN
+	-- Provider License Check - START
+	 vs_license_check_failed := 'N';
+
+	 vs_service_start_dt := RTRIM(TO_CHAR(vd_service_start_dt,'YYYY-MM-DD'));
+     vs_service_end_dt := RTRIM(TO_CHAR(vd_service_end_dt,'YYYY-MM-DD'));
+     vs_placement_exit_dt := RTRIM(TO_CHAR(ad_placement_exit_dt,'YYYY-MM-DD'));            
+		
+		
+	 vs_xml_args  := '<ARG01>PLC_VALIDATION</ARG01>';
+	 vs_xml_args := RTRIM(vs_xml_args) || '<ARG02>' || LTRIM(RTRIM((vl_contract_program_id)::character varying)) || '</ARG02>';
+	 vs_xml_args := RTRIM(vs_xml_args) || '<ARG03>' || LTRIM(RTRIM((vl_provider_id)::character varying)) || '</ARG03>';
+	 vs_xml_args := RTRIM(vs_xml_args) || '<ARG04>' || LTRIM(RTRIM(vs_service_start_dt)) || '</ARG04>';
+	 vs_xml_args := RTRIM(vs_xml_args) || '<ARG05>' || LTRIM(RTRIM(vs_service_end_dt)) || '</ARG05>';
+
+	IF ad_placement_exit_dt Is NOT NULL THEN  
+		 vs_xml_args := RTRIM(vs_xml_args) || '<ARG06>' || LTRIM(RTRIM(vs_placement_exit_dt)) || '</ARG06>';
+	ELSE
+		 vs_xml_args := RTRIM(vs_xml_args) || '<ARG06>NULL</ARG06>';
+	END IF;
+	SELECT a.as_results,a.as_error,a.al_sqlcode from SP_PROVIDER_LICENSE_CONTRACT_EDITS ( RTRIM(vs_xml_args)) a into vs_results, as_error, al_sqlcode;
+													
+	IF al_sqlcode < 0  THEN
+		 as_error := 'SP_PROVIDER_LICENSE_CONTRACT_EDITS Failed.';
+		--SIGNAL p_sp_error;
+	END IF;
+
+	IF vs_results is NOT NULL AND LTRIM(RTRIM(vs_results)) <> '' THEN 
+
+		vs_results := '<response>' || vs_results || '</response>';
+		-- Get output validation Pass/Fail
+		--SELECT RTRIM(LTRIM(F_GET_VALUEBYTAG(vs_results, 'OUT01'))) INTO vs_output FROM SYSIBM.SYSDUMMY1;
+
+		SELECT btrim(xpath('./OUT01/text()', vs_results::xml)::text, '{}') INTO vs_output;
+
+		IF vs_output Is NULL THEN 
+			 vs_output := '';
+		END IF;	
+		
+		IF UPPER(vs_output) = 'FAIL' THEN
+			-- Get Message IDs
+			-- 1st message
+			 vs_tag_value := NULL;
+			--SELECT RTRIM(LTRIM(F_GET_VALUEBYTAG(vs_results, 'OUT02'))) INTO vs_tag_value FROM SYSIBM.SYSDUMMY1; 
+			SELECT btrim(xpath('./OUT02/text()', vs_results::xml)::text, '{}') INTO vs_tag_value;
+
+			IF vs_tag_value Is NULL THEN 
+				 vs_tag_value := '';
+			END IF;	
+			
+			IF vs_tag_value <> '' THEN
+				 --vl_msg_id1 := TO_INT(LTRIM(RTRIM(vs_tag_value)));
+				 vl_msg_id1 := btrim(vs_tag_value)::integer;
+			END IF;	
+			
+			-- Result will have either message text (OUT06) or more than one message IDs (OUT03....05)
+			-- Get Message Tx
+			 vs_tag_value := NULL;
+			--SELECT RTRIM(LTRIM(F_GET_VALUEBYTAG(vs_results, 'OUT06'))) INTO vs_tag_value FROM SYSIBM.SYSDUMMY1; 
+			SELECT btrim(xpath('./OUT06/text()', vs_results::xml)::text, '{}') INTO vs_tag_value;
+
+			IF vs_tag_value Is NULL THEN 
+				 vs_tag_value := '';
+			END IF;	
+			
+			IF vs_tag_value <> '' THEN -- message text
+				-- SET vs_msgtx = LTRIM(RTRIM(REPLACE(vs_tag_value,';','.')));
+				 vs_msgtx := LTRIM(RTRIM(vs_tag_value));
+			ELSE -- message IDs
+				-- 2nd message
+				 vs_tag_value := NULL;
+				--SELECT RTRIM(LTRIM(F_GET_VALUEBYTAG(vs_results, 'OUT03'))) INTO vs_tag_value FROM SYSIBM.SYSDUMMY1; 
+				SELECT btrim(xpath('./OUT03/text()', vs_results::xml)::text, '{}') INTO vs_tag_value;
+				IF vs_tag_value Is NULL THEN 
+					 vs_tag_value := '';
+				END IF;	
+			
+				IF vs_tag_value <> '' THEN
+					 vl_msg_id2 :=  btrim(vs_tag_value)::integer;
+				END IF;	
+				
+				-- 3rd message
+				 vs_tag_value := NULL;
+				--SELECT RTRIM(LTRIM(F_GET_VALUEBYTAG(vs_results, 'OUT04'))) INTO vs_tag_value FROM SYSIBM.SYSDUMMY1; 
+				SELECT btrim(xpath('./OUT04/text()', vs_results::xml)::text, '{}') INTO vs_tag_value;
+
+				IF vs_tag_value Is NULL THEN 
+					 vs_tag_value := '';
+				END IF;	
+		
+				IF vs_tag_value <> '' THEN
+					 vl_msg_id3 := btrim(vs_tag_value)::integer;
+				END IF;	
+				
+				-- 4th message
+				 vs_tag_value := NULL;
+				--SELECT RTRIM(LTRIM(F_GET_VALUEBYTAG(vs_results, 'OUT05'))) INTO vs_tag_value FROM SYSIBM.SYSDUMMY1; 
+				SELECT btrim(xpath('./OUT05/text()', vs_results::xml)::text, '{}') INTO vs_tag_value;
+
+				IF vs_tag_value Is NULL THEN 
+					 vs_tag_value := '';
+				END IF;	
+		
+				IF vs_tag_value <> '' THEN
+					 vl_msg_id4 := btrim(vs_tag_value)::integer;
+				END IF;	
+			END IF;	
+			 vs_license_check_failed := 'Y'; 
+		END IF;
+	ELSE
+		 as_error := as_error + ' - ' + 'Error in SP_PROVIDER_LICENSE_CONTRACT_EDITS - output is NULL/Blank.' ;
+		-- Error in Getting Active License for the Provider.
+		 vs_license_check_failed := 'E'; 
+	END IF;	
+
+	IF vs_license_check_failed = 'Y' THEN
+		IF vl_msg_id1 = 564 THEN	
+			 vs_license_msg := 'License expired for' || vs_provider_nm || ', Contact OLM for relicensure/extension. This placement cannot be validated.';
+		ELSEIF vl_msg_id1 = 1112 THEN 
+			 vs_license_msg := vs_msgtx || ' placement cannot be validated.';
+		ELSEIF vl_msg_id1 = 1117 THEN
+			IF vs_msgtx = 'RVK_OPEN' THEN
+				 vs_license_msg := 'Placement validation for this child cannot take place until the child''s placement is end-dated.';
+			ELSEIF vs_msgtx = 'RVK_CLOSED' THEN
+				 vs_license_msg := 'Placement validation for this child cannot take place until the child''s placement is end-dated on or before the revocation date.';
+			ELSEIF vs_msgtx = 'SUS_OPEN' THEN
+				 vs_license_msg := 'Placement validation for this child cannot take place until the child''s placement is end-dated.';
+			ELSEIF vs_msgtx = 'SUS_CLOSED' THEN
+				 vs_license_msg := 'Placement validation for this child cannot take place until the child''s placement is end-dated on or before the suspension date.';
+			END IF;
+		ELSEIF vl_msg_id1 = 1361 OR vl_msg_id1 = 1362 OR vl_msg_id1 = 1363 OR vl_msg_id1 = 1364 THEN
+			IF vl_msg_id1 = 1361 THEN
+				 vs_license_msg := 'The placement validation start date cannot be prior to the License start date. Please contact OLM.';
+			ELSEIF vl_msg_id1 = 1362 THEN
+				 vs_license_msg := 'The placement validation start date cannot be prior to the Program start date. Please contact SSA.';
+			ELSEIF vl_msg_id1 = 1363  THEN
+				 vs_license_msg := 'The placement validation end date cannot extend beyond the License end date. Please contact OLM.';
+			ELSEIF vl_msg_id1 = 1364 THEN	
+				 vs_license_msg := 'The placement validation end date cannot extend beyond the Program end date. Please contact SSA.';	
+			END IF;
+
+			-- 2nd message
+			IF vl_msg_id2 > 0 THEN
+				IF vl_msg_id2 = 1361 THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation start date cannot be prior to the License start date. Please contact OLM.';
+				ELSEIF vl_msg_id2 = 1362 THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation start date cannot be prior to the Program start date. Please contact SSA.';
+				ELSEIF vl_msg_id2 = 1363  THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation end date cannot extend beyond the License end date. Please contact OLM.';
+				ELSEIF vl_msg_id2 = 1364 THEN	
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation end date cannot extend beyond the Program end date. Please contact SSA.';	
+				END IF;	
+			END IF;
+			
+			-- 3rd message
+			IF vl_msg_id3 > 0 THEN
+				IF vl_msg_id3 = 1361 THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation start date cannot be prior to the License start date. Please contact OLM.';
+				ELSEIF vl_msg_id3 = 1362 THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation start date cannot be prior to the Program start date. Please contact SSA.';
+				ELSEIF vl_msg_id3 = 1363  THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation end date cannot extend beyond the License end date. Please contact OLM.';
+				ELSEIF vl_msg_id3 = 1364 THEN	
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation end date cannot extend beyond the Program end date. Please contact SSA.';	
+				END IF;
+			END IF;
+			
+			-- 4th message
+			IF vl_msg_id4 > 0 THEN
+				IF vl_msg_id4 = 1361 THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation start date cannot be prior to the License start date. Please contact OLM.';
+				ELSEIF vl_msg_id4 = 1362 THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation start date cannot be prior to the Program start date. Please contact SSA.';
+				ELSEIF vl_msg_id4 = 1363  THEN
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation end date cannot extend beyond the License end date. Please contact OLM.';
+				ELSEIF vl_msg_id4 = 1364 THEN	
+					 vs_license_msg := vs_license_msg || CHR(13) || 'The placement validation end date cannot extend beyond the Program end date. Please contact SSA.';	
+				END IF;
+			END IF;	
+		END IF;
+		IF vs_license_msg is NULL THEN
+			 vs_license_msg := '';
+		END IF;
+		
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+			 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || RTRIM(LTRIM(vs_license_msg)) ;
+		ELSE	
+			 as_auto_valid_errors := RTRIM(LTRIM(vs_license_msg)) ;	
+		END IF;	
+		
+	ELSEIF vs_license_check_failed = 'E' THEN
+
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+			 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Error in Getting Active License for the Provider.';		
+		ELSE
+			 as_auto_valid_errors := 'Error in Getting Active License for the Provider.';		
+		END IF;	
+	END IF;
+	-- Provider License Check - END
+
+	-- Provider Contract Rate Check - START
+	SELECT PROGRAM_RATE_ID
+		INTO vl_prog_rate_id
+	FROM TB_PROV_PROGRAM_RATES
+	WHERE PROGRAM_ID = vl_contract_program_id 
+		AND PROV_PROGRAM_ACTUAL_MAX_CD = '5590' 
+		AND DELETE_SW = 'N' 
+		AND MONTHLY_RATE_NO > 0 
+		AND PER_DIEM_RATE_NO > 0 
+		AND	START_DT <= vd_service_end_dt
+		AND ( END_DT >= vd_service_start_dt OR END_DT IS NULL)
+	ORDER BY PROGRAM_RATE_ID DESC
+	-- VINEET 05/06/2020
+	-- FETCH FIRST ROW ONLY
+	limit 1;
+
+	 al_sqlcode := SQLCODE;
+	IF al_sqlcode < 0 THEN
+		 as_error := 'Error in getting Contract Rate ID for PROGRAM_ID : ' || LTRIM(RTRIM((vl_contract_program_id)::character varying));
+		--SIGNAL p_sp_error;
+	END IF ;
+
+	IF vl_prog_rate_id = 0 OR vl_prog_rate_id is NULL THEN
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+			 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Contract program rates expired for ' || vs_provider_nm || ', Contact SSA for renewal/extension. This placement cannot be validated.';
+		ELSE	
+			 as_auto_valid_errors := 'Contract program rates expired for ' || vs_provider_nm || ', Contact SSA for renewal/extension. This placement cannot be validated.';
+		END IF;		
+	END IF;
+	-- Provider Contract Rate Check - END
+	
+	-- CPA Home Check is not included in this SP as it's having only warning messages and no edits.	
+END IF;
+-- Private Providers Edits - END
+
+-- Public Providers Edits - START
+IF vl_contract_program_id = 0 THEN
+	-- Provider Home Approval Check - START
+	SELECT APPROVAL_STATUS_CD,
+		HA_REVOKE_APPROVAL_STATUS_CD,
+		HA_REVOKE_APPROVAL_DT
+	INTO vs_ha_app_status_cd,
+		vs_ha_revoke_app_status_cd,
+		vd_ha_revoke_dt	 	
+	FROM TB_PROVIDER_APPROVAL  
+	WHERE DELETE_SW = 'N'   
+		AND PROVIDER_ID = vl_provider_id
+		AND HA_APPROVAL_STATUS_CD = '3047' 
+	ORDER BY PROVIDER_APPROVAL_ID DESC
+	-- VINEET 05/06/2020
+	-- FETCH FIRST ROW ONLY
+	Limit 1 ;
+	
+	 al_sqlcode := SQLCODE;
+	IF al_sqlcode < 0 THEN
+		 as_auto_valid_success_sw := 'N';
+		IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+			 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Error in Getting Approved Home Approval for the Provider.' ;
+		ELSE	
+			 as_auto_valid_errors := 'Error in Getting Approved Home Approval for the Provider.' ;
+		END IF;	
+	ELSE
+	
+		IF vs_ha_app_status_cd is NULL THEN
+			 vs_ha_app_status_cd := '';
+		END IF;
+		
+		IF vs_ha_app_status_cd = '3585' AND vs_ha_revoke_app_status_cd = '3047' THEN
+			IF ad_placement_exit_dt IS NULL THEN -- Open Placement
+				 as_auto_valid_success_sw := 'N';
+				IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+					 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Placement validation for this child cannot take place until the child''s placement is end-dated.';
+				ELSE	
+					 as_auto_valid_errors := 'Placement validation for this child cannot take place until the child''s placement is end-dated.';
+				END IF;		
+			ELSE
+				IF vd_ha_revoke_dt is NOT NULL THEN
+					IF ad_placement_exit_dt > vd_ha_revoke_dt THEN
+						 as_auto_valid_success_sw := 'N';
+						IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+							 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Placement validation for this child cannot take place until the child''s placement is end-dated on or before the revocation date.';
+						ELSE	
+							 as_auto_valid_errors := 'Placement validation for this child cannot take place until the child''s placement is end-dated on or before the revocation date.';
+						END IF;	
+					END IF;
+				ELSE
+					-- Allow placement Validation, for HA data with 'Revoked' status an d NULL Approved DT (Data issue).
+				END IF;
+			END IF;
+		ELSEIF vs_ha_app_status_cd <> '3579' AND vs_ha_app_status_cd <> '3586' THEN	
+			-- 3579	Approved / 3586 On Hold
+			 as_auto_valid_success_sw := 'N';
+			IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+				 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Approved Home Approval not found for ' || vs_provider_nm || '; placement cannot be validated.';
+			ELSE	
+				 as_auto_valid_errors := 'Approved Home Approval not found for ' || vs_provider_nm || '; placement cannot be validated.';
+			END IF;	
+		END IF;	
+	END IF;	
+	-- Provider Home Approval Check - END
+	
+	-- Location Address Check (Only if Service Start Date >= 2010-04-01 – County Specific Implementation date) - START
+	-- 1783 - Local Department Home
+	-- 2010-04-01 - County Specific Rate Implementation date
+		
+	IF vs_provider_category = '1783' AND vd_service_start_dt >= DATE('2010-04-01') THEN 
+	
+
+--		SELECT DAYS(vd_service_start_dt) - DAYS(ad_placement_entry_dt) AS PLACEMENT_DAYS 
+       -- select EXTRACT(DAY FROM DATE ((TO_CHAR(vd_service_start_dt,'YYYY-MM-DD')))) :: integer - EXTRACT(DAY FROM DATE ((TO_CHAR(ad_placement_entry_dt,'YYYY-MM-DD')))) :: integer AS PLACEMENT_DAYS 
+		--	INTO vl_efc_days;
+	select (vd_service_start_dt::date - ad_placement_entry_dt::date)AS PLACEMENT_DAYS INTO vl_efc_days;
+		--FROM SYSIBM.SYSDUMMY1;
+		
+		-- 10 - Regular Foster Care and 13 - Emergency Foster Home Care	
+		IF vl_rate_strucure_id = 10 OR ( vl_plc_strucure_id = 13 AND vl_efc_days >  60 ) THEN  
+			-- Check for Location Address information is completely missing
+			SELECT COUNT(*)
+				INTO vl_add_count
+			FROM TB_PROVIDER_ADDRESSES
+			WHERE DELETE_SW = 'N'
+				AND PARENT_KEY_ID = vl_provider_id :: character varying
+				AND ADR_TYPE_CD = '3357'
+				AND ADR_START_DT <= vd_service_end_dt
+				AND ( ADR_END_DT is NULL OR ADR_END_DT >= vd_service_start_dt );
+
+			 al_sqlcode := SQLCODE;
+			IF al_sqlcode < 0 THEN
+				 as_error := 'Error in getting Location Address for PROVIDER_ID : ' || LTRIM(RTRIM((vl_provider_id)::character varying));
+				--SIGNAL p_sp_error;
+			END IF ;
+	
+			IF vl_add_count = 0 THEN
+				 vl_add_ret := -1 ; -- Fail
+			ELSE
+				 vl_add_ret := -1 ; -- Initial value - Fail
+				 vl_add_count := 1;
+
+				-- Cursor for All Location Address slabs within service dates  - START
+				
+				--EXIT_LOOP:
+				
+				--FOR Cur_locn_add_slabs AS
+				OPEN Cur_locn_add_slabs_refcur FOR
+      
+
+					SELECT ADR_START_DT,
+						   ADR_END_DT 
+					FROM TB_PROVIDER_ADDRESSES
+					WHERE DELETE_SW = 'N'
+						AND PARENT_KEY_ID = vl_provider_id :: character varying
+						AND ADR_TYPE_CD = '3357'
+						AND ADR_START_DT <= vd_service_end_dt
+						AND ( ADR_END_DT is NULL OR ADR_END_DT >= vd_service_start_dt  )
+					ORDER BY ADR_START_DT ;  
+				<<EXIT_LOOP>>
+				--DO
+				  loop
+				fetch Cur_locn_add_slabs_refcur into Cur_locn_add_slabs;
+										 exit when not found;
+
+					 vd_adr_start_dt := Cur_locn_add_slabs.ADR_START_DT;
+					 vd_adr_end_dt := Cur_locn_add_slabs.ADR_END_DT;
+				
+					-- Service Start date is prior to Address slab start date as cursor is having sort by clause 
+					
+					IF vl_add_count = 1 AND vd_service_start_dt < vd_adr_start_dt THEN
+						-- Fail
+						--LEAVE EXIT_LOOP;
+						EXIT EXIT_LOOP WHEN (vl_add_count = 1 AND vd_service_start_dt < vd_adr_start_dt);
+
+					END IF;
+					
+					-- Start date is prior to Service Start date AND End date is later than Service Start date or Slab is Open 
+					IF vd_adr_start_dt <= vd_service_start_dt AND ( vd_adr_end_dt is NULL OR vd_adr_end_dt = DATE('1900-01-01') OR vd_adr_end_dt >= vd_service_end_dt ) THEN
+						-- Pass
+						 vl_add_ret := 1; 
+						--LEAVE EXIT_LOOP;
+						EXIT EXIT_LOOP WHEN (vd_adr_start_dt <= vd_service_start_dt AND ( vd_adr_end_dt is NULL OR vd_adr_end_dt = DATE('1900-01-01') OR vd_adr_end_dt >= vd_service_end_dt ));
+
+					END IF;
+					
+					-- Conditions for Second Slab onwards
+					IF vd_adr_last_end_dt is NOT NULL AND vd_adr_last_end_dt <> DATE('1900-01-01')  THEN
+						-- Check the gap between prior slabs End date and current slabs Start Date
+						IF vd_adr_start_dt > vd_adr_last_end_dt THEN
+							-- Fail
+							--LEAVE EXIT_LOOP;
+							EXIT EXIT_LOOP WHEN (vd_adr_start_dt > vd_adr_last_end_dt);
+
+						ELSE
+							-- End date is later than Service Start date or Slab is Open 
+							IF vd_adr_end_dt is NULL OR vd_adr_end_dt = DATE('1900-01-01') OR vd_adr_end_dt >= vd_service_end_dt THEN
+								-- Pass
+								 vl_add_ret := 1; 
+								--LEAVE EXIT_LOOP;
+								EXIT EXIT_LOOP WHEN (vd_adr_end_dt is NULL OR vd_adr_end_dt = DATE('1900-01-01') OR vd_adr_end_dt >= vd_service_end_dt);
+							END IF;
+						END IF;
+					END IF;
+					
+					-- Get current rows exit date to compare with next rows entry date for gap
+					--SELECT DATE(vd_adr_end_dt) + 1 DAY
+					SELECT DATE(vd_adr_end_dt) + 1 
+						INTO vd_adr_last_end_dt;
+					   --FROM SYSIBM.SYSDUMMY1;
+					
+					 vl_add_count := vl_add_count + 1;
+
+					-- Reset
+					 vd_adr_start_dt := NULL;
+					 vd_adr_end_dt := NULL;
+				--END FOR;	
+				END LOOP;
+				CLOSE Cur_locn_add_slabs_refcur;
+				-- Cursor for All Location Address slabs within service dates  - END
+			END IF;
+
+			IF vl_add_ret = -1 THEN
+				 as_auto_valid_success_sw := 'N';
+				IF RTRIM(LTRIM(as_auto_valid_errors)) <> '' THEN
+					 as_auto_valid_errors := as_auto_valid_errors || ' ' || CHR(13) || 'Provider location address information is incomplete (not every service day is counted for) contact provider resource worker, placement cannot be validated.';
+				ELSE	
+					 as_auto_valid_errors := 'Provider location address information is incomplete (not every service day is counted for) contact provider resource worker, placement cannot be validated.';
+				END IF;	
+			END IF;
+		END IF;	
+	END IF;
+	-- Location Address Check (Only if Service Start Date >= 2010-04-01 – County Specific Implementation date) - END
+	
+END IF;
+-- Public Providers Edits - END
+										 
+-- Placement Validation Edits - END
+END;
+
+$function$
+;

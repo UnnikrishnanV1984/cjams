@@ -1,0 +1,513 @@
+CREATE OR REPLACE FUNCTION as_f_fm205r_s(start_date date, end_date date)
+ RETURNS TABLE(picklist_value_cd text, jurisdiction text, ar_0_60_days numeric, ar_61_180_days numeric, ar_181_365_days numeric, ar_greater_365_days numeric, " TOTAL_A/R " numeric, ccu_amount numeric)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+( 
+SELECT PLV.PICKLIST_VALUE_CD,
+             PLV.VALUE_TX
+                AS JURISDICTION,
+             COALESCE (TB_MAIN.AR_0_60_DAYS, 0)
+                AS AR_0_60_DAYS,
+             COALESCE (TB_MAIN.AR_61_180_DAYS, 0)
+                AS AR_61_180_DAYS,
+             COALESCE (TB_MAIN.AR_181_365_DAYS, 0)
+                AS AR_181_365_DAYS,
+             COALESCE (TB_MAIN.AR_GREATER_365_DAYS, 0)
+                AS AR_GREATER_365_DAYS,
+             COALESCE (
+                (  TB_MAIN.AR_0_60_DAYS
+                 + TB_MAIN.AR_61_180_DAYS
+                 + TB_MAIN.AR_181_365_DAYS
+                 + TB_MAIN.AR_GREATER_365_DAYS),
+                0)
+                AS "TOTAL A/R",
+             TB_MAIN."CCU AMOUNT"
+        FROM (SELECT distinct trim(TB_PICKLIST_VALUES.PICKLIST_VALUE_CD) PICKLIST_VALUE_CD,
+             trim(VALUE_TX) VALUE_TX
+               FROM TB_PICKLIST_VALUES
+              WHERE     PICKLIST_TYPE_ID = 104
+                    AND TB_PICKLIST_VALUES.PICKLIST_VALUE_CD NOT IN
+                           ('3825', '3826', '9115')
+                    AND DELETE_SW = 'N') PLV
+             LEFT JOIN
+             (  SELECT COUNTY_CD,
+                       SUM (TAB2.AR_0_60_DAYS) AS AR_0_60_DAYS,
+                       SUM (TAB2.AR_61_180_DAYS) AS AR_61_180_DAYS,
+                       SUM (TAB2.AR_181_365_DAYS) AS AR_181_365_DAYS,
+                       SUM (TAB2.AR_GREATER_365_DAYS) AS AR_GREATER_365_DAYS,
+                       SUM (TAB2.CCU_AMOUNT) AS "CCU AMOUNT"
+                  FROM (SELECT COUNTY_CD,
+                               RECEIVABLE_BALANCE_NO,
+                               CASE
+                                  WHEN     (    NO_OF_DAYS >= 0
+                                            AND NO_OF_DAYS <= 60)
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_0_60_DAYS,
+                               CASE
+                                  WHEN     (    NO_OF_DAYS > 60
+                                            AND NO_OF_DAYS <= 180)
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_61_180_DAYS,
+                               CASE
+                                  WHEN     (    NO_OF_DAYS > 180
+                                            AND NO_OF_DAYS <= 365)
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_181_365_DAYS,
+                               CASE
+                                  WHEN     NO_OF_DAYS > 365
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_GREATER_365_DAYS,
+                               (CASE
+                                   WHEN     STS_CD = '775'
+                                        AND COLLECTION_STATUS_DT BETWEEN CAST (
+                                                                            START_DATE 
+                                                                               AS DATE)
+                                                                     AND CAST (
+                                                                            END_DATE 
+                                                                             AS DATE)
+                                   THEN
+                                      BALANCE
+                                   ELSE
+                                      NULL
+                                END) AS CCU_AMOUNT
+                          FROM (SELECT PROVIDER_ID,
+                                       COUNTY_CD,
+                                       RECEIVABLE_BALANCE_NO,
+                                       NO_OF_DAYS,
+                                       STS_CD,
+                                       CASE
+                                          WHEN RECEIVABLE_DETAIL_ID IN
+                                                  (SELECT RECEIVABLE_DETAIL_ID
+                                                    FROM TB_RECEIVABLE_LIQUIDATION
+                                                   WHERE     DELETE_SW = 'N'
+                                                         AND DATE (CREATE_TS) >
+                                                             '2018-12-31')
+                                          THEN
+                                               RECEIVABLE_BALANCE_NO
+                                             + (SELECT SUM (
+                                                          COLLECTED_AMOUNT_NO)
+                                                 FROM TB_RECEIVABLE_LIQUIDATION
+                                                WHERE     RECEIVABLE_DETAIL_ID =
+                                                          MAIN.RECEIVABLE_DETAIL_ID
+                                                      AND DELETE_SW = 'N'
+                                                      AND DATE (CREATE_TS) >
+                                                          '2018-12-31')
+                                          ELSE
+                                             RECEIVABLE_BALANCE_NO
+                                       END AS BALANCE,
+                                       COLLECTION_STATUS_DT
+                                  FROM (  SELECT DISTINCT
+                                                 TB_RECEIVABLE_HEADER.PROVIDER_ID,
+                                                 TB_PROVIDER.COUNTY_CD,
+                                                 CASE
+                                                    WHEN WRITE_OFF_ACTION_DATE >
+                                                         CAST (END_DATE  AS DATE)
+                                                    THEN
+                                                         COALESCE (
+                                                            SUM (
+                                                               TB_RECEIVABLE_DETAIL.RECEIVABLE_BALANCE_NO),
+                                                            0)
+                                                       + COALESCE (
+                                                            SUM (
+                                                               TB_RECEIVABLE_DETAIL.WRITTEN_OFF_AMOUNT_NO),
+                                                            0)
+                                                    ELSE
+                                                       SUM (
+                                                          TB_RECEIVABLE_DETAIL.RECEIVABLE_BALANCE_NO)
+                                                 END
+                                                    AS RECEIVABLE_BALANCE_NO,
+                                                   DATE_PART (
+                                                      'DAYS',
+                                                      DATE (
+                                                         CAST (END_DATE  AS DATE)))
+                                                 - DATE_PART (
+                                                      'DAYS',
+                                                      (DATE (
+                                                          SUBSTRING (
+                                                             TB_RECEIVABLE_DETAIL.RECEIVABLE_TS
+                                                             FROM 1
+                                                             FOR 10))))
+                                                    AS NO_OF_DAYS,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_CD
+                                                    AS STS_CD,
+                                                 TB_RECEIVABLE_DETAIL.RECEIVABLE_DETAIL_ID,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_DT
+                                            FROM TB_RECEIVABLE_DETAIL
+                                                 JOIN TB_RECEIVABLE_HEADER
+                                                    ON     TB_RECEIVABLE_HEADER.RECEIVABLE_ID =
+                                                           TB_RECEIVABLE_DETAIL.RECEIVABLE_ID
+                                                       AND TB_RECEIVABLE_DETAIL.DELETE_SW =
+                                                           'N'
+                                                       AND TB_RECEIVABLE_HEADER.DELETE_SW =
+                                                           'N'
+                                                 JOIN
+                                                 (SELECT *
+                                                   FROM TB_RECEIVABLE_COLLECTION_STATUS
+                                                  WHERE COLLECTION_STATUS_ID IN
+                                                           (SELECT MAX (
+                                                                      COLLECTION_STATUS_ID)
+                                                                FROM TB_RECEIVABLE_COLLECTION_STATUS
+                                                               WHERE     DELETE_SW =
+                                                                         'N'
+                                                                     AND COLLECTION_STATUS_DT <=
+                                                                         CAST (
+                                                                            END_DATE 
+                                                                               AS DATE)
+                                                            GROUP BY RECEIVABLE_DETAIL_ID))
+                                                 TB_RECEIVABLE_COLLECTION_STATUS
+                                                    ON     TB_RECEIVABLE_DETAIL.RECEIVABLE_DETAIL_ID =
+                                                           TB_RECEIVABLE_COLLECTION_STATUS.RECEIVABLE_DETAIL_ID
+                                                       AND TB_RECEIVABLE_COLLECTION_STATUS.DELETE_SW =
+                                                           'N'
+                                                 JOIN TB_PROVIDER
+                                                    ON     TB_PROVIDER.PROVIDER_ID =
+                                                           TB_RECEIVABLE_HEADER.PROVIDER_ID
+                                                       AND TB_PROVIDER.DELETE_SW =
+                                                           'N'
+                                                 LEFT JOIN
+                                                 (SELECT *
+                                                   FROM TB_PAYMENT_PLAN
+                                                  WHERE     DELETE_SW = 'N'
+                                                        AND PAYMENT_PLAN_ID IN
+                                                               (SELECT MAX (
+                                                                          PAYMENT_PLAN_ID)
+                                                                    FROM TB_PAYMENT_PLAN
+                                                                   WHERE     DELETE_SW =
+                                                                             'N'
+                                                                         AND (END_DT
+                                                                                 IS NULL --OR END_DT <= F_DAYMONTH(DATE(CAST(CURRENT_DATE  AS DATE)) - INTERVAL '1 MONTH','L' ,'')
+                                                                                        )
+                                                                GROUP BY RECEIVABLE_ID))
+                                                 TB_PAYMENT_PLAN
+                                                    ON TB_PAYMENT_PLAN.RECEIVABLE_ID =
+                                                       TB_RECEIVABLE_DETAIL.RECEIVABLE_ID
+                                           WHERE     (   RECEIVABLE_BALANCE_NO >=
+                                                         0
+                                                      OR (    TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_CD =
+                                                              '775'
+                                                          AND DATE (
+                                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_DT) BETWEEN F_DAYMONTH (
+                                                                                                                                  CAST (
+                                                                                                                                     END_DATE 
+                                                                                                                                        AS DATE),
+                                                                                                                                  ' ',
+                                                                                                                                  'C')
+                                                                                                                           AND F_DAYMONTH (
+                                                                                                                                  CAST (
+                                                                                                                                     CURRENT_DATE
+                                                                                                                                        AS DATE),
+                                                                                                                                  'L',
+                                                                                                                                  'C')))
+                                                 AND DATE (
+                                                        SUBSTRING (
+                                                           TB_RECEIVABLE_DETAIL.RECEIVABLE_TS
+                                                           FROM 1
+                                                           FOR 10)) <=
+                                                     CAST (END_DATE  AS DATE)
+                                                 AND TB_RECEIVABLE_DETAIL.APPROVAL_STATUS_CD =
+                                                     '3047'
+                                        GROUP BY TB_PROVIDER.COUNTY_CD,
+                                                 TB_RECEIVABLE_HEADER.PROVIDER_ID,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_CD,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_DT,
+                                                 DATE (
+                                                    SUBSTRING (
+                                                       TB_RECEIVABLE_DETAIL.RECEIVABLE_TS
+                                                       FROM 1
+                                                       FOR 10)),
+                                                 TB_RECEIVABLE_DETAIL.RECEIVABLE_DETAIL_ID,
+                                                 TB_RECEIVABLE_DETAIL.WRITTEN_OFF_AMOUNT_NO,
+                                                 TB_RECEIVABLE_DETAIL.WRITE_OFF_ACTION_DATE)
+                                       MAIN) AS TAB1) AS TAB2
+              GROUP BY COUNTY_CD) TB_MAIN
+                ON TRIM (TB_MAIN.COUNTY_CD) = TRIM (PLV.PICKLIST_VALUE_CD)
+                                                                 union
+                                                                 SELECT '5001' AS PICKLIST_VALUE_CD,
+             'STATE TOTAL' AS "JURISDICTION",
+             SUM (TB_MAIN2.AR_0_60_DAYS) AS AR_0_60_DAYS,
+             SUM (TB_MAIN2.AR_61_180_DAYS) AS AR_61_180_DAYS,
+             SUM (TB_MAIN2.AR_181_365_DAYS) AS AR_181_365_DAYS,
+             SUM (TB_MAIN2.AR_GREATER_365_DAYS) AS AR_GREATER_365_DAYS,
+             SUM (TB_MAIN2."TOTAL A/R") AS "TOTAL A/R",
+             SUM (TB_MAIN2."CCU AMOUNT") AS "CCU AMOUNT"
+        FROM (    SELECT PLV.PICKLIST_VALUE_CD,
+             PLV.VALUE_TX
+                AS JURISDICTION,
+             COALESCE (TB_MAIN.AR_0_60_DAYS, 0)
+                AS AR_0_60_DAYS,
+             COALESCE (TB_MAIN.AR_61_180_DAYS, 0)
+                AS AR_61_180_DAYS,
+             COALESCE (TB_MAIN.AR_181_365_DAYS, 0)
+                AS AR_181_365_DAYS,
+             COALESCE (TB_MAIN.AR_GREATER_365_DAYS, 0)
+                AS AR_GREATER_365_DAYS,
+             COALESCE (
+                (  TB_MAIN.AR_0_60_DAYS
+                 + TB_MAIN.AR_61_180_DAYS
+                 + TB_MAIN.AR_181_365_DAYS
+                 + TB_MAIN.AR_GREATER_365_DAYS),
+                0)
+                AS "TOTAL A/R",
+             TB_MAIN."CCU AMOUNT"
+        FROM (SELECT distinct trim(TB_PICKLIST_VALUES.PICKLIST_VALUE_CD) PICKLIST_VALUE_CD,
+             trim(VALUE_TX) VALUE_TX
+               FROM TB_PICKLIST_VALUES
+              WHERE     PICKLIST_TYPE_ID = 104
+                    AND TB_PICKLIST_VALUES.PICKLIST_VALUE_CD NOT IN
+                           ('3825', '3826', '9115')
+                    AND DELETE_SW = 'N') PLV
+             LEFT JOIN
+             (  SELECT COUNTY_CD,
+                       SUM (TAB2.AR_0_60_DAYS) AS AR_0_60_DAYS,
+                       SUM (TAB2.AR_61_180_DAYS) AS AR_61_180_DAYS,
+                       SUM (TAB2.AR_181_365_DAYS) AS AR_181_365_DAYS,
+                       SUM (TAB2.AR_GREATER_365_DAYS) AS AR_GREATER_365_DAYS,
+                       SUM (TAB2.CCU_AMOUNT) AS "CCU AMOUNT"
+                  FROM (SELECT COUNTY_CD,
+                               RECEIVABLE_BALANCE_NO,
+                               CASE
+                                  WHEN     (    NO_OF_DAYS >= 0
+                                            AND NO_OF_DAYS <= 60)
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_0_60_DAYS,
+                               CASE
+                                  WHEN     (    NO_OF_DAYS > 60
+                                            AND NO_OF_DAYS <= 180)
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_61_180_DAYS,
+                               CASE
+                                  WHEN     (    NO_OF_DAYS > 180
+                                            AND NO_OF_DAYS <= 365)
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_181_365_DAYS,
+                               CASE
+                                  WHEN     NO_OF_DAYS > 365
+                                       AND (   STS_CD <> '775'
+                                            OR (    STS_CD = '775'
+                                                AND COLLECTION_STATUS_DT >
+                                                    CAST (END_DATE  AS DATE)))
+                                  THEN
+                                     BALANCE
+                                  ELSE
+                                     0
+                               END AS AR_GREATER_365_DAYS,
+                               (CASE
+                                   WHEN     STS_CD = '775'
+                                        AND COLLECTION_STATUS_DT BETWEEN CAST (
+                                                                            START_DATE 
+                                                                               AS DATE)
+                                                                     AND CAST (
+                                                                            END_DATE 
+                                                                               AS DATE)
+                                   THEN
+                                      BALANCE
+                                   ELSE
+                                      NULL
+                                END) AS CCU_AMOUNT
+                          FROM (SELECT PROVIDER_ID,
+                                       COUNTY_CD,
+                                       RECEIVABLE_BALANCE_NO,
+                                       NO_OF_DAYS,
+                                       STS_CD,
+                                       CASE
+                                          WHEN RECEIVABLE_DETAIL_ID IN
+                                                  (SELECT RECEIVABLE_DETAIL_ID
+                                                    FROM TB_RECEIVABLE_LIQUIDATION
+                                                   WHERE     DELETE_SW = 'N'
+                                                         AND DATE (CREATE_TS) >
+                                                             '2018-12-31')
+                                          THEN
+                                               RECEIVABLE_BALANCE_NO
+                                             + (SELECT SUM (
+                                                          COLLECTED_AMOUNT_NO)
+                                                 FROM TB_RECEIVABLE_LIQUIDATION
+                                                WHERE     RECEIVABLE_DETAIL_ID =
+                                                          MAIN.RECEIVABLE_DETAIL_ID
+                                                      AND DELETE_SW = 'N'
+                                                      AND DATE (CREATE_TS) >
+                                                          '2018-12-31')
+                                          ELSE
+                                             RECEIVABLE_BALANCE_NO
+                                       END AS BALANCE,
+                                       COLLECTION_STATUS_DT
+                                  FROM (  SELECT DISTINCT
+                                                 TB_RECEIVABLE_HEADER.PROVIDER_ID,
+                                                 TB_PROVIDER.COUNTY_CD,
+                                                 CASE
+                                                    WHEN WRITE_OFF_ACTION_DATE >
+                                                         CAST (END_DATE  AS DATE)
+                                                    THEN
+                                                         COALESCE (
+                                                            SUM (
+                                                               TB_RECEIVABLE_DETAIL.RECEIVABLE_BALANCE_NO),
+                                                            0)
+                                                       + COALESCE (
+                                                            SUM (
+                                                               TB_RECEIVABLE_DETAIL.WRITTEN_OFF_AMOUNT_NO),
+                                                            0)
+                                                    ELSE
+                                                       SUM (
+                                                          TB_RECEIVABLE_DETAIL.RECEIVABLE_BALANCE_NO)
+                                                 END
+                                                    AS RECEIVABLE_BALANCE_NO,
+                                                   DATE_PART (
+                                                      'DAYS',
+                                                      DATE (
+                                                         CAST (END_DATE  AS DATE)))
+                                                 - DATE_PART (
+                                                      'DAYS',
+                                                      (DATE (
+                                                          SUBSTRING (
+                                                             TB_RECEIVABLE_DETAIL.RECEIVABLE_TS
+                                                             FROM 1
+                                                             FOR 10))))
+                                                    AS NO_OF_DAYS,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_CD
+                                                    AS STS_CD,
+                                                 TB_RECEIVABLE_DETAIL.RECEIVABLE_DETAIL_ID,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_DT
+                                            FROM TB_RECEIVABLE_DETAIL
+                                                 JOIN TB_RECEIVABLE_HEADER
+                                                    ON     TB_RECEIVABLE_HEADER.RECEIVABLE_ID =
+                                                           TB_RECEIVABLE_DETAIL.RECEIVABLE_ID
+                                                       AND TB_RECEIVABLE_DETAIL.DELETE_SW =
+                                                           'N'
+                                                       AND TB_RECEIVABLE_HEADER.DELETE_SW =
+                                                           'N'
+                                                 JOIN
+                                                 (SELECT *
+                                                   FROM TB_RECEIVABLE_COLLECTION_STATUS
+                                                  WHERE COLLECTION_STATUS_ID IN
+                                                           (SELECT MAX (
+                                                                      COLLECTION_STATUS_ID)
+                                                                FROM TB_RECEIVABLE_COLLECTION_STATUS
+                                                               WHERE     DELETE_SW =
+                                                                         'N'
+                                                                     AND COLLECTION_STATUS_DT <=
+                                                                         CAST (
+                                                                            END_DATE 
+                                                                               AS DATE)
+                                                            GROUP BY RECEIVABLE_DETAIL_ID))
+                                                 TB_RECEIVABLE_COLLECTION_STATUS
+                                                    ON     TB_RECEIVABLE_DETAIL.RECEIVABLE_DETAIL_ID =
+                                                           TB_RECEIVABLE_COLLECTION_STATUS.RECEIVABLE_DETAIL_ID
+                                                       AND TB_RECEIVABLE_COLLECTION_STATUS.DELETE_SW =
+                                                           'N'
+                                                 JOIN TB_PROVIDER
+                                                    ON     TB_PROVIDER.PROVIDER_ID =
+                                                           TB_RECEIVABLE_HEADER.PROVIDER_ID
+                                                       AND TB_PROVIDER.DELETE_SW =
+                                                           'N'
+                                                 LEFT JOIN
+                                                 (SELECT *
+                                                   FROM TB_PAYMENT_PLAN
+                                                  WHERE     DELETE_SW = 'N'
+                                                        AND PAYMENT_PLAN_ID IN
+                                                               (SELECT MAX (
+                                                                          PAYMENT_PLAN_ID)
+                                                                    FROM TB_PAYMENT_PLAN
+                                                                   WHERE     DELETE_SW =
+                                                                             'N'
+                                                                         AND (END_DT
+                                                                                 IS NULL --OR END_DT <= F_DAYMONTH(DATE(CAST(CURRENT_DATE  AS DATE)) - INTERVAL '1 MONTH','L' ,'')
+                                                                                        )
+                                                                GROUP BY RECEIVABLE_ID))
+                                                 TB_PAYMENT_PLAN
+                                                    ON TB_PAYMENT_PLAN.RECEIVABLE_ID =
+                                                       TB_RECEIVABLE_DETAIL.RECEIVABLE_ID
+                                           WHERE     (   RECEIVABLE_BALANCE_NO >=
+                                                         0
+                                                      OR (    TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_CD =
+                                                              '775'
+                                                          AND DATE (
+                                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_DT) BETWEEN F_DAYMONTH (
+                                                                                                                                  CAST (
+                                                                                                                                     END_DATE 
+                                                                                                                                        AS DATE),
+                                                                                                                                  ' ',
+                                                                                                                                  'C')
+                                                                                                                           AND F_DAYMONTH (
+                                                                                                                                  CAST (
+                                                                                                                                     CURRENT_DATE
+                                                                                                                                        AS DATE),
+                                                                                                                                  'L',
+                                                                                                                                  'C')))
+                                                 AND DATE (
+                                                        SUBSTRING (
+                                                           TB_RECEIVABLE_DETAIL.RECEIVABLE_TS
+                                                           FROM 1
+                                                           FOR 10)) <=
+                                                     CAST (END_DATE  AS DATE)
+                                                 AND TB_RECEIVABLE_DETAIL.APPROVAL_STATUS_CD =
+                                                     '3047'
+                                        GROUP BY TB_PROVIDER.COUNTY_CD,
+                                                 TB_RECEIVABLE_HEADER.PROVIDER_ID,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_CD,
+                                                 TB_RECEIVABLE_COLLECTION_STATUS.COLLECTION_STATUS_DT,
+                                                 DATE (
+                                                    SUBSTRING (
+                                                       TB_RECEIVABLE_DETAIL.RECEIVABLE_TS
+                                                       FROM 1
+                                                       FOR 10)),
+                                                 TB_RECEIVABLE_DETAIL.RECEIVABLE_DETAIL_ID,
+                                                 TB_RECEIVABLE_DETAIL.WRITTEN_OFF_AMOUNT_NO,
+                                                 TB_RECEIVABLE_DETAIL.WRITE_OFF_ACTION_DATE)
+                                       MAIN) AS TAB1) AS TAB2
+              GROUP BY COUNTY_CD) TB_MAIN
+                ON TRIM (TB_MAIN.COUNTY_CD) = TRIM (PLV.PICKLIST_VALUE_CD)) tb_main2                          
+       WHERE TB_MAIN2."TOTAL A/R" > 0 OR TB_MAIN2."CCU AMOUNT" > 0
+      ORDER BY 1 );
+    END;
+    $function$
+

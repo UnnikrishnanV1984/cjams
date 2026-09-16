@@ -1,0 +1,1 @@
+UPDATE defecttracking.supportlog set rejecteddate = insertedon where jirarequestsent = 'Rejected' and rejecteddate is null;

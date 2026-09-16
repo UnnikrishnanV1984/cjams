@@ -1,0 +1,2 @@
+update intakeservreqchildremoval set removaldate='2012-07-17 00:00:00', removaltime='2012-07-17 00:00:00', updatedby='CDM-10612',updatedon=now() where personid='a1a2ecb5-9057-4525-9389-f4789e344580' and servicecaseid='2b71562b-b162-4757-931b-ff756c30b2fb'
+and intakeservreqchildremovalid='4bf36934-a7b9-4430-8d24-08ee73d3134c';

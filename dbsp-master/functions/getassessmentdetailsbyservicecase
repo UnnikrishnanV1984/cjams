@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION getassessmentdetailsbyservicecase(objectsid character varying, lassessmenttemplateid uuid, v_roletypecode character varying DEFAULT ''::character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+declare l_assment json;
+ 
+begin
+  
+ SELECT json_agg(astmp) INTO l_assment 
+ FROM  (
+   SELECT  AST.assessmentTextPositionTypeKey
+     , AST.assessmentscoresetupid
+     , AST.assessmenttemplateid
+     , AST.calculationmethod
+     , AST.datamappingenabled
+     , AST.description
+     , AST.effectivedate
+     , AST.enableassessmentscore
+     , AST.expirationdate
+     , AST.external_templateid
+     , AST.helptext
+     , AST.instructions
+     , AST.isvisible
+     , AST.name
+     , AST.scoringname
+     , AST.titleheadertext
+     , AST.version
+     , a.submissionid
+     , a.submissiondata
+     --,null as submissiondata
+     , coalesce(A.score,0) score 
+     , A.assessmentstatustypekey
+     , A.assessmentid
+       
+  --isr.intakeserviceid , 
+  --v_servicerequestnumber as servicerequestnumber,
+  , CASE  WHEN A.servicecaseid IS NULL THEN 
+     (SELECT ISR.servicerequestnumber FROM intakeservicerequest ISR where ISR.intakeserviceid=A.objectid::uuid)
+    ELSE 
+     (SELECT sCASE.serviceCASEnumber  FROM serviceCASE sCASE where sCASE.serviceCASEid=objectsid::uuid)
+    END as servicerequestnumber
+  , A.serviceCASEid 
+  , to_char(a.updatedon::timestamp, 'MM/dd/yyyy - HH12:MI PM') updateddate
+  , CASE a.updatedby  WHEN 'migration' THEN  'Migrated' ELSE coalesce(up.lastname,'')||', ' ||coalesce(up.firstname,'') END  as username
+  , a.insertedon as createddate
+  , AC.comments
+  , coalesce(A.ismigrated,0)   ismigration
+  , A.assessmentsubmissiontypekey
+  , CASE when AST.name = 'safeCOhp' THEN (SELECT * FROM  getsubmissiondetails(a.submissionid)) ELSE NULL end as migratedsubmissiondata
+  , CASE  WHEN coalesce(A.ismigrated,0)= 1 AND LOWER(AST."name") = 'safe-c'  THEN 
+    (SELECT datavalue FROM assessmentsubmission asub WHERE asub.datakey ='safetyassessmentcompletiondate' AND asub.assessmentid = a.assessmentid AND asub.activeflag =1 LIMIT 1) 
+    ELSE NULL END safetyassessmentcompletiondate 
+  ,concat(p.firstname,' ',p.middlename,' ',p.lastname) as clientname
+  --isr.servicerequestnumber 
+  FROM  assessment A --on A.serviceCASEid = isr.serviceCASEid 
+    INNER JOIN  assessmenttemplate AST ON AST.assessmenttemplateid = A.assessmenttemplateid AND A.activeflag = 1 
+      AND A.assessmenttemplateid =lassessmenttemplateid
+    LEFT join assessmentcomments AC on AC.assessmentid = A.assessmentid and ac.activeflag =1
+    LEFT join userprofile up on up.securityusersid = a.updatedby 
+    LEFT join person p on p.personid = a.personid
+  WHERE  ( A.serviceCASEid = objectsid::uuid OR 
+     A.objectid IN (SELECT intakeserviceid FROM intakeservicerequest WHERE servicecaseid = objectsid::uuid)
+    )
+    AND lower(A.assessmentstatustypekey) Not in ( CASE coalesce(v_roletypecode,'')  WHEN '' THEN 'inprocess' ELSE '' END)
+  ORDER by a.updatedon desc 
+ ) as astmp;
+
+return l_assment;        
+END;
+
+$function$
+

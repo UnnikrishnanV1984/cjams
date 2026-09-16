@@ -1,0 +1,1 @@
+alter table intakeservicerequest ALTER COLUMN  nonreferalreason type CHARACTER varying(2000);

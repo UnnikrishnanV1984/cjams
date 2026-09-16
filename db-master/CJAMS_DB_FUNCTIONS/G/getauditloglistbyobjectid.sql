@@ -1,0 +1,96 @@
+  DROP FUNCTION IF EXISTS cjams.getauditloglistbyobjectid(v_objectid character varying, _page integer, _limit integer, sortorder character varying, sortcolumn character varying, v_updatedfrom character varying, v_updatedto character varying, updatedperson character varying);
+  DROP FUNCTION IF EXISTS cjams.getauditloglistbyobjectid(v_objectid character varying, _page integer, _limit integer, sortorder character varying, sortcolumn character varying, v_updatedfrom character varying, v_updatedto character varying, updatedperson character varying,v_casenumber character varying);
+ CREATE OR REPLACE FUNCTION cjams.getauditloglistbyobjectid(v_objectid character varying, _page integer, _limit integer, sortorder character varying, sortcolumn character varying, v_updatedfrom character varying, v_updatedto character varying, updatedperson character varying,v_casenumber character varying)
+ RETURNS TABLE(totalcount bigint, logtypekey character varying, description character varying, inserteduserdetails json, updateduserdetails json, insertedon timestamp without time zone, insertedby character varying, updatedon timestamp without time zone, updatedby character varying)
+ LANGUAGE plpgsql
+AS $function$
+ 
+DECLARE                    
+_offset    integer;
+ 
+
+BEGIN
+_offset  :=  (_page  -  1)  *  _limit;    
+
+ 
+ RAISE  NOTICE  '_page  %',_page;
+RAISE  NOTICE  '_limit  %',_limit;
+
+
+
+RETURN  QUERY  
+
+
+ select count(1) over() as totalcount,
+ al.logtypekey as logtypekey,
+ al.description :: character varying as description ,
+ 
+  (SELECT json_agg (e) 
+  	FROM ( 
+		 SELECT  tm.roletypekey ,r.description ,t.teamid , up.firstname ,up.lastname   ,t.teamname                                                                                                        
+		  FROM   teammemberassignment tma  INNER JOIN  teammember tm  ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1                                                                                                                                                                                       
+		  inner join team t on t.teamid = tm.teamid  and t.activeflag =1                                                                                                                                                                                           
+		  inner join userprofile up on up.securityusersid = tma.securityusersid inner join role r on r.roletypekey=tm.roletypekey                                                                                                                                                                                    
+		  and up.activeflag =1  WHERE  tma.SecurityUsersId = al.insertedby  AND   tma.activeflag =1 )e
+	) :: json as inserteduserdetails, 
+  (SELECT json_agg (e) 
+  	FROM (	 						
+		  SELECT tm.roletypekey ,r.description ,t.teamid , up.firstname ,up.lastname  ,t.teamname                                                                                                        
+		  FROM   teammemberassignment tma  INNER JOIN  teammember tm  ON tm.teammemberid = tma.teammemberid                                                                                                                                                                                       
+		  inner join team t on t.teamid = tm.teamid  and t.activeflag =1                                                                                                                                                                                           
+		  inner join userprofile up on up.securityusersid = tma.securityusersid inner join role r on r.roletypekey=tm.roletypekey                                                                                                                                                                                    
+		  WHERE  tma.SecurityUsersId = al.updatedby and (case when up.activeflag = 1 then tm.activeflag =1 and tma.activeflag = 1 else true end)) e 
+  ) :: json as updateduserdetails ,
+  al.insertedon as insertedon,
+  (select up.displayname from userprofile up where up.securityusersid=al.insertedby) as insertedby,
+  al.updatedon as updatedon,
+  (select up.displayname from userprofile up where up.securityusersid=al.updatedby) as updatedby
+  from auditlog al where al.objectid in (v_objectid, v_casenumber)  
+	  
+and
+case    WHEN (v_updatedfrom IS NOT NULL and  v_updatedto is not null)  and ( v_updatedfrom !='' and v_updatedto !='' )
+		THEN to_date(cast(al.insertedon::date as text), 'YYYY-MM-DD') 
+		BETWEEN to_date(cast(v_updatedfrom::date as TEXT), 'YYYY-MM-DD') and to_date(cast(v_updatedto::date as text), 'YYYY-MM-DD')
+   	  WHEN (v_updatedto IS NOT NULL and  v_updatedto !='') and  (v_updatedfrom is null  or  v_updatedfrom ='' )
+   	 	THEN to_date(cast(al.insertedon::date as text), 'YYYY-MM-DD')<= to_date(cast(v_updatedto::date as TEXT), 'YYYY-MM-DD') 
+      WHEN (v_updatedfrom IS NOT null and v_updatedfrom !='' ) and (v_updatedto ='' or v_updatedto is null)   
+      	THEN to_date(cast(al.insertedon::date as text), 'YYYY-MM-DD')>= to_date(cast(v_updatedfrom::date as TEXT), 'YYYY-MM-DD') 
+   else true end
+	  
+  and case when updatedperson is not null and updatedperson!='' then al.updatedby = updatedperson  else true end 	  
+ 
+order by (
+				CASE sortorder
+					WHEN 'asc'
+					THEN
+                         CASE sortcolumn
+                         	WHEN 'logtypekey' THEN al.logtypekey 
+                            WHEN 'description' THEN  (al.description :: character varying)
+                         	WHEN 'updatedby' THEN al.updatedby  
+                         	WHEN 'updatedon' THEN (al.updatedon :: character varying)
+                         	 
+             		ELSE
+                  		 al.insertedon :: character varying
+             		END
+             	END) ASC NULLS LAST,
+                (CASE sortorder
+                  	WHEN 'desc'
+					THEN
+						CASE sortcolumn
+						    WHEN 'logtypekey' THEN al.logtypekey 
+                            WHEN 'description' THEN  (al.description :: character varying)
+                         	WHEN 'updatedby' THEN al.updatedby  
+                         	WHEN 'updatedon' THEN (al.updatedon :: character varying)
+                         	 
+		             	ELSE
+		                 	 al.insertedon :: character varying
+             			END
+                   END) DESC NULLS last
+	                   
+LIMIT  _limit  OFFSET  _offset
+;
+ 
+  END;
+
+$function$
+;

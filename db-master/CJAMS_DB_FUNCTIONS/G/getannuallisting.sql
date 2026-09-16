@@ -1,0 +1,28 @@
+ CREATE OR REPLACE FUNCTION public.getannuallisting(v_pagenumber integer, v_limit integer)                                                                                               
+  RETURNS json                                                                                                                                                                           
+  LANGUAGE plpgsql                                                                                                                                                                       
+ AS $function$                                                                                                                                                                         
+                                                                                                                                                                                       
+ DECLARE result json;                                                                                                                                                                  
+ DECLARE totalcount integer;                                                                                                                                                           
+                                                                                                                                                                                       
+ BEGIN                                                                                                                                                                                 
+                                                                                                                                                                                       
+  totalcount := 0;                                                                                                                                                                     
+                                                                                                                                                                                       
+       IF v_pagenumber = 1 THEN                                                                                                                                                        
+                                                                                                                                                                                       
+          select Count(*) into totalcount from progressnote as a left outer join progressnotetype as b on a.progressnotetypeid=b.progressnotetypeid;                                   
+                                                                                                                                                                                       
+       END IF;                                                                                                                                                                         
+                                                                                                                                                                                       
+      select array_to_json(array_agg(e)) from                                                                                                                                          
+       (SELECT array_to_json(array_agg(row_to_json(d))) as "data",totalcount as "count" from (                                                                                         
+         select a.*                                                                                                                                                                    
+         from progressnote as a left outer join progressnotetype as b on a.progressnotetypeid=b.progressnotetypeid  LIMIT v_limit OFFSET (v_pagenumber - 1) * v_limit )d)e INTO result;
+                                                                                                                                                                                       
+                                                                                                                                                                                       
+ RETURN COALESCE(result,'[]');                                                                                                                                                         
+                                                                                                                                                                                       
+ END; $function$                                                                                                                                                                         
+

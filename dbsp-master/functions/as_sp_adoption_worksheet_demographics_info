@@ -1,0 +1,123 @@
+CREATE OR REPLACE FUNCTION as_sp_adoption_worksheet_demographics_info(al_client_id bigint)
+ RETURNS TABLE(client_id bigint, childname character varying, dateofbirth timestamp without time zone, gender character varying, childrace character varying, childjurisdiction character varying, adoptionpetitiondate timestamp without time zone, adoptionfinalizationdate timestamp without time zone, adoptionparent1signdate timestamp without time zone, adoptionparent2signdate timestamp without time zone, adoptionldssdate timestamp without time zone, singleparentadoptioncheck integer)
+ LANGUAGE plpgsql
+AS $function$                                                                                                                                                                                                                                                                                                                     
+                                                                                                                                                                                                                                                                                                                                   
+DECLARE 
+  vs_Procedure_nm           VARCHAR(100) DEFAULT 'sp_adoption_worksheet_demographics_info';
+  vs_chld_nm            VARCHAR(250);
+  vd_birth_dt            TIMESTAMP;
+  vs_gender            VARCHAR(20);
+  vs_race             VARCHAR(50);
+  vs_us_ctzn            VARCHAR(50);
+  vs_jrsdctn            VARCHAR(50);
+  vs_qlfd_alien           VARCHAR(50);
+  vd_adp_pitn_dt           TIMESTAMP;
+  vd_adp_fnlztn_dt          TIMESTAMP;
+  vd_adp_ldss_dt                                          TIMESTAMP;
+  vd_adp_parent1sign_dt                                   TIMESTAMP;
+  vd_adp_parent2sign_dt                                   TIMESTAMP;
+  vd_single_parent_adoption_check       INTEGER;
+ 
+  
+   
+ BEGIN 
+CREATE TEMP TABLE IF NOT EXISTS
+Temp_worksheet_demographics_info ( 
+  client_id             BIGINT,
+  childname            VARCHAR(250),
+  dateofbirth            TIMESTAMP,
+  gender             VARCHAR(20),
+  childrace            VARCHAR(50),
+  uscitizen            VARCHAR(50),
+  childjurisdiction          VARCHAR(50),
+  qualifiedalien           VARCHAR(50),
+  adoptionpetitiondate         TIMESTAMP,
+  adoptionfinalizationdate        TIMESTAMP,
+  adoptionparent1signdate                                 TIMESTAMP,
+  adoptionparent2signdate                                 TIMESTAMP,
+  adoptionldssdate                                        TIMESTAMP,
+  singleparentadoptioncheck        INTEGER
+ ); 
+
+-- Child Name  
+SELECT concat(per.firstname, ' ', per.middlename, ' ', per.lastname)  
+ INTO vs_chld_nm
+   FROM person as per     
+WHERE per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+  
+-- Date of Birth   
+SELECT per.dob  
+ INTO vd_birth_dt
+   FROM person as per     
+WHERE per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+-- Gender  
+SELECT per.gendertypekey  
+ INTO vs_gender
+   FROM person as per     
+WHERE per.cjamspid::BIGINT = al_client_id
+   AND per.activeflag = 1;
+
+-- Child Race
+SELECT rt.typedescription::VARCHAR
+ INTO vs_race
+ FROM racetype rt, person per
+WHERE rt.activeflag = 1 AND TRIM(rt.racetypekey)=TRIM(per.racetypekey)
+ AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+
+
+-- Child Jurisdiction  
+SELECT  ida.jsondata->'General'->>'countyid' INTO vs_jrsdctn
+ FROM   intakeservicerequestactor isra, person per, intakedastaging ida 
+ WHERE  ida.intakenumber = isra.intakenumber
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 LIMIT 1;
+
+
+-- Adoption Petition Filed Date
+SELECT ( CASE WHEN (isrp.petitiontypekey IN ('Adoption')) 
+    THEN isrp.petitiondate ELSE NULL END )
+ INTO vd_adp_pitn_dt
+   FROM intakeservicerequestpetition isrp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per     
+WHERE isrp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isrp.updatedon DESC LIMIT 1;
+
+-- Adoption Finalization Date  
+SELECT adpa.finalizationdate , adpa.parent1signdate , adpa.parent2signdate , adpa.ldssdate , adpa.singleparentadoptioncheck
+ INTO vd_adp_fnlztn_dt , vd_adp_parent1sign_dt , vd_adp_parent2sign_dt , vd_adp_ldss_dt , vd_single_parent_adoption_check
+   FROM adoptionagreement adpa, adoptionplanning ap, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per
+WHERE ap.adoptionplanningid = adpa.adoptionplanningid AND ap.activeflag = 1 
+ AND pp.permanencyplanid = ap.permanencyplanid AND pp.activeflag = 1
+ AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1 AND ap.servicecaseid = pp.servicecaseid
+ AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N' 
+ AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1
+ AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY  adpa.updatedon asc limit 1;
+
+INSERT INTO Temp_worksheet_demographics_info
+SELECT 
+  al_client_id,
+  vs_chld_nm,
+  vd_birth_dt,
+  vs_gender,
+  vs_race,
+  vs_us_ctzn,
+  vs_jrsdctn,
+  vs_qlfd_alien,
+  vd_adp_pitn_dt,
+  vd_adp_fnlztn_dt,
+  vd_adp_parent1sign_dt,
+  vd_adp_parent2sign_dt,
+  vd_adp_ldss_dt,
+  vd_single_parent_adoption_check;                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                                                   
+ RETURN QUERY SELECT *                                                                                                                                                                                                                                                                                                             
+                FROM Temp_worksheet_demographics_info;                                                                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                                                                                                                   
+ DROP TABLE Temp_worksheet_demographics_info;                                                                                                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                                                                                                   
+    END                                                                                                                                                                                                                                                                                                                            
+     $function$
+

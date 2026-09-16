@@ -1,0 +1,147 @@
+CREATE OR REPLACE FUNCTION sp_update_payment_reasons(as_prov_type character)
+ RETURNS void
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Amit Rastogi
+-- 03/20/2007
+-- incident 7263
+-- 05/09/2007 Vineet Tirodkar - Added CONTINUE HANDLER to trap the Errors/Warnings in tb_BATCH_ERROR_LOG # 14088
+------------------------------------------------------------------------
+
+DECLARE vl_payment_detail_id BIGINT DEFAULT 0;--
+DECLARE vs_void_reason_cd VARCHAR(5)DEFAULT '3040';--
+DECLARE vs_date_reason_cd VARCHAR(5) DEFAULT '3035';--
+DECLARE vs_reason_cd VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_void_sw CHAR(1) DEFAULT NULL;--
+
+--Log Error
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(100) DEFAULT 'SP_UPDATE_PAYMENT_REASONS';--
+DECLARE vs_identity_column VARCHAR(100);--
+DECLARE vs_identity_val VARCHAR(100);--
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+cur_update_reason record;
+ cur_update_reason_refcur REFCURSOR;
+BEGIN
+BEGIN
+ EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    --SET al_sqlcode = -1 ;--
+     as_error := COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error := COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error := as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_UPDATE_PAYMENT_REASONS' ,
+           NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+    
+      as_error := '';   --
+END;--
+--Log error
+
+IF as_prov_type = 'P' THEN -- private providers payments
+  OPEN cur_update_reason_refcur FOR
+       -- FOR cur_update_reason AS
+                select pd.payment_detail_id,p.void_sw
+                --p.entry_dt,p.exit_dt,p.void_sw,pd.draft_service_start_dt,pd.draft_service_end_dt,pd.payment_detail_id
+                from tb_placement p, tb_payment_detail pd
+                where p.placement_id = pd.placement_id and
+                pd.change_reason_cd is null and pd.draft_service_id is not null and pd.final_service_id is null and pd.delete_Sw = 'N'
+                and p.provider_organization_id is not null;
+
+-- DO
+    loop
+ fetch cur_update_reason_refcur into cur_update_reason;
+           exit when not found;
+
+                 vl_payment_detail_id := cur_update_reason.payment_detail_id;--
+                 vs_void_sw := cur_update_reason.void_sw;--
+
+                IF vs_void_sw = 'Y' THEN
+                     vs_reason_cd := vs_void_reason_cd;--
+                ELSE
+                     vs_reason_cd := vs_date_reason_cd;--
+                END IF;--
+
+                update tb_payment_detail
+                set change_reason_cd = vs_reason_cd,
+                update_ts = current_timestamp,
+                update_user_id = 'finance'
+                where payment_detail_id = vl_payment_detail_id;--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+       as_error := 'Error in Updating Payment Detail - private providers payments'  ;--
+       vs_identity_column := 'Payment Detail ID';--
+       vs_identity_val := TO_CHAR(vl_payment_detail_id);--
+      --SIGNAL p_sp_error  ;--
+  END IF ;--
+
+        --END FOR;--
+  END LOOP;
+ELSE
+
+        --FOR cur_update_reason AS
+OPEN cur_update_reason_refcur FOR
+                select pd.payment_detail_id,p.void_sw
+                --p.entry_dt,p.exit_dt,p.void_sw,pd.draft_service_start_dt,pd.draft_service_end_dt,pd.payment_detail_id
+                from tb_placement p, tb_payment_detail pd
+                where p.placement_id = pd.placement_id and
+                pd.change_reason_cd is null and pd.draft_service_id is not null and pd.final_service_id is null and pd.delete_Sw = 'N'
+                and p.provider_organization_id is null;
+        -- DO
+    loop
+ fetch cur_update_reason_refcur into cur_update_reason;
+           exit when not found;
+
+                 vl_payment_detail_id := cur_update_reason.payment_detail_id;--
+                 vs_void_sw := cur_update_reason.void_sw;--
+
+                IF vs_void_sw = 'Y' THEN
+                     vs_reason_cd := vs_void_reason_cd;--
+                ELSE
+                     vs_reason_cd := vs_date_reason_cd;--
+                END IF;--
+
+                update tb_payment_detail
+                set change_reason_cd = vs_reason_cd,
+                update_ts = current_timestamp,
+                update_user_id = 'finance'
+                where payment_detail_id = vl_payment_detail_id;--
+
+   al_sqlcode := SQLCODE;--
+  IF al_sqlcode <> 0 THEN
+       as_error := 'Error in Updating Payment Detail'  ;--
+       vs_identity_column := 'Payment Detail ID';--
+       vs_identity_val := TO_CHAR(vl_payment_detail_id);--
+      --SIGNAL p_sp_error  ;--
+  END IF ;--
+        --END FOR;--
+  END LOOP;
+END IF;--
+
+END;
+
+$function$
+

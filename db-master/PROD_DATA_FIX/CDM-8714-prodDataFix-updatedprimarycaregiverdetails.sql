@@ -1,0 +1,1 @@
+update intakeservreqchildremoval i set primarycaregiverid = 1439497,primarycaregiveractorid = '2ff3704f-b0ce-4c89-8c32-964153479b0c', updatedby = 'Data Fix as per CDM-8714', updatedon = NOW() where removalid = 250812 and intakeservreqchildremovalid = 'b45a02c0-a18c-4716-bd3a-d5cac0a16d5b'

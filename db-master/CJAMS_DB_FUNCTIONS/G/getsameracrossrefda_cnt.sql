@@ -1,0 +1,23 @@
+ CREATE OR REPLACE FUNCTION public.getsameracrossrefda_cnt(actorids character varying[], p_intakeserviceid character varying, p_role character varying)
+  RETURNS SETOF bigint                                                                                                                                 
+  LANGUAGE plpgsql                                                                                                                                     
+ AS $function$                                                                                                                                         
+                                                                                                                                                       
+ DECLARE actoridform character varying;                                                                                                                
+                                                                                                                                                       
+  BEGIN                                                                                                                                                
+                                                                                                                                                       
+   RETURN QUERY                                                                                                                                        
+   SELECT COUNT(*)                                                                                                                                     
+   FROM IntakeServiceRequest ISR                                                                                                                       
+       JOIN  IntakeSerReqStatusType ISST ON ISR.IntakeSerReqStatusTypeId   = ISST.IntakeSerReqStatusTypeId                                             
+       JOIN IntakeServiceRequestInputType ISRIT ON ISRIT.IntakeServReqInputTypeId = ISR.IntakeServReqInputTypeId                                       
+       JOIN IntakeServiceRequestType ISRT ON ISRT.IntakeServReqTypeId = ISR.IntakeServReqTypeId                                                        
+       JOIN ServiceRequestSubType SUB ON SUB.ServiceRequestSubTypeId = ISR.IntakeServiceRequestClassId                                                 
+       JOIN  IntakeServiceRequestActor ISRA ON ISRA.IntakeServiceId = ISR.IntakeServiceId                                                              
+   WHERE ISRA.ActorId in (SELECT actorid from actor where actorid::character varying = ANY(actorids) and actortype = p_Role)                           
+   AND ISR.IntakeServiceId <> p_intakeserviceid::uuid;                                                                                                 
+                                                                                                                                                       
+ END;                                                                                                                                                  
+ $function$                                                                                                                                            
+

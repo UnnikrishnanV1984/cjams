@@ -1,0 +1,1243 @@
+CREATE OR REPLACE FUNCTION getdhs116report(as_section_type character varying, vl_client_acc_id integer, v_lipagesize bigint, v_lipagenumber bigint, date_sw character varying, date_from date, date_to date)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$\r
+\r
+DECLARE\r
+ v_dhs116report json;\r
+ v_pagenumber int;\r
+ v_pageoffset int;\r
+\r
+BEGIN \r
+ \r
+ IF COALESCE(v_liPageSize, 0) < 1 THEN                     \r
+  v_liPageSize := 10;\r
+ END IF;\r
+\r
+ IF COALESCE(v_liPageNumber, 0) < 1 THEN\r
+  v_liPageNumber := 1; \r
+ END IF;\r
+\r
+ v_pagenumber := v_liPageNumber - 1;\r
+ v_pageoffset := v_pagenumber * v_liPageSize;\r
+\r
+ drop table if exists  temp_account_transaction;\r
+ drop table if exists tmp_placemnt ;\r
+ drop table if exists temp_payment_detail;\r
+ drop table if exists temp_payment_header;\r
+ drop table if exists temp_payment_status ;\r
+\r
+ CREATE TEMP TABLE temp_account_transaction  AS\r
+  SELECT *,to_char(ta.benefit_start_dt  , 'Mon-YY') as benefit_start_dt_MONTH  \r
+  FROM tb_account_transaction ta  WHERE ta.client_account_id = vl_client_acc_id ;\r
+\r
+ create temp table tmp_placemnt  as\r
+  --select tp.placement_id  from tb_client_account ac , tb_placement tp  WHERE ac.client_id = tp.client_id  and ac.client_account_id = vl_client_acc_id ;\r
+  select pl.alternateid as placement_id\r
+  FROM placement pl\r
+   JOIN servicecase sc ON sc.servicecaseid = pl.servicecaseid AND sc.activeflag = 1\r
+   JOIN person pr ON pr.personid = pl.personid AND pr.activeflag = 1\r
+   join tb_client_account ac on ac.client_id = pr.cjamspid \r
+   JOIN intakeservreqchildremoval irl ON irl.intakeservreqchildremovalid = pl.intakeservreqchildremovalid AND irl.activeflag = 1\r
+  WHERE pl.activeflag = 1 and ac.client_account_id = vl_client_acc_id;\r
+\r
+ create temp table temp_payment_detail as \r
+  select  PD.FINAL_AMOUNT_NO,PD.PAYMENT_ID,PD.PLACEMENT_ID,PD.FINAL_SERVICE_START_DT, PD.DELETE_SW, PD.FINAL_SERVICE_ID, \r
+   PD.CLIENT_ID, PD.PAYMENT_DETAIL_ID \r
+  from tb_payment_detail pd join tmp_placemnt tp on  tp.placement_id  = pd.placement_id;   \r
+\r
+ CREATE TEMP TABLE temp_payment_header AS\r
+  SELECT PH.PAYMENT_ID, PH.PAYMENT_TYPE_CD, PH.MANUAL_SW, PH.DELETE_SW\r
+  FROM tb_payment_header ph join temp_payment_detail pd on ph.payment_id = pd.payment_id ;\r
+\r
+ CREATE TEMP TABLE temp_payment_status AS\r
+  SELECT PS.PAYMENT_ID,PS.DELETE_SW ,PS.PAYMENT_STATUS_CD  \r
+  FROM tb_payment_status ps join temp_payment_header ph on  ph.payment_id = ps.payment_id  ;\r
+\r
+ RAISE NOTICE '>>>>>>>>AS_SECTION_TYPE >>>> %',AS_SECTION_TYPE;\r
+\r
+ IF AS_SECTION_TYPE = 'CLTAC' THEN -- Report Header \r
+  \r
+  SELECT json_agg(e) into v_dhs116report from (\r
+  SELECT  CA.CLIENT_ID,  \r
+   F_ENAME('2955',CA.CLIENT_ID) AS CLIENT_NAME,\r
+   CONCAT('***-**-',RIGHT(PR.SSNNO::VARCHAR,4)) AS SSN,\r
+   PR.DOB AS DOB,\r
+   CA.OPEN_DT AS OPEN_DATE,\r
+   CA.CLOSE_DT AS CLOSE_DATE,\r
+   CA.BANK_NM AS BANK_NAME,\r
+   CA.ACCOUNT_NO_TX AS ACCT_NUMBER,\r
+   F_PDESC(CA.ACCOUNT_TYPE_CD, 40) AS ACCT_TYPE,\r
+   F_PDESC(CA.STATUS_CD, 41) AS ACCOUNT_STATUS,\r
+   COALESCE(CA.TOTAL_BALANCE_NO,0) AS TOTAL_BALANCE,\r
+   COALESCE(CA.OBLIGATED_FOR_COC,0) AS TOTAL_AVAILABLE_FOR_COC,\r
+   COALESCE(CA.OBLIGATED_FOR_COC,0) + COALESCE(CA.OBLIGATED_FOR_ANC,0) AS TOTAL_OBLIGATED,\r
+   COALESCE(CA.OBLIGATED_FOR_ANC,0) AS TOTAL_AVAILABLE_FOR_ANC\r
+  FROM TB_CLIENT_ACCOUNT CA,\r
+   PERSON PR\r
+  WHERE CA.CLIENT_ID = PR.cjamspid\r
+   AND CA.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+   AND CA.DELETE_SW = 'N'\r
+   AND PR.activeflag = 1\r
+  )e ;\r
+\r
+ ELSIF AS_SECTION_TYPE = 'TRANS' THEN -- Transactions Details\r
+  \r
+  SELECT json_agg(e) into v_dhs116report from (\r
+  SELECT  ACT.TRANSACTION_ID AS TRANSACTION_ID,\r
+   ACT.TRANSACTION_DT AS ENTRY_DATE,\r
+   LPAD(EXTRACT(MONTH FROM ACT.BENEFIT_START_DT)::VARCHAR,2,'0') || '/' || EXTRACT(YEAR FROM ACT.BENEFIT_START_DT) AS "BENEFIT/ANCILLARY MONTH/YEAR",\r
+   F_PDESC(ACT.TRANSACTION_TYPE_CD, 39)AS TRANSACTION_TYPE,\r
+   F_PDESC(ACT.TRANSACTION_SOURCE_CD, 38) AS TRANSACTION_SOURCE,\r
+   ACT.TRANSACTION_AMOUNT_NO AS AMOUNT,\r
+   ACT.CREDIT_DEBIT_SW\r
+  FROM TB_CLIENT_ACCOUNT CA,\r
+   temp_account_transaction ACT\r
+  WHERE CA.CLIENT_ACCOUNT_ID = ACT.CLIENT_ACCOUNT_ID\r
+   AND CA.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+   AND CA.DELETE_SW = 'N'\r
+   AND ACT.DELETE_SW = 'N' \r
+  ORDER BY ACT.BENEFIT_START_DT desc\r
+   --  ACT.TRANSACTION_ID\r
+  )e ;\r
+\r
+ ELSIF AS_SECTION_TYPE = 'COCRM' THEN -- Cost of Care Reimbursement\r
+\r
+  SELECT json_agg(e) into v_dhs116report from (\r
+  select count(1) over() as totalcount, \r
+   a.monthyear,\r
+   year,\r
+   month, \r
+   sum(a.RECEIPTS_FOR_COC) as RECEIPTS_FOR_COC ,\r
+   a.ACTUAL_COC as ACTUAL_COC, \r
+   sum(a.COC_REIMBURSEMENT) as COC_REIMBURSEMENT, \r
+   (a.AVAILABLE_BALANCE_NO_COC) as AVAILABLE_BALANCE_NO_COC \r
+  from \r
+   (select tr.benefit_start_dt_month as monthyear,\r
+    EXTRACT(YEAR FROM TR.BENEFIT_START_DT) AS YEAR, \r
+    EXTRACT(MONTH FROM TR.BENEFIT_START_DT) AS MONTH, \r
+    (\r
+    SUM( \r
+    (CASE WHEN TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C' AND  TR.TRANSACTION_SOURCE_CD in ( '587', '586', '585' ) THEN\r
+     COALESCE(TR.TRANSACTION_AMOUNT_NO,0.00)\r
+    ELSE \r
+     0.00\r
+    END )\r
+    )\r
+    +\r
+    COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00))\r
+     FROM temp_account_transaction TR1,\r
+      TB_CLIENT_ACCOUNT AC1\r
+    WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID  \r
+     AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+     AND TR1.DELETE_SW = 'N'  \r
+     AND AC1.DELETE_SW = 'N' \r
+     and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(month FROM TR1.BENEFIT_START_DT) =  EXTRACT(month FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)\r
+     AND TR1.TRANSACTION_TYPE_CD = '588'\r
+     AND TR1.CREDIT_DEBIT_SW = 'C'\r
+     AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+     AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+     AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+       FROM temp_account_transaction TR2\r
+         WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+       AND TR2.DELETE_SW = 'N' ) in  ( '587', '586', '585' ))\r
+         GROUP BY  to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+       -- EXTRACT(year from TR1.BENEFIT_START_DT),\r
+       -- EXTRACT(MONTH from TR1.BENEFIT_START_DT),\r
+       AC1.CLIENT_ID \r
+    ),0.00)        \r
+    - \r
+    COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00))\r
+     FROM temp_account_transaction TR1,\r
+      TB_CLIENT_ACCOUNT AC1\r
+    WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+     AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+     AND TR1.DELETE_SW = 'N'  \r
+     AND AC1.DELETE_SW = 'N' \r
+     and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) =  EXTRACT(MONTH FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =   EXTRACT(YEAR FROM TR.BENEFIT_START_DT)\r
+     AND TR1.TRANSACTION_TYPE_CD = '588'\r
+     AND TR1.CREDIT_DEBIT_SW = 'D'\r
+     AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+     AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+     AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+       FROM temp_account_transaction TR2\r
+       WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+        AND TR2.DELETE_SW = 'N' ) in  ( '587', '586', '585' ))\r
+       GROUP by to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+       -- EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),\r
+       -- EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),\r
+       AC1.CLIENT_ID\r
+    ),0.00)        \r
+    ) AS RECEIPTS_FOR_COC,\r
+ \r
+    (\r
+    COALESCE( (SELECT SUM(COALESCE(PD.FINAL_AMOUNT_NO,0.00)  )\r
+     FROM temp_payment_detail PD, \r
+      temp_payment_header PH,\r
+      temp_payment_status PS,\r
+      PLACEMENT PL   -- Removing view and placing with table for performance improvementment\r
+    WHERE PH.PAYMENT_ID = PD.PAYMENT_ID\r
+     AND PH.PAYMENT_ID = PS.PAYMENT_ID\r
+     AND PL.alternateid= PD.PLACEMENT_ID    \r
+     and to_char(PD.FINAL_SERVICE_START_DT,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(MONTH FROM PD.FINAL_SERVICE_START_DT) = EXTRACT(MONTH FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM PD.FINAL_SERVICE_START_DT) = EXTRACT(YEAR FROM TR.BENEFIT_START_DT) \r
+     AND ( PH.PAYMENT_TYPE_CD = '6' OR (PH.PAYMENT_TYPE_CD = '3294' AND PH.MANUAL_SW  = 'N' )) \r
+     AND PH.DELETE_SW = 'N' \r
+     AND PD.DELETE_SW = 'N'\r
+     AND PS.DELETE_SW = 'N' \r
+     --AND PL.DELETE_SW = 'N' \r
+     AND PD.FINAL_SERVICE_ID IS NOT NULL\r
+     AND PS.PAYMENT_STATUS_CD NOT IN ('1635','1639') \r
+     AND PD.PLACEMENT_ID IS NOT NULL\r
+     --   AND ( PL.VOID_SW = 'N' OR PL.VOID_SW is null OR RTRIM(LTRIM(PL.VOID_SW)) = '')\r
+     AND (PL.isvoided=0 or PL.isvoided is null)\r
+     AND PD.CLIENT_ID = AC.CLIENT_ID \r
+    ),0.00)  \r
+    -\r
+    COALESCE((SELECT SUM(COALESCE(RD.AMOUNT_NO,0.00)  )\r
+     FROM TB_RECEIVABLE_DETAIL RD\r
+    WHERE RD.DELETE_SW = 'N' \r
+     AND RD.PAYMENT_DETAIL_ID  in ( \r
+      SELECT PD.PAYMENT_DETAIL_ID\r
+      FROM temp_payment_detail PD, \r
+       temp_payment_header PH,\r
+       temp_payment_status PS,\r
+       PLACEMENT PL\r
+      WHERE PH.PAYMENT_ID = PD.PAYMENT_ID\r
+       AND PH.PAYMENT_ID = PS.PAYMENT_ID\r
+       AND PL.alternateid= PD.PLACEMENT_ID  \r
+       and to_char(PD.FINAL_SERVICE_START_DT,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(MONTH FROM PD.FINAL_SERVICE_START_DT) = EXTRACT(MONTH FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM PD.FINAL_SERVICE_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)\r
+     AND ( PH.PAYMENT_TYPE_CD = '6' OR (PH.PAYMENT_TYPE_CD = '3294' AND PH.MANUAL_SW  = 'N' )) \r
+     AND PH.DELETE_SW = 'N' \r
+     AND PD.DELETE_SW = 'N'\r
+     AND PS.DELETE_SW = 'N' \r
+     -- AND PL.DELETE_SW = 'N' \r
+     AND PD.FINAL_SERVICE_ID IS NOT NULL\r
+     AND PS.PAYMENT_STATUS_CD NOT IN ('1635','1639') \r
+     AND PD.PLACEMENT_ID IS NOT NULL\r
+     -- AND ( PL.VOID_SW = 'N' OR PL.VOID_SW is null OR RTRIM(LTRIM(PL.VOID_SW)) = '')\r
+     AND (PL.isvoided=0 or PL.isvoided is null)\r
+     AND PD.CLIENT_ID = AC.CLIENT_ID\r
+             )\r
+    ),0.00) \r
+    ) AS ACTUAL_COC,\r
+\r
+    SUM(\r
+    (CASE WHEN TR.TRANSACTION_TYPE_CD = '3444' AND TR.CREDIT_DEBIT_SW = 'D' AND TR.TRANSACTION_SOURCE_CD = '5477' THEN\r
+     COALESCE(TR.TRANSACTION_AMOUNT_NO,0.00)\r
+    ELSE\r
+     0.00\r
+    END )\r
+    ) AS COC_REIMBURSEMENT,\r
+    \r
+    /*\r
+    COALESCE((\r
+    ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00)) \r
+      FROM temp_account_transaction TR1,\r
+       TB_CLIENT_ACCOUNT AC1\r
+       WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+     AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+     AND TR1.DELETE_SW = 'N' \r
+     AND TR1.CREDIT_DEBIT_SW = 'C'\r
+     AND AC1.DELETE_SW = 'N'  \r
+     and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) =  EXTRACT(MONTH FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)\r
+     AND TR1.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) \r
+     AND ( TR1.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - INTERVAL '2 MONTHS'  ,'L' , 'C')  \r
+        OR COALESCE(TR1.LATE_ENTRY_SW, 'N')  = 'Y' )  \r
+     GROUP BY  to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+      -- EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),\r
+      -- EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),\r
+      AC1.CLIENT_ID\r
+    ) \r
+    + \r
+    COALESCE((\r
+    SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00))     \r
+     FROM temp_account_transaction TR1,\r
+      TB_CLIENT_ACCOUNT AC1\r
+    WHERE  TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+     AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+     AND TR1.DELETE_SW = 'N' \r
+     AND AC1.DELETE_SW = 'N'  \r
+     AND TR1.TRANSACTION_TYPE_CD = '588'\r
+     AND TR1.CREDIT_DEBIT_SW = 'C'\r
+     AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+     AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+     and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) = EXTRACT(MONTH FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)\r
+     AND TR1.REFERENCE_TRANSACTION_ID in \r
+     ( \r
+       SELECT TR2.TRANSACTION_ID\r
+       FROM temp_account_transaction TR2,\r
+          TB_CLIENT_ACCOUNT AC2\r
+      WHERE TR2.CLIENT_ACCOUNT_ID = AC2.CLIENT_ACCOUNT_ID \r
+        AND AC2.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+        AND TR2.DELETE_SW = 'N' \r
+        AND AC2.DELETE_SW = 'N'  \r
+        AND TR2.CREDIT_DEBIT_SW = 'C'\r
+        AND TR2.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) \r
+        AND ( TR2.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - INTERVAL '2 MONTHS'  ,'L' , 'C')  \r
+           OR COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'Y' )  \r
+     )\r
+     GROUP by    to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+      -- EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),\r
+      -- EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),\r
+      AC1.CLIENT_ID\r
+\r
+    ),0.00)\r
+    -\r
+    COALESCE((\r
+    SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00))     \r
+     FROM temp_account_transaction TR1,\r
+      TB_CLIENT_ACCOUNT AC1\r
+    WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+     AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+     AND TR1.DELETE_SW = 'N' \r
+     AND AC1.DELETE_SW = 'N'  \r
+     AND TR1.TRANSACTION_TYPE_CD = '588'\r
+     AND TR1.CREDIT_DEBIT_SW = 'D'\r
+     AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+     AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+     and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+     -- AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) =  EXTRACT(MONTH FROM TR.BENEFIT_START_DT)\r
+     -- AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)\r
+     AND TR1.REFERENCE_TRANSACTION_ID in \r
+     ( \r
+       SELECT TR2.TRANSACTION_ID\r
+       FROM temp_account_transaction TR2,\r
+          TB_CLIENT_ACCOUNT AC2\r
+      WHERE TR2.CLIENT_ACCOUNT_ID = AC2.CLIENT_ACCOUNT_ID \r
+        AND AC2.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+        AND TR2.DELETE_SW = 'N' \r
+        AND AC2.DELETE_SW = 'N'  \r
+        AND TR2.CREDIT_DEBIT_SW = 'C'\r
+        AND TR2.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) \r
+        AND ( TR2.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - INTERVAL '2 MONTHS'  ,'L' , 'C')  \r
+           OR COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'Y' )  \r
+     )\r
+     GROUP BY EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),\r
+      EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),\r
+      AC1.CLIENT_ID\r
+    ),0.00)\r
+    ),0.00) AS AVAILABLE_BALANCE_NO_COC,\r
+    */\r
+      \r
+    (CASE WHEN DATE(RTRIM((extract(year from TR.BENEFIT_START_DT))::varchar) || '-' || RTRIM((extract (month from TR.BENEFIT_START_DT))::varchar) || '-01') > F_daymonth(CURRENT_DATE - interval '2 MONTHS'  ,'L' , 'C')  THEN  \r
+     0\r
+    ELSE\r
+     -- TAB.BALANCE_AVAIL_FOR_ANCLL\r
+      \r
+     (COALESCE( \r
+     (SUM((CASE WHEN TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C' AND  TR.TRANSACTION_SOURCE_CD \r
+        in ( '587', '586', '585' ) AND COALESCE(TR.LATE_ENTRY_SW, 'N')  = 'N'   THEN\r
+       COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+       0\r
+      END )\r
+     )\r
+     +\r
+     COALESCE(\r
+     ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+      FROM temp_account_transaction TR1,\r
+       TB_CLIENT_ACCOUNT AC1\r
+     WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+      AND AC1.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+      AND TR1.DELETE_SW = 'N'  \r
+      AND AC1.DELETE_SW = 'N'  \r
+      and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+      -- AND extract (month from TR1.BENEFIT_START_DT) = extract (month from TR.BENEFIT_START_DT)\r
+      -- AND extract (year from TR1.BENEFIT_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+      AND TR1.TRANSACTION_TYPE_CD = '588'\r
+      AND TR1.CREDIT_DEBIT_SW = 'C'\r
+      AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+      AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+      AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+         FROM temp_account_transaction TR2\r
+        WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+           AND COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'N'  \r
+           AND TR2.DELETE_SW = 'N' ) in  ( '587', '586', '585' ))\r
+        GROUP BY  extract (month from TR1.BENEFIT_START_DT), \r
+         extract (year from TR1.BENEFIT_START_DT) , AC1.CLIENT_ID\r
+     ),0)        \r
+     - \r
+     COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+      FROM temp_account_transaction TR1,\r
+       TB_CLIENT_ACCOUNT AC1\r
+     WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+      AND AC1.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+      AND TR1.DELETE_SW = 'N'  \r
+      AND AC1.DELETE_SW = 'N'  \r
+      and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+      -- AND  extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+      -- AND  extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+      AND TR1.TRANSACTION_TYPE_CD = '588'\r
+      AND TR1.CREDIT_DEBIT_SW = 'D'\r
+      AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+      AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+      AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+        FROM temp_account_transaction TR2\r
+       WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+          AND COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'N'  \r
+          AND TR2.DELETE_SW = 'N' ) in  ( '587', '586', '585' ))\r
+       GROUP BY   to_char(tr1.benefit_start_dt,'Mon-YY') , AC1.CLIENT_ID\r
+     ),0)\r
+     ) \r
+     -\r
+     SUM(\r
+     (CASE WHEN TR.TRANSACTION_TYPE_CD = '3444' AND TR.CREDIT_DEBIT_SW = 'D' AND TR.TRANSACTION_SOURCE_CD = '5477' THEN\r
+       COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+     ELSE\r
+       0\r
+     END )\r
+     ) \r
+     ,0.00)) \r
+    END ) AS AVAILABLE_BALANCE_NO_COC\r
+   \r
+   FROM temp_account_transaction TR, \r
+    TB_CLIENT_ACCOUNT AC\r
+   WHERE TR.CLIENT_ACCOUNT_ID = AC.CLIENT_ACCOUNT_ID \r
+    AND AC.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+    AND TR.DELETE_SW = 'N'  \r
+    AND AC.DELETE_SW = 'N'  \r
+    and \r
+    (date_sw is null \r
+    or case when date_sw = 'M' then \r
+     (date_trunc('month', TR.benefit_start_dt) = date_trunc('month', CURRENT_DATE - interval '1' month)) \r
+    when date_sw = 'Y' then\r
+     date_part('year', now() :: date):: integer = date_part('year', TR.benefit_start_dt):: integer\r
+     --  (tat.benefit_start_dt = date_trunc('year', CURRENT_DATE)) \r
+    when date_sw = 'D' then \r
+     to_date(cast(TR.benefit_start_dt as TEXT), 'YYYY-MM-DD') \r
+      BETWEEN to_date(cast(date_from as TEXT), 'YYYY-MM-DD') \r
+       AND to_date( cast(date_to as TEXT), 'YYYY-MM-DD' ) \r
+    end) \r
+   GROUP BY tr.benefit_start_dt_month,\r
+      AC.CLIENT_ID,\r
+      EXTRACT(YEAR FROM TR.BENEFIT_START_DT),\r
+      EXTRACT(MONTH FROM TR.BENEFIT_START_DT) \r
+   )a\r
+   group by  a.monthyear ,A.YEAR , A.MONTH ,a.ACTUAL_COC,\r
+    -- a.COC_REIMBURSEMENT  ,\r
+      a.AVAILABLE_BALANCE_NO_COC\r
+   order by   A.YEAR DESC,\r
+     A.MONTH desc LIMIT v_liPageSize OFFSET v_pageoffset  \r
+  )e ;\r
+ \r
+ ELSIF AS_SECTION_TYPE = 'ANCLR' THEN -- Ancillary Services Child Account Funded \r
+\r
+  SELECT json_agg(e) into v_dhs116report from \r
+  (select --a.BENEFIT_START_DT,\r
+   count(1) over() as totalcount,  \r
+   a.YEAR, \r
+   a.MONTH, \r
+   a.monthyear,\r
+   sum(a.RECEIPTS_FOR_ANC) as RECEIPTS_FOR_ANC,\r
+   sum(a.EXCESS_AFTER_COC_REIMBURSEMENT) as EXCESS_AFTER_COC_REIMBURSEMENT,\r
+   (a.OBLIGATIONS),\r
+   a.OTHERDISBURSEMENT,\r
+   a.OTHERDISBURSEMENTOBLIGATION, \r
+   sum(a.ANCILLARY_PAYMENTS) as ANCILLARY_PAYMENTS,\r
+   (a.BALANCE_AVAIL_FOR_ANCILLARY)\r
+  from (\r
+  \r
+   SELECT tab2.MONTHYEAR,\r
+    TAB2.YEAR, \r
+    TAB2.MONTH, \r
+    TAB2.RECEIPTS_FOR_ANC,\r
+    TAB2.EXCESS_AFTER_COC_REIMBURSEMENT,\r
+    TAB2.OBLIGATIONS,\r
+    TAB2.ANCILLARY_PAYMENTS,\r
+    TAB2.BALANCE_AVAIL_FOR_ANCILLARY,\r
+    TAB2.OTHERDISBURSEMENT,\r
+    TAB2.OTHERDISBURSEMENTOBLIGATION \r
+   FROM (\r
+    SELECT TAB1.*,\r
+     -- TAB1.OTHERDISBURSEMENT,\r
+     -- TAB1.OTHERDISBURSEMENTOBLIGATION ,\r
+     SUM(TAB1.MONTHY_BAL_AVAIL_FOR_ANC) OVER (ORDER BY TAB1.YEAR, TAB1.MONTH) AS BALANCE_AVAIL_FOR_ANCILLARY\r
+    FROM (\r
+     SELECT TAB.*,\r
+      (CASE WHEN DATE(RTRIM((TAB.YEAR)::varchar) || '-' || RTRIM((TAB.MONTH)::varchar) || '-01') > F_daymonth(CURRENT_DATE - interval '2 MONTHS'  ,'L' , 'C')  THEN\r
+        0\r
+      ELSE\r
+        TAB.BALANCE_AVAIL_FOR_ANCLL\r
+      END ) AS EXCESS_AFTER_COC_REIMBURSEMENT,\r
+      \r
+      ( TAB.RECEIPTS_FOR_ANC  \r
+       + \r
+      ( CASE WHEN DATE(RTRIM((TAB.YEAR)::varchar) || '-' || RTRIM((TAB.MONTH)::varchar) || '-01') > F_daymonth(CURRENT_DATE - interval '2 MONTHS'  ,'L' , 'C')  THEN\r
+       0\r
+      ELSE\r
+       TAB.BALANCE_AVAIL_FOR_ANCLL\r
+      END )\r
+      -  TAB.OBLIGATIONS \r
+      -  TAB.ANCILLARY_PAYMENTS - (TAB.OTHERDISBURSEMENT + TAB.OTHERDISBURSEMENTOBLIGATION)\r
+      ) AS MONTHY_BAL_AVAIL_FOR_ANC\r
+      -- TAB.OTHERDISBURSEMENT,\r
+      -- TAB.OTHERDISBURSEMENTOBLIGATION  \r
+     FROM \r
+     ( \r
+      select \r
+       tr.benefit_start_dt_MONTH as monthyear,  \r
+       extract(year from TR.BENEFIT_START_DT) AS YEAR, \r
+       extract (month from TR.BENEFIT_START_DT) AS MONTH, \r
+       (\r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C' \r
+         AND  TR.TRANSACTION_SOURCE_CD in ( '5471', '582', '583', '584', '5478' ) THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       )\r
+       /* CDM-10843 Fix - Bank Service Charges moved to otherdisbursement\r
+       -  \r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '588' AND TR.CREDIT_DEBIT_SW = 'D' \r
+        AND ADJUSTMENT_APPROVAL_STATUS_CD = '3047' AND TR.TRANSACTION_SOURCE_CD = '5472' THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       )\r
+       */\r
+       + \r
+       COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+        FROM temp_account_transaction TR1,\r
+         TB_CLIENT_ACCOUNT AC1\r
+       WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+        AND AC1.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+        AND TR1.DELETE_SW = 'N'  \r
+        AND AC1.DELETE_SW = 'N'  \r
+        and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+        -- AND extract (month from TR1.BENEFIT_START_DT) = extract (month from TR.BENEFIT_START_DT)\r
+        -- AND extract (year from TR1.BENEFIT_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+        AND TR1.TRANSACTION_TYPE_CD = '588'\r
+        AND TR1.CREDIT_DEBIT_SW = 'C'\r
+        AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+        AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+        AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+          FROM temp_account_transaction TR2\r
+          WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+            AND TR2.DELETE_SW = 'N' ) in  ( '5471', '582', '583', '584', '5478' ))\r
+          GROUP BY  extract (month from TR1.BENEFIT_START_DT) ,  \r
+           extract (year from TR1.BENEFIT_START_DT) ,   AC1.CLIENT_ID\r
+       ),0)        \r
+       - \r
+       COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+        FROM temp_account_transaction TR1,\r
+         TB_CLIENT_ACCOUNT AC1\r
+       WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+        AND AC1.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+        AND TR1.DELETE_SW = 'N'  \r
+        AND AC1.DELETE_SW = 'N'  \r
+        and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+        -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+        -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+        AND TR1.TRANSACTION_TYPE_CD = '588'\r
+        AND TR1.CREDIT_DEBIT_SW = 'D'\r
+        AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+        AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+        AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+          FROM temp_account_transaction TR2\r
+         WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+            AND TR2.DELETE_SW = 'N' ) in  ( '5471', '582', '583', '584', '5478' ))\r
+         GROUP BY extract (month from TR1.BENEFIT_START_DT) , \r
+          extract (year from TR1.BENEFIT_START_DT),\r
+          AC1.CLIENT_ID\r
+       ),0)        \r
+       ) AS RECEIPTS_FOR_ANC,\r
+\r
+       COALESCE(    \r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '5530' AND TR.CREDIT_DEBIT_SW = 'D' \r
+         AND  TR.TRANSACTION_SOURCE_CD = '5474' THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       )\r
+       -\r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '5530' AND TR.CREDIT_DEBIT_SW = 'C' \r
+         AND  TR.TRANSACTION_SOURCE_CD = '5475' THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       )\r
+       ,0) AS OBLIGATIONS,\r
+\r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '5531' AND TR.CREDIT_DEBIT_SW = 'D' \r
+         AND TR.TRANSACTION_SOURCE_CD = '5476' THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       ) AS ANCILLARY_PAYMENTS,\r
+\r
+       (\r
+       (\r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C' \r
+         AND TR.TRANSACTION_SOURCE_CD in ( '587', '586', '585' ) \r
+         AND COALESCE(TR.LATE_ENTRY_SW, 'N')  = 'N'  THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       )\r
+       +\r
+       COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+       FROM temp_account_transaction TR1,\r
+         TB_CLIENT_ACCOUNT AC1\r
+       WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+        AND AC1.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+        AND TR1.DELETE_SW = 'N'  \r
+        AND AC1.DELETE_SW = 'N'  \r
+        and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+        -- AND extract (month from TR1.BENEFIT_START_DT) = extract (month from TR.BENEFIT_START_DT)\r
+        -- AND extract (year from TR1.BENEFIT_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+        AND TR1.TRANSACTION_TYPE_CD = '588'\r
+        AND TR1.CREDIT_DEBIT_SW = 'C'\r
+        AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+        AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+        AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+          FROM temp_account_transaction TR2\r
+         WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+           AND COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'N'  \r
+           AND TR2.DELETE_SW = 'N' ) in  ( '587', '586', '585' ))\r
+         GROUP BY  extract (month from TR1.BENEFIT_START_DT), \r
+          extract (year from TR1.BENEFIT_START_DT) , AC1.CLIENT_ID\r
+       ),0)        \r
+       - \r
+       COALESCE(( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+        FROM temp_account_transaction TR1,\r
+         TB_CLIENT_ACCOUNT AC1\r
+       WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+        AND AC1.CLIENT_ACCOUNT_ID = vl_client_acc_id\r
+        AND TR1.DELETE_SW = 'N'  \r
+        AND AC1.DELETE_SW = 'N'  \r
+        and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH\r
+        -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+        -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+        AND TR1.TRANSACTION_TYPE_CD = '588'\r
+        AND TR1.CREDIT_DEBIT_SW = 'D'\r
+        AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+        AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+        AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+          FROM temp_account_transaction TR2\r
+         WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+          AND COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'N'  \r
+          AND TR2.DELETE_SW = 'N' ) in  ( '587', '586', '585' ))\r
+         GROUP BY   to_char(tr1.benefit_start_dt,'Mon-YY') , AC1.CLIENT_ID\r
+       ),0)        \r
+       ) \r
+       -\r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '3444' AND TR.CREDIT_DEBIT_SW = 'D' AND TR.TRANSACTION_SOURCE_CD = '5477' THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END )\r
+       ) ) AS BALANCE_AVAIL_FOR_ANCLL,\r
+       \r
+       (\r
+       ROUND( AVG(\r
+       (select coalesce(sum(tcd.amount),0) \r
+        from tb_child_account_disbursement tcd \r
+       where tcd.client_account_id = vl_client_acc_id \r
+        and tcd.payment_approval_status = '3047'\r
+        and to_char(tcd.disbursement_dt, 'Mon-YY') = tr.benefit_start_DT_MONTH \r
+        and tcd.service_id != 101\r
+       )):: numeric (10,2),2)\r
+       -- CDM-10843\r
+       +\r
+       SUM(\r
+       (CASE WHEN TR.TRANSACTION_TYPE_CD = '588' AND TR.CREDIT_DEBIT_SW = 'D' \r
+        AND ADJUSTMENT_APPROVAL_STATUS_CD = '3047' AND TR.TRANSACTION_SOURCE_CD = '5472' THEN\r
+        COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+       ELSE\r
+        0\r
+       END ))\r
+       ) as otherdisbursement,\r
+  \r
+       ROUND( AVG(\r
+       ( select coalesce(sum(tcd.amount),0) \r
+        from tb_child_account_disbursement tcd \r
+       where tcd.client_account_id = vl_client_acc_id \r
+        and (tcd.payment_approval_status not in ('3047','3281') or tcd.funding_approval_status not in ('3047','3281'))\r
+        -- and (tcd.payment_approval_status is null or tcd.payment_approval_status = '3281')\r
+        -- or (tcd.funding_approval_status is null or tcd.funding_approval_status = '3405' or tcd.funding_approval_status = '3281')\r
+        and to_char(tcd.disbursement_dt, 'Mon-YY') = tr.benefit_start_DT_MONTH\r
+        and tcd.service_id != 101\r
+       ) ):: numeric (10,2),2) as otherdisbursementobligation\r
+      FROM temp_account_transaction TR, \r
+       TB_CLIENT_ACCOUNT AC\r
+      WHERE TR.CLIENT_ACCOUNT_ID = AC.CLIENT_ACCOUNT_ID \r
+       AND AC.CLIENT_ACCOUNT_ID = vl_client_acc_id \r
+       AND TR.DELETE_SW = 'N'  \r
+       AND AC.DELETE_SW = 'N'  \r
+      GROUP BY extract (month from TR.BENEFIT_START_DT),\r
+       extract (year from TR.BENEFIT_START_DT),\r
+       tr.benefit_start_dt_month\r
+       , AC.CLIENT_ID\r
+      ORDER by\r
+      -- extract (month from TR.BENEFIT_START_DT) desc\r
+      -- ,  extract (year from TR.BENEFIT_START_DT) desc\r
+      tr.benefit_start_dt_month\r
+      ,AC.CLIENT_ID\r
+     ) TAB\r
+    ) TAB1\r
+   ) TAB2\r
+  ) A\r
+  where (date_sw is null \r
+    or case \r
+    when date_sw = 'M' then \r
+     (date_trunc('month', DATE(RTRIM((a.YEAR)::varchar) || '-' || RTRIM((a.MONTH)::varchar) || '-01')) = date_trunc('month', CURRENT_DATE - interval '1' month)) \r
+    when date_sw = 'Y' then\r
+     date_part('year', now() :: date):: integer = date_part('year', DATE(RTRIM((a.YEAR)::varchar) || '-' || RTRIM((a.MONTH)::varchar) || '-01')):: integer\r
+     --  (tat.benefit_start_dt = date_trunc('year', CURRENT_DATE))  \r
+    end)\r
+  group by --a.BENEFIT_START_DT, \r
+   a.YEAR, \r
+   a.month,--  (a.EXCESS_AFTER_COC_REIMBURSEMENT),\r
+   a.monthyear,\r
+   (a.OBLIGATIONS),\r
+   (a.BALANCE_AVAIL_FOR_ANCILLARY),\r
+   a.OTHERDISBURSEMENT,\r
+   a.OTHERDISBURSEMENTOBLIGATION\r
+   order by  a.year desc , \r
+   a.month desc \r
+   LIMIT v_liPageSize OFFSET v_pageoffset\r
+  )e ;\r
+\r
+ ELSIF AS_SECTION_TYPE = 'SAVE' THEN -- Save As Excel    \r
+\r
+  SELECT json_agg(e) into v_dhs116report from (\r
+  SELECT  CA.CLIENT_ID,\r
+   F_ENAME('2955',CA.CLIENT_ID) AS CLIENT_NAME,\r
+   CONCAT('***-**-',RIGHT(PR.SSNNO::varchar,4)) AS SSN,\r
+   PR.DOB AS DOB,\r
+   CA.OPEN_DT AS OPEN_DATE,\r
+   CA.CLOSE_DT AS CLOSE_DATE,\r
+   CA.BANK_NM AS BANK_NAME,\r
+   CA.ACCOUNT_NO_TX AS ACCT_NUMBER,\r
+   F_PDESC(CA.ACCOUNT_TYPE_CD, 40) AS ACCT_TYPE,\r
+   F_PDESC(CA.STATUS_CD, 41) AS ACCOUNT_STATUS,\r
+   COALESCE(CA.TOTAL_BALANCE_NO,0) AS TOTAL_BALANCE,\r
+   COALESCE(CA.OBLIGATED_FOR_COC,0) AS TOTAL_AVAILABLE_FOR_COC,\r
+   COALESCE(CA.OBLIGATED_FOR_COC,0) + COALESCE(CA.OBLIGATED_FOR_ANC,0) AS TOTAL_OBLIGATED,\r
+   COALESCE(CA.OBLIGATED_FOR_ANC,0) AS TOTAL_AVAILABLE_FOR_ANC,\r
+   ACT.TRANSACTION_ID AS TRANSACTION_ID,\r
+   ACT.TRANSACTION_DT AS ENTRY_DATE,\r
+   -- LPAD(extract(month from ACT.BENEFIT_START_DT),2,'0') || '/' ||extract(year from ACT.BENEFIT_START_DT) AS "BENEFIT/ANCILLARY MONTH/YEAR",\r
+   to_char(act.benefit_start_dt  , 'DD-Mon-YY')  AS "BENEFIT/ANCILLARY MONTH/YEAR",\r
+   F_PDESC(ACT.TRANSACTION_TYPE_CD, 39)AS TRANSACTION_TYPE,\r
+   F_PDESC(ACT.TRANSACTION_SOURCE_CD, 38) AS TRANSACTION_SOURCE,\r
+   ACT.TRANSACTION_AMOUNT_NO AS AMOUNT,\r
+   ACT.CREDIT_DEBIT_SW,\r
+   TAB3.*\r
+  FROM TB_CLIENT_ACCOUNT CA,\r
+   PERSON PR,\r
+   temp_account_transaction ACT,\r
+   ( select A.BENEFIT_MONTHYEAR, \r
+    SUM(A.RECEIPTS_AVAILABLE_FOR_COC) as RECEIPTS_AVAILABLE_FOR_COC, \r
+    SUM(A.ACTUAL_COC) as ACTUAL_COC,\r
+    SUM(A.COC_REIMBURSEMENT) as COC_REIMBURSEMENT, \r
+    SUM(A.EXCESS_AVAILABLE_FOR_ANCILLARY) as EXCESS_AVAILABLE_FOR_ANCILLARY,\r
+    SUM(A.RECEIPTS_AVAILABLE_FOR_ANCILLARY) as RECEIPTS_AVAILABLE_FOR_ANCILLARY,\r
+    SUM(A.OBLIGATIONS) as OBLIGATIONS,\r
+    SUM(A.ANCILLARY_PAYMENTS) as ANCILLARY_PAYMENTS, \r
+    SUM(A.BALANCE_AVAIL_FOR_ANCILLARY) as BALANCE_AVAIL_FOR_ANCILLARY  \r
+   from \r
+    (SELECT TAB2.MONTHYEAR as BENEFIT_MONTHYEAR,\r
+     -- TAB2.YEAR AS BENEFIT_YEAR, \r
+     -- TAB2.MONTH AS BENEFIT_MONTH,\r
+     TAB2.RECEIPTS_AVAILABLE_FOR_COC,\r
+     TAB2.ACTUAL_COC,\r
+     TAB2.COC_REIMBURSEMENT,\r
+     (TAB2.RECEIPTS_AVAILABLE_FOR_COC - TAB2.AVAILABLE_BALANCE_NO_COC - TAB2.COC_REIMBURSEMENT) AS EXCESS_AVAILABLE_FOR_ANCILLARY,\r
+     TAB2.RECEIPTS_FOR_ANC AS RECEIPTS_AVAILABLE_FOR_ANCILLARY,\r
+     TAB2.EXCESS_AFTER_COC_REIMBURSEMENT,\r
+     TAB2.OBLIGATIONS,\r
+     TAB2.ANCILLARY_PAYMENTS,\r
+     TAB2.BALANCE_AVAIL_FOR_ANCILLARY\r
+\r
+    FROM (\r
+     SELECT TAB1.*,\r
+      SUM(TAB1.MONTHY_BAL_AVAIL_FOR_ANC) OVER (ORDER BY TAB1.monthyear desc/*, TAB1.MONTH*/) AS BALANCE_AVAIL_FOR_ANCILLARY\r
+     FROM (\r
+      SELECT  TAB.*,\r
+       (CASE WHEN  date('01-' || RTRIM((TAB.monthyear)::varchar)) >  F_daymonth(CURRENT_DATE - interval '2 MONTHS'  ,'L' , 'C') THEN \r
+        0 \r
+       ELSE \r
+        TAB.BALANCE_AVAIL_FOR_ANCLL \r
+       END ) AS EXCESS_AFTER_COC_REIMBURSEMENT,\r
+       ( TAB.RECEIPTS_FOR_ANC  \r
+       + \r
+       (CASE WHEN  date('01-' || RTRIM((TAB.monthyear)::varchar)) >  F_daymonth(CURRENT_DATE - interval '2 MONTHS'  ,'L' , 'C') THEN \r
+        0 \r
+       ELSE \r
+        TAB.BALANCE_AVAIL_FOR_ANCLL \r
+       END )\r
+       - \r
+       TAB.OBLIGATIONS \r
+       - \r
+       TAB.ANCILLARY_PAYMENTS\r
+       ) AS MONTHY_BAL_AVAIL_FOR_ANC\r
+      FROM (\r
+       SELECT to_char(tr.benefit_start_dt  , 'Mon-YY') as monthyear,\r
+        -- extract (year from TR.BENEFIT_START_DT) AS YEAR,\r
+        -- extract (month from TR.BENEFIT_START_DT) AS MONTH,\r
+        (\r
+        SUM(  \r
+        (CASE WHEN TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C'\r
+          AND TR.TRANSACTION_SOURCE_CD IN ( '5471', '582', '583', '584', '5478' ) THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE \r
+         0 \r
+        END)\r
+        )\r
+        /* CDM-10843 Fix - Bank Service Charges moved out from here \r
+        -\r
+        SUM( \r
+        (CASE WHEN TR.TRANSACTION_TYPE_CD = '588' AND TR.CREDIT_DEBIT_SW = 'D'\r
+          AND ADJUSTMENT_APPROVAL_STATUS_CD = '3047' AND TR.TRANSACTION_SOURCE_CD = '5472' THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE \r
+         0 \r
+        END)\r
+        )\r
+        */\r
+        +\r
+        COALESCE(\r
+        (SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N'  \r
+         AND AC1.DELETE_SW = 'N'  \r
+         and to_char(tr1.benefit_start_dt,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'C'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         AND ( ( SELECT TR2.TRANSACTION_SOURCE_CD \r
+             FROM temp_account_transaction TR2\r
+             WHERE  TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+               AND TR2.DELETE_SW = 'N' \r
+           ) IN  ( '5471', '582', '583', '584', '5478' )\r
+          )\r
+        GROUP BY  to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+        ),0)        \r
+        - \r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N'  \r
+         AND AC1.DELETE_SW = 'N'  \r
+         and to_char(tr1.benefit_start_dt,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'D'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         AND ( ( SELECT TR2.TRANSACTION_SOURCE_CD \r
+            FROM temp_account_transaction TR2\r
+           WHERE  TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+             AND TR2.DELETE_SW = 'N' \r
+           ) IN  ( '5471', '582', '583', '584', '5478' )\r
+           )\r
+           GROUP BY to_char(tr1.benefit_start_dt,'Mon-YY') ,\r
+            -- extract (year from TR1.BENEFIT_START_DT),\r
+            -- extract (month from TR1.BENEFIT_START_DT),\r
+            AC1.CLIENT_ID\r
+        ),0)\r
+        ) AS RECEIPTS_FOR_ANC,\r
+\r
+        (COALESCE \r
+        (SUM(\r
+        (CASE WHEN TR.TRANSACTION_TYPE_CD = '5530' AND TR.CREDIT_DEBIT_SW = 'D'\r
+          AND  TR.TRANSACTION_SOURCE_CD = '5474'THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE \r
+         0 \r
+        END ))\r
+        -\r
+        SUM(\r
+        (CASE WHEN TR.TRANSACTION_TYPE_CD = '5530' AND TR.CREDIT_DEBIT_SW = 'C'\r
+          AND TR.TRANSACTION_SOURCE_CD = '5475' THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE \r
+         0 \r
+        END ))\r
+        ,0)\r
+        )AS OBLIGATIONS,\r
+\r
+        SUM(\r
+        ( CASE WHEN TR.TRANSACTION_TYPE_CD = '5531' AND TR.CREDIT_DEBIT_SW = 'D'\r
+          AND TR.TRANSACTION_SOURCE_CD = '5476' THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE \r
+         0 \r
+        END)\r
+        ) AS ANCILLARY_PAYMENTS,\r
+\r
+        ( ( SUM(\r
+        (CASE WHEN  TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C'\r
+          AND TR.TRANSACTION_SOURCE_CD IN ( '587', '586', '585' )\r
+          AND COALESCE(TR.LATE_ENTRY_SW, 'N')  = 'N' THEN \r
+         COALESCE (TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE \r
+         0 \r
+        END )\r
+        )\r
+        +\r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+        FROM temp_account_transaction TR1,\r
+         TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N'  \r
+         AND AC1.DELETE_SW = 'N' \r
+         and to_char(tr1.benefit_start_dt,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'C'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+           FROM temp_account_transaction TR2\r
+           WHERE  TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+             AND COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'N'  \r
+             AND TR2.DELETE_SW = 'N' \r
+           ) IN  ( '587', '586', '585' )\r
+          )\r
+        GROUP BY to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+        ),0)\r
+        - \r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE  TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N'  \r
+         AND AC1.DELETE_SW = 'N'  \r
+         and to_char(tr1.benefit_start_dt,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) =extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'D'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+            FROM temp_account_transaction TR2\r
+            WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+              AND COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'N'  \r
+              AND TR2.DELETE_SW = 'N'\r
+           ) IN ( '587', '586', '585' )\r
+          )\r
+         GROUP BY to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+          -- extract (year from TR1.BENEFIT_START_DT),\r
+          -- extract (month from TR1.BENEFIT_START_DT),\r
+          AC1.CLIENT_ID\r
+        ),0)        \r
+        ) \r
+        -\r
+        SUM(\r
+        ( CASE WHEN TR.TRANSACTION_TYPE_CD = '3444' AND TR.CREDIT_DEBIT_SW = 'D'\r
+          AND TR.TRANSACTION_SOURCE_CD = '5477' THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE  \r
+         0 \r
+        END )) \r
+        ) AS BALANCE_AVAIL_FOR_ANCLL,\r
+        \r
+        (SUM(\r
+        (CASE WHEN TR.TRANSACTION_TYPE_CD = '589' AND TR.CREDIT_DEBIT_SW = 'C'\r
+          AND  TR.TRANSACTION_SOURCE_CD IN ( '587', '586', '585' ) THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE  \r
+         0\r
+        END )\r
+        )\r
+        +\r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N'  \r
+         AND AC1.DELETE_SW = 'N'\r
+         and to_char(tr1.benefit_start_dt,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'C'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+             FROM  temp_account_transaction TR2\r
+             WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+               AND TR2.DELETE_SW = 'N' ) IN  ( '587', '586', '585' )\r
+           )\r
+        GROUP by to_char(tr1.benefit_start_dt,'Mon-YY') ,\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+        ),0)        \r
+        - \r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))\r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N'  \r
+         AND AC1.DELETE_SW = 'N'\r
+         and to_char(tr1.benefit_start_dt,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) = extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'D'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         AND (( SELECT TR2.TRANSACTION_SOURCE_CD \r
+            FROM temp_account_transaction TR2\r
+            WHERE TR2.TRANSACTION_ID =  TR1.REFERENCE_TRANSACTION_ID\r
+              AND TR2.DELETE_SW = 'N' \r
+           ) IN  ( '587', '586', '585' )\r
+          )\r
+        GROUP BY to_char(tr1.benefit_start_dt,'Mon-YY'),\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+        ),0)        \r
+        ) AS RECEIPTS_AVAILABLE_FOR_COC,\r
+   \r
+        ( COALESCE((SELECT SUM(COALESCE(PD.FINAL_AMOUNT_NO,0)  )\r
+         FROM temp_payment_detail PD, \r
+          temp_payment_header PH,\r
+          temp_payment_status PS,\r
+          PLACEMENT PL\r
+        WHERE PH.PAYMENT_ID = PD.PAYMENT_ID\r
+         AND PH.PAYMENT_ID = PS.PAYMENT_ID\r
+         AND PL.alternateid= PD.PLACEMENT_ID      \r
+         and to_char(PD.FINAL_SERVICE_START_DT,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from PD.FINAL_SERVICE_START_DT) = extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from PD.FINAL_SERVICE_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+         AND ( PH.PAYMENT_TYPE_CD = '6' OR (PH.PAYMENT_TYPE_CD = '3294' AND PH.MANUAL_SW  = 'N' )) \r
+         AND PH.DELETE_SW = 'N' \r
+         AND PD.DELETE_SW = 'N'\r
+         AND PS.DELETE_SW = 'N' \r
+         --AND PL.DELETE_SW = 'N' \r
+         AND PD.FINAL_SERVICE_ID IS NOT NULL\r
+         AND PS.PAYMENT_STATUS_CD NOT IN ('1635','1639') \r
+         AND PD.PLACEMENT_ID IS NOT NULL\r
+         --AND ( PL.VOID_SW = 'N' OR PL.VOID_SW is null OR RTRIM(LTRIM(PL.VOID_SW)) = '')\r
+         AND (PL.isvoided=0 or PL.isvoided is null)\r
+         AND PD.CLIENT_ID = AC.CLIENT_ID \r
+        ),0)  \r
+        -\r
+        COALESCE(\r
+        (SELECT SUM(COALESCE(RD.AMOUNT_NO,0)  )\r
+         FROM TB_RECEIVABLE_DETAIL RD\r
+        WHERE  RD.DELETE_SW = 'N' \r
+         AND RD.PAYMENT_DETAIL_ID \r
+         IN ( SELECT PD.PAYMENT_DETAIL_ID \r
+           FROM temp_payment_detail PD, \r
+           temp_payment_header PH,\r
+           temp_payment_status PS,\r
+           PLACEMENT PL\r
+          WHERE PH.PAYMENT_ID = PD.PAYMENT_ID\r
+           AND PH.PAYMENT_ID = PS.PAYMENT_ID\r
+           AND PL.alternateid= PD.PLACEMENT_ID     \r
+           and to_char(PD.FINAL_SERVICE_START_DT,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+           -- and extract (month from PD.FINAL_SERVICE_START_DT) = extract (month from TR.BENEFIT_START_DT)\r
+           -- AND extract (year from PD.FINAL_SERVICE_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+           AND ( PH.PAYMENT_TYPE_CD = '6' OR (PH.PAYMENT_TYPE_CD = '3294' AND PH.MANUAL_SW  = 'N' )) \r
+           AND PH.DELETE_SW = 'N' \r
+           AND PD.DELETE_SW = 'N'\r
+           AND PS.DELETE_SW = 'N' \r
+           --AND PL.DELETE_SW = 'N' \r
+           AND PD.FINAL_SERVICE_ID IS NOT NULL\r
+           AND PS.PAYMENT_STATUS_CD NOT IN ('1635','1639') \r
+           AND PD.PLACEMENT_ID IS NOT NULL\r
+           --AND ( PL.VOID_SW = 'N' OR PL.VOID_SW is null OR RTRIM(LTRIM(PL.VOID_SW)) = '')\r
+           AND (PL.isvoided=0 or PL.isvoided is null)\r
+           AND PD.CLIENT_ID = AC.CLIENT_ID\r
+                   )\r
+        ),0)\r
+        ) AS ACTUAL_COC,\r
+\r
+        SUM( \r
+        (CASE WHEN TR.TRANSACTION_TYPE_CD = '3444' AND TR.CREDIT_DEBIT_SW = 'D'\r
+          AND TR.TRANSACTION_SOURCE_CD = '5477' THEN \r
+         COALESCE(TR.TRANSACTION_AMOUNT_NO,0)\r
+        ELSE  \r
+         0 \r
+        END)) AS COC_REIMBURSEMENT,\r
+\r
+        COALESCE(( \r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0)) \r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N' \r
+         AND TR1.CREDIT_DEBIT_SW = 'C'\r
+         AND AC1.DELETE_SW = 'N'  \r
+         and to_char(TR1.BENEFIT_START_DT,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) \r
+         AND ( TR1.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - interval '2 MONTHS'  ,'L' , 'C')  \r
+           OR COALESCE(TR1.LATE_ENTRY_SW, 'N')  = 'Y' \r
+          )  \r
+        GROUP BY to_char(TR1.BENEFIT_START_DT,'Mon-YY'),\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+        )\r
+        + \r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))     \r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N' \r
+         AND AC1.DELETE_SW = 'N'  \r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'C'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         and to_char(TR1.BENEFIT_START_DT,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) = extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.REFERENCE_TRANSACTION_ID IN \r
+            ( SELECT TR2.TRANSACTION_ID\r
+             FROM temp_account_transaction TR2,\r
+              TB_CLIENT_ACCOUNT AC2\r
+             WHERE  TR2.CLIENT_ACCOUNT_ID = AC2.CLIENT_ACCOUNT_ID \r
+              AND AC2.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+              AND TR2.DELETE_SW = 'N' \r
+              AND AC2.DELETE_SW = 'N'  \r
+              AND TR2.CREDIT_DEBIT_SW = 'C'\r
+              AND TR2.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) \r
+              AND ( TR2.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - interval '2 MONTHS'  ,'L' , 'C')  \r
+                 OR COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'Y'\r
+               )  \r
+            )\r
+        GROUP BY to_char(TR1.BENEFIT_START_DT,'Mon-YY') ,\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+\r
+        ),0)\r
+        -\r
+        COALESCE(\r
+        ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0))     \r
+         FROM temp_account_transaction TR1,\r
+          TB_CLIENT_ACCOUNT AC1\r
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID \r
+         AND AC1.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+         AND TR1.DELETE_SW = 'N' \r
+         AND AC1.DELETE_SW = 'N'  \r
+         AND TR1.TRANSACTION_TYPE_CD = '588'\r
+         AND TR1.CREDIT_DEBIT_SW = 'D'\r
+         AND TR1.TRANSACTION_SOURCE_CD = '5473' \r
+         AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'\r
+         and to_char(TR1.BENEFIT_START_DT,'Mon-YY') = to_char(tr.benefit_start_dt  , 'Mon-YY')\r
+         -- AND extract (month from TR1.BENEFIT_START_DT) =  extract (month from TR.BENEFIT_START_DT)\r
+         -- AND extract (year from TR1.BENEFIT_START_DT) =  extract (year from TR.BENEFIT_START_DT)\r
+         AND TR1.REFERENCE_TRANSACTION_ID IN \r
+          (  SELECT TR2.TRANSACTION_ID\r
+           FROM  temp_account_transaction TR2,\r
+            TB_CLIENT_ACCOUNT AC2\r
+           WHERE  TR2.CLIENT_ACCOUNT_ID = AC2.CLIENT_ACCOUNT_ID \r
+            AND AC2.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+            AND TR2.DELETE_SW = 'N' \r
+            AND AC2.DELETE_SW = 'N'  \r
+            AND TR2.CREDIT_DEBIT_SW = 'C'\r
+            AND TR2.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) \r
+            AND ( TR2.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - interval '2 MONTHS'  ,'L' , 'C')  \r
+               OR COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'Y' )  \r
+          )\r
+        GROUP BY to_char(TR1.BENEFIT_START_DT,'Mon-YY'),\r
+         -- extract (year from TR1.BENEFIT_START_DT),\r
+         -- extract (month from TR1.BENEFIT_START_DT),\r
+         AC1.CLIENT_ID\r
+\r
+        ),0)\r
+        ),0) AS AVAILABLE_BALANCE_NO_COC\r
+     \r
+       FROM  temp_account_transaction TR, \r
+        TB_CLIENT_ACCOUNT AC\r
+       WHERE TR.CLIENT_ACCOUNT_ID = AC.CLIENT_ACCOUNT_ID \r
+        AND AC.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID \r
+        AND TR.DELETE_SW = 'N'  \r
+        AND AC.DELETE_SW = 'N'  \r
+       GROUP BY  tr.benefit_start_dt,\r
+        -- to_char(TR.BENEFIT_START_DT,'Mon-YY'),\r
+        -- extract (year from TR.BENEFIT_START_DT),\r
+        -- extract (month from TR.BENEFIT_START_DT),\r
+        AC.CLIENT_ID\r
+       ORDER BY to_char(TR.BENEFIT_START_DT,'Mon-YY') desc\r
+       -- extract (year from TR.BENEFIT_START_DT),\r
+       -- extract (month from TR.BENEFIT_START_DT),\r
+       -- AC.CLIENT_ID\r
+      ) TAB\r
+     ) TAB1\r
+    ) TAB2\r
+   ) A \r
+   GROUP BY  A.BENEFIT_MONTHYEAR \r
+   order by  A.BENEFIT_MONTHYEAR DESC\r
+   )TAB3\r
+   WHERE  CA.CLIENT_ID = PR.CJAMSPID \r
+    AND CA.CLIENT_ACCOUNT_ID = ACT.CLIENT_ACCOUNT_ID\r
+    AND CA.CLIENT_ACCOUNT_ID = VL_CLIENT_ACC_ID\r
+    AND CA.DELETE_SW = 'N'\r
+    AND ACT.DELETE_SW = 'N'\r
+    AND PR.ACTIVEFLAG = 1\r
+  )e ;\r
+\r
+ end if;\r
+ return v_dhs116report;\r
+\r
+ drop TABLE temp_account_transaction;\r
+ drop table tmp_placemnt ;\r
+ drop table temp_payment_detail;\r
+ drop TABLE temp_payment_header;\r
+ drop table temp_payment_status ;\r
+end ;\r
+$function$
+

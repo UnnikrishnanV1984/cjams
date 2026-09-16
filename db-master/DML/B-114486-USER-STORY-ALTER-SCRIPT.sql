@@ -1,0 +1,1 @@
+ALTER TABLE intakeservicerequestcourthearing ADD COLUMN IF NOT EXISTS nexthearingtype jsonb;

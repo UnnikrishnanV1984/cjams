@@ -1,0 +1,102 @@
+CREATE OR REPLACE FUNCTION prov_sendnotificationmontoring(v_monitoring_id character varying, v_provider_id integer, v_fromsecurityuserid character varying, v_inspected_with character varying, v_time_visit character varying)
+ RETURNS TABLE(emailnotify json)
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+--v_fromsecurityuserid character varying;
+v_appstatus character varying;
+v_objectid character varying;
+v_eventcode character varying;
+v_msg character varying;
+v_msgs character varying;
+v_tosecurityusersid character varying;
+v_tousersid RECORD;
+v_username character varying;
+v_notification character varying;
+v_notifymsg character varying DEFAULT ''::character varying;
+v_site_id character varying;
+v_request_no character varying;
+v_request_type character varying;
+v_status character varying;
+v_isfinal boolean;
+v_activeflag integer;
+v_rejectedbyid character varying;
+resubmit integer;
+v_toroleid character varying;
+v_touserid character varying;
+v_emailid json;
+accessuserid character varying;
+--v_provider_id integer;
+
+
+begin
+ 
+ v_msg := 'Requested Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_monitoring_id||')';
+  
+ if(v_inspected_with = 'DJS')
+ then
+  select mu.securityusersid into accessuserid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+  join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+  where  r.roletypekey in ('PVRDJSQA');
+ else
+  select mu.securityusersid into accessuserid  from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+  join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+  where  r.roletypekey in ('OLMQA');
+ end if;
+
+ select COALESCE(fullname,'') into v_username
+  FROM userprofile WHERE securityusersid = accessuserid;
+ v_msgs:= v_msg || ' on ' || v_time_visit::date;
+ 
+ SELECT prov_send_notification into v_notification  FROM prov_send_notification(accessuserid,v_fromsecurityuserid,accessuserid,
+  'System', 'High', v_msgs,
+  v_msgs , v_objectid);
+ 
+ v_msg := 'Requested Monitoring visit for Provider ('||v_provider_id||') 
+ ( Monitoring visit id '||v_monitoring_id||') you must submit days of availability within  10 days ';
+
+  FOR v_tousersid IN 
+   
+    select tpu.securityusers_id::character varying as securityusersid from tb_provider tp 
+    join tb_provider_userconfig tpu on tpu.provider_id = tp.provider_id
+  where tpu.provider_id = v_provider_id limit 1
+ 
+     loop
+      select COALESCE(fullname,'') into v_username
+     FROM userprofile WHERE securityusersid = v_fromsecurityuserid;
+      v_msgs:=  v_msg || ' by ';
+      v_msgs:= COALESCE(v_msgs ,'') ||COALESCE( v_username,'');
+      raise notice 'v_tousersid.securityusersid %',v_msgs;
+    
+     SELECT prov_send_notification into v_notification  FROM prov_send_notification( v_tousersid.securityusersid,v_fromsecurityuserid, v_tousersid.securityusersid,
+     'System':: character varying, 'High':: character varying, v_msgs,
+     v_msgs , v_monitoring_id,false);
+  end loop;
+    
+-- if(v_appstatus = 'Submitted')
+-- then
+-- raise notice 'here 1.1';
+-- v_status := 'Approved';
+-- v_activeflag := 0;
+-- raise notice 'here 1.1.1'; 
+-- update prov_monitoring set license_expiry_dt = v_expiry_dt where monitoring_id = v_objectid;
+-- if(resubmit = 0)
+-- then
+-- v_msg := 'Requested Monitoring visit for Provider ('||v_provider_id||') 
+--  ( Monitoring visit id '||v_objectid||')';
+-- else 
+-- v_msg := 'Resubmitted Monitoring visit for Provider ('||v_provider_id||') 
+--  ( Monitoring visit id '||v_objectid||')';
+-- 
+-- end if;
+  
+
+RETURN QUERY
+select json_agg(x) from (
+select v_provider_id) as x
+;
+end;
+$function$
+

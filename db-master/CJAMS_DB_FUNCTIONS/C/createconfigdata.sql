@@ -1,0 +1,39 @@
+ CREATE OR REPLACE FUNCTION public.createconfigdata()                                                                                   
+  RETURNS character varying                                                                                                             
+  LANGUAGE plpgsql                                                                                                                      
+ AS $function$                                                                                                                          
+                                                                                                                                        
+                                                                                                                                        
+                                                                                                                                        
+ DECLARE                                                                                                                                
+ v_config record;                                                                                                                       
+                                                                                                                                        
+ BEGIN                                                                                                                                  
+                                                                                                                                        
+ FOR v_config IN                                                                                                                        
+                                                                                                                                        
+ select servicerequesttypeconfigid from  servicerequesttypeconfig                                                                       
+ where servicerequesttypeconfigid  in ( '5930b040-0f24-4199-976c-97f8d0b04449',                                                         
+ 'b461e3ab-6e1e-4b06-bab4-172c6d0b169e',                                                                                                
+ '0d438e84-d129-4b48-851d-773b56221334',                                                                                                
+ 'b42388b2-5669-49a2-a169-0dd7269db621',                                                                                                
+ '1eafc5bb-75af-40fb-947a-f9f690519588') and activeflag =1                                                                              
+                                                                                                                                        
+ LOOP                                                                                                                                   
+                                                                                                                                        
+          INSERT INTO servicerequesttypeconfigdispositioncode                                                                           
+            (                                                                                                                           
+                         servicerequesttypeconfigid, dispositioncode, description, intakeserreqstatustypeid, activeflag, effectivedate, 
+                         insertedby, insertedon,updatedby,updatedon                                                                     
+                         )                                                                                                              
+          select v_config.servicerequesttypeconfigid, dispositioncode, description, intakeserreqstatustypeid, activeflag, effectivedate,
+         'admin', now(),'admin',now() from  servicerequesttypeconfigdispositioncode                                                     
+     where servicerequesttypeconfigid = '2f6bfe3f-5f8d-4b4a-9566-9b6433c924f8' and  activeflag =1;                                      
+                                                                                                                                        
+ END LOOP;                                                                                                                              
+ RETURN                                                                                                                                 
+          'Success';                                                                                                                    
+ END;                                                                                                                                   
+                                                                                                                                        
+ $function$                                                                                                                             
+

@@ -1,0 +1,1 @@
+update intakeservicerequest set intakedaterecieved = '2021-03-20 11:30:00',updatedon = now(),updatedby = 'CDM-11493' where intakenumber = 'I202100139582' and intakeserviceid = '2d68ae9a-48b4-4433-ba38-59ddfb57b32e';

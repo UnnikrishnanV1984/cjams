@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION sp_ive_status_approval(a_client_id bigint, a_removal_id bigint, userid character varying, v_status text[], v_roleid character varying, v_placementtype character varying, pagenumber bigint, pagesize bigint)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+declare 
+i record;
+v_approvalid uuid;
+v_approvalstatus character varying;
+begin
+
+if(v_placementtype = 'Fostercare') then
+  
+  v_approvalid = gen_random_uuid();
+ 
+  for i in select tfa.sqnm_sw, (select tfa1.auditperiodid from tb_ive_fostercare_audit tfa1 where tfa1.cjamspid::bigint = a_client_id and tfa1.removalid::bigint = a_removal_id and tfa1.sqnm_sw = tfa.sqnm_sw order by tfa1.insertedon desc limit 1) from tb_ive_fostercare_audit tfa where tfa.cjamspid::bigint = a_client_id and tfa.removalid::bigint = a_removal_id group by tfa.sqnm_sw
+  loop
+  select approvalstatus into v_approvalstatus from tb_ive_fostercare_audit where auditperiodid = i.auditperiodid;
+  if v_approvalstatus is null then
+  UPDATE tb_ive_fostercare_audit
+  SET  approvalstatus='PENDING' , approvalid = v_approvalid , updatedby = userid, updatedon = now()
+  WHERE auditperiodid=i.auditperiodid and finalresult not in ('FOSTER_CARE_INCOMPLETE', '201_MISSING_INFO');
+  end if;
+  END loop;
+ 
+  RETURN v_approvalid;
+elseif(v_placementtype = 'Gap') then
+ v_approvalid = gen_random_uuid();
+ for i in select tfa.category, (select tfa1.gapauditid from tb_ive_gapaudit tfa1 where tfa1.cjamspid::bigint = a_client_id and tfa1.removalid::bigint = a_removal_id and tfa1.category = tfa.category order by tfa1.insertedon desc limit 1 ) from tb_ive_gapaudit tfa where tfa.cjamspid::bigint = a_client_id and tfa.removalid::bigint = a_removal_id group by tfa.category
+ loop
+ select approvalstatus into v_approvalstatus from tb_ive_gapaudit where gapauditid = i.gapauditid;
+ if v_approvalstatus is null then
+ UPDATE tb_ive_gapaudit
+ SET  approvalstatus='PENDING' , approvalid = v_approvalid , updatedby = userid, updatedon = now()
+ WHERE gapauditid=i.gapauditid;
+ end if;
+ END loop;
+ return v_approvalid;
+elseif(v_placementtype = 'Adoption') then
+ v_approvalid = gen_random_uuid();
+ for i in select tadp.category, (select tadp1.adoptionauditid from tb_ive_adoption_audit tadp1 where tadp1.cjamspid::bigint = a_client_id and tadp1.removalid::bigint = a_removal_id and tadp1.category = tadp.category order by tadp1.insertedon desc limit 1 ) from tb_ive_adoption_audit tadp where tadp.cjamspid::bigint = a_client_id and tadp.removalid::bigint = a_removal_id group by tadp.category
+ loop
+ select approvalstatus into v_approvalstatus from tb_ive_adoption_audit where adoptionauditid = i.adoptionauditid;
+ if v_approvalstatus is null then
+ UPDATE tb_ive_adoption_audit
+ SET  approvalstatus='PENDING' , approvalid = v_approvalid , updatedby = userid, updatedon = now()
+ WHERE adoptionauditid=i.adoptionauditid;
+ end if;
+ END loop;
+ return v_approvalid;
+end if;
+end
+$function$
+

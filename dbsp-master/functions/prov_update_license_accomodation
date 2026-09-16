@@ -1,0 +1,85 @@
+CREATE OR REPLACE FUNCTION prov_update_license_accomodation(insertobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+declare 
+v_provider_id character varying;
+v_securityuserid character varying;
+v_applicant_id character varying;
+v_minageno int;
+v_maxageno int;
+v_gender_cd character varying;
+v_childrenno int;
+v_minagemonthno int;
+v_maxagemonthno int;
+v_effectivedate date;
+v_enddate date;
+v_parentproviderid int;
+v_prgram text;
+v_programtype text;
+v_licencetypecd text;
+v_licappid int;
+v_licno text;
+v_licenseprefix text;
+v_execsignature json;
+i record;
+v_program_type_id character varying;
+v_text_program_type CHARACTER VARYING;
+v_license_status_cd character varying;
+v_appstatus character varying;
+l_license_application_id bigint;
+v_reqobj json;
+begin
+
+v_reqobj := insertobj ->> 'where';
+v_securityuserid := insertobj->>'securityuserid';
+v_applicant_id := insertobj->>'applicant_id';
+v_license_status_cd := insertobj->>'license_status_cd';
+v_execsignature:= (v_reqobj->>'execsignature')::json;
+v_appstatus:= (v_reqobj->>'status')::text;
+
+v_text_program_type := '';
+
+--select picklist_value_cd into v_licencetypecd from tb_picklist_values where picklist_type_id = 284 and value_tx = ANY(string_to_array(v_programtype,',')) ;
+
+SELECT pl.license_no into v_licno from tb_provider_licensing pl join tb_provider_applicant pa 
+ on pl.site_id = pa.site_id where pa.applicant_id = v_applicant_id;
+ 
+UPDATE tb_prov_applicant_accomodation SET 
+ license_no = v_licno 
+ WHERE provider_applicant_id = v_applicant_id; 
+
+SELECT requested_license_effective_date, requested_license_end_date, paa.minimum_age_no ,paa.maximum_age_no, paa.gender_cd, paa.children_no, paa.min_age_months_no , paa.max_age_months_no , paa.program_type_id::character VARYING, license_no
+into v_effectivedate, v_enddate, v_minageno, v_maxageno, v_gender_cd, v_childrenno, v_minagemonthno, v_maxagemonthno, v_program_type_id, v_licno
+FROM tb_prov_applicant_accomodation paa where provider_applicant_id = v_applicant_id;
+
+IF v_appstatus = 'Approved' THEN
+
+UPDATE tb_provider_licensing 
+SET active_sw = 'N' 
+WHERE license_no = v_licno;
+
+
+
+INSERT INTO tb_provider_licensing(
+  provider_id, license_type_cd, license_status_cd, application_type_cd, license_decision_cd, license_issue_dt, license_expiry_dt, license_modification_dt, license_no, licensing_agency_cd, licensing_corodinator_id, licensed_beds_no, requirement_sw, midterm_issue_dt, active_sw, comments_tx, program_id, site_id, revoke_dt, revoke_approval_status_cd, midterm_rqrmnt_sw, create_ts, create_user_id, update_ts, update_user_id, delete_sw, ref_license_application_id, lic_entry_dt, request_revoke_sw, pre_revoke_status_cd, license_level, license_type, etl_userid, etl_load_date)
+  (SELECT provider_id, license_type_cd, v_license_status_cd, '3069', v_license_status_cd, v_effectivedate, v_enddate, null, license_no, licensing_agency_cd, licensing_corodinator_id, licensed_beds_no, requirement_sw, midterm_issue_dt, 'Y', comments_tx, program_id, site_id, null, null, midterm_rqrmnt_sw, now(), v_securityuserid, now(), v_securityuserid, 'N', null, lic_entry_dt, request_revoke_sw, pre_revoke_status_cd, license_level, license_type, etl_userid, etl_load_date
+  FROM tb_provider_licensing where license_no = v_licno limit 1) returning license_application_id into l_license_application_id; 
+
+update tb_prov_accomodation set delete_sw = 'Y'
+  where license_no = v_licno ;
+
+INSERT INTO tb_prov_accomodation(
+  prov_accomodation_id,license_application_id,minimum_age_no, maximum_age_no, gender_cd, children_no, create_ts, create_user_id, update_ts, update_user_id, delete_sw, min_age_months_no, max_age_months_no, execsignature,  license_no, requested_license_end_date, requested_license_effective_date)
+  values (gen_random_uuid(),l_license_application_id, v_minageno, v_maxageno, v_gender_cd, v_childrenno, now(), v_securityuserid, now(), v_securityuserid, 'N', v_minagemonthno, v_maxagemonthno, v_execsignature,  v_licno, v_enddate, v_effectivedate);  
+
+return 'success';
+
+ELSE 
+return 'failure';
+END IF;
+  
+
+end
+$function$
+

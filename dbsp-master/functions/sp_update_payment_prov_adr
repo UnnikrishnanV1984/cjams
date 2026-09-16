@@ -1,0 +1,321 @@
+CREATE OR REPLACE FUNCTION sp_update_payment_prov_adr(as_activity character, al_provider_id bigint)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- To Update Provider Address after Final Payments run for the last month
+-- for all the Providers with Payment Type CD = 6 (Maintenance)
+-- 09/17/2007 Vineet Tirodkar
+-- 09/18/2007 Vineet Tirodkar - New logic to consider ADR_TYPE_CD
+-- 06/09/2008 Vineet Tirodkar - Two New argument as_activity and al_provider_id
+--       'F' - Final Run and 0 as al_provider_id
+--       'H' - Payments release (HOLD --> Approved) and pass provider Id as al_provider_id 
+-- 01/06/2009 Vineet Tirodkar - changes always look for current default address based on payment settings  
+--            Also to Update PAYEE_NM # 19211
+------------------------------------------------------------------------
+
+DECLARE vd_previous_month_start_dt DATE;--
+DECLARE vd_previous_month_end_dt DATE;--
+DECLARE vl_provider_id BIGINT DEFAULT 0;--
+DECLARE vl_payment_id BIGINT DEFAULT 0;--
+DECLARE vs_pay_to_aff VARCHAR(5) DEFAULT NULL;--
+DECLARE vs_adr_typ VARCHAR(5) DEFAULT '3356';--
+DECLARE vs_payment_adr_typ VARCHAR(5);--
+
+DECLARE vs_adr_type_cd VARCHAR(5);--
+DECLARE vs_adr_format_cd VARCHAR(5);--
+DECLARE vs_street_no VARCHAR(10) DEFAULT NULL;--
+DECLARE vl_adr_box_no BIGINT DEFAULT 0;--
+DECLARE vs_pre_dir_cd VARCHAR(5);--
+DECLARE vs_adr_street_nm  VARCHAR(50);--
+DECLARE vs_str_suff_cd VARCHAR(5);--
+DECLARE vs_post_dir_cd VARCHAR(5);--
+DECLARE vs_unit_type_cd VARCHAR(5);--
+DECLARE vs_unit_no_tx VARCHAR(50);--
+DECLARE vs_city_nm  VARCHAR(50);--
+DECLARE vs_adr_county_cd VARCHAR(5);--
+DECLARE vs_adr_state_cd VARCHAR(5);--
+DECLARE vl_zip5_no BIGINT DEFAULT 0;--
+DECLARE vl_zip4_no BIGINT DEFAULT 0;--
+DECLARE vs_adr_dir VARCHAR(500);--
+DECLARE vs_forgin_tx VARCHAR(50);--
+DECLARE vs_forgin_state VARCHAR(50);--
+DECLARE vs_county_tx VARCHAR(50);--
+DECLARE vs_adr_postal_tx VARCHAR(50);--
+DECLARE vd_adr_start_dt DATE;--
+DECLARE vd_adr_end_dt DATE;--
+DECLARE vdt_payment_dt DATE;--
+
+DECLARE vs_home_phone_tx VARCHAR(10) DEFAULT NULL;--
+DECLARE vs_work_phone_tx VARCHAR(10) DEFAULT NULL;--
+DECLARE vs_work_ext VARCHAR(5) DEFAULT NULL;--
+
+DECLARE vl_address_id BIGINT DEFAULT 0;--
+
+DECLARE vs_cursor_sql VARCHAR(12000) ;--
+DECLARE vl_row_cnt BIGINT DEFAULT 0;--
+
+--Log Error
+
+DECLARE SQLCODE INT DEFAULT 0;--
+DECLARE al_sqlcode INT DEFAULT 0;--
+DECLARE as_error VARCHAR(3000);--
+DECLARE SQLSTATE CHAR(5) DEFAULT '00000';--
+--DECLARE p_sp_error CONDITION FOR SQLSTATE '99999' ;--
+p_sp_error CHAR(5);--
+DECLARE vs_message_text VARCHAR(3000) DEFAULT '';--
+DECLARE vl_ret_status INTEGER DEFAULT 0;--
+DECLARE vs_Procedure_nm VARCHAR(250) DEFAULT 'SP_UPDATE_PAYMENT_PROV_ADR';--
+DECLARE vs_identity_column VARCHAR(250);--
+DECLARE vs_identity_val VARCHAR(250);--
+
+--DECLARE CUR_PAYMENTS CURSOR WITH HOLD FOR s1;--
+CUR_PAYMENTS REFCURSOR;--
+
+--DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+BEGIN
+begin
+ EXCEPTION WHEN OTHERS THEN
+   -- GET DIAGNOSTICS EXCEPTION 1 vs_message_text =  MESSAGE_TEXT;--
+    GET STACKED DIAGNOSTICS vs_message_text :=  MESSAGE_TEXT;
+
+--    SET al_sqlcode = -1 ;--
+     as_error = COALESCE(as_error ,'') || (CURRENT_TIMESTAMP::text) ||'::' || vs_Procedure_nm || '.' ;--
+     as_error = COALESCE(as_error ,'') || '::RO ' || COALESCE(vs_identity_column ,'N/A') || ' :: ' || COALESCE(vs_identity_val ,'');--
+     as_error = as_error || COALESCE(vs_message_text ,'');--
+
+    SELECT SP_BATCH_ERROR_LOG ( 'SP_UPDATE_PAYMENT_PROV_ADR' ,
+           NULL::bigint,
+            NULL::bigint,
+                  NULL::character varying,
+            NULL::INTEGER,
+      NULL::character varying,
+            SQLSTATE::character varying,
+                  as_error::character varying,
+            'finance'::character varying) INTO
+                  vl_ret_status;
+
+     as_error := '';--
+    RETURN 0;
+END;-- 
+--Log error
+
+SELECT (date_trunc('month', now()) - interval '1 month')::date,
+       (date_trunc('month', now())::date - 1)
+       
+INTO    vd_previous_month_start_dt,
+        vd_previous_month_end_dt
+        ;
+
+IF as_activity = 'F' THEN
+   -- SQL for Cursor (called after Final Run) - START 
+    vs_cursor_sql :=
+   ' SELECT PH.PAYMENT_ID, '||
+   '       PH.PROVIDER_ID, '||
+   '       PR.PAY_TO_AFFILIATE_CD, '||
+   '       PR.ADR_HOME_PHONE_TX, '||
+   '       PR.ADR_WORK_PHONE_TX, '||
+   '       PR.ADR_WORK_XTN_TX, '||
+   '       PH.ADR_TYPE_CD '||
+   ' FROM tb_PAYMENT_HEADER PH, '||
+   '      tb_PROVIDER PR '||
+   ' WHERE  PH.PROVIDER_ID = PR.PROVIDER_ID AND '||
+   '       PH.PAYMENT_TYPE_CD = ''6'' AND '|| 
+   '       PH.MANUAL_SW = ''N''  AND '||
+   '       PH.DELETE_SW = ''N''  AND '||
+   '       PR.DELETE_SW = ''N''  AND '||
+   '       PH.PAYMENT_START_DT BETWEEN '''|| TO_CHAR(vd_previous_month_start_dt:: DATE, 'mm/dd/yyyy') ||''' AND '''|| TO_CHAR(vd_previous_month_end_dt:: DATE, 'mm/dd/yyyy') ||''' ' ;--
+
+   -- SQL for Cursor (called after Final Run) - END 
+      
+   -- Take count to run a loop for cursor (called after Final Run) - START
+   SELECT COUNT(*)
+      INTO vl_row_cnt
+    FROM tb_PAYMENT_HEADER PH,
+         tb_PROVIDER PR
+   WHERE  PH.PROVIDER_ID = PR.PROVIDER_ID AND
+          PH.PAYMENT_TYPE_CD = '6' AND  
+          PH.MANUAL_SW = 'N'  AND
+          PH.DELETE_SW = 'N'  AND
+          PR.DELETE_SW = 'N'  AND
+          PH.PAYMENT_START_DT BETWEEN vd_previous_month_start_dt AND vd_previous_month_end_dt ;--
+
+   -- Take count to run a loop for cursor (called after Final Run) - END     
+
+ELSE
+   -- SQL for Cursor (called after payment released) - START 
+    vs_cursor_sql :=
+   ' SELECT PH.PAYMENT_ID, '||
+   '  PH.PROVIDER_ID, '||
+   '  PR.PAY_TO_AFFILIATE_CD, '||
+   '  PR.ADR_HOME_PHONE_TX, '||
+   '  PR.ADR_WORK_PHONE_TX, '||
+   '  PR.ADR_WORK_XTN_TX, '||
+   '  PH.ADR_TYPE_CD  '||
+   ' FROM tb_PAYMENT_HEADER PH, '||
+   '      tb_PROVIDER PR '||
+   ' WHERE PH.PROVIDER_ID = PR.PROVIDER_ID  '||
+   '     AND PH.PAYMENT_TYPE_CD = ''3294''  '||
+   '  AND PH.MANUAL_SW = ''N'' '||
+   '  AND PH.DELETE_SW = ''N'' '||
+   '  AND PR.DELETE_SW = ''N'' '||
+   '  AND PH.PAYMENT_DT = CURRENT_DATE  '||
+   '  AND PH.PROVIDER_ID = '|| (al_provider_id::varchar) ;--
+   -- SQL for Cursor (called after payment released) - END 
+
+   -- Take count to run a loop for cursor (called after payment released) - START
+   SELECT COUNT(*)
+    INTO vl_row_cnt
+   FROM tb_PAYMENT_HEADER PH,
+        tb_PROVIDER PR
+   WHERE PH.PROVIDER_ID = PR.PROVIDER_ID
+     AND PH.PAYMENT_TYPE_CD = '3294'
+    AND PH.MANUAL_SW = 'N'
+    AND PH.DELETE_SW = 'N'
+    AND PR.DELETE_SW = 'N'
+    AND PH.PAYMENT_DT = CURRENT_DATE
+    AND PH.PROVIDER_ID = al_provider_id ;--
+   -- Take count to run a loop for cursor (called after payment released) - END
+END IF;--
+
+--PREPARE s1 FROM vs_cursor_sql;--
+--OPEN CUR_PAYMENTS;--
+
+OPEN CUR_PAYMENTS FOR EXECUTE vs_cursor_sql;--
+--PROVIDER_PAYMENTS:
+<<PROVIDER_PAYMENTS>>
+--WHILE vl_row_cnt > 0  DO
+loop EXIT WHEN vl_row_cnt = 0::bigint ;
+    /*IF vl_row_cnt = 0 THEN
+       LEAVE PROVIDER_PAYMENTS;--
+    END IF;--*/
+
+     vl_payment_id := 0; -- INITIAL VALUE
+     vl_provider_id := 0; -- INITIAL VALUE
+     vs_pay_to_aff := ''; -- INITIAL VALUE
+     vs_home_phone_tx := ''; -- INITIAL VALUE
+     vs_work_phone_tx := ''; -- INITIAL VALUE
+     vs_work_ext := ''; -- INITIAL VALUE
+     vs_payment_adr_typ := ''; -- INITIAL VALUE
+
+    FETCH CUR_PAYMENTS INTO vl_payment_id, vl_provider_id, vs_pay_to_aff, vs_home_phone_tx, vs_work_phone_tx, vs_work_ext, vs_payment_adr_typ;--
+
+--    IF vs_payment_adr_typ is NULL THEN
+       IF vs_pay_to_aff = '3366' THEN -- The Same Address
+           vs_adr_typ := '3357';--
+       ELSEIF vs_pay_to_aff = '3367' THEN  -- A Different Payment Address
+           vs_adr_typ := '3356';--
+       ELSEIF vs_pay_to_aff = '3368' THEN  -- The Payment Address of the Affiliate Organization
+           vs_pay_to_aff := '';  -- Do NOT Update Address
+       END IF; --
+--    ELSE
+--       SET vs_adr_typ = vs_payment_adr_typ;--
+--    END IF;--
+
+    IF  LENGTH(LTRIM(RTRIM(vs_pay_to_aff))) > 0  THEN -- PAYMENT SETTING FOR THE PROVIDER 
+ 
+ -- get the address from tb_provider_address table
+  vl_address_id := 0; -- INITIAL VALUE
+ 
+     SELECT ADDRESS_ID,
+      ADR_TYPE_CD,                ADR_FORMAT_CD,
+      ADR_STREET_TX,              ADR_BOX_NO,
+      ADR_PRE_DIR_CD,             ADR_STREET_NM,
+      ADR_STREET_SUFFIX_CD,       ADR_POST_DIR_CD,
+      ADR_UNIT_TYPE_CD,           ADR_UNIT_NO_TX,
+      ADR_CITY_NM,                ADR_COUNTY_CD,
+      ADR_STATE_CD,               ADR_ZIP5_NO,
+      ADR_ZIP4_NO,                ADR_DIRECTION_TX,
+      ADR_FOREIGN_TX,             ADR_FOREIGN_STATE_TX,
+      ADR_COUNTRY_TX,             ADR_POSTAL_CODE_TX,
+      ADR_START_DT,               ADR_END_DT
+         INTO vl_address_id,
+         vs_adr_type_cd,        vs_adr_format_cd,
+         vs_street_no,          vl_adr_box_no,
+      vs_pre_dir_cd,         vs_adr_street_nm,
+         vs_str_suff_cd,        vs_post_dir_cd,
+         vs_unit_type_cd,       vs_unit_no_tx,
+         vs_city_nm,            vs_adr_county_cd,
+         vs_adr_state_cd,       vl_zip5_no,
+         vl_zip4_no,            vs_adr_dir,
+         vs_forgin_tx,          vs_forgin_state,
+         vs_county_tx,          vs_adr_postal_tx,
+      vd_adr_start_dt,       vd_adr_end_dt
+          FROM
+          tb_PROVIDER_ADDRESSES
+          WHERE
+          ( DELETE_SW = 'N' AND
+              PARENT_KEY_ID::varchar = vl_provider_id::varchar AND
+              ADR_TYPE_CD = vs_adr_typ AND
+              ADR_DEFAULT_SW = 'Y' )
+          FETCH FIRST ROW ONLY;--
+ 
+  IF vl_address_id is Null THEN
+      vl_address_id := 0;--
+  END IF;--
+ 
+  IF vl_address_id > 0  THEN
+ 
+    UPDATE tb_PAYMENT_HEADER
+      SET ADR_TYPE_CD = vs_adr_type_cd,
+   ADR_FORMAT_CD = vs_adr_format_cd,
+   ADR_STREET_TX = vs_street_no,
+   ADR_BOX_NO = vl_adr_box_no,
+   ADR_PRE_DIR_CD = vs_pre_dir_cd,
+   ADR_STREET_NM = vs_adr_street_nm,
+   ADR_STREET_SUFFIX_CD = vs_str_suff_cd,
+   ADR_POST_DIR_CD = vs_post_dir_cd,
+   ADR_UNIT_TYPE_CD = vs_unit_type_cd,
+   ADR_UNIT_NO_TX = vs_unit_no_tx,
+   ADR_CITY_NM = vs_city_nm,
+   ADR_COUNTY_CD = vs_adr_county_cd,
+   ADR_STATE_CD = vs_adr_state_cd,
+   ADR_ZIP5_NO = vl_zip5_no,
+   ADR_ZIP4_NO = vl_zip4_no,
+   ADR_DIRECTION_TX = vs_adr_dir,
+   ADR_FOREIGN_TX = vs_forgin_tx,
+   ADR_FOREIGN_STATE_TX = vs_forgin_state,
+   ADR_COUNTRY_TX = vs_county_tx,
+   ADR_POSTAL_CODE_TX = vs_adr_postal_tx,
+   ADR_START_DT = vd_adr_start_dt,
+   ADR_END_DT = vd_adr_end_dt,
+   ADR_HOME_PHONE_TX = vs_home_phone_tx,
+   ADR_WORK_PHONE_TX = vs_work_phone_tx,
+   ADR_WORK_XTN_TX = vs_work_ext,
+   UPDATE_TS = CURRENT_TIMESTAMP,
+   UPDATE_USER_ID = 'finance',
+   PAYEE_NM =  F_ENAME('2953', PROVIDER_ID) 
+    WHERE PAYMENT_ID = vl_payment_id ;--
+
+      al_sqlcode := SQLCODE;--
+     IF al_sqlcode <> 0 THEN
+        as_error := 'Error in Updating PROVIDER ADDRESS of ' || CAST(vl_provider_id AS varchar)  ;--
+        vs_identity_column := 'Payment ID';--
+        vs_identity_val := CAST(vl_payment_id AS varchar);--
+       --SIGNAL p_sp_error  ;--
+     END IF ;--
+
+    -- COMMIT;   --
+   END IF; --
+ ELSE
+      al_sqlcode := -1;--
+     IF al_sqlcode <> 0 THEN
+       as_error := 'Payment Address setting is missing for the Provider ' || CAST(vl_provider_id AS varchar)  ;--
+       vs_identity_column := 'Payment ID';--
+   vs_identity_val := CAST(vl_payment_id AS varchar);--
+      --SIGNAL p_sp_error  ;--
+    END IF ;--
+ END IF;--
+
+     vl_row_cnt := vl_row_cnt  - 1; --
+--END WHILE ;--
+END loop;
+--CLOSE CUR_PAYMENTS ;--
+CLOSE CUR_PAYMENTS ;--
+return 1;
+END;
+
+$function$
+

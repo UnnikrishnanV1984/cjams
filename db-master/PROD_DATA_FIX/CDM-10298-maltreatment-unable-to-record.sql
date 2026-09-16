@@ -1,0 +1,1 @@
+update intakeservicerequestsdm set ismalpa_insjury = true, isar = true, updatedby = 'CDM-10298', updatedon = now() where intakeserviceid = '3d765261-7937-4f3a-b0a7-fb346f860f4e';

@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION as_icjassessmentnotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+v_status character varying;
+
+v_count int;
+v_icjassessment20daysrecord  record;
+v_msg character varying;
+v_voluntrytype character varying;
+P_cjamspid bigint;
+
+
+BEGIN
+     FOR  v_icjassessment20daysrecord  IN
+ 
+select distinct ISR.intakeserviceid, ISR.servicerequestnumber, ISR.intakenumber, 
+R.tosecurityusersid,R.fromsecurityusersid,P.lastname,P.firstname ,P.cjamspid,ISIT.voluntrytype,
+case when R.insertedon::date = now()::date -'20 day'::interval then 20
+ when R.insertedon::date = now()::date -'25 day'::interval then 25
+ when R.insertedon::date = now()::date -'30 day'::interval then 30
+end as daysinterval
+ 
+           from intakeservicerequest as ISR
+          JOIN intakeservicerequesttype ISRT on ISRT.intakeservreqtypeid=ISR.intakeservreqtypeid and ISRT.intakeservreqtypekey='IC'
+  JOIN routing as R 
+           ON R.objectid = ISR.intakeserviceid::character varying  and R.toroleid='JSCW' and R.routingstatustypeid=4 
+ JOIN intakeservicerequestactor as ISRA
+           ON ISR.intakeserviceid  = ISRA.intakeserviceid  and ISRA.activeflag = 1 and lower(ISRA.intakeservicerequestpersontypekey) = 'youth'
+      JOIN actor as A
+           ON A.actorid  = ISRA.actorid  and A.activeflag = 1  
+      JOIN Person as P
+           ON P.personid  = A.personid  and P.activeflag = 1 
+JOIN intakeserreqinterstate ISIT on ISIT.intakeserviceid=ISR.intakeserviceid and ISIT.activeflag=1
+
+JOIN referencevalues RV on RV.ref_key=ISIT.voluntrytype and RV.activeflag=1
+
+JOIN referencetype RT on RT.referencetypeid=RV.referencetypeid and RT.tablename='voluntrytype'
+   
+     -- WHERE  (R.insertedon::date = now()::date -'20 day'::interval or R.insertedon::date = now()::date -'25 day'::interval or R.insertedon::date = now()::date -'30 day'::interval)
+      WHERE  (R.insertedon::date = now()::date -'20 day'::interval or R.insertedon::date = now()::date -'25 day'::interval or R.insertedon::date = now()::date -'30 day'::interval)
+     -- and ISR.servicerequestnumber ='201900513806'
+ LOOP
+   
+select count(*) into v_count from assessment AST 
+join assessmenttemplate ASMT on ASMT.assessmenttemplateid=AST.assessmenttemplateid and AST.assessmentstatustypekey='Submitted'and AST.activeflag=1
+
+join intakeservicerequest ISR on ISR.intakeserviceid=AST.objectid and ISR.activeflag=1
+
+where AST.objectid=v_icjassessment20daysrecord.intakeserviceid and ASMT.name='icjFormIiRequisitionForEscapeeAbsconderOrAccusedDelinquent';
+
+
+IF(v_count=0) then -- and v_icjassessment20daysrecord.voluntrytype='NVRF'
+
+ v_msg:=   'ICJ Requisition Packet for the '|| v_icjassessment20daysrecord.lastname ||', '|| v_icjassessment20daysrecord.firstname ||'  ('|| v_icjassessment20daysrecord.servicerequestnumber ||')is due for the past '||v_icjassessment20daysrecord.daysinterval||' days.Please submit it at the earliest';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.tosecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+ 
+ SELECT send_notification INTO v_status FROM as_send_notification(v_icjassessment20daysrecord.fromsecurityusersid, 'System'::character varying, v_icjassessment20daysrecord.fromsecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_icjassessment20daysrecord.intakeserviceid::character varying);
+      
+END IF;      
+    END LOOP;
+ 
+RETURN
+
+'Success';
+
+END;
+
+
+$function$
+

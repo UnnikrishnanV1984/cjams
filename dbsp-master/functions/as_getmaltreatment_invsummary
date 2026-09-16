@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION as_getmaltreatment_invsummary(v_investigationid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+l_maltreatment json;
+
+begin  
+
+ SELECT Json_agg(a) 
+  INTO   l_maltreatment 
+  FROM   ( 
+                  SELECT     IMA.intakeservicerequestactorid, 
+                             im.maltreatmentid,  
+                             p.personid, 
+                             --im.incidentlocationtypekey, 
+                             COALESCE(p.firstname,'') 
+                                        ||' ' 
+                                        ||COALESCE(p.lastname,'') AS personname, 
+                   P.DOB,
+                   P.gendertypekey,
+                   (SELECT coalesce(pa.address,'') ||' ' 
+                                          || coalesce(pa.address2,'')  ||' '
+                                         || coalesce(pa.city,'') ||' ' 
+                                         || coalesce(pa.zipcode,'')  address 
+                                        FROM personaddress pa 
+                                        WHERE pa.personid = p.personid 
+                                        AND pa.activeflag =1 
+                                        AND pa.personaddresstypekey ='C' limit 1
+                                        ) address,
+                         ( 
+                                    SELECT Json_agg(a) 
+                                    FROM   ( 
+                                                  SELECT ia.investigationallegationid, 
+                                                         ia.maltreatmentid, 
+                                                         ia.allegationid, 
+                                                         ia.sextrafficking, 
+                                                         im.enddate, 
+                                    
+                                                         al.NAME, 
+                                                         ia.indicators, 
+                                                         ia.comments, 
+                                                         ia.injurycomments, 
+                                                         ia.incidentdate, 
+                                                         ia.sextrafficking , 
+                                             (SELECT   IFT.description findingtype 
+                                                                FROM   investigationfinding IAF 
+                                                                       INNER JOIN investigationfindingtype IFT 
+                                                                               ON IFT.investigationfindingtypekey = 
+                                                                                  IAF.investigationfindingtypekey 
+                                                                              AND IFT.activeflag = 1 
+                                                                     WHERE IAF.ACTIVEFLAG =1
+                                                                    -- AND IAF.investigationallegationactorid =ia.investigationallegationactorid 
+                                                LIMIT 1 )   findings                                                         
+                                                  FROM   investigationallegation ia 
+                                            INNER JOIN allegation al on al.allegationid= ia.allegationid 
+                                            AND ia.activeflag =1
+                                                  WHERE  ia.maltreatmentid = im.maltreatmentid 
+                                                  AND    ia.activeflag =1 ) a) AS investigationallegation
+                  FROM       investigationmaltreatment im 
+                  INNER JOIN Investigationmaltreatmentactor IMA on IMA.maltreatmentid = IM.maltreatmentid and IMA.activeflag =1              
+                  INNER JOIN intakeservicerequestactor ISRA on ISRA.intakeservicerequestactorid = IMA.intakeservicerequestactorid
+                  INNER JOIN person p 
+                  ON         p.personid = ISRA.personid 
+                  WHERE      im.investigationid = v_investigationid 
+                  AND        im.activeflag =1
+                  ) a;
+
+  RETURN  l_maltreatment;   
+                  
+
+ END;
+ 
+
+$function$
+

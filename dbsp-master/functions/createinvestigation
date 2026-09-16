@@ -1,0 +1,166 @@
+CREATE OR REPLACE FUNCTION createinvestigation(datypeid uuid, dasubtypeid uuid, investigationid uuid, securityuserid character varying, v_roletypecode character varying DEFAULT 'CW'::character varying, v_teamtypekey character varying DEFAULT 'CW'::character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+                                                                                                          
+DECLARE  
+v_activity  record;
+newactivityid  uuid;
+duedate  timestamp;
+loadnumber  character  varying;
+v_manualinvestigation  character  varying;
+v_protectivesupervision character varying;
+
+BEGIN            
+duedate:=now();
+  SELECT  tm.loadnumber  into  loadnumber
+  FROM  userprofile  u  
+  INNER  JOIN      teammemberassignment  tma  
+   ON  tma.SecurityUsersId  =    u.SecurityUsersId  AND  tma.activeflag  =1
+  INNER  JOIN    teammember  tm  
+   on  tm.teammemberid  =  tma.teammemberid  AND  tm.activeflag  =1
+  WHERE  u.activeflag  =1      AND  u.SecurityUsersId  =  securityuserid;
+  
+  
+FOR  v_activity  IN
+SELECT    am.name,        am.amactivityid,
+  am.ammappingid,investigationid,am.description,    
+  am.activitytypekey,  am.helptext  
+FROM  investigationmapping  as  im    
+INNER  JOIN  servicerequesttypeconfig  as  sc
+ on  sc.servicerequesttypeconfigid  =  im.objectid  
+INNER  JOIN  ammapping  am  on  am.ammappingid  =  im.ammappingid  
+ AND  am.activitytypekey  ='Investigation'
+        and  am.teamtypekey  =v_teamtypekey
+        and  coalesce(am.isinvestigstionactivity,0)  =1
+INNER  JOIN  ammappingrole  amr  on  amr.ammappingid  =  am.ammappingid  
+and  amr.activeflag  =1  
+and  amr.roletypecode  =v_roletypecode  
+INNER  JOIN  (  select  distinct  ammappingid  from  (SELECT  distinct  ammappingid  
+           FROM  ammappingtask  amt
+                         INNER  JOIN  activitytasktype  ats  on  ats.activitytasktypekey  =  amt.activitytasktypekey  
+     AND  amt.activeflag  =1  and  ats.activeflag  =1  
+     AND  ats.activitytypekey  ='Investigation'
+                            and  amt.required  =true  
+     AND  coalesce(amt.ismandatory_fatality  ,0)=0
+    union  all
+                           SELECT  distinct  ammappingid  FROM  ammappinggoal  amt
+                         INNER  JOIN  activitygoaltype  ats  on  ats.activitygoaltypekey  =  amt.activitygoaltypekey  
+     AND  amt.activeflag  =1  and  ats.activeflag  =1  
+     AND  ats.activitytypekey  ='Investigation'
+                           and  amt.required  =true)  as  t
+                     )  as  amt        
+        on  amt.ammappingid  =  am.ammappingid
+                      
+WHERE  coalesce(im.isreviewactivity  ,false)    =false
+AND  sc.intakeservreqtypeid  in  (datypeid)
+AND  sc.servicerequestsubtypeid  in  (dasubtypeid)
+AND  sc.activeflag    =1  
+AND  sc.intakeservicerequestplantypekey='INV'  
+
+LOOP
+   
+   INSERT  INTO  activity
+                      (  
+   description,    amactivityid
+                      ,ammappingid,objectid,sourcedescription
+                      ,activitytypekey,helptext,sequence
+                      ,updatedby,insertedby
+                      ,effectivedate,expirationdate
+   )
+      values
+      (
+        v_activity.name,    v_activity.amactivityid,
+        v_activity.ammappingid,  investigationid,  v_activity.description,  
+        v_activity.activitytypekey,  v_activity.helptext,  1,
+        securityuserid,securityuserid,  now(),duedate)  RETURNING  "activityid"  INTO    newactivityid;
+
+/*ACTIVIY  TASK  taken  from  activity  mapping  based  on  mapping  id    (task  status  hardcoded)*/
+
+ INSERT  INTO    activitytask
+                      (  
+        activityid,name,description
+                      ,helptext,amtaskid,assignedto
+                      ,assignedon  ,activitytaskstatustypekey  
+                      ,activitytasktypekey,activityprioritytypekey,duedate
+                        ,sequence,required,activeflag
+                      ,updatedby,insertedby,EffectiveDate
+                              ,assessmenttemplateid
+                    )
+   SELECT    newactivityid  ,ta.name,  ta.description,
+     am.helptext,ta.amtaskid,securityuserid,
+     now()  at  time  zone  'utc'  ,'InvOpen',
+       amt.activitytasktypekey,  amt.activityprioritytypekey,
+    case when am.name='Protective Supervision' then (now()  at  time  zone  'utc'  )::  date else  (now()  at  time  zone  'utc'  )::  date    +coalesce(amt.duedateoffset,1) end                     
+       ,1,true,1,
+       securityuserid,securityuserid,  now()  at  time  zone  'utc'  
+                            ,amt.assessmenttemplateid
+ FROM  investigationmapping  as  im    
+ INNER  JOIN  servicerequesttypeconfig  as  sc
+  on  sc.servicerequesttypeconfigid  =  im.objectid  
+ INNER  JOIN  ammapping  am  on  am.ammappingid  =  im.ammappingid  
+  AND  am.activitytypekey  ='Investigation'
+ INNER  JOIN    ammappingtask  amt      on  amt.ammappingid  =  am.ammappingid
+ INNER  JOIN  activitytasktype  ats  on  ats.activitytasktypekey  =  amt.activitytasktypekey  
+  AND  amt.activeflag  =1  and  ats.activeflag  =1  
+  AND  ats.activitytypekey  ='Investigation'
+  AND  amt.required  =true  
+  AND  coalesce(amt.ismandatory_fatality  ,0)=0
+ INNER  JOIN  amtask  ta  on  ta.amtaskid  =  amt.amtaskid  
+  AND  ta.activeflag  =1  and  ats.activeflag  =1  
+  AND  ta.activitytypekey  ='Investigation'   
+ WHERE  sc.intakeservreqtypeid  in  (datypeid)
+ AND  sc.servicerequestsubtypeid  in  (dasubtypeid)
+ AND  sc.activeflag    =1  
+ AND  sc.intakeservicerequestplantypekey='INV'  
+   and  am.ammappingid  =v_activity.ammappingid;
+/*Task  end  */ 
+       
+/*ACTIVIY  GOAL  taken  from  activity  mapping  based  on  mapping  id    (GOAL  status  hardcoded)*/
+ INSERT  INTO    activitygoal
+         (activityid,name,description
+         ,helptext,amgoalid,assignedto
+         ,activitygoalstatustypekey  ,activitygoaltypekey
+         ,activityprioritytypekey,duedate,  required,sequence
+         ,updatedby,insertedby,effectivedate
+ )
+   SELECT    
+    newactivityid  ,ta.name,  ta.description,  
+    am.helptext,ta.amgoalid,  loadnumber,  
+    'InvUnmet',  amt.activitygoaltypekey,  
+    amt.activityprioritytypekey,
+                                case when am.name='Protective Supervision' then (now()  at  time  zone  'utc'  )::  date else  (now()  at  time  zone  'utc'  )::  date    +coalesce(amt.duedateoffset,1) end ,                   
+                                true,1,
+    securityuserid,securityuserid,  now()  at  time  zone  'utc'  
+
+ FROM  investigationmapping  as  im    
+ INNER  JOIN  servicerequesttypeconfig  as  sc
+  on  sc.servicerequesttypeconfigid  =  im.objectid  
+ INNER  JOIN  ammapping  am  on  am.ammappingid  =  im.ammappingid  
+  AND  am.activitytypekey  ='Investigation'
+ INNER  JOIN    ammappinggoal  amt      on  amt.ammappingid  =  am.ammappingid  
+     AND  amt.required  =true  
+ INNER  JOIN  activitygoaltype  ats  on  ats.activitygoaltypekey  =  amt.activitygoaltypekey  
+  AND  amt.activeflag  =1  and  ats.activeflag  =1  
+  AND  ats.activitytypekey  ='Investigation'
+ INNER  JOIN  amgoal  ta  on  ta.amgoalid  =  amt.amgoalid  
+  AND  ta.activeflag  =1  and  ats.activeflag  =1  
+  AND  ta.activitytypekey  ='Investigation'
+ WHERE  sc.intakeservreqtypeid  in  (datypeid)
+ AND  sc.servicerequestsubtypeid  in  (dasubtypeid)
+ AND  sc.activeflag    =1  
+ AND  sc.intakeservicerequestplantypekey='INV'  
+   and  am.ammappingid  =v_activity.ammappingid;
+
+END  LOOP;
+
+SELECT  createmanualinvestigation  INTO  v_manualinvestigation  
+  FROM  createmanualinvestigation(datypeid,dasubtypeid,investigationid,securityuserid,v_roletypecode,v_teamtypekey);
+
+ 
+RETURN
+   'Success';
+END;
+
+$function$
+

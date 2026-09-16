@@ -1,0 +1,74 @@
+CREATE OR REPLACE FUNCTION as_copreferralproviderlist11(v_investigationcopreferralid uuid)
+ RETURNS TABLE(totalcount bigint, narrative text, investigationcopreferralid uuid, s3bucketpathname character varying, providerid uuid, documnettype character varying, copdocument jsonb, copprovider jsonb)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+   
+v_providerid uuid;
+v_s3bucketpathname character varying;
+v_documnettype character varying;
+BEGIN 
+
+select distinct crdc.providerid,cpdc.s3bucketpathname,cpdc.documnettype into v_providerid ,v_s3bucketpathname,v_documnettype from copreferraldocumentconfig cpdc
+ 
+join copreferralproviderconfig crdc on crdc.investigationcopreferralid=cpdc.investigationcopreferralid and crdc.activeflag=1
+ join routing R on R.objectid=crdc.copreferralproviderconfigid::character varying and R.activeflag=1 and R.routingstatustypeid=94
+
+where cpdc.investigationcopreferralid=v_investigationcopreferralid and cpdc.uploadeddocumenttype='gen' and cpdc.documnettype in('cop','referral');
+return query
+ 
+
+SELECT 
+COUNT(1) OVER() totalcount,
+icr.narrative,icr.investigationcopreferralid,
+v_s3bucketpathname ,
+v_providerid uuid,
+v_documnettype,
+(SELECT Json_agg(copdocuments) 
+   FROM (SELECT crdc.copreferraldocumentconfigid,
+   crdc.investigationcopreferralid,   
+   crdc.s3bucketpathname,
+   crdc.originalfilename
+   
+     FROM copreferraldocumentconfig crdc
+     
+     WHERE crdc.investigationcopreferralid = icr.investigationcopreferralid 
+     AND crdc.activeflag = 1)
+     copdocuments) :: jsonb AS copdocument,
+     
+     (SELECT Json_agg(copproviders) 
+    FROM (
+     SELECT  p.providerid, p.providercategorytypekey,
+     p.providername, p.prefix, p.firstname, p.middlename,
+     p.lastname,pcinfo.phonenumber,pcinfo.email,p.providercode,
+      p.isoperatedbydjs,p.parentorg as providerorganizationtype,
+      p.providerunit,p.placementadmissionclassificationkey, p.placementadmissionclassificationkey,
+      pac.description as placementadmissionclassificationdesc,
+      padt.description as placementadmissiontypedesc,
+      
+     pac.description as categorytype
+   
+     FROM copreferralproviderconfig crpc
+     inner join provider p  on crpc.providerid=p.providerid
+     LEFT JOIN providercontactinfo pcinfo ON p.providerid = pcinfo.providerid AND pcinfo.activeflag = 1
+     left join placementadmissiontype padt 
+    on padt.placementadmissiontypekey = p.placementadmissiontypekey
+     left join placementadmissionclassificationtype pac
+         on pac.placementadmissionclassificationkey = p.placementadmissionclassificationkey
+      --left join copreferraldocumentconfig cpdc on cpdc.investigationcopreferralid=icr.investigationcopreferralid and cpdc.activeflag=1
+         
+     WHERE crpc.investigationcopreferralid = icr.investigationcopreferralid 
+     AND crpc.activeflag = 1)
+     copproviders) :: jsonb AS copprovider
+from investigationcopreferral icr
+
+WHERE  icr.investigationcopreferralid=v_investigationcopreferralid
+
+order by icr.insertedon desc;
+ 
+
+END;
+
+$function$
+

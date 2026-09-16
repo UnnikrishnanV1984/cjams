@@ -1,0 +1,215 @@
+CREATE OR REPLACE FUNCTION as_addupdateperson(v_personid uuid, persondetails json, v_intakeserviceid uuid, v_securityuserid character varying)
+ RETURNS TABLE(personid uuid, cjamspid bigint)
+ LANGUAGE plpgsql
+AS $function$
+
+  DECLARE 
+  
+ v_personjsondata json;
+ 
+ v_person json;
+ 
+ l_generatedactorid uuid;
+ 
+ l_generatedintakeservicereqactorid uuid;
+ 
+ l_genereatedactorrelationshipid uuid;
+ 
+ v_personrole json;
+ 
+ v_personrolejs json; 
+ 
+ v_date timestamp  without  time  zone;
+
+ returnmsg character varying;
+ 
+ v_intakeservicerequestactorid uuid;
+
+ v_actorid uuid;
+
+ v_cjamspid bigint;
+ 
+ l_personid uuid;
+   
+    v_savefocuspersoncasenostatus character varying;
+ 
+  BEGIN  
+
+ v_date :=  now()  at  time  zone  'utc';
+
+ v_person  :=  persondetails;
+
+ v_actorid := v_person  ->>'actorid';
+
+ 
+RAISE NOTICE 'values %', v_Personjsondata->>'activeflag';
+
+  v_personrole  :=  v_person->>  'personrole';
+
+  RAISE NOTICE 'v_personrole %', v_personrole;
+
+  RAISE NOTICE 'v_personrole111 %', v_personrole->>'rolekey';
+
+IF(v_personid IS NOT NULL) THEN
+
+select * from as_personupdatebasicinfo(v_personid,persondetails,v_intakeserviceid,v_securityuserid) into returnmsg;
+
+ELSE
+      
+select * from as_personadd(v_person,v_securityuserid) into v_personid,v_cjamspid;
+
+END IF;   
+
+IF(v_actorid IS NOT NULL) THEN
+
+ select intakeservicerequestactorid from intakeservicerequestactor where actorid = v_actorid and intakenumber = v_person ->>'intakenumber' INTO v_intakeservicerequestactorid;
+ 
+ UPDATE actor SET actortype = COALESCE(v_personrole ->> 'rolekey',actortype), 
+ updatedby = v_person  ->>'updatedby',updatedon = v_date where actorid = v_actorid;
+
+ 
+ UPDATE intakeservicerequestactor SET intakeservicerequestpersontypekey = COALESCE(v_personrole ->> 'rolekey',intakeservicerequestpersontypekey),
+ isprimary = COALESCE((v_personrole  ->>'isprimary')::boolean,isprimary),updatedby = v_person  ->>'updatedby',updatedon = v_date where actorid = v_actorid;
+
+ UPDATE actorrelationship SET relationshiptypekey = COALESCE(v_personrole  ->>'relationshiptypekey',relationshiptypekey),
+ updatedby = v_person  ->>'updatedby',updatedon = v_date 
+ where intakeservicerequestactorid = v_intakeservicerequestactorid; 
+
+ELSE
+ insert into actor(
+  
+  activeflag,
+  
+  personid,
+  
+  actortype,
+  
+  insertedby,
+
+  intakenumber,
+  
+  intakeserviceid,
+  
+  insertedon
+
+ )
+ values( 
+
+  1,
+
+  v_personid,
+
+  (v_personrole ->> 'rolekey')::character varying,
+
+  (v_person  ->>'insertedby')::character varying,
+
+  (v_person  ->>'intakenumber')::character varying,
+  
+  v_intakeserviceid,
+
+  v_date
+  
+ )returning actorid into l_generatedactorid;
+
+ RAISE NOTICE 'v_personrole222 %', v_personrole->>'rolekey';
+
+ insert into intakeservicerequestactor(
+ 
+  actorid,
+  
+  intakeservicerequestpersontypekey,
+  
+  insertedby,
+  
+  insertedon,
+  
+  isprimary,
+  
+  intakenumber,
+  
+  intakeserviceid,
+  
+  personid,
+
+  activeflag
+
+ )
+ values(        
+  l_generatedactorid,
+
+  v_personrole ->> 'rolekey',
+
+  v_person  ->>'insertedby',
+
+  v_date,
+
+  (v_personrole  ->>'isprimary')::boolean,
+
+  v_person  ->>'intakenumber',
+  
+  v_intakeserviceid ,
+  
+  v_personid,
+
+  1
+   
+ ) returning intakeservicerequestactorid into l_generatedintakeservicereqactorid;
+
+ IF(v_personrole  ->>'relationshiptypekey' is not null) then
+ 
+ insert into actorrelationship(
+  
+  relationshiptypekey,
+  
+  intakeservicerequestactorid,
+
+  insertedby,  
+
+  insertedon,
+
+  effectivedate,
+
+  intakenumber,
+  
+  intakeserviceid,
+
+  activeflag
+ )
+ values(
+ 
+ v_personrole  ->>'relationshiptypekey',
+ 
+ l_generatedintakeservicereqactorid,
+
+ v_person  ->>'insertedby',
+
+ v_date,
+
+ v_date,
+
+ v_person  ->>'intakenumber',
+ 
+ v_intakeserviceid,
+
+ 1
+  
+ )returning actorrelationshipid into l_genereatedactorrelationshipid;
+ END IF;
+END IF;
+
+/*Referral Focus personcasestatus */
+       SELECT ISRA.personid into l_personid FROM intakeservicerequestactor ISRA
+    WHERE intakenumber = v_person  ->>'intakenumber' 
+    AND lower(intakeservicerequestpersontypekey) = 'youth' AND activeflag =1;
+     raise notice  'intakenumber %',  v_person  ->>'intakenumber' ;
+     raise notice  'l_personid %',  l_personid ;
+    SELECT savefocuspersoncasestatus into v_savefocuspersoncasenostatus 
+    from as_savefocuspersoncasestatus(l_personid,v_intakeserviceid,v_person  ->>'intakenumber','REF',
+    'Open',v_securityuserid, null, null);
+    
+ RETURN query
+ select v_personid,v_cjamspid;      
+END;
+
+$function$
+

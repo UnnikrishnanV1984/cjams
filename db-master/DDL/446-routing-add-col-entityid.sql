@@ -1,0 +1,1 @@
+ALTER TABLE cjams.routing ADD COLUMN IF NOT EXISTS entityid character varying NULL;

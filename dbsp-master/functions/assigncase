@@ -1,0 +1,107 @@
+CREATE OR REPLACE FUNCTION assigncase(appeventcode character varying, service_caseid uuid, fromuserid character varying, v_assignedsecurityid character varying)
+ RETURNS TABLE(statuscode integer, status_description character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+statuscode integer;
+status_description character varying;
+
+caseworker_name text;
+
+v_teamid uuid;
+v_loadnumber character varying; 
+v_toroletypekey  character varying;
+v_teamname character varying;
+v_team_member_id  uuid;
+v_torolesupervisor  bool;
+
+v_roletypecode character varying;
+v_fromroletypekey character varying;
+v_routingid uuid;
+v_status  int;
+v_notifystatus character varying;
+v_servicerequestno character varying;
+
+BEGIN
+ v_status:= 4; 
+ 
+ /*Assigned service Case number*/
+ 
+ SELECT  servicecasenumber
+ INTO v_servicerequestno
+ FROM servicecase  
+ WHERE servicecaseid = service_caseid AND activeflag =1 LIMIT 1;
+ 
+ 
+ /*Assigned user team details*/
+
+  SELECT   tm.teamid ,tm.loadnumber ,tm.roletypekey , 
+   t.teamname, tm.teammemberid ,coalesce(isupervisor,false) 
+        INTO  v_teamid ,v_loadnumber, v_toroletypekey,
+        v_teamname,v_team_member_id,v_torolesupervisor
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        INNER JOIN  team t ON t.teamid = tm.teamid  AND t.activeflag =1
+        INNER JOIN  teammemberroletype tmrt ON tmrt.roletypekey =tm.roletypekey 
+        WHERE  tma.SecurityUsersId = v_assignedsecurityid
+        AND   tma.activeflag =1;
+
+   
+ /*Logged in user role details*/ 
+
+  SELECT  tm.roletypekey  INTO  v_fromroletypekey 
+        FROM    teammemberassignment tma 
+        INNER JOIN  teammember tm ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        INNER JOIN team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = fromuserid
+        AND   tma.activeflag =1;
+ 
+     SELECT routingid INTO v_routingid 
+        FROM routing r WHERE tosecurityusersid = fromuserid 
+        AND activeflag =1
+        AND r.objectid  = service_caseid :: character varying
+        ORDER BY insertedon desc limit 1;
+       
+ /*Mark previous data as inactive and mark as accepted*/    
+      UPDATE routing SET activeflag =0 WHERE routingid =v_routingid ;
+
+ /*Routing to  user*/
+   INSERT INTO routing(
+      eventcode, fromsecurityusersid, tosecurityusersid, teamid, 
+      fromroleid, toroleid,objectid , routingstatustypeid,
+      insertedby,  updatedby , servicerequestnumber,objecttypekey,routeddescription)
+
+  VALUES(appeventcode,fromuserid,v_assignedsecurityid,v_teamid,
+     v_fromroletypekey,v_toroletypekey,service_caseid,v_status,
+     fromuserid,fromuserid,v_servicerequestno,'servicecase','Service Case Assigned');
+    
+   /*Service Case Status Change*/ 
+   UPDATE servicecase SET statustypekey = 'ASSGN' 
+   WHERE servicecaseid = service_caseid 
+   AND activeflag =1;
+   
+ /*Notification*/
+
+ /*Get caseworker name for Notification*/
+ SELECT cast( lastname ||',' || firstname as character varying) INTO caseworker_name 
+ FROM userprofile 
+ WHERE SecurityUsersId=v_assignedsecurityid AND activeflag =1;
+
+    SELECT send_notification INTO v_notifystatus from send_notification(fromuserid, fromuserid,v_assignedsecurityid,
+ 'System', 'Normal', 'Service Case #'||v_servicerequestno|| ' Assigned to '|| caseworker_name ,
+ 'Service Case #'||v_servicerequestno|| ' Assigned to '|| caseworker_name ,
+ cast(service_caseid as character varying));
+ 
+ statuscode:= 200;
+    status_description := 'Service Case Assigned Successfully';
+        
+RETURN  QUERY 
+
+SELECT statuscode,status_description;
+
+END;
+
+$function$
+

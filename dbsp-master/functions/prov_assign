@@ -1,0 +1,128 @@
+CREATE OR REPLACE FUNCTION prov_assign(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_tosecurityuserid character varying;
+v_fromroleid character varying;
+v_toroleid character varying;
+v_objectid character varying;
+v_subject character VARYING;
+v_body character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_objecttype character varying;
+v_object_other_id character varying;
+v_eventcode character varying;
+v_sign json;
+v_appstatus character varying;
+v_send_to character varying;
+response json;
+v_sitename character varying;
+v_date TIMESTAMP without time zone;
+v_siteListString character varying;
+currentRow record;
+v_status_cd integer;
+v_providerid character varying;
+v_objecttypename character varying;
+v_statustext character varying;
+v_providername character varying;
+v_site_list json;
+v_tousers json;
+v_providerassignmentid character varying;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_tosecurityuserid := objectls->>'tosecurityusersid';
+v_fromroleid := objectls->>'fromroleid';
+v_status_cd := objectls->>'status_cd';
+v_toroleid := objectls->>'toroleid';
+v_objecttypename := objectls->>'objectTypeName';
+v_statustext := objectls->>'statusText';
+v_appstatus := objectls->>'status';
+v_send_to := objectls->>'send_to';
+v_objectid := objectls->>'objectid';
+v_objecttype := objectls->>'object_type';
+v_object_other_id := objectls->>'object_other_id';
+v_providerid := objectls->>'provider_id';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_sign := objectls->>'signature';
+v_siteListString := objectls->>'siteListString';
+v_site_list := objectls->>'site_list';
+v_subject :=  objectls->>'subject' ;
+v_body :=  objectls->>'body' ; 
+v_date:= now();
+v_status_cd = 1;
+currentRow = null;
+
+select provider_nm into v_providername from tb_provider tp where tp.provider_id = v_providerid limit 1;
+v_subject = v_objectid||' '||v_objecttypename||' ' || v_statustext;
+v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+
+if v_siteListString is not null and trim(v_siteListString) !='' then 
+    v_body  = v_body|| ' for site(s)';
+    v_subject = v_subject || ' for site(s) "'||v_siteListString||'"';
+    for currentRow IN select provider_nm, provider_id from tb_provider tp where tp.provider_id::character varying in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+    loop
+        BEGIN
+            v_body  = v_body||' "'||currentRow.provider_id||'-'||currentRow.provider_nm||'", ';
+        END;
+    end loop;
+end if;
+v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+v_body  = v_body||', for Provider "'|| v_providerid||'-'||v_providername||'"';
+v_subject  = v_subject||', for Provider "'|| v_providerid||'-'||v_providername||'"';
+
+
+-- if v_send_to = 'ROUTETOSELECTED' then 
+    UPDATE routing SET  activeflag =0  , updatedby = v_fromsecurityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+    INSERT INTO routing(
+                        eventcode, fromsecurityusersid, tosecurityusersid, 
+                        fromroleid, toroleid,objectid , routingstatustypeid,
+                        insertedby, updatedby,insertedon,updatedon, isreviewrequest,
+                        remarks,routeddescription,servicerequestnumber)
+              values (v_eventcode,v_fromsecurityuserid,v_tosecurityuserid,
+                        v_fromroleid,v_toroleid,v_objectid,v_status_cd,
+                        v_fromsecurityuserid,v_fromsecurityuserid,v_date,v_date,true,
+                        objectls->>'remarks',v_appstatus,v_objectid);
+    
+    INSERT INTO providerassignment(fromworkeridno, toworkeridno, 
+           objecttypekey, objectid, activeflag, startdate, enddate, 
+           fromteamid, toteamid, 
+           remarks, assigndate, insertedby, updatedby, insertedon, updatedon)
+    VALUES (v_fromsecurityuserid, v_tosecurityuserid, 
+      v_eventcode, v_objectid,1,now(),null,
+      (select tm.teamid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid where tma.securityusersid = v_fromsecurityuserid),
+            (select tm.teamid from teammemberassignment tma join teammember tm on tm.teammemberid = tma.teammemberid where tma.securityusersid = v_tosecurityuserid),
+           objectls->>'remarks',now(),v_fromsecurityuserid,v_fromsecurityuserid, now(),now()) returning providerassignmentid into v_providerassignmentid;
+
+
+
+    INSERT INTO tb_provider_decision
+            (decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+            toroleid,tosecurityusersid, signature)
+    VALUES(gen_random_uuid(),v_eventcode, v_fromsecurityuserid, objectls->>'fromroleid', v_providerassignmentid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+            now(), false, objectls->>'remarks', v_appstatus,  now(), v_toroleid, v_tosecurityuserid,  v_sign);
+
+
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid, 'System', 'High', v_subject, v_body, v_object_other_id,  false, false, v_objecttype, v_providerid);
+
+    select json_agg(a) into v_tousers from ( 
+        SELECT v_tosecurityuserid as toworkeridno 
+    )a;
+
+-- else 
+--     v_success = 'Error: Notification recipient not defined';
+
+-- end if;
+
+
+
+return (json_build_object('Decision',v_success,'tousers',v_tousers, 'subject', v_subject, 'body', v_body));
+end;
+$function$
+

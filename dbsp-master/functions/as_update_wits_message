@@ -1,0 +1,220 @@
+CREATE OR REPLACE FUNCTION as_update_wits_message(updatedtlsobj json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$ 
+
+DECLARE
+ --
+ returnStatus text;
+ v_num int;
+ v_personid varchar(50);
+ v_progressnoteid uuid;
+ v_oldid varchar(50);
+ v_securityuserid uuid;
+ v_assiststaffid varchar(50);
+ v_contactdate date;
+ v_activeflag int;
+ v_contactroletypekey varchar(50);
+ v_progressnotesubtypeid uuid;
+ v_progressnotesubtypekey varchar(50);
+ v_description text;
+ v_progressnotepurposetypekey varchar(50);
+ v_progressnotetypekey varchar(50);
+ v_roletypekey varchar(50);
+ v_insertedon date;
+ v_updatedby varchar(50);
+ v_updateduserid uuid;
+ v_isusedrugselect boolean;
+ v_currentdate date;
+ v_generatedprogressnoteid uuid;
+ v_generatedprogressnoteactorid uuid;
+ v_genintakeservicerequestactorid uuid;
+ v_genactorid uuid;
+ v_genpersonid uuid;
+ v_genprogressnotetypeid uuid;
+ v_ptype int;
+ v_userprocount int;
+ v_gensecurityid uuid;
+ v_intakeserviceid uuid;
+ v_progressnoteroletypecount int;
+ v_nextval int;
+ v_contactroletypecount int;
+
+BEGIN  
+ --
+ v_personid := updatedtlsobj->>'clientId';
+ v_oldid := updatedtlsobj ->> 'oldId';
+ v_assiststaffid := updatedtlsobj ->> 'assistStaffId';
+ v_contactdate := updatedtlsobj ->> 'contactdate'; 
+ v_activeflag := updatedtlsobj ->> 'activeflag';
+ v_contactroletypekey := updatedtlsobj ->> 'contactroletypekey';
+ v_progressnotesubtypekey := updatedtlsobj ->> 'progressnotesubtypekey';
+ v_description := updatedtlsobj ->> 'description';
+ v_progressnotepurposetypekey := updatedtlsobj ->> 'progressnotepurposetypekey';
+ v_progressnotetypekey := updatedtlsobj ->> 'progressnotetypekey';
+ v_insertedon := updatedtlsobj ->> 'insertedon';
+ v_updatedby := updatedtlsobj ->> 'updatedby';
+ v_currentdate :=  now() at time zone 'utc+05:00';
+
+ returnStatus := 'Success';
+
+SELECT 
+count(*) INTO v_nextval 
+FROM contactroletype;
+
+SELECT  
+--progressnote
+count(*), pr.personid, pn.progressnoteid INTO v_num, v_personid, v_progressnoteid 
+
+FROM progressnote pn 
+INNER JOIN progressnoteactor AS pnc ON pn.progressnoteid = pnc.progressnoteid 
+INNER JOIN intakeservicerequestactor AS isra ON pnc.intakeservicerequestactorid = isra.intakeservicerequestactorid
+INNER JOIN actor AS act ON isra.actorid = act.actorid 
+INNER JOIN person AS pr ON act.personid = pr.personid
+WHERE  pr.old_id = v_personid
+GROUP BY pr.personid, pn.progressnoteid;
+
+SELECT
+--userprofile
+count(*), up.securityusersid INTO v_userprocount, v_securityuserid 
+
+FROM userprofile up
+WHERE up.old_id = v_assiststaffid
+GROUP BY up.securityusersid;
+
+IF v_userprocount >= 0
+THEN
+ --Alla 
+ELSE
+ v_gensecurityid := gen_random_uuid();
+ v_securityuserid := v_gensecurityid;
+
+ INSERT INTO userprofile(old_id, securityusersid, autonotification, usertypekey)
+ VALUES(v_assiststaffid, v_gensecurityid, false, 'DSDS');
+END IF;
+
+SELECT 
+--userprofile
+up.securityusersid INTO v_updateduserid 
+
+FROM userprofile up
+WHERE up.old_id = v_updatedby; 
+
+SELECT
+--personabusesubstance
+pas.isusedrug INTO v_isusedrugselect 
+
+FROM personabusesubstance pas
+INNER JOIN person AS pr ON pas.personid = pr.personid
+WHERE pr.old_id = v_personid;
+
+SELECT
+--progressnotesubtype
+pnst.progressnotesubtypeid INTO v_progressnotesubtypeid 
+
+FROM progressnotesubtype pnst
+WHERE pnst.progressnotesubtypekey = v_progressnotesubtypekey;
+
+IF (v_num) >= 1
+THEN
+ UPDATE progressnote 
+ SET insertedby = v_securityuserid,
+  contactdate = now() at time zone 'utc+05:00',
+  activeflag = v_activeflag,
+  contactroletypekey = v_contactroletypekey,
+  progressnotesubtypeid = v_progressnotesubtypeid,
+  description = v_description,
+  progressnotepurposetypekey = v_progressnotepurposetypekey,
+  progressnotetypekey = v_progressnotetypekey,
+  insertedon = now() at time zone 'utc+05:00',
+  updatedby = v_updateduserid
+ WHERE progressnoteid = v_progressnoteid;
+
+ SELECT
+ --progressnoteroletype
+ count(*) INTO v_progressnoteroletypecount
+ 
+ FROM progressnoteroletype
+ WHERE progressnoteid = v_progressnoteid;
+
+ IF (v_progressnoteroletypecount >= 1)
+ THEN 
+  UPDATE progressnoteroletype SET contactroletypekey = v_contactroletypekey
+  WHERE progressnoteid = v_progressnoteid;
+ ELSE   
+  INSERT INTO contactroletype(contactroletypekey, sequencenumber, datavalue, editable)
+  VALUES(v_contactroletypekey, v_nextval + 1, v_nextval + 1, 0);
+
+  INSERT INTO progressnoteroletype(contactroletypekey, progressnoteid, insertedby)
+  VALUES(v_contactroletypekey, v_progressnoteid, v_securityuserid);  
+ END IF;
+ELSE
+ v_personid := updatedtlsobj->>'clientId';
+ v_generatedprogressnoteid := gen_random_uuid();
+ v_generatedprogressnoteactorid := gen_random_uuid();
+ v_genintakeservicerequestactorid := gen_random_uuid();
+ v_genactorid := gen_random_uuid();
+ v_genpersonid := gen_random_uuid();
+
+ SELECT
+ --progressnotetype
+ count(*), progressnotetypeid  INTO v_ptype, v_genprogressnotetypeid 
+ 
+ FROM progressnotetype 
+ WHERE progressnotetypekey = v_progressnotetypekey
+ GROUP BY progressnotetypeid;
+ 
+ IF (v_ptype >= 1)
+ THEN
+  -- 
+ ELSE  
+  v_genprogressnotetypeid := gen_random_uuid();
+ 
+  INSERT INTO progressnotetype(progressnotetypekey, progressnotetypeid)
+  VALUES(v_progressnotetypekey, v_genprogressnotetypeid);  
+ END IF;
+
+ SELECT
+ --contactroletype
+ count(*) INTO v_contactroletypecount 
+ 
+ FROM contactroletype
+ WHERE contactroletypekey = v_contactroletypekey;  
+ 
+ IF (v_contactroletypecount >= 1)
+ THEN
+  -- 
+ ELSE
+  INSERT INTO contactroletype(contactroletypekey, sequencenumber, datavalue, editable)
+  VALUES(v_contactroletypekey, v_nextval + 1, v_nextval + 1, 0);
+ END IF;
+
+ INSERT INTO progressnote(progressnoteid, insertedby, contactdate, activeflag, progressnotesubtypeid, description, progressnotepurposetypekey, progressnotetypekey, insertedon, updatedby, old_id, progressnotetypeid, entitytype, entitytypeid) 
+ VALUES(v_generatedprogressnoteid, v_securityuserid, v_currentdate, v_activeflag, v_progressnotesubtypeid, v_description, v_progressnotepurposetypekey, v_progressnotetypekey, v_currentdate, v_updateduserid, v_oldid, v_genprogressnotetypeid, 'intakeservicerequest', gen_random_uuid());
+  
+ INSERT INTO person(personid, old_id, insertedby, firstname, lastname)
+ VALUES(v_genpersonid, v_personid, v_securityuserid, 'mets', 'user');
+
+ INSERT INTO actor(actorid, personid, actortype)
+ VALUES(v_genactorid, v_genpersonid, v_contactroletypekey);
+
+ SELECT 
+ --intakeservicerequest
+ intakeserviceid INTO v_intakeserviceid 
+ FROM intakeservicerequest;
+ 
+ INSERT INTO intakeservicerequestactor(intakeservicerequestactorid, actorid, intakeserviceid)
+ VALUES(v_genintakeservicerequestactorid, v_genactorid, v_intakeserviceid);
+
+ INSERT INTO progressnoteactor(progressnoteid, progressnoteactorid, intakeservicerequestactorid)
+ VALUES(v_generatedprogressnoteid, v_generatedprogressnoteactorid, v_genintakeservicerequestactorid);
+
+ INSERT INTO progressnoteroletype(contactroletypekey, progressnoteid, insertedby)
+ VALUES(v_contactroletypekey, v_generatedprogressnoteid, v_securityuserid);
+END IF;
+ 
+RETURN format('%s', returnStatus);
+
+ END;
+ $function$
+

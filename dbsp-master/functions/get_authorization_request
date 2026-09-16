@@ -1,0 +1,276 @@
+CREATE OR REPLACE FUNCTION get_authorization_request(v_authorizationid integer, isapproved boolean DEFAULT NULL::boolean)
+ RETURNS TABLE(service_log_id bigint, tax_id_no character varying, casename character varying, case_id bigint, authorization_id integer, provider_id integer, provider_nm character varying, provider_address text, provider_ph character varying, case_worker jsonb, client_id bigint, justification_tx character varying, fiscal_category_desc character varying, start_dt text, end_dt text, cost_no numeric, voucher_sw character, final_amount_no numeric, service_nm character varying, clientname text, supervisor jsonb, rundate text, funding jsonb, payment jsonb, director jsonb, payment_id bigint)
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- Revision(s)\r
+-- 11/09/2021 Vineet Tirodkar - Modifications for CJAMS - Performance Issue \r
+-- 11/23/2021 Vineet Tirodkar - To display Payment ID for isapproved = false condition (CDM-18560)\r
+------------------------------------------------------------------------\r
+DECLARE \r
+\r
+BEGIN  \r
+ if (isapproved = true)\r
+ then \r
+  RETURN query \r
+  select tss.service_log_id,\r
+   -- lpad(tss.tax_id_no::character varying ,9,'0')::character varying,\r
+   (case when btrim(prov_tax_type_cd) = '2518' then\r
+     left(lpad(tss.tax_id_no::character varying ,9,'0')::character varying,3) || '-' || \r
+     substr(lpad(tss.tax_id_no::character varying ,9,'0')::character varying,4, 2) || '-' || \r
+     substr(lpad(tss.tax_id_no::character varying ,9,'0')::character varying,6, length(lpad(tss.tax_id_no::character varying ,9,'0')::character varying))\r
+    else\r
+     left(lpad(tss.tax_id_no::character varying ,9,'0')::character varying,2) || '-' || \r
+     SUBSTR(lpad(tss.tax_id_no::character varying ,9,'0')::character varying,3, length(lpad(tss.tax_id_no::character varying ,9,'0')::character varying))\r
+    end )::character varying,\r
+   tss.case_nm,\r
+   tss.case_id,\r
+   (tss.authorization_id)::int,\r
+   (tss.provider_id)::int,\r
+   tss.provider_name,\r
+   tss.provider_address::text,\r
+   tss.provider_phone,\r
+   (select row_to_json(x) from\r
+    (select tss.worker_name as fullname,\r
+     tss.ldss_address as address,\r
+     (select c.countyname\r
+      from county c\r
+      where c.statecountycode = tss.ldss_cd \r
+      ) as localdepartment,\r
+     tss.worker_staff_id as workerid,\r
+     tss.requestor_name as requestorname,\r
+     tss.requestor_phone as requestorphone    \r
+    ) as x)::jsonb as case_worker,\r
+   tss.client_id,\r
+   tss.justification_tx::character varying,\r
+   case when tss.fiscal_category_desc is not null then \r
+    (tss.fiscal_category_desc || ' (' || tss.fiscal_category_cd || ')')  :: character varying\r
+   else \r
+    tss.fiscal_category_desc\r
+   end as fiscalcode\r
+   ,to_char(tss.start_dt,'MM-DD-YYYY')::text \r
+   ,to_char(tss.end_dt,'MM-DD-YYYY')::text \r
+   ,tss.cost_no,tss.voucher_sw\r
+   ,tss.final_amount_no\r
+   ,tss.provider_service_desc\r
+   ,tss.client_name::text\r
+   ,(select row_to_json(x) from\r
+    (select  case when tss.fiscal_category_cd = '7108' then\r
+        (select up1.fullname from routing r1 \r
+       join userprofile up1 on up1.securityusersid=r1.fromsecurityusersid \r
+       join tb_service_purchase_authorization tspaaa on tspaaa.authorization_id :: character varying = r1.objectid and routingstatustypeid = 40\r
+          where r1.objectid = v_authorizationid::character varying\r
+      ) else  tss.supervisor_name end as fullname,\r
+     to_char(tss.sprvsr_approval_dt,'MM-DD-YYYY')::text as insertedon \r
+    ) as x) ::jsonb,\r
+   coalesce((select to_char(route.insertedon ,'MM-DD-YYYY')::text  \r
+      from routing route \r
+      where route.objectid::character varying = tss.authorization_id::character varying \r
+      and routingstatustypeid=39 limit 1),''\r
+   )::text as rundate\r
+   ,(select row_to_json(x) from\r
+    (select  tss.funding_name as fullname,\r
+     to_char(tss.funding_approval_dt ,'MM-DD-YYYY')::text as insertedon \r
+    ) as x)::jsonb\r
+   ,(select row_to_json(x) from\r
+    (select  tss.payment_name as fullname,\r
+     to_char(tss.payment_approval_dt ,'MM-DD-YYYY')::text as insertedon \r
+    ) as x) ::jsonb\r
+    ,(select row_to_json(x) from\r
+    (select  tss.director_name as fullname,\r
+     to_char(tss.ads_approval_dt ,'MM-DD-YYYY')::text as insertedon  \r
+     ) as x)::jsonb,\r
+    payhead.payment_id::bigint\r
+  from tb_slpa_snapshot tss  \r
+   left join tb_payment_header payhead on payhead.authorization_id = tss.authorization_id \r
+    and payhead.delete_sw='N'\r
+  where tss.authorization_id=v_authorizationid;\r
+ else\r
+   RETURN QUERY \r
+  select  tsl.service_log_id,\r
+   (case when btrim(prov_tax_type_cd) = '2518' then\r
+     left(lpad(prov.tax_id_no::character varying ,9,'0')::character varying,3) || '-' || \r
+     substr(lpad(prov.tax_id_no::character varying ,9,'0')::character varying,4, 2) || '-' || \r
+     substr(lpad(prov.tax_id_no::character varying ,9,'0')::character varying,6, length(lpad(prov.tax_id_no::character varying ,9,'0')::character varying))\r
+    else\r
+     left(lpad(prov.tax_id_no::character varying ,9,'0')::character varying,2) || '-' || \r
+     SUBSTR(lpad(prov.tax_id_no::character varying ,9,'0')::character varying,3, length(lpad(prov.tax_id_no::character varying ,9,'0')::character varying))\r
+    end )::character varying,\r
+   (SELECT INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||\r
+    CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)\r
+   FROM person as P \r
+   WHERE personid = (\r
+    SELECT PersonId  \r
+     FROM IntakeServiceRequestActor  \r
+    where isheadofhousehold = true \r
+     and servicecaseid = \r
+      (select servicecaseid from servicecase \r
+       where servicecasenumber = tsl.case_id::varchar \r
+      )\r
+     and activeflag = 1 \r
+    LIMIT 1)\r
+   ):: character varying as case_nm,\r
+   tsl.case_id,\r
+   payauth.authorization_id,\r
+   prov.provider_id,\r
+   (CASE WHEN (prov.provider_nm is null OR prov.provider_nm='') THEN \r
+    CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) \r
+    ELSE \r
+    prov.provider_nm \r
+   END) as provider_nm,\r
+   (select provider_adr as paymentaddress from get_provider_address(prov.provider_id,trim('{3357,3356}') )):: text as provider_address,\r
+   coalesce(prov.adr_cell_phone_tx,prov.adr_home_phone_tx,prov.adr_work_phone_tx) :: character varying,\r
+   (select row_to_json(x) from\r
+    (select distinct up.fullname,\r
+     up.cjamspid as workerid,\r
+     upp.phonenumber,\r
+     upa.county as localdepartment,\r
+     (concat_ws(' ',upa.address,upa.city) :: character varying\r
+     || ' ' ||\r
+     concat_ws(' ',upa.state,upa.zipcode) :: character varying) as address,\r
+     upa.city,\r
+     upa.state,\r
+     upa.country,\r
+     ups.fullname as requestorname,\r
+     upps.phonenumber as requestorphone \r
+    from routing rr \r
+     inner join userprofile up on up.securityusersid=rr.fromsecurityusersid\r
+     inner join userprofile ups on ups.securityusersid = rr.fromsecurityusersid\r
+     left join userprofilephonenumber upps on ups.securityusersid = upps.securityusersid\r
+     left join userprofilephonenumber upp on up.securityusersid = upp.securityusersid and upp.activeflag=1\r
+     left join userprofileaddress upa on up.securityusersid = upa.securityusersid\r
+    where rr.objectid = payauth.authorization_id::character varying \r
+     and rr.routingstatustypeid='39' \r
+   )as x)::jsonb as case_worker,\r
+   tsl.client_id ,\r
+   payauth.justification_tx::character varying,\r
+   (tfcm.fiscal_category_desc || ' (' || tfcm.fiscal_category_cd || ')')::character varying as fiscalcode,\r
+   to_char(payauth.start_dt,'MM-DD-YYYY')::text as start_dt,\r
+   to_char(payauth.end_dt,'MM-DD-YYYY')::text as end_dt,\r
+   payauth.cost_no,\r
+   payauth.voucher_sw,\r
+   payauth.final_amount_no,\r
+   (select ts.service_nm \r
+    from tb_services ts \r
+   where ts.service_id = tps.service_id\r
+   ) as service_nm,\r
+   \r
+   concat(client.firstname,' ',client.lastname) as clientname,\r
+   \r
+   (select row_to_json(x) from\r
+    (select case when payauth.fiscal_category_cd = '7108' then\r
+     (select up1.fullname from routing r1 \r
+       join userprofile up1 on up1.securityusersid=r1.fromsecurityusersid \r
+       join tb_service_purchase_authorization tspaaa on tspaaa.authorization_id :: character varying = r1.objectid and routingstatustypeid = 40\r
+          where r1.objectid = v_authorizationid::character varying\r
+      ) else \r
+     up.fullname end,\r
+     coalesce(to_char(payauth.sprvsr_approval_dt,'MM-DD-YYYY'),\r
+     case when rr.routingstatustypeid = 62 and payauth.sprvsr_approval_status_cd is null  then \r
+      'Supervisor Denied' \r
+     else \r
+      'Pending' \r
+     end\r
+     )::text as insertedon\r
+    from routing rr \r
+     inner join userprofile up on up.securityusersid=rr.tosecurityusersid\r
+    where rr.objectid= payauth.authorization_id::character varying  \r
+     and rr.eventcode  in ('PCAUTH','PCAUTHR') \r
+     --and rr.toroleid='CWSP'\r
+     and rr.routingstatustypeid in (39,40,42, 62) order by rr.insertedon\r
+   limit 1 )as x)::jsonb as supervisor,\r
+   \r
+   coalesce(\r
+    (select to_char(route.insertedon ,'MM-DD-YYYY')::text   \r
+     from routing route \r
+     where route.objectid::character varying = payauth.authorization_id::character varying \r
+     and routingstatustypeid=39 limit 1),'')::text\r
+    ,(select row_to_json(x) from\r
+     (select up.fullname,\r
+      coalesce(to_char(payauth.funding_approval_dt,'MM-DD-YYYY'),\r
+      case when rr.routingstatustypeid = 62 and rr.activeflag = 1 \r
+       and (( payauth.sprvsr_approval_status_cd = '3047' \r
+       and case when payauth.cost_no < 1000 then \r
+        true \r
+      else \r
+        payauth.ads_approval_status_cd ='3047' \r
+      end \r
+      and payauth.funding_approval_status_cd is null) or payauth.funding_approval_status_cd = 3281) then\r
+       'Funding Denied' \r
+    when rr.routingstatustypeid =62  \r
+     and rr.activeflag = 1 \r
+     and case when payauth.cost_no < 1000 then \r
+       true \r
+      else \r
+       payauth.ads_approval_status_cd is null \r
+      end \r
+     and payauth.funding_approval_status_cd is null  then \r
+      ''\r
+     else \r
+      'Pending' \r
+     end\r
+    )::text as insertedon \r
+   from routing rr \r
+    inner join userprofile up on up.securityusersid=rr.tosecurityusersid  and rr.eventcode  in ('PCAUTH','PCAUTHR') \r
+   where rr.objectid = payauth.authorization_id::character varying \r
+    and  rr.routingstatustypeid in (40,44,62)  \r
+   limit 1)as x)::jsonb as funding,\r
+   \r
+   (select row_to_json(x) from\r
+    (select up.fullname,\r
+     coalesce(to_char(payauth.payment_approval_dt,'MM-DD-YYYY'),\r
+     case when rr.routingstatustypeid = 62 and ((payauth.funding_approval_status_cd='3047' \r
+      and case when payauth.cost_no < 1000 then \r
+       true \r
+     else \r
+      payauth.ads_approval_status_cd ='3047' \r
+     end \r
+     and payauth.payment_approval_status_cd is null) or payauth.funding_approval_status_cd = 3281) and rr.activeflag = 1 then \r
+      'Payment Denied' \r
+     when payauth.funding_approval_status_cd is null then\r
+      '' \r
+     else \r
+      'Pending' \r
+     end)::text as insertedon\r
+    from routing rr \r
+     inner join userprofile up on up.securityusersid=rr.tosecurityusersid  and rr.eventcode  in ('PCAUTH','PCAUTHR') \r
+    where rr.objectid = payauth.authorization_id::character varying \r
+    and  rr.routingstatustypeid in (41,43,62)  \r
+   limit 1)as x)::jsonb as payment,\r
+   \r
+   (select row_to_json(x) from\r
+    (select up.fullname,\r
+     coalesce(to_char(payauth.ads_approval_dt,'MM-DD-YYYY'),\r
+     case when rr.routingstatustypeid = 62 and rr.activeflag = 1 and payauth.sprvsr_approval_status_cd = '3047' \r
+      and case when payauth.cost_no >= 1000 then payauth.ads_approval_status_cd is null end then \r
+      'Director Denied' \r
+     when payauth.sprvsr_approval_status_cd is null then \r
+      ''\r
+     else \r
+      case when payauth.cost_no >= 1000 then 'Pending' else '' end end\r
+    )::text as insertedon \r
+    from routing rr \r
+     inner join userprofile up on up.securityusersid=rr.tosecurityusersid  and rr.eventcode  in ('PCAUTH','PCAUTHR') \r
+    where rr.objectid = payauth.authorization_id::character varying \r
+     and payauth.cost_no >= 1000 \r
+     and rr.toroleid = 'CWSP'\r
+     and rr.routingstatustypeid in (40,42,44,62)  \r
+   limit 1)as x)::jsonb as director,\r
+   payhead.payment_id::bigint\r
+  from tb_service_purchase_authorization payauth \r
+   join tb_service_log tsl on tsl.service_log_id = payauth.service_log_id \r
+   left JOIN person as client ON tsl.client_id = client.cjamspid and client.activeflag=1\r
+   join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id \r
+   left JOIN tb_provider as prov ON tps.provider_id = prov.provider_id and prov.delete_sw='N'\r
+   left join tb_provider_addresses provadd on prov.provider_id = provadd.parent_key_id::integer \r
+    and provadd.delete_sw='N'\r
+   left join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd = payauth.fiscal_category_cd\r
+   left join tb_payment_header payhead on payhead.authorization_id = payauth.authorization_id \r
+    and payhead.delete_sw = 'N'\r
+  where payauth.authorization_id = v_authorizationid \r
+  limit 1;\r
+ end if;\r
+END;\r
+\r
+$function$
+

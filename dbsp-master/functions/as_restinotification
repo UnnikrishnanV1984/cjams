@@ -1,0 +1,75 @@
+CREATE OR REPLACE FUNCTION as_restinotification(vr_intakenumber character varying, resticourtaction character varying, vr_securityusersid character varying, vr_courtorderdesc character varying DEFAULT ''::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ 
+ l_status character varying;
+ v_CW_tosecurityusersid character varying;
+ v_RTC_tosecurityusersid character varying;
+ v_msg character varying;
+ v_body character varying;
+ v_username character varying;
+ v_restitutionnoval character varying;
+ v_restitutionno int;
+ v_restitutionno_msg character varying;
+ 
+BEGIN
+
+ v_body := vr_courtorderdesc;
+ 
+ SELECT COALESCE(lastname,'')||', '|| COALESCE(firstname,'') INTO v_username
+  FROM userprofile WHERE securityusersid = vr_securityusersid;
+ 
+ v_restitutionno_msg := '';
+ v_restitutionnoval := '';
+ SELECT restitutionno, restitutionno::varchar INTO v_restitutionno, v_restitutionnoval FROM intakeserreqrestitution WHERE intakenumber = vr_intakenumber AND activeflag = 1 and approvestatus = 'RSTAPR' and isccu = TRUE;
+ 
+ IF v_restitutionnoval != '' THEN
+  v_restitutionno_msg := ' (' || v_restitutionnoval || ')';
+  UPDATE intakeserreqrestitution SET isccusent = TRUE WHERE restitutionno = v_restitutionno AND activeflag = 1 and isccu = TRUE;
+ END IF;
+  
+ -- FETCHING CW
+ SELECT u2.securityusersid::VARCHAR INTO v_CW_tosecurityusersid FROM as_teammemberassignment tma 
+  JOIN teammember tm ON tma.teammemberid = tm.teammemberid AND tm.activeflag = 1
+  JOIN teammember tm2 ON tm2.teamid = tm.teamid AND tm2.activeflag = 1
+  JOIN as_teammemberassignment tma2 ON tma2.teammemberid = tm2.teammemberid AND tma2.activeflag = 1
+  JOIN muser u2 ON tma2.securityusersid = u2.securityusersid AND u2.activeflag = 1
+  JOIN rolemapping rm ON rm.principalid = u2.id::VARCHAR AND rm.activeflag = 1
+  JOIN role r ON r.id = rm.roleid AND r.activeflag = 1 AND r.roletypekey = 'JSCW'
+  WHERE tma.securityusersid = vr_securityusersid LIMIT 1;
+  
+ 
+ IF lower(resticourtaction) = 'restino' THEN 
+  v_msg := 'Restitution' || v_restitutionno_msg || ' for the Intake (' || vr_intakenumber || ') is closed by ' || v_username;
+ ELSE
+  v_msg := 'Restitution' || v_restitutionno_msg || ' for the Intake (' || vr_intakenumber || ') is given Continuance by ' || v_username;
+ END IF;
+ 
+ SELECT send_notification INTO l_status FROM as_send_notification(v_CW_tosecurityusersid,vr_securityusersid, v_CW_tosecurityusersid,
+    'System', 'High', v_msg,
+     v_body , vr_intakenumber);
+ 
+ --------------------------------------------------
+ 
+ SELECT u.securityusersid::VARCHAR INTO v_RTC_tosecurityusersid FROM role r
+  JOIN rolemapping rm on rm.roleid = r.id and rm.activeflag = 1
+  JOIN muser u on  rm.principalid = u.id::VARCHAR AND u.activeflag = 1
+  WHERE r.activeflag = 1 and r.roletypekey = 'JSRTC' LIMIT 1;
+ 
+ --v_msg := '';
+ 
+ SELECT send_notification INTO l_status FROM as_send_notification(v_RTC_tosecurityusersid,vr_securityusersid, v_RTC_tosecurityusersid,
+    'System', 'High', v_msg,
+     v_body , vr_intakenumber);
+          
+RETURN l_status;
+
+END;
+
+
+
+$function$
+

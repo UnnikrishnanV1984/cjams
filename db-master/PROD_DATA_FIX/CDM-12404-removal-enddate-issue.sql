@@ -1,0 +1,2 @@
+update intakeservreqchildremoval set exitdate = null, returndate = null, returntime = null, removalexitreason = null, updatedon = now(), updatedby = 'CDM-12381' where intakeservreqchildremovalid in
+('101d529d-f2b8-41ef-887e-451aed7f6580', '0d274f2d-27cb-4c09-a6b2-9db5f6b87343');

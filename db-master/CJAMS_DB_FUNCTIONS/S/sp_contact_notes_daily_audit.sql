@@ -1,0 +1,395 @@
+CREATE OR REPLACE FUNCTION cjams.sp_contact_notes_daily_audit(as_module_type character varying, ad_run_dt date, al_days integer)
+ RETURNS integer
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author: Vineet Tirodkar
+-- Date Created : 03/01/2022 
+-- To Capture CJAMS Daily Contact Notes Counts and basic Info (CIDM-4325)
+
+-- Argument   : 1) IN as_module_type - To differentiate the CJAMS modules (If needed)
+--				2) IN ad_run_dt - Batch Run Date 	
+--				3) IN al_days - Number of days for re-verification (Count match)
+
+-- Revision(s)
+-- 03/10/2022 - Vineet Tirodkar - Changes to verification run for null Statecounty county 
+-- 03/11/2022 - Vineet Tirodkar - Modifications to batch run dates query for tmp_daily_audit_batch_run
+-- 03/14/2022 - Vineet Tirodkar - Modifications to daily verification logic
+-- 09/22/2022 Vineet Tirodkar - Type casting fixes for Aurora DB migration 
+------------------------------------------------------------------------
+Declare v_batch_rundate date;
+Declare vd_run_dt date;
+Declare vs_error_desc character varying;
+Declare vl_count integer;
+Declare vl_ret_status integer;
+
+cur_contacts_errors record;
+cur_contacts_errors_refcur REFCURSOR;
+
+BEGIN
+	DROP TABLE IF EXISTS tmp_daily_audit_batch_run;
+	CREATE TEMPORARY TABLE tmp_daily_audit_batch_run (batchrundate date);
+
+	IF ad_run_dt is null OR ad_run_dt = '1900-01-01' THEN
+		Insert into tmp_daily_audit_batch_run (batchrundate)
+		(select generate_series(
+			coalesce(( select max(start_ts)::date  -- + interval '1 day' 
+						from tb_batch_log 
+					   where batch_master_id = 76
+						and success_sw = 'Y'
+					  ), now()::date - interval '1 day'
+					), 
+			now()::date - interval '1 day', 
+			'1 day'::interval
+			)::date
+		 order by 1
+		 );
+	ELSE
+		Insert into tmp_daily_audit_batch_run ( batchrundate ) 
+		values ( ad_run_dt::date ) ;
+	END IF;
+	
+	-- Currrently not in use
+	IF as_module_type is null or btrim(as_module_type) = '' THEN
+		as_module_type := 'All';
+	END IF;
+		
+	FOR v_batch_rundate in select batchrundate from tmp_daily_audit_batch_run
+	LOOP
+		RAISE NOTICE 'v_batch_rundate >> %', v_batch_rundate;
+
+		vd_run_dt := v_batch_rundate ; 
+		
+		INSERT INTO cjams.progressnote_audit_summary
+			(	auditsummaryid, 
+				auditdate, 
+				statecountycode, 
+				totalcontacts, 
+				countcountmatched, 
+				lastverifiedon, 
+				insertedon, 
+				insertedby, 
+				updatedon, 
+				updatedby, 
+				activeflag
+			)
+		(	select gen_random_uuid(),
+				vd_run_dt,
+				tab.user_county, 
+				tab.notes_count,
+				null,
+				null,
+				now(),
+				'cjams',
+				now(),
+				'cjams',
+				1
+			from (	
+				select user_county, 
+					count(*) as notes_count
+				from 
+				(
+					select coalesce(
+								( select county.statecountycode
+									   from county
+								  where county.activeflag = 1 and county.countyid = t.countyid::uuid
+								  limit 1) ,
+								( select county.statecountycode
+									from county
+								  where county.activeflag = 1 and county.countyid = tas.countyid::uuid
+								  limit 1
+								) 
+							) as user_county,
+						up.securityusersid,	
+						up.fullname as user_name,
+						prg.witsid as contatct_id, 	
+						-- prg.entitytype, 
+						(case when lower(btrim(prg.entitytype)) = 'intake' or lower(btrim(prg.entitytype)) = 'intakeservicerequest' then
+							'Intake'
+						when lower(btrim(prg.entitytype)) = 'servicerequest' then
+							'CPS'	
+						when lower(btrim(prg.entitytype)) = 'servicecase' then
+							'Service Case'
+						when lower(btrim(prg.entitytype)) = 'adoption' or lower(btrim(prg.entitytype)) = 'adoptioncase' then
+							'Adoption Case'
+						else
+							'Unknown'
+						end)as case_type,
+						(case when lower(btrim(prg.entitytype)) = 'intake' then
+							prg.entitytypeid
+						when lower(btrim(prg.entitytype)) = 'intakeservicerequest' then
+							coalesce(
+								(	select ins.intakenumber
+										from intakeservicerequest ins 
+									where ins.intakeserviceid = prg.entitytypeid::uuid
+								),
+								(	select sc.servicecasenumber 
+											from servicecase sc 
+										where sc.servicecaseid = prg.entitytypeid::uuid
+								),
+								(	select ad.adoptioncasenumber 
+										from adoptioncase ad 
+									where ad.adoptioncaseid = prg.entitytypeid::uuid
+								)
+							)	
+						when lower(btrim(prg.entitytype)) = 'servicerequest' then
+							(	select ins.servicerequestnumber
+									from intakeservicerequest ins 
+								where ins.intakeserviceid = prg.entitytypeid::uuid
+							)	
+						when lower(btrim(prg.entitytype)) = 'servicecase' then
+							coalesce(
+								(	select sc.servicecasenumber 
+										from servicecase sc 
+									where sc.servicecaseid = prg.entitytypeid::uuid
+								),
+								(	select ins.intakenumber
+										from intakeservicerequest ins 
+									where ins.intakeserviceid = prg.entitytypeid::uuid
+								)		
+							)	
+						when lower(btrim(prg.entitytype)) = 'adoption' or lower(btrim(prg.entitytype)) = 'adoptioncase' then
+								(	select ad.adoptioncasenumber 
+									from adoptioncase ad 
+								where ad.adoptioncaseid = prg.entitytypeid::uuid
+								)				
+						else
+							'Unknown'
+						end) as case_number,
+					--	prt.typedescription as contatct_purpose,
+						pt.description as contatct_type, 	
+						prg.contactdate::date as contatct_date,
+						-- prg.description,
+						-- regexp_replace(prg.description, E'<[^>]+>', '', 'gi'),
+						-- to_char(prg.insertedon, 'Mon DD, YYYY HH12:MI:SS PM') as insertedon,
+						prg.insertedon,
+						substring(regexp_replace(prg.description, E'<[^>]+>', '', 'gi'),1,15) || '...' 	as description
+					from progressnote prg 
+						left outer join progressnotetype pt on pt.progressnotetypeid = prg.progressnotetypeid 
+						left outer join progressnotereasontype prt 
+							on prt.progressnotereasontypekey = prg.progressnotereasontypekey 
+								and prt.activeflag = 1
+						left outer join userprofile up on up.securityusersid = prg.insertedby
+					--		and up.activeflag = 1  -- 03/14
+					--	left outer join muser m on m.securityusersid::text = up.securityusersid::text 
+					--		and m.activeflag = 1 
+						left outer join teammemberassignment tma on tma.securityusersid::text = up.securityusersid::text 
+							and tma.activeflag = 1
+						left outer join teammember tm on tm.teammemberid = tma.teammemberid 
+							and tm.activeflag = 1
+					--    left outer join teammemberroletype tmrt on tmrt.roletypekey::text = tm.roletypekey::text 
+					--    	and tmrt.activeflag = 1
+						left outer join team t on t.teamid = tm.teamid 
+							and t.activeflag = 1
+						left outer join as_teammemberassignment tmsas on tmsas.securityusersid::text = up.securityusersid::text 
+							and tmsas.activeflag = 1
+						left outer join teammember tmas on tmas.teammemberid = tmsas.teammemberid 
+							and tmas.activeflag = 1
+						left outer join team tas on tas.teamid = tmas.teamid 
+							and tas.activeflag = 1	
+					where prg.activeflag  = 1
+						and prg.insertedon::date = vd_run_dt::date
+						and lower(btrim(prg.entitytype)) not in ('ive', 'iveadop', 'ivegap')
+				)a
+				group by user_county 
+				order by user_county
+			) tab
+		) ;	
+			
+		INSERT INTO cjams.progressnote_audit_detail
+			(	auditdetailid, 
+				auditdate, 
+				statecountycode, 
+				securityusersid, 
+				conatctid, 
+				casetype, 
+				casenumber, 
+				contacttype, 
+				contactdate, 
+				contactinsertedon, 
+				conatctdescription, 
+				insertedon, 
+				insertedby, 
+				updatedon, 
+				updatedby, 
+				activeflag,
+				progressnoteid
+			)
+		(	select gen_random_uuid(),
+				vd_run_dt,
+				tab.user_county, 
+				tab.securityusersid,
+				tab.contatct_id,
+				tab.case_type,
+				tab.case_number,
+				tab.contatct_type,
+				tab.contatct_date,
+				tab.insertedon,
+				tab.description,
+				now(),
+				'cjams',
+				now(),
+				'cjams',
+				1,
+				tab.progressnoteid
+			from (	select coalesce(
+								( select county.statecountycode
+									   from county
+								  where county.activeflag = 1 and county.countyid = t.countyid::uuid
+								  limit 1) ,
+								( select county.statecountycode
+									from county
+								  where county.activeflag = 1 and county.countyid = tas.countyid::uuid
+								  limit 1
+								) 
+							) as user_county,
+						up.securityusersid,	
+						up.fullname as user_name,
+						prg.witsid as contatct_id, 	
+						-- prg.entitytype, 
+						(case when lower(btrim(prg.entitytype)) = 'intake' or lower(btrim(prg.entitytype)) = 'intakeservicerequest' then
+							'Intake'
+						when lower(btrim(prg.entitytype)) = 'servicerequest' then
+							'CPS'	
+						when lower(btrim(prg.entitytype)) = 'servicecase' then
+							'Service Case'
+						when lower(btrim(prg.entitytype)) = 'adoption' or lower(btrim(prg.entitytype)) = 'adoptioncase' then
+							'Adoption Case'
+						else
+							'Unknown'
+						end)as case_type,
+						(case when lower(btrim(prg.entitytype)) = 'intake' then
+							prg.entitytypeid
+						when lower(btrim(prg.entitytype)) = 'intakeservicerequest' then
+							coalesce(
+								(	select ins.intakenumber
+										from intakeservicerequest ins 
+									where ins.intakeserviceid = prg.entitytypeid::uuid
+								),
+								(	select sc.servicecasenumber 
+											from servicecase sc 
+										where sc.servicecaseid = prg.entitytypeid::uuid
+								),
+								(	select ad.adoptioncasenumber 
+										from adoptioncase ad 
+									where ad.adoptioncaseid = prg.entitytypeid::uuid
+								)
+							)	
+						when lower(btrim(prg.entitytype)) = 'servicerequest' then
+							(	select ins.servicerequestnumber
+									from intakeservicerequest ins 
+								where ins.intakeserviceid = prg.entitytypeid::uuid
+							)	
+						when lower(btrim(prg.entitytype)) = 'servicecase' then
+							coalesce(
+								(	select sc.servicecasenumber 
+										from servicecase sc 
+									where sc.servicecaseid = prg.entitytypeid::uuid
+								),
+								(	select ins.intakenumber
+										from intakeservicerequest ins 
+									where ins.intakeserviceid = prg.entitytypeid::uuid
+								)		
+							)	
+						when lower(btrim(prg.entitytype)) = 'adoption' or lower(btrim(prg.entitytype)) = 'adoptioncase' then
+								(	select ad.adoptioncasenumber 
+									from adoptioncase ad 
+								where ad.adoptioncaseid = prg.entitytypeid::uuid
+								)				
+						else
+							'Unknown'
+						end) as case_number,
+					--	prt.typedescription as contatct_purpose,
+						pt.description as contatct_type, 	
+						prg.contactdate::date as contatct_date,
+						-- prg.description,
+						-- regexp_replace(prg.description, E'<[^>]+>', '', 'gi'),
+						-- to_char(prg.insertedon, 'Mon DD, YYYY HH12:MI:SS PM') as insertedon,
+						prg.insertedon,
+						substring(regexp_replace(prg.description, E'<[^>]+>', '', 'gi'),1,15) || '...' 	as description,
+						prg.progressnoteid
+					from progressnote prg 
+						left outer join progressnotetype pt on pt.progressnotetypeid = prg.progressnotetypeid 
+						left outer join progressnotereasontype prt 
+							on prt.progressnotereasontypekey = prg.progressnotereasontypekey 
+								and prt.activeflag = 1
+						left outer join userprofile up on up.securityusersid = prg.insertedby
+							-- and up.activeflag = 1 -- 03/14
+					--	left outer join muser m on m.securityusersid::text = up.securityusersid::text 
+					--		and m.activeflag = 1 
+						left outer join teammemberassignment tma on tma.securityusersid::text = up.securityusersid::text 
+							and tma.activeflag = 1
+						left outer join teammember tm on tm.teammemberid = tma.teammemberid 
+							and tm.activeflag = 1
+					--    left outer join teammemberroletype tmrt on tmrt.roletypekey::text = tm.roletypekey::text 
+					--    	and tmrt.activeflag = 1
+						left outer join team t on t.teamid = tm.teamid 
+							and t.activeflag = 1
+						left outer join as_teammemberassignment tmsas on tmsas.securityusersid::text = up.securityusersid::text 
+							and tmsas.activeflag = 1
+						left outer join teammember tmas on tmas.teammemberid = tmsas.teammemberid 
+							and tmas.activeflag = 1
+						left outer join team tas on tas.teamid = tmas.teamid 
+							and tas.activeflag = 1	
+					where prg.activeflag  = 1
+						and prg.insertedon::date = vd_run_dt::date
+						and lower(btrim(prg.entitytype)) not in ('ive', 'iveadop', 'ivegap')
+					order by user_county,
+						user_name,
+						prg.insertedon 
+				) tab
+		) ;
+		
+	END LOOP;	
+	
+	RAISE NOTICE 'Data Verification Started';
+	
+	OPEN cur_contacts_errors_refcur FOR
+		select row_to_json(t) as error_desc 
+		from (	select pd.auditdate, 
+					pd.conatctid as witsid, 
+					pd.progressnoteid
+				from cjams.progressnote_audit_detail pd
+				where pd.activeflag = 1
+					and (	select count(*)
+								from progressnote pt
+							where pt.progressnoteid =  pd.progressnoteid
+						) = 0
+			) t	 
+		;
+	LOOP
+		fetch cur_contacts_errors_refcur into cur_contacts_errors;
+		exit when not found;
+
+		vs_error_desc := '';
+		
+		vs_error_desc := cur_contacts_errors.error_desc;
+		
+		vs_error_desc := 'Contact Note verification failed for ' || vs_error_desc ;
+					
+		select cjams.sp_batch_error_log 
+			(	'SP_CONTACT_NOTES_DAILY_AUDIT' ,
+				null::bigint,
+				null::bigint,
+				null::character varying,
+				null::integer,
+				null::character varying,
+				null::character varying,
+				vs_error_desc::character varying,
+				'cjams'::character varying
+			) 
+		into 
+			vl_ret_status;					
+			
+	END LOOP;
+	CLOSE cur_contacts_errors_refcur;
+
+	DROP TABLE IF EXISTS tmp_daily_audit_batch_run CASCADE;	
+	
+	Return 1;
+	
+END;
+
+$function$
+;

@@ -1,0 +1,47 @@
+CREATE OR REPLACE FUNCTION prov_getapplicants(searchobj json)
+ RETURNS TABLE(applicant_id character varying, create_ts timestamp without time zone, prgram character varying, program_name character varying, contact_first_nm character varying, mailing_address character varying, contact_phonenumber character varying, contact_email character varying, contact_fax character varying, program_type character varying, program_type_other character varying, prgram_size character varying, current_license character varying, licenced_by_dda character varying, facesheet_dev_by_consultant character varying, application_status character varying, provider_id character varying, applicant_profile_id uuid, program_tax_id_no integer, contact_last_nm character varying, contact_middle_nm character varying, contact_suffix_cd character varying, contact_prefix_cd character varying, requested_license_effective_date timestamp without time zone, requested_license_end_date timestamp without time zone, site_id bigint, application_decision character varying, corporation_name character varying, agency character varying, accreditation character varying, profit character varying, application_type character varying, license_agency character varying)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+v_provider_id INTEGER;    
+v_applicant_id character varying;    
+v_toworkeridno character varying;
+v_agency character varying;
+v_application_type character varying;
+v_applicant_status character varying;
+
+BEGIN
+
+ v_provider_id := searchobj ->> 'provider_id';
+    v_applicant_id := searchobj ->> 'applicant_id';
+    v_toworkeridno = (searchobj->>'toworkeridno')::character varying;
+ v_agency = (searchobj->>'agency')::character varying;
+    v_application_type = (searchobj->>'application_type')::character varying;
+    v_applicant_status = (searchobj->>'application_status')::character varying;
+ 
+
+return query
+select distinct 
+a.* from ( 
+    select tpa.applicant_id, tpa.create_ts::timestamp without time zone, tpa.prgram, tpa.program_name, tpa.contact_first_nm, tpa.mailing_address, tpa.contact_phonenumber, tpa.contact_email, tpa.contact_fax, tpa.program_type, tpa.program_type_other, tpa.prgram_size, tpa.current_license, tpa.licenced_by_dda, tpa.facesheet_dev_by_consultant, tpa.application_status, tpa.provider_id, tpa.applicant_profile_id, tpa.program_tax_id_no, tpa.contact_last_nm, tpa.contact_middle_nm, tpa.contact_suffix_cd, tpa.contact_prefix_cd, tpa.requested_license_effective_date, tpa.requested_license_end_date, tpa.site_id, tpa.application_decision, tpa.corporation_name, tpa.agency, tpa.accreditation, tpa.profit, tpa.application_type, tpa.license_agency
+    from 
+    tb_provider_applicant tpa 
+    left join providerassignment p on p.objectid = tpa.applicant_id and p.activeflag=1
+    left join tb_provider_decision tpd on tpd.objectid = tpa.applicant_id and tpd.eventcode = 'PTA'
+    where case when v_applicant_status = 'Pending' then (tpa.application_status in ('Pending','Submitted','Pending Approval','Returned to Worker','') or tpa.application_status is null)
+                when v_applicant_status = 'Incomplete' then tpa.application_status in ('Incomplete','Rejected')
+                else tpa.application_status = v_applicant_status end
+    and case when v_provider_id is null then true else tpa.provider_id = v_provider_id end 
+    and case when v_applicant_id is null then true else tpa.applicant_id = v_applicant_id end
+    and case when v_application_type is null then tpa.application_type is null else tpa.application_type = v_application_type end 
+    and case when v_agency is null then tpa.agency = 'OLM' else tpa.agency = v_agency end 
+    and case when v_toworkeridno is null then true else (p.toworkeridno = v_toworkeridno or v_toworkeridno = tpd.tosecurityusersid) end 
+    and tpa.delete_sw <> 'Y'
+    order by  tpa.create_ts::timestamp without time zone desc nulls last, tpa.applicant_id desc nulls last, p.updatedon desc nulls last
+) a order by a.create_ts::timestamp without time zone desc nulls last;
+ 
+
+  
+END;
+$function$
+

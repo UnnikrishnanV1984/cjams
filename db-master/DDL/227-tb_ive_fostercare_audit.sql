@@ -1,0 +1,1 @@
+ALTER TABLE cjams.tb_ive_fostercare_audit ADD wasthechildremovedfromspecifiedrelative varchar(10) NULL;

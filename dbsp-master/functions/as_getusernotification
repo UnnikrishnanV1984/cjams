@@ -1,0 +1,78 @@
+CREATE OR REPLACE FUNCTION as_getusernotification(searchobj json, isextentity boolean DEFAULT false)
+ RETURNS TABLE(totalcount bigint, usernotificationid uuid, objecttype character varying, fromname character varying, toname character varying, frommail character varying, tomail character varying, usernotificationtypekey character varying, url text, subject character varying, priorityleveltypekey character varying, body text, hasattachments boolean, updatedby character varying, updatedon timestamp without time zone, insertedby character varying, insertedon timestamp without time zone, teammemberid uuid, attachmentlocation character, tosecurityusersid character varying, isreplied boolean, isforwarded boolean, iscarboncopy boolean, isread boolean, effectivedate timestamp without time zone, expirationdate timestamp without time zone, intakeserviceid character varying, focus text, servicerequestnumber character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_userID character varying;
+v_liPageNumber      INT;                                                          
+v_liPageSize       INT; 
+v_pageNumber INT;                                                          
+v_pageSize  INT; 
+v_pageOffset int;
+v_userSecurityID character varying; 
+
+BEGIN
+
+v_userID := searchObj ->> 'userid';
+v_liPageNumber := searchObj ->> 'pagenumber';
+v_liPageSize := searchObj ->> 'pagesize';
+ 
+ 
+-- SELECT securityusersid into v_userSecurityID FROM muser where id = v_userID;
+ 
+ v_pageNumber := v_liPageNumber-1;
+v_pageOffset = v_pageNumber * v_liPageSize;    
+
+ RETURN QUERY 
+select count(1) over(), un.usernotificationid, un.objecttype,
+case coalesce(upfrom.displayname,'')when '' then
+unmap.fromsecurityusersid  else  coalesce(upfrom.displayname,'') end :: character varying as fromname,
+upto.displayname as toname,
+case coalesce(upfrom.email,'')when '' then
+unmap.fromsecurityusersid  else  coalesce(upfrom.email,'') end :: character varying as frommail,
+upto.email as tomail,
+un.usernotificationtypekey,un.url
+,un.subject,un.priorityleveltypekey,un.body,un.hasattachments,un.updatedby,un.insertedon as updatedon,un.insertedby,
+un.insertedon, un.teammemberid,un.attachmentlocation,
+unmap.tosecurityusersid,unmap.isreplied,unmap.isforwarded,unmap.iscarboncopy,unmap.isread,
+unmap.effectivedate,unmap.expirationdate,
+un.objectid,
+(
+select INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+  CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename)
+                    ELSE '' END) from person p
+                    where p.personid in(
+select pr.personid from personrole pr where pr.ishouseholdmember =1 and (
+pr.intakeserviceid = i.intakeserviceid or pr.intakenumber = itk.intakenumber
+)
+limit 1
+)) as focus,
+
+coalesce(un.objectcasenumber,(select case_id from tb_service_log where service_log_id = (tspa.service_log_id))::character varying) as servicecasenumber
+from usernotification un 
+LEFT JOIN(select authorization_id, service_log_id from tb_service_purchase_authorization) tspa ON tspa.authorization_id::CHARACTER VARYING = un.objectid
+inner join usernotificationmap unmap on un.usernotificationid=unmap.usernotificationid 
+--LEFT join intakeservicerequest intakereq on un.objectid=intakereq.intakeserviceid:: character varying
+/*left join 
+(select 'cps':: character varying as objecttype,  ins.intakeserviceid :: character varying as caseid,ins.servicerequestnumber as servicecasenumber from intakeservicerequest ins where ins.activeflag =1
+union 
+select 'intake':: character varying as objecttype, idass.intakenumber ::character varying  as caseid,idass.intakenumber as servicecasenumber from intakedastaging idass where idass.activeflag =1
+) 
+ intakereq on un.objectid=intakereq.caseid :: character varying */
+left join intakeservicerequest i on i.servicerequestnumber = un.objectcasenumber 
+left join intakedastatus itk on itk.intakenumber= un.objectcasenumber 
+left join userprofile upfrom on upfrom.securityusersid=unmap.fromsecurityusersid 
+inner join userprofile upto on upto.securityusersid=unmap.tosecurityusersid 
+and un.securityusersid = v_userID
+and unmap.tosecurityusersid is not null
+and un.activeflag=1  and un.teamtypekey = 'AS'
+and  COALESCE(un.isexternalentity,false)= isextentity 
+and unmap.fromsecurityusersid is not null 
+order by un.updatedon desc
+LIMIT v_liPageSize OFFSET v_pageOffset;
+
+ END;
+
+$function$
+

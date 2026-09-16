@@ -1,0 +1,51 @@
+CREATE OR REPLACE FUNCTION as_getcaseconnected(l_object_id text)
+ RETURNS TABLE(object_id character varying, object_type character varying, is_isrcase boolean, is_intake boolean, isr_type character varying, isr_type_description character varying, isr_subtype character varying, isr_subtype_description character varying, intakenumber character varying, intakeserviceid uuid, servicerequestnumber character varying, persons jsonb)
+ LANGUAGE plpgsql
+AS $function$ 
+DECLARE 
+    v_objectid uuid;
+
+BEGIN 
+ v_objectid := uuid(l_object_id);
+ DROP TABLE IF EXISTS tmp_persons_table;
+ CREATE TEMP TABLE   tmp_persons_table(personid uuid);
+ 
+  INSERT INTO tmp_persons_table(personid) 
+  SELECT DISTINCT a.personid
+ FROM intakeservicerequestactor i_a
+ JOIN actor a ON a.actorid = i_a.actorid AND a.objecttype like 'as%' AND a.personid <> '00000000-0000-0000-0000-000000000000'
+ JOIN intakeservicerequest ISR ON ISR.teamtypekey = 'AS' AND ISR.intakeserviceid = i_a.intakeserviceid
+ WHERE i_a.intakeserviceid = v_objectid AND i_a.activeflag = 1 AND i_a.isprimary = TRUE AND i_a.objecttype like 'as%';
+
+ RETURN query
+ SELECT CASE WHEN isr.servicerequestnumber IS NULL THEN i.intakenumber ELSE isr.servicerequestnumber END,
+ CASE WHEN isr.servicerequestnumber IS NULL THEN 'Intake' ELSE srt.classkey END, 
+ CASE WHEN i.intakeserviceid IS NULL THEN FALSE ELSE TRUE END AS is_isrcase,
+ CASE WHEN i.intakenumber IS NULL THEN FALSE ELSE TRUE END AS is_intake, t.intakeservreqtypekey AS isr_type, 
+ t.description AS isr_type_description, srt.classkey AS isr_subtype, srt.description AS isr_subtype_description, 
+ i.intakenumber, i.intakeserviceid, isr.servicerequestnumber,
+ ( SELECT json_agg(a) 
+  FROM ( SELECT p1.lastname, p1.firstname
+    FROM intakeservicerequestactor i1
+    JOIN actor a1 ON i1.actorid = a1.actorid AND a1.ishouseholdmember = 1 AND a1.activeflag = 1 AND a1.objecttype like 'as%' 
+    JOIN person p1 ON p1.personid = a1.personid AND p1.activeflag = 1 
+    WHERE (i1.intakeserviceid = i.intakeserviceid OR i1.intakenumber = i.intakenumber) AND i1.activeflag = 1 AND i1.objecttype like 'as%' 
+    AND i1.isprimary = TRUE 
+    GROUP BY p1.lastname, p1.firstname
+   ) AS a
+ ):: jsonb AS persons
+ FROM intakeservicerequestactor i
+ INNER JOIN actor a ON i.actorid = a.actorid AND a.activeflag = 1 AND i.objecttype like 'as%'
+ INNER JOIN tmp_persons_table temptb ON temptb.personid = a.personid 
+ INNER JOIN intakeservicerequest isr ON isr.intakeserviceid = i.intakeserviceid AND isr.activeflag = 1 AND isr.teamtypekey = 'AS'
+ INNER JOIN intakeservicerequesttype t ON t.intakeservreqtypeid = isr.intakeservreqtypeid
+ INNER JOIN servicerequestsubtype srt ON srt.servicerequestsubtypeid = isr.intakeservicerequestclassid 
+ WHERE i.activeflag = 1  AND i.isprimary = TRUE AND i.intakeserviceid <> v_objectid AND i.objecttype like 'as%' 
+ GROUP BY t.intakeservreqtypekey, t.description, srt.classkey, srt.description, i.intakeserviceid, isr.servicerequestnumber,
+ i.intakenumber;
+
+ DROP TABLE tmp_persons_table;
+END;
+
+$function$
+

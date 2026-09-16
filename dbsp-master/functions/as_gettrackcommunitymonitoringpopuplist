@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION as_gettrackcommunitymonitoringpopuplist(v_intakeservid uuid, v_placementid uuid)
+ RETURNS TABLE(personid uuid, personname character varying, placementprimaryapprovedalttypekey character varying, placementid uuid, countyname character varying, countycode character varying, countyid uuid, regionid uuid, regionname character varying, photodetails json, courtorderspecific boolean, violations json)
+ LANGUAGE plpgsql
+AS $function$     
+DECLARE
+BEGIN
+RETURN QUERY
+
+select PN.personid,
+cast(TRIM(coalesce(INITCAP(PN.lastname),''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END 
+ || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(INITCAP(PN.firstname),'')) as  character varying)
+ as personname,
+ PT.placementprimaryapprovedalttypekey,PT.placementid,
+ countyregion.countyname,countyregion.countycode, countyregion.countyid, countyregion.regionid, countyregion.regionname,
+ (select json_build_object('photourl',ppp.photourl,'insertedon',ppp.insertedon) from personprofilephoto as ppp where ppp.personprofiletypekey='CLIPF' and ppp.personid=PN.personid order by insertedon desc limit 1) as photodetails,
+ coalesce((select ISRCAT.firstinfraction from intakeservicerequestcourtaction ISRCAT where ISRCAT.intakenumber = ISR.intakenumber  and  ISRCAT.activeflag = 1 and ISRCAT.firstinfraction=true limit 1),false)  as courtorderspecific,
+ (select json_agg(p) as violations from
+(select cmv.*, rv.description as violationtypedesc 
+from communitymonitoringviolations cmv 
+join referencevalues rv on rv.ref_key = cmv.violationtypekey and rv.activeflag = 1
+join referencetype rt on rt.referencetypeid = rv.referencetypeid and rt.tablename = 'communitymonitoringviolations' and rv.activeflag = 1
+where cmv.activeflag = 1 and cmv.placementid = PT.placementid
+) as p) as violations
+ from intakeservicerequestactor isra join actor ac on  ac.actorid  = isra.actorid 
+join intakeservicerequest ISR on ISR.intakeserviceid = v_intakeservid
+join person PN on PN.personid = ac.personid
+left join (select CY.countyname,CY.countycode, CY.countyid, RN.regionid, RN.regionname,PA.personid from personaddress PA  
+left join county CY on CY.countyname = PA.county
+left join region RN on RN.regionid = CY.regionid 
+where CY.activeflag = 1 and RN.activeflag = 1 
+and PA.activeflag = 1) as countyregion on PN.personid=countyregion.personid
+join placement PT on PT.intakeserviceid = v_intakeservid
+and isra.intakeserviceid = v_intakeservid
+and isra.intakeservicerequestpersontypekey='Youth'  
+and isra.activeflag = 1
+and PN.activeflag = 1 and ISR.activeflag =1 
+where PT.placementid=v_placementid;
+
+END;
+$function$
+

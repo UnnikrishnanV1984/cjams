@@ -1,0 +1,128 @@
+CREATE OR REPLACE FUNCTION as_restitutionsendtoccu(v_restitution json, securityuserid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ 
+ v_ccuno int;
+ v_eventcode character varying;
+ v_restitutionno integer;
+ i_restitutionccuconfigcount int;
+ v_securityuserid character varying;
+ v_restitutionccuconfigid uuid;
+ v_date timestamp without time zone;
+ l_status character varying;
+ v_status character varying;
+    v_status1 character varying;
+ v_msg character varying;
+ v_restitutionsupervisorrecord  record;
+    v_restitutionfinancerecord  record;
+
+ 
+BEGIN
+
+ v_securityuserid := securityuserid;
+ 
+ 
+ v_restitutionno:= v_restitution ->>'restitutionno';
+ v_eventcode:= v_restitution ->>'appevent';
+ v_date:= now() at time zone 'utc';
+
+ RAISE NOTICE ' v_restitutionno:  %',v_restitutionno;  
+
+ select count(1) into i_restitutionccuconfigcount from restitutionccuconfig where restitutionno = v_restitutionno::integer and lower(status) = 'open' and activeflag = 1;
+
+ IF (i_restitutionccuconfigcount = 0) THEN
+
+ SELECT MAX(ccuno)+1 INTO v_ccuno FROM restitutionccuconfig WHERE activeflag = 1;
+   
+ IF v_ccuno IS NULL THEN
+    v_ccuno := 1000000;
+ END IF;
+ v_restitutionccuconfigid := gen_random_uuid();
+
+ Insert into restitutionccuconfig(restitutionccuconfigid, restitutionno, ccuno, status, activeflag, insertedby,updatedby, insertedon, updatedon)
+ Values(v_restitutionccuconfigid, v_restitutionno, v_ccuno, 'Open',  1, v_securityuserid, v_securityuserid, v_date, v_date);
+ 
+ Update intakeserreqrestitution set ccuapprovedate = v_date ,updatedon = v_date where restitutionno = v_restitutionno and activeflag=1;
+ 
+ select routingintake into l_status from routingintake (v_restitutionno::character varying,v_securityuserid,v_eventcode,63,null);
+ 
+ FOR  v_restitutionsupervisorrecord  IN
+ 
+ select tma.securityusersid as tosecurityusersid,isrr.restitutionno,isrr.intakeserviceid,
+ (select coalesce(up.fullname,'') as rcname from routing as R 
+    join userprofile as up on up.securityusersid = r.fromsecurityusersid and up.activeflag=1 
+    where r.fromroleid ilike'%JSRTC%' and r.objectid = v_restitutionno::character varying  limit 1) as rcname,
+    (select coalesce(up.fullname,'') as caseworkername from routing as R
+    join intakeserreqrestitution as ISRR on ISRR.intakeserviceid =  R.objectid::uuid and ISRR.activeflag=1 
+    join userprofile as UP on up.securityusersid = r.tosecurityusersid and up.activeflag= 1
+    where toroleid ilike'%JSCW%' and ISRR.restitutionno= v_restitutionno and ISRR.approvestatus='RSTAPR' and ISRR.status='Active' limit 1) as caseworkername
+    
+ from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1 
+ join team t on t.teamid = tm.teamid and t.activeflag = 1
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active'
+ 
+ WHERE r.roletypekey ilike'%JSRTS%' and tma.activeflag = 1 and isrr.isccu = true and isrr.isccusent = true and isrr.approvestatus='RSTAPR'
+ and isrr.restitutionno = v_restitutionno group by tma.securityusersid ,isrr.restitutionno,isrr.intakeserviceid,rcname,caseworkername
+ 
+ LOOP
+ 
+ -- Restitution A/C # xxxxxxxxx has been forwarded to CCU by RC Name. Notification is also sent to Case Worker Name (Case Worker). Please wait for Case Worker response for 3 days and proceed on approval.
+
+ v_msg:=   'Restitution A/C ('|| v_restitutionsupervisorrecord.restitutionno ||') has been forwarded to CCU by '|| coalesce(v_restitutionsupervisorrecord.rcname,'') ||'. Notification is also sent to '|| coalesce(v_restitutionsupervisorrecord.caseworkername,'') ||' (Case Worker). Please wait for Case Worker response for 3 days and proceed on approval.';
+
+ SELECT send_notification INTO v_status FROM as_send_notification(v_restitutionsupervisorrecord.tosecurityusersid, 'System'::character varying, v_restitutionsupervisorrecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_restitutionsupervisorrecord.restitutionno::character varying);
+  
+    END LOOP; 
+ 
+  FOR  v_restitutionfinancerecord  IN
+ 
+ select tma.securityusersid as tosecurityusersid,isrr.restitutionno,isrr.intakeserviceid, --coalesce(up.fullname,'') as fullname,
+ (select coalesce(up.fullname,'') as rcname from routing as R 
+    join userprofile as up on up.securityusersid = r.fromsecurityusersid and up.activeflag=1 
+    where r.fromroleid ilike'%JSRTC%' and r.objectid = v_restitutionno::character varying  limit 1) as rcname,
+    (select coalesce(up.fullname,'') as rcsupervisorname from routing as R 
+    join userprofile as up on up.securityusersid = r.tosecurityusersid and up.activeflag=1 
+    where r.fromroleid ilike'%JSRTC%' and r.objectid = v_restitutionno::character varying  limit 1) as rcsupervisorname,
+    ISR.servicerequestnumber
+    from as_teammemberassignment tma 
+ join teammember tm on tm.teammemberid = tma.teammemberid and  tm.activeflag = 1 
+ join team t on t.teamid = tm.teamid and t.activeflag = 1
+ join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1
+ join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 
+ join role r on r.id = rm.roleid :: int and r.activeflag = 1
+ join intakeserreqrestitution as isrr on isrr.countyid = t.countyid::uuid and isrr.activeflag = 1 and isrr.status='Active'
+ join intakeservicerequest as ISR on ISR.intakeserviceid = ISRR.intakeserviceid and ISR.activeflag=1
+ --join userprofile as up on up.securityusersid = tma.securityusersid and up.activeflag=1
+ WHERE r.roletypekey ilike'%JSCW%' and tma.activeflag = 1 and isrr.isccu = true and isrr.isccusent = true and isrr.approvestatus='RSTAPR'
+ and isrr.restitutionno = v_restitutionno group by tma.securityusersid ,isrr.restitutionno,isrr.intakeserviceid,rcname,rcsupervisorname,ISR.servicerequestnumber
+ 
+ LOOP
+ 
+ --  Restitution A/C # xxxxxxxxx has been forwarded to CCU by RC Name. Please provide your response in 3 days to RC Supervisor Name.
+
+ v_msg:=   'Restitution A/C ('|| v_restitutionfinancerecord.restitutionno ||') has been forwarded to CCU by '|| coalesce(v_restitutionfinancerecord.rcname,'') ||'. Please provide your response in 3 days for Case ('|| v_restitutionfinancerecord.servicerequestnumber ||')  to '|| coalesce(v_restitutionfinancerecord.rcsupervisorname,'') ||'.';
+
+ SELECT send_notification INTO v_status1 FROM as_send_notification(v_restitutionfinancerecord.tosecurityusersid, 'System'::character varying, v_restitutionfinancerecord.tosecurityusersid,
+ 'System', 'High', v_msg, v_msg , v_restitutionfinancerecord.restitutionno::character varying);
+  
+    END LOOP; 
+ 
+ END IF;
+ 
+ 
+
+RETURN
+   'Success';
+END;
+
+
+$function$
+

@@ -1,0 +1,4 @@
+delete from routing where routingid='a84e81d1-32dd-4e91-99c4-4a097cc1a209' and objectid=1731042;
+INSERT INTO cjams.routing
+(routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid)
+VALUES('a84e81d1-32dd-4e91-99c4-4a097cc1a209', 'PCAUTHR', '753c40c4-34fd-4e88-9e2a-f974a416d51a', NULL, '5e5ec749-3791-4cc7-ad32-cf85b0c52d74', 'FNSFS', 'FNSFS', '1731042', 41, 1, '753c40c4-34fd-4e88-9e2a-f974a416d51a', '2020-01-16 19:12:11', '753c40c4-34fd-4e88-9e2a-f974a416d51a', '2020-01-16 19:12:11', true, 'Forwarded to Payment Approval', NULL, 'Purchase Authorization Forwarded to Payment Approval', '3277308', 'ServiceCase', NULL, NULL, NULL, NULL, NULL, NULL, NULL);

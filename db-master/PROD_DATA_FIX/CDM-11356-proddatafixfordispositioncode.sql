@@ -1,0 +1,1 @@
+update servicecase set dispositioncode = 'open' , updatedon = now(), updatedby = 'CDM-11356'  where servicecaseid = 'c9b66829-d09a-4460-873a-9e1d9e729414';

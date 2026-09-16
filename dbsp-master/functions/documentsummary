@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION documentsummary(i_personid uuid, i_searchtext character varying, v_pageoffset bigint, pagesize bigint)
+ RETURNS TABLE(totalcount bigint, outputtype text, servicerequestnumber text, intakenumber character varying, servicerequestid uuid, filename character varying, category character varying, documentpropertiesid uuid, s3bucketpathname character varying, originalfilename character varying, username character varying, securityusersid character varying, insertedon timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+declare l_assment json;
+declare querytxt text;
+declare youthstatussearch character varying;
+
+begin
+ if(i_searchtext != '' and i_searchtext is not null)
+ then 
+youthstatussearch := ' AND fp.focuspersonstatustypekey = ''' || i_searchtext || '''';    
+ else
+ youthstatussearch='';
+ end if;
+ querytxt='select count(1) over(),x.* from(
+(select distinct ''intake'' as outputtype,'''' as servicerequestnumber, fp.intakenumber,dp.servicerequestid,dp.filename,acty.typedescription
+,dp.documentpropertiesid,dp.s3bucketpathname,dp.originalfilename,mu.username,mu.securityusersid,dp.insertedon from documentproperties dp 
+left join documentattachment da on da.documentpropertiesid=dp.documentpropertiesid and da.activeflag=1
+left join attachmentclassificationtype acty on  acty.attachmentclassificationtypekey=da.attachmentclassificationtypekey and acty.activeflag=1
+join muser mu on mu.securityusersid=dp.insertedby 
+join focuspersoncasestatus fp on fp.intakenumber=dp.intakenumber and fp.activeflag=1 
+where dp.activeflag=1 and (dp.servicerequestid=''00000000-0000-0000-0000-000000000000'' or dp.servicerequestid is null) and  fp.personid='''||i_personid||''''||youthstatussearch||')
+union all
+(select distinct ''case'' as outputtype,irs.servicerequestnumber ::text, fp.intakenumber,dp.servicerequestid,dp.filename,acty.typedescription,
+dp.documentpropertiesid,dp.s3bucketpathname,dp.originalfilename,mu.username,mu.securityusersid,dp.insertedon from documentproperties dp 
+left join documentattachment da on da.documentpropertiesid=dp.documentpropertiesid and da.activeflag=1
+left join attachmentclassificationtype acty on  acty.attachmentclassificationtypekey=da.attachmentclassificationtypekey and acty.activeflag=1
+join muser mu on mu.securityusersid=dp.insertedby 
+ join focuspersoncasestatus fp on fp.intakeserviceid=dp.servicerequestid and fp.activeflag=1 
+join intakeservicerequest irs on irs.intakeserviceid=fp.intakeserviceid
+where dp.activeflag=1 and fp.personid='''||i_personid||''''||youthstatussearch||')) x
+LIMIT '||pagesize||'  offset '||v_pageoffset;
+--querytxt
+RAISE NOTICE 'Parsing %', querytxt ;
+return query execute querytxt;      
+end;
+
+$function$
+

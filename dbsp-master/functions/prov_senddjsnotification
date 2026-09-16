@@ -1,0 +1,542 @@
+CREATE OR REPLACE FUNCTION prov_senddjsnotification(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_tosecurityuserid character varying;
+v_fromroleid character varying;
+v_toroleid character varying;
+v_objectid character varying;
+v_notification_objectid character varying;
+v_subject character VARYING;
+v_body character VARYING;
+v_notification_text character varying;
+v_remarks character VARYING;
+v_success character VARYING;
+v_objecttype character varying;
+v_eventcode character varying;
+v_sign json;
+v_appstatus character varying;
+v_send_to json;
+v_site_list json;
+response json;
+v_sitename character varying;
+v_date TIMESTAMP without time zone;
+v_show_sites character varying;
+currentRow record;
+v_status_cd integer;
+v_providerid character varying;
+v_objecttypename character varying;
+v_statustext character varying;
+v_show_provider character varying;
+v_providername character varying;
+v_tousers json;
+v_tousers2 json;
+v_tousers3 json;
+v_tousers4 json;
+v_tousers5 json;
+v_tousers6 json;
+v_sentfromprovider character varying;
+v_agency character varying;
+v_text character varying;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_tosecurityuserid := objectls->>'tosecurityusersid';
+v_fromroleid := objectls->>'fromroleid';
+v_status_cd := objectls->>'status_cd';
+v_toroleid := objectls->>'toroleid';
+v_objecttypename := objectls->>'objectTypeName';
+v_statustext := objectls->>'notif_text';
+v_appstatus := objectls->>'status';
+v_send_to := objectls->>'send_to';
+v_site_list := objectls->>'site_list';
+v_objectid := objectls->>'objectid';
+v_notification_objectid := objectls->>'notification_objectid';
+v_objecttype := objectls->>'object_type';
+v_providerid := objectls->>'provider_id';
+v_sentfromprovider := objectls->>'isProvider';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_sign := objectls->>'signature';
+v_subject :=  objectls->>'subject' ;
+v_body :=  objectls->>'body' ; 
+v_show_sites :=  objectls->>'show_sites' ; 
+v_show_provider :=  objectls->>'show_provider' ; 
+v_notification_text :=  objectls->>'notification_text' ;
+v_agency :=  objectls->>'agency' ; 
+v_text :=  objectls ->>'text';
+v_date:= now();
+v_status_cd = 1;
+currentRow = null;
+    ---build subject and body text  - for provider
+    select provider_nm into v_providername from tb_provider tp where tp.provider_id = v_providerid limit 1;
+    v_statustext = v_notification_text;
+    IF v_eventcode is not null and trim(v_eventcode) ='SAN' then 
+
+    IF v_text is not null and trim (v_text) = 'Submit to Provider' then
+    v_subject = ''||v_objecttypename|| ' for '||v_providername||' ' || v_statustext ||' #'||v_objectid||' ';
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                -- v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+   
+END IF; 
+   IF v_text is not null and trim (v_text) not in  ('Submit to Provider') then
+    v_subject = ''||v_objecttypename|| ' for '||v_providername||' #'||v_objectid||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                -- v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+   
+END IF; 
+END IF; 
+IF v_eventcode is not null and trim(v_eventcode) in ('PTA') then 
+IF v_objecttypename is not null and trim(v_objecttypename) not in ('The License','The Application') then
+  v_subject = ''||v_objecttypename||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        v_subject = v_subject || ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+        v_subject = v_subject||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    v_subject = v_body;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+END IF;
+IF v_objecttypename is not null and trim(v_objecttypename) in ('The License') then
+    v_body = ''||v_objecttypename||' ';
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for "'||v_providername||'"' || ' #'||v_objectid||' '|| v_providerid|| ' ' || v_statustext;
+    end if;
+   v_subject=v_body;
+   v_notification_objectid = v_providerid;
+END IF;
+IF v_objecttypename is not null and trim(v_objecttypename) in ('The Application') then
+     v_subject = ''||v_objecttypename|| ' for '||' #'||v_objectid||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' ' || v_statustext || ' #'||v_objectid;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+       
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+               
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+     if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+END IF;
+END IF;
+
+IF v_eventcode is not null and trim(v_eventcode) in ('APPL') then 
+
+IF v_objecttypename is not null and (trim(v_objecttypename) in ('The License letter, license certificate and monitoring report') or trim(v_statustext) in (' is ready for review for a new program ') )then
+    v_subject = ''||v_objecttypename||' ' || v_statustext || ' #'||v_objectid;
+    v_body = ''||v_objecttypename||' ' || v_statustext || ' #'||v_objectid;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+       
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+               
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+     if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+ END IF;  
+ IF v_objecttypename is not null and (trim(v_objecttypename) not in ('The License letter, license certificate and monitoring report') or trim(v_statustext) not in (' is ready for review for a new program ')) then
+    v_subject = ''||v_objecttypename|| ' for '||' #'||v_objectid||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+               
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+       
+    end if;
+  
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+
+ END IF;
+END IF; 
+ IF v_eventcode is not null and trim(v_eventcode) in ('LICINFO') then 
+    v_subject = ''||v_objecttypename||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        v_subject = v_subject || ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+        v_subject = v_subject||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+    
+END IF; 
+IF v_eventcode is not null and trim(v_eventcode) in ('OLMRESMON') then 
+    v_subject = ''||v_objecttypename||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' ' || v_statustext ||' #'||v_objectid;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        v_subject = v_subject || ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        -- v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+       -- v_subject = v_subject||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    v_subject = v_body;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+    
+END IF; 
+    IF v_eventcode is not null and trim(v_eventcode) not in ('SAN','LICINFO','OLMRESMON','APPL','PTA') then 
+    v_subject = ''||v_objecttypename||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        v_subject = v_subject || ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+        v_subject = v_subject||' for Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    v_subject = v_body;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+
+END IF; 
+    IF v_eventcode is not null and trim(v_eventcode) in ('DJSAppeal') then 
+    v_subject = ''||v_objecttypename||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        v_subject = v_subject || ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+                v_subject  = v_subject||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' by Provider "'|| v_providerid||'-'||v_providername||'"';
+        v_subject = v_subject||' by Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;
+    
+END IF; 
+IF v_eventcode is not null and trim(v_eventcode) in ('SUNS') then 
+    v_subject = ''||v_objecttypename||' ' || v_statustext;
+    v_body = ''||v_objecttypename||' #'||v_objectid||' ' || v_statustext;
+    if v_show_sites is not null and trim(v_show_sites) ='Y' then 
+        v_body  = v_body|| ' for ';
+        for currentRow IN select tp.provider_nm as site_nm, 'site "'||tp.provider_id::character varying as site_id
+                                from tb_provider tp 
+                                where '"'||trim(tp.provider_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+                        union 
+                            select program_name as site_nm, 'application "'||applicant_id as site_id
+                                from tb_provider_applicant tpa 
+                                where '"'||trim(tpa.applicant_id)||'"'::character varying in 
+                                    (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_site_list))
+        loop
+            BEGIN
+                v_body  = v_body||' '||currentRow.site_id||'-'||currentRow.site_nm||'"';
+            END;
+        end loop;
+    end if;
+    if v_providerid is not null and trim(v_providerid) not in ('') and v_show_provider ='Y' then 
+        v_body  = v_body||' by Provider "'|| v_providerid||'-'||v_providername||'"';
+        v_subject = v_subject||' by Provider "'|| v_providerid||'-'||v_providername||'"';
+    end if;
+    if v_remarks is not null and trim(v_remarks) !='' then 
+        v_body  = v_body|| ' with remarks `' || v_remarks || '`';
+    end if;    
+END IF; 
+---IF - Sending notification to provider
+IF '"PROVIDER"' in (SELECT ((value)::json->'preset')::character varying FROM json_array_elements(v_send_to)) then 
+
+    ---Send notification    
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_providerid, v_fromsecurityuserid, v_providerid, 'System', 'High',  v_subject, v_body, v_notification_objectid,  false, false, v_objecttype, v_providerid);
+    
+    select json_agg(a) into v_tousers4 from ( 
+    SELECT distinct tpu.securityusers_id as toworkeridno 
+    , up.email as email
+            from tb_provider_userconfig tpu 
+            inner join muser mu on mu.securityusersid = tpu.securityusers_id::character varying and mu.activeflag = 1
+            inner join userprofile up on up.securityusersid::character varying  = tpu.securityusers_id ::character varying and up.activeflag =1
+            inner join rolemapping r on r.principalid = mu.id and r.activeflag = 1 and r.roleid =2455
+            inner join role ro on ro.id = r.roleid and ro.activeflag = 1
+            where tpu.provider_id = v_providerid
+                and tpu.activeflag = 1 
+    )a;
+    select json_agg(a) into v_tousers5 from ( 
+        select m.email as email
+        from tb_provider t
+        cross join lateral (values (t.adr_email_tx), (t.ref_email_tx), (t.adm_email_tx))   as m(email) 
+            where provider_id = v_providerid
+    )a;
+
+    select json_agg(a) into v_tousers6 from ( 
+        select staff_email  as email
+        from providerstaff p 
+        where employee_type ='Program Administrator' 
+        and delete_sw = 'N' and object_id = v_providerid
+    )a;
+
+----END IF - Sending notification to provider
+END IF; 
+---------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------------------------------
+    ---build subject and body text - for others
+
+    ---Send notification    to selected user
+if '"SELECTED"' in (SELECT ((value)::json->'preset')::character varying FROM json_array_elements(v_send_to)) then 
+    SELECT prov_send_notification into v_success
+    FROM  prov_send_notification( v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid, 'System', 'High', v_subject, v_body, v_notification_objectid,  false, false, v_objecttype, v_providerid);
+end if;
+    ---Send notification    to site - assigned workers
+for currentRow IN SELECT distinct toworkeridno 
+                        FROM providerassignment pa 
+                        where '"'||trim(pa.objectid)||'"' in 
+                        (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_send_to))
+                        and (pa.enddate is null or pa.enddate::date > now()::date)
+                        and (toworkeridno not in (v_fromsecurityuserid) or v_sentfromprovider = 'Y')
+loop
+    BEGIN
+        SELECT prov_send_notification into v_success
+        FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_notification_objectid,  false, false, v_objecttype, v_providerid);
+    END;
+end loop;
+    ---Send notification    to all workers with role 
+for currentRow IN SELECT distinct mu.securityusersid as toworkeridno 
+                                                        from muser mu 
+                                                        join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+                                                        join role r on r.id = rm.roleid and r.activeflag = 1
+                                                        where ('"'||trim(r.name)||'"' in  (SELECT ((value)::json->'role')::character varying FROM json_array_elements(v_send_to))) 
+                                                        and rm.teamtypekey =  v_agency
+                                                        and mu.activeflag =1
+                                                        and  (mu.securityusersid not in (v_fromsecurityuserid) or v_sentfromprovider = 'Y')
+
+loop
+    BEGIN
+        SELECT prov_send_notification into v_success
+        FROM  prov_send_notification( currentRow.toworkeridno, v_fromsecurityuserid, currentRow.toworkeridno, 'System', 'High',  v_subject, v_body, v_notification_objectid,  false, false, v_objecttype, v_providerid);
+    END;
+end loop;
+
+
+
+    ---return the securityusersid for email list 
+select json_agg(a) into v_tousers from ( 
+    SELECT distinct toworkeridno 
+    , up.email
+    FROM providerassignment pa 
+    join userprofile up on up.securityusersid  = pa.toworkeridno
+    where '"'||trim(pa.objectid)||'"' in (SELECT ((value)::json->'site_id')::character varying FROM json_array_elements(v_send_to))
+    and (pa.enddate is null or pa.enddate::date > now()::date)
+    and (toworkeridno not in (v_fromsecurityuserid) or v_sentfromprovider = 'Y')
+)a;
+select json_agg(a) into v_tousers2 from ( 
+    SELECT distinct mu.securityusersid as toworkeridno 
+    , mu.email
+    from muser mu 
+    join rolemapping rm on rm.principalid = mu.id and rm.activeflag = 1
+    join role r on r.id = rm.roleid and r.activeflag = 1
+    where ('"'||trim(r.name)||'"' in  (SELECT ((value)::json->'role')::character varying FROM json_array_elements(v_send_to))) 
+    and rm.teamtypekey =  v_agency
+        and mu.activeflag =1
+        and  (mu.securityusersid not in (v_fromsecurityuserid) or v_sentfromprovider = 'Y')
+
+)a;
+select json_agg(a) into v_tousers3 from ( 
+    select mu.securityusersid as toworkeridno , mu.email 
+    from muser mu where mu.securityusersid = v_tosecurityuserid
+)a;
+
+return (json_build_object(
+    'ASSIGNED_WORKERS',v_tousers, 
+    'ROLE_WORKERS',v_tousers2, 
+    'SELECTED_WORKER',v_tousers3, 
+    'PROV_CONFIG_USERS',v_tousers4, 
+    'PROV_ADMIN_USERS', v_tousers5, 
+    'PROV_STAFF_ADMIN_USERS', v_tousers6, 
+    'subject', v_subject, 
+    'body', v_body,  
+    'sendEmail', objectls->>'sendEmail',
+    'Decision',v_success));
+end;
+$function$
+

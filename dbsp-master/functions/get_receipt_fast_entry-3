@@ -1,0 +1,96 @@
+CREATE OR REPLACE FUNCTION get_receipt_fast_entry(v_account_type character varying, v_transaction_source_cd character varying, v_lipagenumber bigint, v_lipagesize bigint, v_client_id bigint, v_client_name character varying, v_securityusersid uuid)
+ RETURNS TABLE(totalcount bigint, transaction_id bigint, client_account_id bigint, account_type character varying, transaction_type_cd character varying, transaction_type character varying, transaction_source_cd character varying, transaction_source character varying, benefit_start_dt date, benefit_end_dt date, transaction_amount_no numeric, transaction_dt date, credit_debit_sw character, notes_tx character varying, account_no_tx character varying, client_id bigint, client_name character varying, ssn character varying, total_balance_no numeric, post_sw character, received_cd character, fast_entry_id integer, current_mon_start_day timestamp without time zone, current_mon_end_day timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- Revision(s)\r
+-- 03/30/2021 Vineet Tirodkar \r
+-- Modifications to add new parameter v_securityusersid and filter the result set for the user's County (CDM-11736)\r
+------------------------------------------------------------------------\r
+\r
+DECLARE \r
+    v_pagenumber int;\r
+ v_pageoffset int;\r
+ v_statecountycode character varying;\r
+ \r
+BEGIN \r
+ \r
+--IF COALESCE(v_liPageSize, 0) < 1 THEN                     \r
+-- v_liPageSize := 10;\r
+--END IF;\r
+--\r
+--IF COALESCE(v_liPageNumber, 0) < 1 \r
+--THEN\r
+-- v_liPageNumber := 1; \r
+--end if;\r
+v_pagenumber := v_liPageNumber - 1;\r
+v_pageoffset := v_pagenumber * v_liPageSize;\r
+\r
+select btrim(statecountycode) \r
+ into v_statecountycode \r
+from v_userprofile vu  \r
+where securityusersid = v_securityusersid::character varying  ;\r
+\r
+return query \r
+select count(1) over(),\r
+ tat.transaction_id,\r
+ tca.client_account_id\r
+ ,((SELECT value_tx FROM tb_picklist_values where picklist_type_id=40 and delete_sw='N' and TRIM(picklist_value_cd)=tca.account_type_cd :: text)) as account_type\r
+ ,tat.transaction_type_cd\r
+ ,(SELECT value_tx FROM tb_picklist_values where picklist_type_id=39 and delete_sw='N' and TRIM(picklist_value_cd)=tat.transaction_type_cd::text) as transaction_type\r
+ ,tat.transaction_source_cd\r
+ ,((SELECT value_tx FROM tb_picklist_values where picklist_type_id=38 and delete_sw='N' and TRIM(picklist_value_cd)=tat.transaction_source_cd::text)) as transaction_source\r
+ ,tat.benefit_start_dt,\r
+ tat.benefit_end_dt,\r
+ case when  (select count(1) from tb_account_fast_entry  tattf where tattf.transaction_id= tat.transaction_id) >0  then\r
+  tafe.transaction_amount_no :: numeric(10,2) \r
+ else \r
+  tat.transaction_amount_no:: numeric(10,2) \r
+ end ,\r
+ tat.transaction_dt,\r
+ tat.credit_debit_sw,\r
+ tat.notes_tx,\r
+ tca.account_no_tx,\r
+ tca.client_id, \r
+ concat(p.firstname , ' ', p.middlename , ' ', p.lastname) :: character varying,\r
+ --p.ssnno,\r
+ (select pid.personidentifiervalue from personidentifier pid \r
+  where pid.personidentifiertypekey = 'SSN' and pid.personid = p.personid and pid.activeflag = 1 limit 1) :: character varying as ssn,\r
+ tca.total_balance_no,\r
+ tafe.post_sw,\r
+ ''::bpchar,\r
+ tafe.fast_entry_id,\r
+ date_trunc('month', current_date )::timestamp without time zone as current_start_day,\r
+ (date_trunc('month', now()::date) + interval '1 month' - interval '1 day') ::timestamp without time zone as current_end_day\r
+from tb_account_transaction tat\r
+ join tb_client_account tca on tca.client_account_id = tat.client_account_id \r
+  and tca.delete_sw = 'N'\r
+ join person p on p.cjamspid = tca.client_id \r
+  and p.activeflag = 1\r
+ left join tb_account_fast_entry tafe on  tafe.transaction_id = tat.transaction_id \r
+  and tafe.delete_sw ='N'\r
+where -- transaction_source_cd in ('585','586','587') and\r
+ tca.county_cd = v_statecountycode\r
+ and tca.status_cd = '592' \r
+ and tat.transaction_type_cd = '589' \r
+ and frequency_cd = 'Y' \r
+ and EXTRACT(month FROM date_trunc('month', tat.benefit_start_dt)) = EXTRACT(month FROM date_trunc('month', current_date - interval '1' month))\r
+ --and (select count(1) from tb_account_fast_entry tafe where  tafe.transaction_id = tat.transaction_id and tafe.delete_sw ='N') =0\r
+ AND (v_account_type is null or tca.account_type_cd = v_account_type)\r
+ AND (v_transaction_source_cd is null or tat.transaction_source_cd = v_transaction_source_cd)\r
+ AND (v_client_id is null or p.cjamspid = v_client_id)\r
+ AND (v_client_name IS NULL OR \r
+  (LOWER(CAST(INITCAP(TRIM(P.firstname)||' ' || \r
+      CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN TRIM(P.middlename) ELSE '' END\r
+      || ' '||TRIM(P.lastname) ) AS CHARACTER VARYING)\r
+  ) like LOWER('%' || v_client_name || '%'))\r
+  OR CASE WHEN LOWER(TRIM(v_client_name)) IS NOT NULL THEN ( soundex(LOWER(TRIM(p.firstname))) = soundex(LOWER(TRIM(v_client_name)))) END \r
+  OR CASE WHEN LOWER(TRIM(v_client_name)) IS NOT NULL THEN ( soundex(LOWER(TRIM( p.lastname))) = soundex(LOWER(TRIM(v_client_name)))) END\r
+  OR CASE WHEN LOWER(TRIM(v_client_name)) IS NOT NULL THEN ( soundex(LOWER(TRIM( p.middlename))) = soundex(LOWER(TRIM(v_client_name)))) END  \r
+  )\r
+LIMIT v_liPageSize OFFSET v_pageoffset; \r
+\r
+END;\r
+\r
+$function$
+

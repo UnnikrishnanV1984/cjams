@@ -1,0 +1,2 @@
+update person set cisclientid = '426035295', updatedby = 'CDM-2399', updatedon = now() where cisclientid = '424059634';
+update person set cisclientid = '402035236', updatedby = 'CDM-2399', updatedon = now() where cisclientid = '472059381';

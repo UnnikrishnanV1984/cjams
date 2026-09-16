@@ -1,0 +1,1 @@
+update cjams.routing set activeflag = 0  where routingid = '6065f44e-8382-4a56-800f-2bbee43b55f0';

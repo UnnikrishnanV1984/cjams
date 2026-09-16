@@ -1,0 +1,33 @@
+DROP TABLE cjams.afcarsadoptioncount;
+
+CREATE TABLE cjams.afcarsadoptioncount (
+	countid BIGINT NOT NULL,
+	totalnorecords varchar(20) NULL,
+	periodendingdate varchar(20) NULL,
+	chunderoneyear varchar(20) NULL,
+	choneyear varchar(20) NULL,
+	chtwoyear varchar(20) NULL,
+	chthreeyear varchar(20) NULL,
+	chfouryear varchar(20) NULL,
+	chfiveyear varchar(20) NULL,
+	chsixyear varchar(20) NULL,
+	chsevenyear varchar(20) NULL,
+	cheightyear varchar(20) NULL,
+	chnineyear varchar(20) NULL,
+	chtenyear varchar(20) NULL,
+	chelevenyear varchar(20) NULL,
+	chtwelveyear varchar(20) NULL,
+	chthirteenyear varchar(20) NULL,
+	chfourteenyear varchar(20) NULL,
+	chfifteenyear varchar(20) NULL,
+	chsixteenyear varchar(20) NULL,
+	chseventeenyear varchar(20) NULL,
+	cheighteenyear varchar(20) NULL,
+	chovereighteenyear varchar(20) NULL,
+	insertedon timestamp NULL,
+	insertedby varchar(10) NULL,
+	updatedon timestamp NULL,
+	updatedby varchar(10) NULL,
+	activeflag int4 NOT NULL DEFAULT 1,
+	old_id varchar(50) NULL
+);

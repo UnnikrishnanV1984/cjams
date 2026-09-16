@@ -1,0 +1,31 @@
+/* 
+    Issue Description: Please remove CIS #479014865 program assignment from CJAMS investigation # CW2238361. 
+    Assistant Deputy Director, Stephanie Cooke has approved this request
+   Category/ Module  : Expungement Request
+   Root cause: Data fix for expunging the case
+   Pull request# for code fix: 
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+    void the rejected provider placement from backend
+*/
+
+
+select referral_id, maltreatment_type_cd, investigation_finding_cd
+
+from tb_conv_inv_finding
+
+where referral_id = 'CW2238361' ;
+
+ 
+
+select vl_sqlcode, vs_err_message
+
+from cjams.expungcaserequest
+
+( 'IR'::character varying,
+
+'CW2238361'::character varying,
+
+null::date
+
+) ;

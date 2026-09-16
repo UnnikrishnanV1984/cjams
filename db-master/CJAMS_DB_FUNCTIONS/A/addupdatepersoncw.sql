@@ -1,0 +1,443 @@
+-- FUNCTION: cjams.addupdatepersoncw(uuid, json, uuid, character varying)
+
+-- DROP FUNCTION cjams.addupdatepersoncw(uuid, json, uuid, character varying);
+
+CREATE OR REPLACE FUNCTION cjams.addupdatepersoncw(
+	v_personid uuid,
+	persondetails json,
+	v_intakeserviceid uuid,
+	v_securityuserid character varying)
+
+RETURNS uuid
+    LANGUAGE 'plpgsql'
+    VOLATILE 
+    COST 100
+AS $function$
+
+--Revision(s)
+--  07/16/2024- Umasankar Raavi --CIDM-9029-Person profile -Added new column othergendertypekey
+--  -6/16/2025 -Umasankar Raavi --CIDM-10541-Child Fatality Radio Button-Added new column sdmpersonapprovalflag
+-- 01-06-2026 - Veera Nadimpalli -- CIDM-10982 - To save Sen Criteria Identification
+
+DECLARE
+   v_personjsondata                     json;
+   v_person                             json;
+   l_generatedactorid                   uuid;
+   l_generatedintakeservicereqactorid   uuid;
+   l_genereatedactorrelationshipid      uuid;
+   v_personrole                         json;
+   v_personrolejs                       json;
+   v_date                               TIMESTAMP WITHOUT TIME ZONE;
+   returnmsg                            CHARACTER VARYING;
+   v_intakeservicerequestactorid        uuid;
+   v_actorid                            uuid;
+   v_maritalstatus                      json;
+   v_role                               json;
+BEGIN
+   v_date := now ();
+   v_person := persondetails;
+   v_actorid := v_person ->> 'actorid';
+   v_maritalstatus := v_person -> 'maritalstatus';
+
+   RAISE NOTICE 'values %', v_Personjsondata ->> 'activeflag';
+   
+   v_personrole := v_person ->> 'personrole';
+   
+   RAISE NOTICE 'v_personrole %', v_personrole;
+   RAISE NOTICE 'v_personrole %', v_personrole ->> 'rolekey';
+
+   IF (v_personid IS NOT NULL)
+   THEN
+      SELECT *
+        FROM personupdatebasicinfo (v_personid,
+                                    persondetails,
+                                    v_intakeserviceid,
+                                    v_securityuserid)
+        INTO returnmsg;
+   ELSE
+      INSERT INTO Person (activeflag,
+                          firstname,
+                          lastname,
+                          middlename,
+                          dob,
+                          gendertypekey,
+                          othergendertypekey,
+                          sdmpersonapprovalflag,
+                          insertedby,
+                          insertedon,
+                          dateofdeath,
+                          isapproxdod,
+                          isapproxdob,
+                          stateid,
+                          racetypekey,
+                          ethnicgrouptypekey,
+                          occupation,
+                          tribalassociation,
+                          physicalattributes,
+                          effectivedate,
+                          name_suffix,
+                          userphoto,
+                          livingsituationdesc,
+                          primarylanguageid,
+                          secondarylanguageid,
+                          isuscitizen,
+                          ssnno,
+                          salutation,
+                          heightininch,
+                          weightinlb,
+                          everbeenadoptedflag,
+                          livingsituationkey,
+                          maritalstatustypekey,
+                          religiontypekey,
+                          citizenalenageflag,
+                          primarycitizenshiptypekey,
+                          seccitizenshiptypekey,
+                          nationalitytypekey,
+                          alienstatustypekey,
+                          substanceexposednewbornflag,
+                          substanceexposednewbornsourceid,
+                          substanceexposednewbornsourcetypekey,
+                          substanceexposednewborntimetamp,
+                          substanceclasses,
+                          sencriteria,
+                          birthinghospital,
+                          othersubstances)
+           VALUES (1,
+                   v_person ->> 'Firstname',
+                   v_person ->> 'Lastname',
+                   v_person ->> 'Middlename',
+                   (v_person ->> 'Dob')::TIMESTAMP,
+                   v_person ->> 'gendertypekey',
+                  (v_person ->> 'othergendertypekey')::INT,
+                  (v_person ->> 'sdmpersonapprovalflag')::int4,
+                   v_person ->> 'insertedby',
+                   v_date,
+                   (v_person ->> 'Dod')::TIMESTAMP,
+                   (v_person ->> 'isapproxdod')::INT,
+                   (v_person ->> 'isapproxdob')::INT,
+                   v_person ->> 'stateid',
+                   v_person ->> 'Race',
+                   v_person ->> 'ethnicgrouptypekey',
+                   v_person ->> 'occupation',
+                   v_person ->> 'tribalassociation',
+                   v_person ->> 'physicalattributes',
+                   v_date,
+                   v_person ->> 'name_suffix',
+                   v_person ->> 'userphoto',
+                   v_person ->> 'livingsituationdesc',
+                   v_person ->> 'primarylanguageid',
+                   v_person ->> 'secondarylanguageid',
+                   v_person ->> 'isuscitizen',
+                   v_person ->> 'SSN',
+                   v_person ->> 'salutation',
+                   (v_person ->> 'height')::INT,
+                   (v_person ->> 'weight')::INT,
+                   (v_person ->> 'everbeenadoptedflag')::INT,
+                   v_person ->> 'livingsituationkey',
+                   v_person ->> 'maritalstatustypekey',
+                   v_person ->> 'religiontypekey',
+                   (v_person ->> 'citizenalenageflag')::INT,
+                   v_person ->> 'primarycitizenshiptypekey',
+                   v_person ->> 'seccitizenshiptypekey',
+                   v_person ->> 'nationalitytypekey',
+                   v_person ->> 'alienstatustypekey',
+                   (v_person ->> 'substanceexposednewbornflag')::INT,
+                   (v_person ->> 'substanceexposednewbornsourceid')::character varying,
+                   (v_person ->> 'substanceexposednewbornsourcetypekey')::INT,
+                   (v_person ->> 'substanceexposednewborntimetamp')::timestamp,
+                   (v_person ->> 'substanceclasses')::json,
+                   (v_person ->> 'sencriteria')::character varying,
+                   (v_person ->> 'birthinghospital')::character varying,
+                   (v_person ->> 'othersubstances')::character varying)
+        RETURNING personid
+             INTO v_personid;
+
+      IF LENGTH (lower (v_person ->> 'SSN')) > 0
+      THEN
+         INSERT INTO personidentifier (personid,
+                                       personidentifiertypekey,
+                                       personidentifiervalue,
+                                       insertedby,
+                                       insertedon,
+                                       activeflag,
+                                       effectivedate)
+              VALUES (v_personid,
+                      'SSN',
+                      v_person ->> 'SSN',
+                      v_securityuserid,
+                      v_date,
+                      1,
+                      v_date);
+      END IF;
+
+      IF Length (lower (v_person ->> 'dl')) > 0
+      THEN
+         INSERT INTO personidentifier (personid,
+                                       personidentifiertypekey,
+                                       personidentifiervalue,
+                                       insertedby,
+                                       insertedon,
+                                       activeflag,
+                                       effectivedate)
+              VALUES (v_personid,
+                      'DL',
+                      v_person ->> 'dl',
+                      v_securityuserid,
+                      v_date,
+                      1,
+                      v_date);
+      END IF;
+
+      IF Length (lower (v_person ->> 'PhyMark')) > 0
+      THEN
+         INSERT INTO personphysicalattribute (personid,
+                                              physicalattributetypekey,
+                                              attributevalue,
+                                              insertedby,
+                                              insertedon,
+                                              activeflag,
+                                              effectivedate)
+              VALUES (v_personid,
+                      'PhyMark',
+                      v_person ->> 'phymark',
+                      v_securityuserid,
+                      v_date,
+                      1,
+                      v_date);
+      END IF;
+
+      IF Length (lower (v_person ->> 'height')) > 0
+      THEN
+         INSERT INTO personphysicalattribute (personid,
+                                              physicalattributetypekey,
+                                              attributevalue,
+                                              insertedby,
+                                              insertedon,
+                                              activeflag,
+                                              effectivedate)
+              VALUES (v_personid,
+                      'Ht',
+                      v_person ->> 'height',
+                      v_securityuserid,
+                      v_date,
+                      1,
+                      v_date);
+      END IF;
+
+      IF Length (lower (v_person ->> 'weight')) > 0
+      THEN
+         INSERT INTO personphysicalattribute (personid,
+                                              physicalattributetypekey,
+                                              attributevalue,
+                                              insertedby,
+                                              insertedon,
+                                              activeflag,
+                                              effectivedate)
+              VALUES (v_personid,
+                      'Wt',
+                      v_person ->> 'weight',
+                      v_securityuserid,
+                      v_date,
+                      1,
+                      v_date);
+      END IF;
+
+      IF (lower (v_person ->> 'tatoo')) IS NOT NULL
+      THEN
+         INSERT INTO personphysicalattribute (personid,
+                                              physicalattributetypekey,
+                                              attributevalue,
+                                              insertedby,
+                                              insertedon,
+                                              activeflag,
+                                              effectivedate)
+              VALUES (v_personid,
+                      'Tattoo',
+                      v_person ->> 'tatoo',
+                      v_securityuserid,
+                      v_date,
+                      1,
+                      v_date);
+      END IF;
+
+      IF (   (lower (v_maritalstatus ->> 'marriageplace')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'divorceplace')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'startdate')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'enddate')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'childrenno')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'prefixtypekey')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'firstname')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'lastname')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'adrhomephone')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'adrworkphone')) IS NOT NULL
+          OR ((v_maritalstatus ->> 'adrworkxtn')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'adrworkphone')) IS NOT NULL)
+      THEN
+         INSERT INTO cjams.personmaritalstatus (fk_id,
+                                                startdate,
+                                                enddate,
+                                                marriageplace,
+                                                divorceplace,
+                                                prefixtypekey,
+                                                childrenno,
+                                                firstname,
+                                                middlename,
+                                                lastname,
+                                                suffixtypekey,
+                                                adrhomephone,
+                                                adrworkphone,
+                                                adrworkxtn,
+                                                informallivingcomments,
+                                                insertedon,
+                                                insertedby,
+                                                activeflag,
+                                                personid)
+              VALUES ('CW',
+                      (v_maritalstatus ->> 'startdate')::TIMESTAMP,
+                      (v_maritalstatus ->> 'enddate')::TIMESTAMP,
+                      v_maritalstatus ->> 'marriageplace',
+                      v_maritalstatus ->> 'divorceplace',
+                      v_maritalstatus ->> 'prefixtypekey',
+                      (v_maritalstatus ->> 'childrenno')::INT,
+                      v_maritalstatus ->> 'firstname',
+                      v_maritalstatus ->> 'middlename',
+                      v_maritalstatus ->> 'lastname',
+                      v_maritalstatus ->> 'suffixtypekey',
+                      v_maritalstatus ->> 'adrhomephone',
+                      v_maritalstatus ->> 'adrworkphone',
+                      v_maritalstatus ->> 'adrworkxtn',
+                      v_maritalstatus ->> 'informallivingcomments',
+                      v_date,
+                      v_securityuserid,
+                      1,
+                      v_personid);
+      END IF;
+
+      IF (   (lower (v_maritalstatus ->> 'streetno')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'streetname')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'city')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'state')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'county')) IS NOT NULL
+          OR (lower (v_maritalstatus ->> 'zip5no')) IS NOT NULL)
+      THEN
+         INSERT INTO cjams.personspouseaddress (personid,
+                                                streetno,
+                                                streetname,
+                                                city,
+                                                county,
+                                                state,
+                                                zip5no,
+                                                insertedon,
+                                                insertedby,
+                                                activeflag)
+              VALUES (v_personid,
+                      v_maritalstatus ->> 'streetno',
+                      v_maritalstatus ->> 'streetname',
+                      v_maritalstatus ->> 'city',
+                      v_maritalstatus ->> 'county',
+                      v_maritalstatus ->> 'state',
+                      v_maritalstatus ->> 'zip5no',
+                      v_date,
+                      v_securityuserid,
+                      1);
+      END IF;
+   END IF;
+
+   FOR v_role IN SELECT * FROM Json_array_elements (v_personrole)
+   LOOP
+      v_actorid := v_role ->> 'actorid';
+
+      IF (v_actorid IS NOT NULL)
+      THEN
+         SELECT intakeservicerequestactorid
+          FROM intakeservicerequestactor
+         WHERE     actorid = v_actorid
+               AND intakenumber = v_person ->> 'intakenumber'
+          INTO v_intakeservicerequestactorid;
+
+         UPDATE actor
+            SET actortype = COALESCE (v_personrole ->> 'rolekey', actortype),
+                updatedby = v_person ->> 'updatedby',
+                updatedon = v_date
+          WHERE actorid = v_actorid;
+
+         UPDATE intakeservicerequestactor
+            SET intakeservicerequestpersontypekey =
+                   COALESCE (v_personrole ->> 'rolekey',
+                             intakeservicerequestpersontypekey),
+                isprimary =
+                   COALESCE ((v_personrole ->> 'isprimary')::BOOLEAN,
+                             isprimary),
+                updatedby = v_person ->> 'updatedby',
+                updatedon = v_date
+          WHERE actorid = v_actorid;
+
+         UPDATE actorrelationship
+            SET relationshiptypekey =
+                   COALESCE (v_personrole ->> 'relationshiptypekey',
+                             relationshiptypekey),
+                updatedby = v_person ->> 'updatedby',
+                updatedon = v_date
+          WHERE intakeservicerequestactorid = v_intakeservicerequestactorid;
+      ELSE
+         INSERT INTO actor (activeflag,
+                            personid,
+                            actortype,
+                            insertedby,
+                            intakenumber,
+                            insertedon)
+              VALUES (1,
+                      v_personid,
+                      v_personrole ->> 'rolekey',
+                      v_person ->> 'insertedby',
+                      v_person ->> 'intakenumber',
+                      v_date)
+           RETURNING actorid
+                INTO l_generatedactorid;
+
+         INSERT INTO intakeservicerequestactor (
+                        actorid,
+                        intakeservicerequestpersontypekey,
+                        insertedby,
+                        insertedon,
+                        isprimary,
+                        intakenumber,
+                        personid,
+                        activeflag)
+              VALUES (l_generatedactorid,
+                      v_personrole ->> 'rolekey',
+                      v_person ->> 'insertedby',
+                      v_date,
+                      (v_personrole ->> 'isprimary')::BOOLEAN,
+                      v_person ->> 'intakenumber',
+                      v_personid,
+                      1)
+           RETURNING intakeservicerequestactorid
+                INTO l_generatedintakeservicereqactorid;
+
+         INSERT INTO actorrelationship (relationshiptypekey,
+                                        intakeservicerequestactorid,
+                                        insertedby,
+                                        insertedon,
+                                        effectivedate,
+                                        intakenumber,
+                                        activeflag)
+              VALUES (v_personrole ->> 'relationshiptypekey',
+                      l_generatedintakeservicereqactorid,
+                      v_person ->> 'insertedby',
+                      v_date,
+                      v_date,
+                      v_person ->> 'intakenumber',
+                      1)
+           RETURNING actorrelationshipid
+                INTO l_genereatedactorrelationshipid;
+      END IF;
+   END LOOP;
+	
+	--## PUBLISH DATA ACROSS TO CHESSIE FOR CHECKING CLIENT ACTIVITY WITH IN CJAMS
+	SELECT * FROM publishpersonparticipation(v_intakeserviceid,'servicerequest',v_person);
+	
+   RETURN v_personid;
+END;
+
+$function$;

@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION prov_getnoncompliance(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ v_monitoring_id character varying;
+ v_provider_id integer;
+ v_startdate date;
+v_enddate date;
+v_prgram character varying;
+v_report character varying;
+ begin
+   raise notice 'reqobj:prov_getnoncompliance %', reqobj;
+  v_report:=reqobj->>'report';
+ if (v_report='quarterly' or v_report ='midyear') then
+  select provider_id,to_char(date_trunc('quarter', end_dt)  - interval '1 months' ),to_char( end_dt),prgram into v_provider_id,v_startdate,v_enddate,v_prgram from prov_monitoring pm where pm.monitoring_id = v_monitoring_id limit 1;
+end if;
+  v_monitoring_id= reqobj ->> 'monitoring_id';
+  v_provider_id =reqobj->>'provider_id';
+ SELECT JSON_AGG(pla) INTO jsondata FROM (select prs.site_id,prq.question,tpa.program_type,tpa.prgram,
+  prq.question,prq.question_data_type,prq.question_hint,prq.question_options,prq.question_type,prq.record_question_id ,
+  prq.question_mandatory,prq.record_id,pr.records_type,
+  prq.is_group,prq.on_expand,pmv."comments" as violation_comments,pmv.monitoring_violation_id,prdt.findings,prdt.frequency_deficiency,prdt.impact_deficiency,prdt.scope_deficiency
+  ,tpa.provider_id,tp.provider_nm,tpa.site_id
+  from prov_monitoring_record_site prs 
+  join tb_provider_applicant tpa on tpa.site_id = prs.site_id
+  join tb_provider tp on tp.provider_id::character varying = tpa.provider_id
+  join prov_record pr on pr.record_id = prs.record_id
+  join prov_monitoring_record_data prdt on prdt.monitoring_record_site_id = prs.monitoring_record_site_id::uuid
+  join prov_record_question prq on prq.record_question_id = prdt.record_question_id
+  left join prov_monitoring_violation pmv on pmv.record_question_id = prq.record_question_id
+  where 
+  (v_monitoring_id is null or prs.monitoring_id in (select pm.monitoring_id from  prov_monitoring pm where  monitoring_dt between v_startdate::date and v_enddate::date and provider_id=v_provider_id and prgram=v_prgram and
+((periodic='Monthly') or  (pm.monitoring_id =v_monitoring_id)))  )
+  and (v_provider_id is null or tpa.provider_id = v_provider_id :: character varying) 
+  and pr.records_type in ('Child','Staff','Parent','Physical Plant','Office Inspection','Apartment') and pr.module_name in ('Interview','Record')
+  --and pr.prgram='CPA' 
+  and prs.delete_sw = 'N' and prs.status = 'Complete'
+      and prdt.delete_sw = 'N' and coalesce(prdt.monitoring_record_value) = 'Non-Compliance'
+  group by prs.site_id,prq.question,tpa.program_type,tpa.prgram, tpa.site_id,
+  prq.question,prq.question_data_type,prq.question_hint,prq.question_type,prq.record_question_id ,
+  prq.question_mandatory,prq.record_id,
+  prq.is_group,prq.on_expand,pr.records_type,pmv."comments",pmv.monitoring_violation_id
+  ,prdt.findings,prdt.frequency_deficiency,prdt.impact_deficiency,prdt.scope_deficiency,
+  tpa.provider_id,tp.provider_nm
+ ) AS pla;
+
+
+ RETURN jsondata;
+ END;
+$function$
+

@@ -1,0 +1,109 @@
+CREATE OR REPLACE FUNCTION as_processwaitinglistrequest(v_currentuserid character varying, v_intakeserviceid uuid, v_issupervisor boolean, v_servicerequestnumber character varying, v_status integer, v_comments text)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+ DECLARE 
+ v_intakenumber CHARACTER VARYING; 
+ v_supervisorid CHARACTER VARYING; 
+ v_supervisoruserid CHARACTER VARYING; -- Same as v_supervisorid, but v_supervisorid is not available always
+ v_cwuserid CHARACTER VARYING;
+ v_msg CHARACTER VARYING;
+ v_supervisorname CHARACTER VARYING;
+ v_routingid uuid;
+ 
+ BEGIN
+ IF (v_issupervisor AND v_status IN (17)) THEN
+  SELECT routingid, tosecurityusersid, fromsecurityusersid INTO v_routingid, v_supervisoruserid, v_cwuserid 
+  FROM routing WHERE eventcode = 'SCWL' AND objectid = v_intakeserviceid::CHARACTER VARYING ORDER BY insertedon DESC LIMIT 1; 
+
+  SELECT displayname INTO v_supervisorname FROM userprofile WHERE securityusersid = v_supervisoruserid;
+
+  IF v_comments IS NULL THEN 
+   UPDATE routing
+   SET routingstatustypeid = v_status, updatedby = v_currentuserid, updatedon = now() 
+   WHERE routingid = v_routingid;
+   v_msg := 'Waiting list request is rejected by '|| v_supervisorname;
+  ELSE 
+   UPDATE routing
+   SET routingstatustypeid = v_status, updatedby = v_currentuserid, updatedon = now(), remarks = v_comments 
+   WHERE routingid = v_routingid; 
+   v_msg := 'Waiting list request needs more information, please check comments';
+  END IF;
+   
+  PERFORM * FROM as_send_notification(v_cwuserid, v_supervisoruserid, v_cwuserid, 'System', 'Normal', v_msg, v_msg, (v_intakeserviceid:: CHARACTER VARYING));
+  RETURN 'Waiting List request on ('|| v_servicerequestnumber||') is rejected successfully';
+
+ ELSIF (v_issupervisor) THEN 
+  SELECT intakenumber INTO v_intakenumber FROM intakeservicerequest WHERE intakeserviceid = v_intakeserviceid;
+  SELECT routingid INTO v_routingid FROM routing WHERE eventcode = 'SCWL' AND objectid = v_intakeserviceid::CHARACTER VARYING ORDER BY insertedon DESC LIMIT 1; 
+  
+  UPDATE caseassignment 
+  SET enddate = now(), updatedby = v_currentuserid, updatedon = now() 
+  WHERE objectid = v_intakeserviceid AND enddate IS NULL; 
+  
+  UPDATE intakedastatus 
+  SET status = 3, updatedby = v_currentuserid, updatedon = now() 
+  WHERE intakenumber = v_intakenumber; 
+  
+  UPDATE intakeservicerequest 
+  SET intakeserreqstatustypeid = 'eeb4dfc3-30d6-444f-bc05-11b51eefed0f', isrouted = false, routedon = null, 
+  updatedby = v_currentuserid, updatedon = now() 
+  WHERE intakeserviceid = v_intakeserviceid; 
+  
+  UPDATE intakeservicerequestdispositioncode 
+  SET servicerequesttypeconfigiddispostionid = 'ee5e8e8b-5f3c-4f02-bef4-e57a257cf7e0', updatedby = v_currentuserid, 
+  updatedon = now() 
+  WHERE intakeserviceid = v_intakeserviceid; 
+  
+  UPDATE asservicesoncase 
+  SET enddate = now(), updatedby = v_currentuserid, updatedon = now()
+  WHERE  ascaseid = v_intakeserviceid AND enddate IS NULL AND activeflag = 1;
+  
+  UPDATE personprogramarea 
+  SET enddate = now(), updatedby = v_currentuserid, updatedon = now()
+  WHERE  objectid = v_intakeserviceid:: CHARACTER VARYING AND enddate IS NULL AND activeflag = 1;
+
+  IF v_routingid IS NULL THEN 
+   INSERT INTO routing(eventcode, fromsecurityusersid, tosecurityusersid, fromroleid, toroleid, objectid, remarks, 
+    routingstatustypeid, insertedby, updatedby, insertedon, updatedon, isreviewrequest, servicerequestnumber)
+    VALUES('SCWL', v_currentuserid, v_currentuserid, 'ASSP','ASSP', v_intakeserviceid, v_comments, 
+    v_status, v_currentuserid, v_currentuserid, now(), now(), false, v_servicerequestnumber);
+  ELSE 
+   UPDATE routing
+   SET routingstatustypeid = v_status, updatedby = v_currentuserid, updatedon = now(), remarks = v_comments 
+   WHERE routingid = v_routingid;
+  END IF;
+  
+  SELECT tosecurityusersid, fromsecurityusersid INTO v_supervisoruserid, v_cwuserid FROM routing WHERE routingid = v_routingid; 
+  SELECT displayname INTO v_supervisorname FROM userprofile WHERE securityusersid = v_supervisoruserid;
+ 
+  v_msg := 'Waiting list request is approved by '|| v_supervisorname||' successfully';
+  PERFORM * FROM as_send_notification(v_cwuserid, v_supervisoruserid, v_cwuserid, 'System', 'Normal', v_msg, v_msg, (v_intakeserviceid:: CHARACTER VARYING));
+
+  RETURN 'Case ('|| v_servicerequestnumber||') is placed on waitinglist successfully';
+  
+ ELSE 
+  SELECT assupervisorid INTO v_supervisorid FROM userprofile WHERE securityusersid = v_currentuserid;
+  
+  IF v_supervisorid IS NOT NULL THEN 
+   SELECT displayname INTO v_supervisorname FROM userprofile WHERE securityusersid = v_supervisorid;
+  END IF; 
+
+  UPDATE routing
+  SET activeflag = 0, updatedby = fromsecurityusersid, updatedon = now()
+  WHERE eventcode = 'SCWL' AND objectid = v_intakeserviceid::CHARACTER VARYING AND routingstatustypeid = v_status;
+
+  INSERT INTO routing(eventcode, fromsecurityusersid, tosecurityusersid, fromroleid, toroleid, objectid, remarks, 
+   routingstatustypeid, activeflag, insertedby, updatedby, insertedon, updatedon, isreviewrequest, servicerequestnumber)
+   VALUES('SCWL', v_currentuserid, v_supervisorid, 'ASCW', 'ASSP', v_intakeserviceid, v_comments, v_status, 
+   1, v_currentuserid, v_currentuserid, now(), now(), true, v_servicerequestnumber); 
+  
+  v_msg := 'Waiting list request received';
+  PERFORM * FROM as_send_notification(v_supervisorid, v_currentuserid, v_supervisorid, 'System', 'Normal', v_msg, v_msg, (v_intakeserviceid:: CHARACTER VARYING));
+  RETURN 'Request sent to '|| v_supervisorname||' successfully';
+ END IF;
+ END;                                                                                                                                                                                                                                                                    
+
+$function$
+

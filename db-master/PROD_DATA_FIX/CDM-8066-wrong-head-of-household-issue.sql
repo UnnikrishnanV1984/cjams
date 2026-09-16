@@ -1,0 +1,1 @@
+update intakeservicerequestactor set isheadofhousehold = false, updatedby = 'CDM-8066', updatedon = now() where intakeservicerequestactorid = '742c7384-78ce-46b2-9e3b-e2f4ab4d89dd';

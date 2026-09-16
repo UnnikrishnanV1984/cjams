@@ -1,0 +1,254 @@
+CREATE OR REPLACE FUNCTION f_fm200r_log(start_date date, end_date date, ason_date date)
+ RETURNS TABLE(report text, type_cd text, receipt_type text, child_provider_name character, client_provider_id character, ssn_tax_id numeric, account character, account_type character, receipts numeric, benefit_start_dt date, benefit_end_dt date, received_dt date, transaction_dt date, transaction_receipt_id bigint, county_cd character varying)
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+   RETURN QUERY
+      (SELECT AA.REPORT,
+              AA.TYPE_CD,
+              AA.RECEIPT_TYPE,
+              AA.CHILD_PROVIDER_NAME,
+              AA.CLIENT_PROVIDER_ID::CHARACTER,
+              AA.SSN_TAX_ID,
+              AA.ACCOUNT,
+              AA.ACCOUNT_TYPE,
+              AA.RECEIPTS,
+              AA.BENEFIT_START_DT,
+              AA.BENEFIT_END_DT,
+              AA.RECEIVED_DT,
+              AA.TRANSACTION_DT,
+              AA.TRANSACTION_RECEIPT_ID,
+              AA.COUNTY_CD
+         FROM (  SELECT SECOND_TABLE.REPORT,
+                        SECOND_TABLE.TYPE_CD,
+                        SECOND_TABLE.RECEIPT_TYPE,
+                        SECOND_TABLE.CHILD_PROVIDER_NAME,
+                        SECOND_TABLE.CLIENT_PROVIDER_ID,
+                        SECOND_TABLE.SSN_TAX_ID,
+                        SECOND_TABLE.ACCOUNT,
+                        SECOND_TABLE.ACCOUNT_TYPE,
+                        SECOND_TABLE.RECEIPTS,
+                        SECOND_TABLE.BENEFIT_START_DT,
+                        SECOND_TABLE.BENEFIT_END_DT,
+                        SECOND_TABLE.RECEIVED_DT,
+                        SECOND_TABLE.TRANSACTION_DT,
+                        SECOND_TABLE.TRANSACTION_RECEIPT_ID,
+                        SECOND_TABLE.COUNTY_CD
+                   FROM (  SELECT 'HEADER'::TEXT
+                                     AS REPORT,
+                                  'PROVIDER SUMMARY'::TEXT
+                                     AS TYPE_CD,
+                                  'RECOVERY'::TEXT
+                                     AS RECEIPT_TYPE,
+                                  CAST (NULL AS CHAR)
+                                     AS CHILD_PROVIDER_NAME,
+                                  CAST (NULL AS INT)
+                                     AS CLIENT_PROVIDER_ID,
+                                  CAST (NULL AS INT)
+                                     AS SSN_TAX_ID,
+                                  CAST (NULL AS CHAR)
+                                     AS ACCOUNT,
+                                  CAST (NULL AS CHAR)
+                                     AS ACCOUNT_TYPE,
+                                  SUM (PAYMENT_AMOUNT_NO)
+                                     AS RECEIPTS,
+                                  CAST (NULL AS DATE)
+                                     AS BENEFIT_START_DT,
+                                  CAST (NULL AS DATE)
+                                     AS BENEFIT_END_DT,
+                                  TB_PAYMENT_RECEIPT.RECEIPT_DT
+                                     AS RECEIVED_DT,
+                                  DATE (TB_PAYMENT_RECEIPT.CREATE_TS)
+                                     AS TRANSACTION_DT,
+                                  CAST (NULL AS INT)
+                                     AS TRANSACTION_RECEIPT_ID,
+                                  (SELECT PRIMARY_COUNTY_CD
+                                    FROM TB_STAFF
+                                   WHERE     USER_ID =
+                                             TB_PAYMENT_RECEIPT.CREATE_USER_ID
+                                         AND DELETE_SW = 'N')
+                                     COUNTY_CD
+                             FROM TB_PAYMENT_RECEIPT
+                            WHERE     TB_PAYMENT_RECEIPT.DELETE_SW = 'N'
+                                  AND DATE (TB_PAYMENT_RECEIPT.CREATE_TS) BETWEEN CAST (
+                                                                                     START_DATE
+                                                                                        AS DATE)
+                                                                              AND CAST (
+                                                                                     END_DATE
+                                                                                        AS DATE) --PREV_MONTH_FIRST_DAY  AND  PREV_MONTH_LAST_DAY
+                                  AND (   (    (APPROVAL_STATUS_CD IS NULL)
+                                           AND PAYMENT_METHOD_CD <> '16')
+                                       OR (    PAYMENT_METHOD_CD = '16'
+                                           AND APPROVAL_STATUS_CD = '3047'))
+                         GROUP BY REPORT,
+                                  TYPE_CD,
+                                  TB_PAYMENT_RECEIPT.RECEIPT_DT,
+                                  TB_PAYMENT_RECEIPT.CREATE_USER_ID,
+                                  DATE (TB_PAYMENT_RECEIPT.CREATE_TS))
+                        AS SECOND_TABLE
+               GROUP BY SECOND_TABLE.REPORT,
+                        SECOND_TABLE.TYPE_CD,
+                        SECOND_TABLE.RECEIPT_TYPE,
+                        SECOND_TABLE.CHILD_PROVIDER_NAME,
+                        SECOND_TABLE.CLIENT_PROVIDER_ID,
+                        SECOND_TABLE.SSN_TAX_ID,
+                        SECOND_TABLE.ACCOUNT,
+                        SECOND_TABLE.ACCOUNT_TYPE,
+                        SECOND_TABLE.RECEIPTS,
+                        SECOND_TABLE.BENEFIT_START_DT,
+                        SECOND_TABLE.BENEFIT_END_DT,
+                        SECOND_TABLE.RECEIVED_DT,
+                        SECOND_TABLE.TRANSACTION_DT,
+                        SECOND_TABLE.TRANSACTION_RECEIPT_ID,
+                        SECOND_TABLE.COUNTY_CD
+               UNION
+               SELECT THIRD_TABLE.REPORT,
+                      THIRD_TABLE.TYPE_CD,
+                      THIRD_TABLE.RECEIPT_TYPE,
+                      THIRD_TABLE.CHILD_PROVIDER_NAME,
+                      THIRD_TABLE.CLIENT_PROVIDER_ID,
+                      THIRD_TABLE.SSN_TAX_ID,
+                      THIRD_TABLE.ACCOUNT,
+                      THIRD_TABLE.ACCOUNT_TYPE,
+                      THIRD_TABLE.RECEIPTS,
+                      THIRD_TABLE.BENEFIT_START_DT,
+                      THIRD_TABLE.BENEFIT_END_DT,
+                      THIRD_TABLE.RECEIVED_DT,
+                      THIRD_TABLE.TRANSACTION_DT,
+                      THIRD_TABLE.TRANSACTION_RECEIPT_ID,
+                      THIRD_TABLE.COUNTY_CD
+                 FROM (SELECT 'DETAIL'::TEXT
+                                 AS REPORT,
+                              'CHILD DETAILS'::TEXT
+                                 AS TYPE_CD,
+                              F_PLVALUE (TRANSACTION_SOURCE_CD, 38)
+                                 AS RECEIPT_TYPE,
+                              (PERSON.LASTNAME || ', ' || PERSON.FIRSTNAME)
+                                 AS CHILD_PROVIDER_NAME,
+                              TB_CLIENT_ACCOUNT.CLIENT_ID
+                                 AS CLIENT_PROVIDER_ID,
+                              PERSON.SSNNO::BIGINT
+                                 AS SSN_TAX_ID,
+                              ACCOUNT_NO_TX
+                                 AS ACCOUNT,
+                              F_PLVALUE (ACCOUNT_TYPE_CD, 40)
+                                 AS ACCOUNT_TYPE,
+                              CASE
+                                 WHEN CREDIT_DEBIT_SW = 'D'
+                                 THEN
+                                    TRANSACTION_AMOUNT_NO * -1
+                                 ELSE
+                                    TRANSACTION_AMOUNT_NO
+                              END
+                                 AS RECEIPTS,
+                              TB_ACCOUNT_TRANSACTION.BENEFIT_START_DT
+                                 AS BENEFIT_START_DT,
+                              TB_ACCOUNT_TRANSACTION.BENEFIT_END_DT
+                                 AS BENEFIT_END_DT,
+                              CAST (NULL AS DATE)
+                                 AS RECEIVED_DT,
+                              TB_ACCOUNT_TRANSACTION.TRANSACTION_DT
+                                 AS TRANSACTION_DT,
+                              TRANSACTION_ID
+                                 AS TRANSACTION_RECEIPT_ID,
+                              (SELECT PRIMARY_COUNTY_CD
+                                FROM TB_STAFF
+                               WHERE     USER_ID =
+                                         TB_ACCOUNT_TRANSACTION.CREATE_USER_ID
+                                     AND DELETE_SW = 'N')
+                                 COUNTY_CD,
+                              DATE (TB_ACCOUNT_TRANSACTION.CREATE_TS)
+                                 CREATE_TS
+                         FROM TB_ACCOUNT_TRANSACTION
+                              JOIN TB_CLIENT_ACCOUNT
+                                 ON     TB_CLIENT_ACCOUNT.CLIENT_ACCOUNT_ID =
+                                        TB_ACCOUNT_TRANSACTION.CLIENT_ACCOUNT_ID
+                                    AND TB_CLIENT_ACCOUNT.DELETE_SW = 'N'
+                                    AND TB_ACCOUNT_TRANSACTION.DELETE_SW =
+                                        'N'
+                              JOIN PERSON
+                                 ON     TB_CLIENT_ACCOUNT.CLIENT_ID =
+                                        PERSON.CJAMSPID
+                                    AND TB_CLIENT_ACCOUNT.DELETE_SW = 'N'
+                        WHERE     DATE (TB_ACCOUNT_TRANSACTION.CREATE_TS) =
+                                  CAST (ASON_DATE AS DATE)
+                              AND (   (TRANSACTION_TYPE_CD IN ('589'))
+                                   OR (    TRANSACTION_TYPE_CD = '588'
+                                       AND ADJUSTMENT_APPROVAL_STATUS_CD =
+                                           '3047'))) AS THIRD_TABLE
+               UNION ALL
+               SELECT FOURTH_TABLE.REPORT,
+                      FOURTH_TABLE.TYPE_CD,
+                      FOURTH_TABLE.RECEIPT_TYPE,
+                      FOURTH_TABLE.CHILD_PROVIDER_NAME,
+                      FOURTH_TABLE.CLIENT_PROVIDER_ID,
+                      FOURTH_TABLE.SSN_TAX_ID,
+                      FOURTH_TABLE.ACCOUNT,
+                      FOURTH_TABLE.ACCOUNT_TYPE,
+                      FOURTH_TABLE.RECEIPTS,
+                      FOURTH_TABLE.BENEFIT_START_DT,
+                      FOURTH_TABLE.BENEFIT_END_DT,
+                      FOURTH_TABLE.RECEIVED_DT,
+                      FOURTH_TABLE.TRANSACTION_DT,
+                      FOURTH_TABLE.TRANSACTION_RECEIPT_ID,
+                      FOURTH_TABLE.COUNTY_CD
+                 FROM (SELECT 'DETAIL'::TEXT
+                                 AS REPORT,
+                              'PROVIDER DETAILS'::TEXT
+                                 AS TYPE_CD,
+                              'RECOVERY'::TEXT
+                                 AS RECEIPT_TYPE,
+                              (CASE
+                                  WHEN LENGTH (RTRIM (PROVIDER_NM)) > 0
+                                  THEN
+                                     PROVIDER_NM
+                                  ELSE
+                                     (   PROVIDER_LAST_NM
+                                      || ', '
+                                      || PROVIDER_FIRST_NM)
+                               END)
+                                 AS CHILD_PROVIDER_NAME,
+                              TB_PAYMENT_RECEIPT.PROVIDER_ID
+                                 AS CLIENT_PROVIDER_ID,
+                              TAX_ID_NO
+                                 AS SSN_TAX_ID,
+                              CAST (NULL AS CHAR)
+                                 AS ACCOUNT,
+                              CAST (NULL AS CHAR)
+                                 AS ACCOUNT_TYPE,
+                              PAYMENT_AMOUNT_NO
+                                 AS RECEIPTS,
+                              RECEIPT_DT
+                                 AS RECEIVED_DT,
+                              CAST (NULL AS DATE)
+                                 AS BENEFIT_START_DT,
+                              CAST (NULL AS DATE)
+                                 AS BENEFIT_END_DT,
+                              DATE (TB_PAYMENT_RECEIPT.CREATE_TS)
+                                 AS TRANSACTION_DT,
+                              RECEIPT_ID
+                                 AS TRANSACTION_RECEIPT_ID,
+                              (SELECT PRIMARY_COUNTY_CD
+                                FROM TB_STAFF
+                               WHERE     USER_ID =
+                                         TB_PAYMENT_RECEIPT.CREATE_USER_ID
+                                     AND DELETE_SW = 'N')
+                                 COUNTY_CD,
+                              DATE (TB_PAYMENT_RECEIPT.CREATE_TS)
+                                 CREATE_TS
+                         FROM TB_PAYMENT_RECEIPT
+                              LEFT JOIN TB_PROVIDER -- EVEN IF PROVIDER DELETED LATER IT WILL POPULATE THE ENTRY ON THE REPORT--
+                                 ON     TB_PAYMENT_RECEIPT.PROVIDER_ID =
+                                        TB_PROVIDER.PROVIDER_ID
+                                    AND TB_PROVIDER.DELETE_SW = 'N'
+                        WHERE     TB_PAYMENT_RECEIPT.DELETE_SW = 'N'
+                              AND DATE (TB_PAYMENT_RECEIPT.CREATE_TS) =
+                                  CAST (ASON_DATE AS DATE)
+                              AND (   (    (APPROVAL_STATUS_CD IS NULL)
+                                       AND PAYMENT_METHOD_CD <> '16')
+                                   OR (    PAYMENT_METHOD_CD = '16'
+                                       AND APPROVAL_STATUS_CD = '3047')))
+                      AS FOURTH_TABLE) AA);
+END;
+$function$
+

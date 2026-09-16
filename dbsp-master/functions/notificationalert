@@ -1,0 +1,83 @@
+CREATE OR REPLACE FUNCTION notificationalert()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_notifications record;
+v_notifystatus character varying;
+v_duedate timestamp without time zone;
+v_msg character varying;
+
+BEGIN 
+
+FOR v_notifications IN
+
+  SELECT distinct up.securityusersid as securityusersid ,sc.servicerequesttypeconfigid,
+  ir.intakeserviceid as intakeserviceid, 
+  EXTRACT(day from now()::timestamp - ir.insertedon)::int as  differday, 
+  sc.duedateoffset as duedateoffset,
+  ir.servicerequestnumber as servicerequestnumber,
+  sca.alerttimeinterval,ir.insertedon as createddate
+    FROM userprofile up 
+    JOIN teammemberassignment  tma on up.securityusersid = tma.securityusersid
+    AND tma.activeflag = 1 and up.activeflag = 1
+    JOIN areateammemberservicerequest asr on tma.teammemberid = asr.teammemberid
+    AND  asr.activeflag = 1
+    JOIN intakeservicerequest ir on asr.intakeserviceid = ir.intakeserviceid
+    AND ir.activeflag = 1
+    JOIN intakeserreqstatustype isr on ir.intakeserreqstatustypeid = isr.intakeserreqstatustypeid
+ AND isr.activeflag = 1
+    JOIN servicerequesttypeconfig sc on ir.intakeservreqtypeid = sc.intakeservreqtypeid
+    AND sc.activeflag = 1
+    AND ir.intakeservicerequestclassid  = sc.servicerequestsubtypeid 
+    JOIN servicerequesttypeconfigalert  sca on sc.servicerequesttypeconfigid = sca.servicerequesttypeconfigid 
+    AND sca.activeflag = 1 
+ JOIN alerteventtype ae on sca.alerteventkey = ae.alerteventkey and ae.activeflag = 1
+    WHERE isr.intakeserreqstatustypekey  NOT IN ('Closed','Review')
+       AND ae.alerteventkey = 'NotCompleted'
+    
+     
+LOOP
+  
+  
+   
+  IF (v_notifications.duedateoffset - v_notifications.differday ) <  v_notifications.alerttimeinterval  THEN
+  
+  
+ 
+     IF (v_notifications.duedateoffset - v_notifications.differday ) > 0  THEN
+     
+   SELECT send_notification into v_notifystatus FROM 
+     send_notification(v_notifications.securityusersid,
+        v_notifications.securityusersid,
+        v_notifications.securityusersid, 
+        'System',
+        'Normal',
+         ('Case' ||' '|| v_notifications.servicerequestnumber ||' '||' is due in'||' '||v_notifications.duedateoffset - v_notifications.differday || ' '|| 'day(s)'):: character varying, 
+         ('Case' ||' '|| v_notifications.servicerequestnumber ||' '||' is due in'||' '||v_notifications.duedateoffset - v_notifications.differday|| ' '|| 'day(s) and due on '||' '||v_notifications.createddate::date + coalesce(v_notifications.duedateoffset ,0) ::int ):: text,
+                v_notifications.intakeserviceid:: character varying);
+           END IF;                     
+          
+   IF (v_notifications.duedateoffset - v_notifications.differday ) < 0  THEN
+ 
+  SELECT send_notification into v_notifystatus FROM 
+     send_notification(v_notifications.securityusersid,
+        v_notifications.securityusersid,
+        v_notifications.securityusersid, 
+        'System',
+        'Normal',
+         ('Case' ||' '|| v_notifications.servicerequestnumber ||' '|| 'is' ||' '|| -(v_notifications.duedateoffset - v_notifications.differday)|| ' ' ||'day(s) overdue'):: character varying, 
+         ('Case' ||' '|| v_notifications.servicerequestnumber ||' '|| 'is' ||' '|| -(v_notifications.duedateoffset - v_notifications.differday)|| ' '||'day(s) overdue and overdue on ' ||' '||v_notifications.createddate::date + coalesce(v_notifications.duedateoffset ,0) ::int):: text, 
+        v_notifications.intakeserviceid:: character varying);
+
+           END IF;                                                                                          
+     END IF;
+
+END LOOP;
+RETURN
+  'Success';
+END;
+
+$function$
+

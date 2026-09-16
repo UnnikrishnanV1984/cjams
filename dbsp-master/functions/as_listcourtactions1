@@ -1,0 +1,167 @@
+CREATE OR REPLACE FUNCTION as_listcourtactions1(intakenumber character varying, pagenumber bigint, pagesize bigint, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid[], intakeservicerequestcourthearingid uuid, intakeservicerequestcourtactionid uuid, createdisposition boolean, hearingtypekey character varying, hearingtype character varying, hearingdatetime timestamp without time zone, hearingstatustypekey character varying, hearingstatustype character varying, createddate timestamp without time zone, legalcounselname character varying, magistratename character varying, workername character varying, courtorderdatetime timestamp without time zone, conditiontypecompletiondatetime timestamp without time zone, terminationdatetime timestamp without time zone, adjudicationdecision character varying, adjudicationdatetime timestamp without time zone, courthearingstatustypekey character varying, associatedattorneys character varying, transferpetitionid character varying, transfernotes text, otherhearingtypenotes text, othercourtactiontypenotes text, courtactiontype json, courtordertype json, conditiontype json, offense json, petitions json, saocountyid character varying, saotransfernotes character varying, issendtoccu boolean, restitutiondocpath character varying, conditiontypedescription text, firstinfraction boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_pageoffset int;
+    v_pagenumber int;
+ v_intakenumber character varying;
+ 
+BEGIN
+
+ v_pagenumber := pagenumber-1;
+    v_pageoffset = v_pagenumber * pagesize;
+ v_intakenumber := intakenumber;
+
+RETURN QUERY
+select count(1) over(), 
+(select array_agg(isr.intakeserviceid,isr.servicerequestnumber) from intakeservicerequest ISR where ISR.intakenumber 
+=ch.intakenumber and ISR.activeflag =1 )  , 
+ch.intakeservicerequestcourthearingid,ca.intakeservicerequestcourtactionid,ca.isdispositioncreated, ht.hearingtypekey, ht.description as hearingtype, 
+ch.hearingdatetime, hst.hearingstatustypekey, hst.description as hearingstatustype, ch.insertedon as createddate
+, ca.legalcounselname, ca.magistratename, ca.workername, ca.courtorderdatetime
+, ca.conditiontypecompletiondatetime, ca.terminationdatetime
+, ad.description as adjudicationdecision, ca.adjudicationdatetime,ch.courthearingstatustypekey,ch.associatedattorneys
+,ch.transferpetitionid,ch.transfernotes,ch.otherhearingtypenotes,ca.othercourtactiontypenotes
+, (select json_agg(x) from (
+ select cat.courtactiontypekey, cat.description,isrcat.intakeservicerequestcourtactiontypeid
+ from intakeservicerequestcourtactiontype isrcat 
+ join courtactiontype cat on cat.courtactiontypekey = isrcat.courtactiontypekey
+ where isrcat.intakeservicerequestcourtactionid = ca.intakeservicerequestcourtactionid and 
+ isrcat.activeflag=1
+ ) as  x) as courtactiontype
+, (select json_agg(x) from (
+ select cott.courtordertypekey, cott.description,cotc.intakeservicerequestcourtordertypeconfigid
+ from intakeservicerequestcourtordertypeconfig cotc
+ join courtordertype cott on cott.courtordertypekey = cotc.courtordertypekey 
+ where cotc.intakeservicerequestcourtactionid = ca.intakeservicerequestcourtactionid  and 
+ cotc.activeflag=1
+ ) as  x) as courtordertype
+, (select json_agg(x) from (
+ select cndt.conditiontypekey, cndt.description,cctc.conditiontypedescription,cctc.completiondate,cctc.intakeservicerequestcourtconditiontypeconfigid
+ from intakeservicerequestcourtconditiontypeconfig cctc 
+ join conditiontype cndt on cndt.conditiontypekey = cctc.conditiontypekey
+ where cctc.intakeservicerequestcourtactionid = ca.intakeservicerequestcourtactionid and 
+ cctc.activeflag=1
+ ) as  x) as conditiontype
+, (select json_agg(x) from (
+ select a.allegationid, a.name,caac.courtactionallegationconfigid
+ from courtactionallegationconfig caac 
+ join allegation a on a.allegationid = caac.allegationid
+ where --caac.intakeservicerequestcourtactionid = ca.intakeservicerequestcourtactionid and 
+ caac.activeflag=1
+ ) as  x) as offense
+ 
+, (select json_agg(x) from (
+select isrp.intakeservicerequestpetitionid, isrp.petitionid,isrp.adultpetitionid, isrp.insertedon, (select json_agg(x) from (
+ select isre.intakeservicerequestevaluationid, isre.complaintid, isre.offensedate,isre.complainttype,isrp.intakeservicerequestpetitionid,
+ (select json_agg(x) from (
+  select p.personid as personid, p.firstname, p.lastname from intakeservreqevalactorconfig isreac
+   left join intakeservicerequestactor isra on isra.intakeservicerequestactorid = isreac.intakeservicerequestactorid 
+   left join actor ac on isra.actorid = ac.actorid
+   left join person p on p.personid = ac.personid
+   where isreac.intakeservicerequestevaluationid = isre.intakeservicerequestevaluationid
+   and isreac.activeflag = 1 and isra.activeflag = 1 and ac.activeflag = 1 and p.activeflag = 1
+  ) as x) as victims,
+  (select json_agg(x) from (
+--  select distinct a.allegationid, a."name",ADJ.description as adjudicateddecision,INSAC.adjudicateddecisiontypekey,isreg.intakeservicerequestevaluationconfigid,isreg.offenceaddedtype,isreg.activeflag  from intakeservicerequestevaluationconfig isreg 
+--   left join allegation a on a.allegationid = isreg.allegationid
+--   left join intakeservicerequestevaluationadjudicateconfig INSAC on INSAC.intakeservicerequestevaluationconfigid =isreg.intakeservicerequestevaluationconfigid and INSAC.activeflag=1
+--   left join adjudicateddecisiontype ADJ on ADJ.adjudicateddecisiontypekey=INSAC.adjudicateddecisiontypekey and ADJ.activeflag=1
+--   where isreg.intakeservicerequestevaluationid = isre.intakeservicerequestevaluationid
+--   and a.activeflag = 1
+
+  select  a.allegationid, a."name",ADJ.description as adjudicateddecision,CAC.adjudicateddecisiontypekey,CAC.courtactionallegationconfigid,isreg.intakeservicerequestevaluationconfigid,
+ isreg.offenceaddedtype,isreg.activeflag  
+ , (select json_agg(x) from (
+ select cat.courtactiontypekey, cat.description,cat.courtactiontypeid,cat.hearingtypekey,cat.effectivedate,cat.activeflag,isrcat.courtactionallegationconfigid,isrcat.intakeservicerequestcourtactiontypeid
+ from intakeservicerequestcourtactiontype isrcat 
+ join courtactiontype cat on cat.courtactiontypekey = isrcat.courtactiontypekey
+ join courtactionallegationconfig cc on cc.courtactionallegationconfigid=isrcat.courtactionallegationconfigid
+ where cc.courtactionallegationconfigid = CAC.courtactionallegationconfigid and 
+ --cotc.intakeservicerequestcourtactionid = ca.intakeservicerequestcourtactionid  and 
+ isrcat.activeflag =1
+ ) as  x) as courtactiontype
+    , (select json_agg(x) from (
+ select cott.courtordertypekey, cott.description,cott.courtordertypeid,cotc.courtactionallegationconfigid,cotc.intakeservicerequestcourtordertypeconfigid
+ from intakeservicerequestcourtordertypeconfig cotc
+ join courtordertype cott on cott.courtordertypekey = cotc.courtordertypekey 
+ where cotc.courtactionallegationconfigid = CAC.courtactionallegationconfigid and 
+ cotc.activeflag=1
+ ) as  x) as courtordertype
+ 
+ , (select json_agg(x) from (
+ select cndt.conditiontypekey, cndt.description as conditiontype,cctc.conditiontypedescription ,cctc.completiondate,cctc.courtactionallegationconfigid,cctc.intakeservicerequestcourtconditiontypeconfigid
+ from intakeservicerequestcourtconditiontypeconfig cctc 
+ join conditiontype cndt on cndt.conditiontypekey = cctc.conditiontypekey
+ where cctc.courtactionallegationconfigid = CAC.courtactionallegationconfigid and 
+ cctc.activeflag=1
+ ) as x ) as conditiontype
+  
+ from intakeservicerequestevaluationconfig isreg 
+   join allegation a on a.allegationid = isreg.allegationid
+   left join courtactionallegationconfig CAC on CAC.intakeservicerequestevaluationconfigid =isreg.intakeservicerequestevaluationconfigid and CAC.activeflag=1
+   and CAC.intakeservicerequestcourtactionid=ca.intakeservicerequestcourtactionid 
+   left join adjudicateddecisiontype ADJ on ADJ.adjudicateddecisiontypekey=CAC.adjudicateddecisiontypekey 
+   and ADJ.activeflag=1
+  
+   where isreg.intakeservicerequestevaluationid = isre.intakeservicerequestevaluationid and
+   --CAC.intakeservicerequestcourtactionid=ca.intakeservicerequestcourtactionid and 
+    a.activeflag = 1 --and CAC.activeflag=1
+    group by  a.allegationid, a."name",ADJ.description ,CAC.adjudicateddecisiontypekey,isreg.intakeservicerequestevaluationconfigid,
+ isreg.offenceaddedtype,isreg.activeflag ,CAC.courtactionallegationconfigid
+  ) as x) as offences
+ from (
+  
+  select INE.intakeservicerequestevaluationid,INE.complaintid,INE.offensedate,INE.intakenumber,
+  INE.activeflag,'00000000-0000-0000-0000-000000000000' ::uuid as intakeservicerequestpetitionid,'Intake'  as complainttype from intakeservicerequestevaluation INE 
+  union 
+  select INEE.intakeservicerequestevaluationid,INEE.complaintid,INEE.offensedate,INEE.intakenumber,
+  INEE.activeflag,APC.intakeservicerequestpetitionid,'Associate' as complainttype from associatedpetitionsconfig APC
+  join  intakeservicerequestevaluation INEE on INEE.intakeservicerequestevaluationid = APC.associatedevalfieldid 
+  and APC.activeflag=1  and APC.intakeservicerequestpetitionid=isrp.intakeservicerequestpetitionid
+  
+  ) isre 
+  left join intakeservreqevalpetitionconfig isrepc  on  
+  isre.intakeservicerequestevaluationid = isrepc.intakeservicerequestevaluationid and isrepc.activeflag = 1
+  where (isrepc.intakeservicerequestpetitionid = isrp.intakeservicerequestpetitionid or
+  isre.intakeservicerequestpetitionid=isrp.intakeservicerequestpetitionid)
+   and isre.activeflag = 1
+) as x) as complaints from 
+intakeservreqpetitionhearingconfig isrphc join intakeservicerequestpetition isrp
+ on isrp.intakeservicerequestpetitionid = isrphc.intakeservicerequestpetitionid
+where isrphc.intakeservicerequestcourthearingid = ch.intakeservicerequestcourthearingid
+and isrphc.activeflag = 1 and isrp.activeflag = 1
+order by isrp.insertedon desc
+) as x) as petitions, ca.saocountyid,ca.saotransfernotes
+, ca.issendtoccu, ca.restitutiondocpath, ca.conditiontypedescription,ca.firstinfraction
+ from intakeservicerequestcourthearing ch 
+left join hearingtype ht on ht.hearingtypekey = ch.hearingtypekey
+left join hearingstatustype hst on hst.hearingstatustypekey = ch.hearingstatustypekey
+left join intakeservicerequestcourtaction ca on ca.intakeservicerequestcourthearingid = ch.intakeservicerequestcourthearingid
+left join adjudicateddecisiontype ad on ad.adjudicateddecisiontypekey = ca.adjudicationdecision
+--left join intakeservicerequest insr on insr.intakenumber=v_intakenumber and insr.activeflag=1
+where ch.intakenumber = 'I201900256122' and 
+ch.activeflag = 1
+/* ORDER BY    
+ ( CASE sortorder when 'asc' then 
+  CASE sortcolumn 
+  when 'createddate' then 
+          cast( ch.insertedon as character varying) 
+  when 'petitionid' then 
+          cast( isrp.petitionid as character varying) 
+  else cast( isrp.insertedon as character varying) end end) asc,
+ ( CASE sortorder when 'desc' then 
+  CASE sortcolumn 
+  when 'createddate' then 
+          cast( ch.insertedon as character varying) 
+  when 'petitionid' then 
+          cast( isrp.petitionid as character varying) 
+  else cast( isrp.insertedon as character varying) end end) desc */
+ORDER BY ch.insertedon desc
+LIMIT pagesize OFFSET v_pageoffset;
+END;
+
+$function$
+

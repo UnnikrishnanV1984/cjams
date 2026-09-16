@@ -1,0 +1,14 @@
+/*
+   Issue Description: CDM-26031
+   Category/ Module  : servicelog 
+   Root cause: userwants to close the provider service by adding end date and reason for ending
+   Pull request# for code fix:5630
+   Reason why no related code fix: 
+   Status of the code fix if already submitted and expected prod fix date: 
+    Need to do data fix
+*/
+
+
+update cjams.tb_service_log set start_dt='2022-06-01', update_ts=now(), update_user_id='CDM-26031'
+
+where service_log_id='2062547';

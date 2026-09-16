@@ -1,0 +1,324 @@
+CREATE OR REPLACE FUNCTION cjams.update_childremoval(v_intakeservreqchildremovalid uuid, v_input json, user_id uuid)
+ RETURNS TABLE(message character varying, code integer)
+ LANGUAGE plpgsql
+AS $function$ 
+ ------------------------------------------------------------------------------
+ --Revision(s)
+ --01/06/2025 Smitha Somasekharan -Modifications for luggage question update userstory- (CIDM-10008-b-210234)
+ --07/22/2025-- Umasankar Raavi- Added column 'showcontactpage' to track save from GoTo Contact button
+ -------------------------------------------------------------------------------------
+DECLARE 
+
+	v_intakeservreqchildremovalhistoryid uuid;
+	v_intakeservicerequestactorid uuid := (v_input ->> 'intakeservicerequestactorid')::uuid;
+    v_rmvdfrmisractorid uuid := (v_input ->> 'rmvdfrmisractorid')::uuid; 
+    v_personid uuid := (v_input ->> 'personid')::uuid;
+    v_agencytypekey character varying := (v_input ->> 'agencytypekey')::character varying;
+    v_fathername character varying := (v_input ->> 'fathername')::character varying;
+    v_mothername character varying := (v_input ->> 'mothername')::character varying;
+    v_rmvdfrmpersonname character varying := (v_input ->> 'rmvdfrmpersonname')::character varying;
+    v_removaladd1 character varying := (v_input ->> 'removaladd1')::character varying;
+    v_removaladd2 character varying := (v_input ->> 'removaladd2')::character varying;
+    v_removalzip character varying := (v_input ->> 'removalzip')::character varying;
+    v_removalstatecd character varying := (v_input ->> 'removalstatecd')::character varying;
+    v_removalcity character varying := (v_input ->> 'removalcity')::character varying;
+    v_removaldate timestamp := (v_input ->> 'removaldate')::timestamp;
+    v_removaltime timestamp := (v_input ->> 'removaltime')::timestamp;
+    v_familystructuretypekey character varying := (v_input ->> 'familystructuretypekey')::character varying;
+    v_primarycaregiverid integer := (v_input ->> 'primarycaregiverid')::integer ;
+    v_vpabegindate date:= (v_input ->> 'vpabegindate')::date;
+    v_agencysigneddate timestamp := (v_input ->> 'agencysigneddate')::timestamp;
+    v_isbothparentssigned integer := (v_input ->> 'isbothparentssigned')::integer;
+    v_reasonableeffortsmade character varying := (v_input ->> 'reasonableeffortsmade')::character varying;
+    v_childfactorsentry character varying := (v_input ->> 'childfactorsentry')::character varying;
+    v_removaltypekey character varying := (v_input ->> 'removaltypekey')::character varying;
+	v_environmentatremovalkey character varying := (v_input ->> 'environmentatremovalkey')::character varying;
+    v_primarycaregiveractorid uuid := (v_input ->> 'primarycaregiveractorid')::uuid;
+    v_seccaregiveractorid uuid := (v_input ->> 'seccaregiveractorid')::uuid;
+    v_seccaregiveradd character varying := (v_input ->> 'seccaregiveradd')::character varying;
+    v_primarycaregiveradd character varying := (v_input ->> 'primarycaregiveradd')::character varying;
+    v_isverifiedreporteradd integer := (v_input ->> 'isverifiedreporteradd')::integer;
+    v_isverifiedcaregiver1add integer := (v_input ->> 'isverifiedcaregiver1add')::integer;
+    v_isverifiedcaregiver2add integer := (v_input ->> 'isverifiedcaregiver2add')::integer;
+    v_relativeactorid uuid := (v_input ->> 'relativeactorid')::uuid;
+    v_isdisability integer := (v_input ->> 'isdisability')::integer;
+    v_servicecaseid uuid := (v_input ->> 'servicecaseid')::uuid;
+    v_vpaenddate date:= (v_input ->> 'vpaenddate')::date;
+    v_vpayouthsigneddate date := (v_input ->> 'vpayouthsigneddate')::date;
+    v_vpaparentssigneddate date := (v_input ->> 'vpaparentssigneddate')::date;
+    v_parent2signeddate date:= (v_input ->> 'parent2signeddate')::date;
+    v_comments character varying := (v_input ->> 'comments')::character varying;
+    v_specifiedrelativedatechildlastlivedwith date:= (v_input ->> 'specifiedrelativedatechildlastlivedwith')::date;
+    v_specifiedrelativename character varying := (v_input ->> 'specifiedrelativename')::character varying;
+	v_showcontactpage boolean := (v_input ->> 'showcontactpage')::boolean;
+    v_parent2comments character varying := (v_input ->> 'parent2comments')::character varying;
+    v_returndate timestamp := (v_input ->> 'returndate')::timestamp;
+    v_returntime timestamp := (v_input ->> 'returntime')::timestamp;
+    v_childphysicalremovaladdress character varying := (v_input ->> 'childphysicalremovaladdress')::character varying;
+    v_ischildphysicalremovaladdressverified integer := (v_input ->> 'ischildphysicalremovaladdressverified')::integer;
+    v_isuploadedmanually integer := (v_input ->> 'isuploadedmanually')::integer;
+    v_isshelterauthcompleted integer := (v_input ->> 'isshelterauthcompleted')::integer;
+    v_ischildaddressasprimaryaddress integer := (v_input ->> 'ischildaddressasprimaryaddress')::integer;
+    v_removalreason json := (v_input ->> 'removalreason')::json;
+	v_caregiverreason json := (v_input ->> 'caregiverreason')::json;
+	v_reasonableefforts json := (v_input ->> 'reasonableefforts')::json;
+	v_notmakingefforts json := (v_input ->> 'notmakingefforts')::json;
+	v_exitreason json := (v_input ->> 'exitreason')::json;
+    v_justification character varying := (v_input ->> 'justification')::character varying;
+	v_childremovalluggage boolean := (v_input ->> 'childremovalluggage')::boolean;
+	v_luggageprovided boolean := (v_input ->> 'luggageprovided')::boolean;
+	v_luggagecomments character varying := (v_input ->> 'luggagecomments')::character varying;
+	v_placementdisposableortrashbag boolean := (v_input ->> 'placementdisposableortrashbag')::boolean;
+	v_luggageupdatedby character varying := (v_input ->> 'luggageupdatedby')::character varying;
+	v_luggageupdatedon timestamp =(v_input ->> 'luggageupdatedon'):: timestamp;
+
+	v_transferagency character varying := (v_input ->> 'transferagency')::character varying;
+	v_otherpublicagency character varying := (v_input ->> 'otherpublicagency')::character varying;
+	v_locationofadoption character varying := (v_input ->> 'locationofadoption')::character varying;
+
+    -- Exit Information
+    v_removalexitreason character varying := (v_input ->> 'removalexitreason')::character varying;
+    v_exitdate timestamp := (v_input ->> 'exitdate')::timestamp;
+    v_returntransts date := (v_input ->> 'returntransts')::date;
+    
+    v_parent1id bigint := (v_input ->> 'parent1id')::bigint;
+    v_parent2id bigint := (v_input ->> 'parent2id')::bigint;
+    v_guardianid bigint := (v_input ->> 'guardianid')::bigint;
+    v_vpaguardiansigneddate date := (v_input ->> 'vpaguardiansigneddate')::date;
+    v_volrelinquishment integer := (v_input ->> 'volrelinquishment')::integer;
+    v_modifiedjson json := (v_input ->> 'modifiedjson')::json;
+    v_isreviewsubmit integer := (v_input ->> 'isreviewsubmit')::integer;
+    v_record record;
+BEGIN
+		
+		IF(coalesce (v_isreviewsubmit, 0) = 1) THEN -- Submit for approval
+			RAISE NOTICE 'check 21';
+			-- Initiate trigger for History table
+			UPDATE intakeservreqchildremoval 
+			SET actualdata = v_modifiedjson,
+				updatedby = $3,
+				updatedon = now()
+			WHERE intakeservreqchildremovalid = $1;
+			
+			IF(v_exitdate IS NOT NULL) THEN -- Submitting for Exit
+				 -- Adding a new row in Revision Table for Exit
+				--  PERFORM FROM childremovalrevisionupdate($1, v_exitdate, v_removalexitreason, v_returntransts::timestamp, v_transferagency, v_otherpublicagency, v_locationofadoption);
+				 PERFORM FROM childremovalrevisionupdate($1, v_exitdate, v_removalexitreason, v_returntransts::timestamp, v_transferagency, v_otherpublicagency, v_locationofadoption,v_childremovalluggage ,v_luggageprovided,v_luggagecomments,v_placementdisposableortrashbag,v_luggageupdatedby,v_luggageupdatedon);
+			
+			ELSE -- Submitting for removal start date
+				
+				-- Adding a new row in Revision Table for Removal start date	
+				INSERT INTO intakeservreqchildremoval_history 
+				SELECT gen_random_uuid ()
+				 		, json_build_object('justification', v_justification)::json
+				  		, 'REVISION'::character varying
+				        , *
+				FROM intakeservreqchildremoval 
+				WHERE intakeservreqchildremovalid = $1
+				RETURNING intakeservreqchildremovalhistoryid INTO v_intakeservreqchildremovalhistoryid;
+				
+				RAISE NOTICE 'v_comments%',v_comments;
+			
+				UPDATE intakeservreqchildremoval_history 
+				SET intakeservicerequestactorid  = v_intakeservicerequestactorid, 
+					rmvdfrmisractorid = v_rmvdfrmisractorid,
+					personid = v_personid,
+					agencytypekey = v_agencytypekey,
+					fathername = v_fathername,
+					mothername = v_mothername,
+					rmvdfrmpersonname = v_rmvdfrmpersonname,
+					removaladd1 = v_removaladd1,
+					removaladd2 = v_removaladd2,
+					removalzip = v_removalzip,
+					removalstatecd = v_removalstatecd,
+					removalcity = v_removalcity,
+					removaldate = v_removaldate,
+					removaltime = v_removaltime,
+					familystructuretypekey = v_familystructuretypekey,
+					primarycaregiverid = v_primarycaregiverid,
+					vpabegindate = v_vpabegindate,
+					agencysigneddate = v_agencysigneddate,
+					isbothparentssigned = v_isbothparentssigned,
+					reasonableeffortsmade = v_reasonableeffortsmade,
+					childfactorsentry = v_childfactorsentry,
+					removaltypekey = v_removaltypekey,
+					environmentatremovalkey = v_environmentatremovalkey,
+					primarycaregiveractorid = v_primarycaregiveractorid,
+					seccaregiveractorid = v_seccaregiveractorid,
+					seccaregiveradd = v_seccaregiveradd,
+					primarycaregiveradd = v_primarycaregiveradd,
+					isverifiedreporteradd = v_isverifiedreporteradd,
+					isverifiedcaregiver1add = v_isverifiedcaregiver1add,
+					isverifiedcaregiver2add = v_isverifiedcaregiver2add,
+					relativeactorid = v_relativeactorid,
+					isdisability = v_isdisability,
+					servicecaseid = v_servicecaseid,
+					vpaenddate = v_vpaenddate,
+					vpayouthsigneddate = v_vpayouthsigneddate,
+					vpaparentssigneddate = v_vpaparentssigneddate,
+					parent2signeddate = v_parent2signeddate,
+					"comments" = v_comments,
+					specifiedrelativedatechildlastlivedwith = v_specifiedrelativedatechildlastlivedwith,
+					specifiedrelativename = v_specifiedrelativename,
+					showcontactpage =v_showcontactpage,
+					parent2comments = v_parent2comments,
+					insertedby = $3,
+					returntime = v_returntime,
+					returndate = v_returndate,
+					childphysicalremovaladdress = v_childphysicalremovaladdress,
+					ischildphysicalremovaladdressverified = v_ischildphysicalremovaladdressverified,
+					isuploadedmanually = v_isuploadedmanually,
+					isshelterauthcompleted = v_isshelterauthcompleted,
+					ischildaddressasprimaryaddress  = v_ischildaddressasprimaryaddress ,
+					parent1id  = v_parent1id ,
+					parent2id  = v_parent2id ,
+					guardianid = v_guardianid,
+					vpaguardiansigneddate = v_vpaguardiansigneddate,
+					volrelinquishment = v_volrelinquishment,
+					actualdata = v_modifiedjson,
+					transferagency = v_transferagency,
+					otherpublicagency = v_otherpublicagency,
+					locationofadoption = v_locationofadoption,
+					updatedby = $3,
+					updatedon = now(),
+					removalcircumstances = (v_input ->> 'removalcircumstances')::json,
+					justification = v_justification,
+					childremovalluggage=v_childremovalluggage ,
+	                luggageprovided =v_luggageprovided ,
+	                luggagecomments =v_luggagecomments ,	
+                    placementdisposableortrashbag= v_placementdisposableortrashbag,
+					luggageupdatedby =v_luggageupdatedby,
+					luggageupdatedon =v_luggageupdatedon
+				 WHERE intakeservreqchildremovalhistoryid = v_intakeservreqchildremovalhistoryid;
+			
+			END IF;
+
+		ELSE -- Saving as Draft
+				
+			UPDATE intakeservreqchildremoval 
+			SET intakeservicerequestactorid  = v_intakeservicerequestactorid, 
+				rmvdfrmisractorid = v_rmvdfrmisractorid,
+				personid = v_personid,
+				agencytypekey = v_agencytypekey,
+				fathername = v_fathername,
+				mothername = v_mothername,
+				rmvdfrmpersonname = v_rmvdfrmpersonname,
+				removaladd1 = v_removaladd1,
+				removaladd2 = v_removaladd2,
+				removalzip = v_removalzip,
+				removalstatecd = v_removalstatecd,
+				removalcity = v_removalcity,
+				removaldate = v_removaldate,
+				removaltime = v_removaltime,
+				familystructuretypekey = v_familystructuretypekey,
+				primarycaregiverid = v_primarycaregiverid,
+				vpabegindate = v_vpabegindate,
+				agencysigneddate = v_agencysigneddate,
+				isbothparentssigned = v_isbothparentssigned,
+				reasonableeffortsmade = v_reasonableeffortsmade,
+				childfactorsentry = v_childfactorsentry,
+				removaltypekey = v_removaltypekey,
+				environmentatremovalkey = v_environmentatremovalkey,
+				primarycaregiveractorid = v_primarycaregiveractorid,
+				seccaregiveractorid = v_seccaregiveractorid,
+				seccaregiveradd = v_seccaregiveradd,
+				primarycaregiveradd = v_primarycaregiveradd,
+				isverifiedreporteradd = v_isverifiedreporteradd,
+				isverifiedcaregiver1add = v_isverifiedcaregiver1add,
+				isverifiedcaregiver2add = v_isverifiedcaregiver2add,
+				relativeactorid = v_relativeactorid,
+				isdisability = v_isdisability,
+				servicecaseid = v_servicecaseid,
+				vpaenddate = v_vpaenddate,
+				vpayouthsigneddate = v_vpayouthsigneddate,
+				vpaparentssigneddate = v_vpaparentssigneddate,
+				parent2signeddate = v_parent2signeddate,
+				comments = v_comments,
+				specifiedrelativedatechildlastlivedwith = v_specifiedrelativedatechildlastlivedwith,
+				specifiedrelativename = v_specifiedrelativename,
+				showcontactpage =v_showcontactpage,
+				parent2comments = v_parent2comments,
+				insertedby = $3,
+				returntime = v_returntime,
+				returndate = v_returndate,
+				childphysicalremovaladdress = v_childphysicalremovaladdress,
+				ischildphysicalremovaladdressverified = v_ischildphysicalremovaladdressverified,
+				isuploadedmanually = v_isuploadedmanually,
+				isshelterauthcompleted = v_isshelterauthcompleted,
+				ischildaddressasprimaryaddress  = v_ischildaddressasprimaryaddress ,
+				parent1id  = v_parent1id ,
+				parent2id  = v_parent2id ,
+				guardianid = v_guardianid,
+				vpaguardiansigneddate = v_vpaguardiansigneddate,
+				volrelinquishment = v_volrelinquishment,
+				actualdata = v_modifiedjson,
+				transferagency = v_transferagency,
+				otherpublicagency = v_otherpublicagency,
+				locationofadoption = v_locationofadoption,
+				justification = v_justification,
+				childremovalluggage=v_childremovalluggage ,
+	            luggageprovided =v_luggageprovided ,
+	            luggagecomments =v_luggagecomments ,	
+                placementdisposableortrashbag= v_placementdisposableortrashbag,
+				luggageupdatedby =v_luggageupdatedby,
+				luggageupdatedon =v_luggageupdatedon,
+				updatedby = $3,
+				updatedon = now(),
+				removalcircumstances = (v_input ->> 'removalcircumstances')::json
+			WHERE intakeservreqchildremovalid = $1;
+		
+		END IF;
+		
+		-- Inactive Existing Removal Reason 
+		UPDATE intakeservreqchildremovalreason SET activeflag = 0 WHERE  intakeservreqchildremovalid = $1;
+		
+		-- Inactive Existing Removal Reason 
+		UPDATE caseplan1 SET activeflag = 0, updatedon= now(), updatedby= $3 WHERE  caseid = $1;
+		
+		-- Add new removal reason
+		IF((SELECT * FROM json_array_length(v_removalreason)) > 0) THEN
+			FOR v_record IN SELECT * FROM json_array_elements(v_removalreason)
+			LOOP
+				insert into intakeservreqchildremovalreason(intakeservreqchildremovalid, removalreasontypekey, inputtypekey, insertedby, updatedby)
+				values ($1, (v_record.value ->> 'removalreasontypekey')::character  varying, 'CHFE', $3, $3);
+			END LOOP;
+		END IF;
+    
+		IF((SELECT * FROM json_array_length(v_caregiverreason)) > 0) THEN
+			FOR v_record IN SELECT * FROM json_array_elements(v_caregiverreason)
+			LOOP
+				insert into intakeservreqchildremovalreason(intakeservreqchildremovalid, removalreasontypekey, inputtypekey, insertedby, updatedby)
+				values ($1, (v_record.value ->> 'reasontypekey')::character  varying, 'CGFE', $3, $3);
+			END LOOP;
+		END IF;
+
+		IF((SELECT * FROM json_array_length(v_reasonableefforts)) > 0) THEN
+			FOR v_record IN SELECT * FROM json_array_elements(v_reasonableefforts)
+			LOOP
+				insert into intakeservreqchildremovalreason(intakeservreqchildremovalid, removalreasontypekey, inputtypekey, insertedby, updatedby)
+				values ($1, (v_record.value ->> 'reasontypekey')::character  varying, 'REPCR', $3, $3);
+			END LOOP;
+		END IF;
+
+		IF((SELECT * FROM json_array_length(v_notmakingefforts)) > 0) THEN
+			FOR v_record IN SELECT * FROM json_array_elements(v_notmakingefforts)
+			LOOP
+				insert into intakeservreqchildremovalreason(intakeservreqchildremovalid, removalreasontypekey, inputtypekey, insertedby, updatedby)
+				values ($1, (v_record.value ->> 'reasontypekey')::character  varying, 'RNME', $3, $3);
+			END LOOP;
+		END IF;
+
+		IF((SELECT * FROM json_array_length(v_exitreason)) > 0) THEN
+			FOR v_record IN SELECT * FROM json_array_elements(v_exitreason)
+			LOOP
+				insert into intakeservreqchildremovalreason(intakeservreqchildremovalid, removalreasontypekey, inputtypekey, insertedby, updatedby)
+				values ($1, (v_record.value ->> 'reasontypekey')::character  varying, 'ECR', $3, $3);
+			END LOOP;
+		END IF;
+	
+	RETURN QUERY
+		SELECT 'success'::character varying, 200;
+
+END;	
+
+$function$;

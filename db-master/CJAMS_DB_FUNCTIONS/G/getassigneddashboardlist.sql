@@ -1,0 +1,26 @@
+CREATE OR REPLACE FUNCTION cjams.getassigneddashboardlist(v_objectid character varying)
+ RETURNS TABLE(objectid character varying, routingid uuid, eventcode character varying, fromsecurityusersid character varying, tosecurityusersid character varying, teamid uuid, fromroleid character varying, toroleid character varying, routingstatustypeid integer, isreviewrequest boolean, remarks text, routeddescription text, servicerequestnumber character varying, objecttypekey character varying, tofirstname character varying, tolastname character varying, fromfirstname character varying, fromlastname character varying)
+ LANGUAGE plpgsql
+AS $function$
+ 
+
+DECLARE
+    
+    
+    	
+BEGIN
+  
+   
+ return query 
+select r.objectid,r.routingid,r.eventcode,r.fromsecurityusersid,r.tosecurityusersid,r.teamid,r.fromroleid,r.toroleid,r.routingstatustypeid,r.isreviewrequest,
+r.remarks,r.routeddescription,r.servicerequestnumber,r.objecttypekey,uptouser.firstname as tofirstname,uptouser.lastname as tolastname,upfromuser.firstname as fromfirstname,upfromuser.lastname as fromlastname from routing r 
+ inner join userprofile uptouser on uptouser.securityusersid=r.tosecurityusersid 
+ inner join userprofile upfromuser on upfromuser.securityusersid=r.fromsecurityusersid 
+ where r.objectid = v_objectid
+ order by r.insertedon desc;
+
+
+END;   
+
+ 
+$function$;

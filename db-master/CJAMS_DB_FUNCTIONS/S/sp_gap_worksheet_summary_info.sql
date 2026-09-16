@@ -1,0 +1,117 @@
+ DROP FUNCTION cjams.sp_gap_worksheet_summary_info(bigint);
+ 
+ CREATE OR REPLACE FUNCTION cjams.sp_gap_worksheet_summary_info(al_client_id bigint)
+    RETURNS TABLE(client_id bigint, servicecaseid uuid, casenumber character varying, childagency character varying, childjurisdiction character varying, removaldate timestamp without time zone, removalage integer, createdate timestamp without time zone) 
+  LANGUAGE plpgsql                                                                                                                                                                                                  
+ AS $function$                                                                                                                                                                                                    
+                                                                                                                                                                                                                  
+ DECLARE                                                                                                                                                                                                   
+                 vs_Procedure_nm                                         VARCHAR(100) DEFAULT 'sp_gap_worksheet_summary_info';                                                                                    
+                 vn_srv_req_id                                           UUID;                                                                                                                                    
+                 vs_srv_req_no                                           VARCHAR(50);                                                                                                                             
+                 vs_chd_agcy                                             VARCHAR(50);                                                                                                                     
+                 vs_jrsdctn                                              VARCHAR(50);                                                                                                                     
+                 vd_child_rmvl_dt                                        TIMESTAMP;                                                                                                                               
+                 vn_child_age_rmvl                                       INTEGER;                                                                                                                                 
+                 vd_crtd_dt                                              TIMESTAMP WITHOUT TIME ZONE;                                                                                                                                                                                                 
+                                                                                                                                                                                                                  
+                                                                                                                                                                                                                  
+  BEGIN                                                                                                                                                                                                           
+ CREATE TEMP TABLE IF NOT EXISTS                                                                                                                                                                                  
+ Temp_worksheet_summary_info (                                                                                                                                                                                    
+                 client_id                                                                       BIGINT,                                                                                                          
+                 servicecaseid                                                                   UUID,                                                                                                                    
+                 casenumber                                                                      VARCHAR(50),                                                                                                     
+                 childagency                                                                     VARCHAR(50),                                                                                                     
+                 childjurisdiction                                                               VARCHAR(50),                                                                                                             
+                 removaldate                                                                     TIMESTAMP,                                                                                                       
+                 removalage                                                                      INTEGER,
+                 createdate                                                                      TIMESTAMP WITHOUT TIME ZONE                                                                                                          
+         );                                                                                                                                                                                                       
+                                                                                                                                                                                                                  
+ -- Service Case ID , Case Number , Created date                                                                                                                                                                                          
+ SELECT grd.servicecaseid , sc.servicecasenumber , grd.insertedon                                                                                                                                                                                        
+         INTO vn_srv_req_id, vs_srv_req_no, vd_crtd_dt                                                                                                                                                                                      
+ FROM guardianship grd, permanencyplan pp, servicecase sc, tb_placement tp, intakeservicerequestactor isra, person per                                                                                            
+ WHERE grd.servicecaseid = pp.servicecaseid AND pp.activeflag = 1                                                                                                                                                 
+         AND pp.servicecaseid = sc.servicecaseid AND sc.activeflag = 1                                                                                                                                            
+         AND tp.case_id = sc.servicecasenumber::BIGINT AND tp.delete_sw = 'N'                                                                                                                                     
+         AND isra.intakeservicerequestactorid = tp.intakeservicerequestactorid AND isra.activeflag = 1                                                                                                            
+         AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY grd.updatedon DESC LIMIT 1;                                                                     
+
+                                                                                                                                                                                                                  
+ -- Child Agency                                                                                                                                                                                                  
+ SELECT (CASE WHEN teamtypekey = 'CW' THEN                                                                                                                                                                        
+                                 'DHS'::VARCHAR                                                                                                                                                                   
+                         WHEN teamtypekey = 'DJS' THEN                                                                                                                                                            
+                                 'DJS'::VARCHAR                                                                                                                                                                   
+                         ELSE NULL END)                                                                                                                                                                           
+         INTO vs_chd_agcy                                                                                                                                                                                         
+         FROM intakeservicerequest isr, permanencyplan pp, intakeservicerequestactor isra, person per                                                                                                             
+ WHERE pp.servicecaseid = isr.servicecaseid AND pp.activeflag = 1                                                                                                                                                 
+         AND isra.intakeservicerequestactorid = pp.intakeservicerequestactorid AND isra.activeflag = 1                                                                                                            
+         AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 LIMIT 1;                                                                                                         
+                                                                                                                                                                                                                  
+
+-- Child Jurisdiction  
+--SELECT peradr.county
+-- 	INTO vs_jrsdctn
+--  	FROM person per, personaddress peradr
+--WHERE per.personid = peradr.personid AND peradr.activeflag = 1
+--	AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1;
+	
+-- SELECT  ida.jsondata->'General'->>'countyid' INTO vs_jrsdctn
+-- 	FROM   intakeservicerequestactor isra, person per, intakedastaging ida 
+-- 	WHERE  ida.intakenumber = isra.intakenumber
+-- 	AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 LIMIT 1;
+
+
+select c.countyname INTO vs_jrsdctn
+        from caseassignment ca
+        join routing r on r.teamid = ca.fromteamid and r.activeflag= 1
+        join team t on t.teamid = ca.fromteamid and t.activeflag= 1
+        join placement pl on pl.placementid:: character varying = r.objectid :: character varying and pl.activeflag =1
+        join intakeservicerequestactor isra on isra.intakeservicerequestactorid = pl.intakeservicerequestactorid and isra.activeflag =1
+        join county c on c.countyid :: character varying = t.countyid and c.activeflag =1
+	join person per on per.personid = isra.personid
+where r.activeflag=1 AND r.eventcode='PLTR'
+        and per.cjamspid::BIGINT = al_client_id
+        order by r.insertedon desc limit 1;
+
+                                                                                                                                                                                                       
+ -- Child Removal Date                                                                                                                                                                                            
+ SELECT isrcr.removaldate                                                                                                                                                                                         
+         INTO vd_child_rmvl_dt                                                                                                                                                                                    
+         FROM intakeservreqchildremoval isrcr, person per, intakeservicerequestactor isra                                                                                                                         
+ WHERE isra.servicecaseid = isrcr.servicecaseid AND isrcr.activeflag = 1                                                                                                                                          
+         AND isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid AND isra.activeflag = 1                                                                                                         
+         AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isrcr.updatedon DESC LIMIT 1;                                                                   
+                                                                                                                                                                                                                  
+ -- Child Age At Removal                                                                                                                                                                                          
+ SELECT extract('years' FROM isrcr.removaldate)::int -  extract('years' FROM per.dob)::int                                                                                                                        
+         INTO vn_child_age_rmvl                                                                                                                                                                                   
+         FROM intakeservreqchildremoval isrcr, intakeservicerequestactor isra, person per                                                                                                                         
+ WHERE isrcr.intakeservicerequestactorid = isra.intakeservicerequestactorid AND isrcr.activeflag = 1                                                                                                              
+         AND isra.intakeservicerequestactorid = isrcr.intakeservicerequestactorid AND isra.activeflag = 1                                                                                                         
+         AND per.personid = isra.personid AND per.cjamspid::BIGINT = al_client_id AND per.activeflag = 1 ORDER BY isrcr.updatedon DESC LIMIT 1;                                                                   
+                                                                                                                                                                                                                  
+                                                                                                                                                                                                                  
+ INSERT INTO Temp_worksheet_summary_info                                                                                                                                                                          
+ SELECT                                                                                                                                                                                                           
+                 al_client_id,                                                                                                                                                                                    
+                 vn_srv_req_id,                                                                                                                                                                                   
+                 vs_srv_req_no,                                                                                                                                                                                   
+                 vs_chd_agcy,                                                                                                                                                                                     
+                 vs_jrsdctn,                                                                                                                                                                                      
+                 vd_child_rmvl_dt,                                                                                                                                                                                
+                 vn_child_age_rmvl,
+                 vd_crtd_dt;                                                                                                                                                                              
+                                                                                                                                                                                                                  
+ RETURN QUERY SELECT *                                                                                                                                                                                            
+                FROM Temp_worksheet_summary_info;                                                                                                                                                                 
+                                                                                                                                                                                                                  
+ DROP TABLE Temp_worksheet_summary_info;                                                                                                                                                                          
+                                                                                                                                                                                                                  
+    END                                                                                                                                                                                                           
+     $function$                                                                                                                                                                                                     
+

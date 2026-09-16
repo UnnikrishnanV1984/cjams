@@ -1,0 +1,1 @@
+update serviceplan set activeflag =0, updatedby ='CDM-14052', updatedon =now() where serviceplanid ='e5273211-58c5-421f-acc9-911ef767fc5a' ;

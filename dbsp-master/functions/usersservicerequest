@@ -1,0 +1,39 @@
+CREATE OR REPLACE FUNCTION usersservicerequest(userid character varying, page integer, pagelimit integer)
+ RETURNS TABLE(groupnumber character varying, intakeserviceid uuid, servicerequestnumber character varying, srtype character varying, srsubtype character varying, datereceived timestamp without time zone, firstname character varying, lastname character varying, county character varying, duedate timestamp without time zone)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  v_pageoffset  int;
+v_pagenumber  int;
+
+BEGIN
+  
+v_pagenumber  :=  (page-1)*      pagelimit;
+  
+
+RETURN  QUERY
+SELECT    distinct  (SELECT  ISG.groupnumber  from    intakeservicerequestgroup  as  ISG  WHERE  ISG.groupid=ISGD.groupid),
+ISR.intakeserviceid,ISR.servicerequestnumber,(SELECT  itsrt.intakeservreqtypekey  FROM  intakeservicerequesttype  as  itsrt
+where  itsrt.intakeservreqtypeid=ISR.intakeservreqtypeid),(SELECT  srst.classkey  FROM  servicerequestsubtype  as  srst  where  
+srst.servicerequestsubtypeid=ISR.intakeservicerequestclassid)
+,ISR.effectivedate,PN.firstname,PN.lastname,(select  pa.county  from  personaddress  pa  where  pa.personid  =  ar.personid
+                                              and    personaddresstypekey='C'  limit  1)  ,  (
+select    case  ISR.TargetCompleteDate
+        when  null  then  cast(ISR.ReportedDate  as  date)  +  cast(src.DueDateOffset  as  integer)
+        else  ISR.TargetCompleteDate    end        from    ServiceRequestTypeConfig    as  src  
+        where    src.intakeservreqtypeid  =  isr.IntakeServReqTypeId  
+and  src.servicerequestsubtypeid  =  isr.IntakeServiceRequestClassId    limit  1
+  )  as  duedate
+FROM  intakeservicerequest  as  ISR  LEFT  JOIN  intakeservicerequestgroupdetails  as  ISGD  ON
+ISR.intakeserviceid=ISGD.intakeserviceid  
+JOIN  intakeservicerequestactor  as  ISRA  ON  ISRA.intakeserviceid=ISR.intakeserviceid  JOIN  actor  as  AR  ON  AR.actorid=ISRA.actorid  
+JOIN  person  as  PN  ON  PN.personid=AR.personid  
+--LEFT  JOIN  personaddress  AS  PA  ON  PN.personid=PA.personid  AND  PA.personaddresstypekey='C'
+WHERE  ISRA.intakeservicerequestpersontypekey='RA'  AND  ISR.intakeserviceid  in  (
+SELECT  atmsr.intakeserviceid  FROM  areateammemberservicerequest  as  atmsr  where  atmsr.teammemberid  in  (SELECT  teammemberid  FROM  teammemberassignment  
+where  securityusersid=  userid))  ORDER  BY  ISR.effectivedate  desc  LIMIT  10    OFFSET  v_pagenumber  ;
+
+END;
+
+$function$
+

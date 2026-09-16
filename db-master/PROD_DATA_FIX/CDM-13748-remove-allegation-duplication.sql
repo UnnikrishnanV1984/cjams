@@ -1,0 +1,3 @@
+update investigationallegation set activeflag = 0, updatedon = now(),updatedby = 'CDM-13748' where investigationallegationid in ('8cbb6143-8e96-4173-bbea-41eaad3cdf65', 'd2454a7d-0977-453f-8ebb-b758b003deff');
+update Investigationmaltreatment set activeflag = 0, updatedon = now(),updatedby = 'CDM-13748' where maltreatmentid in ('18e1a838-e05f-4c88-a5e8-a80a15d739ef', '7d2e83e3-b56f-4c4f-929d-a48e15ac17e0');
+update Investigationmaltreatmentactor set activeflag = 0, updatedon = now(),updatedby = 'CDM-13748' where maltreatmentid in ('18e1a838-e05f-4c88-a5e8-a80a15d739ef', '7d2e83e3-b56f-4c4f-929d-a48e15ac17e0');

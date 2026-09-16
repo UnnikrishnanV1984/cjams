@@ -1,0 +1,113 @@
+CREATE OR REPLACE FUNCTION as_getfrcassessmentdashboard(securityusersid character varying, status character varying, roletypekey character varying, _page integer, _limit integer)
+ RETURNS TABLE(assessmentinfo jsonb)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+
+v_status int;
+ _offset  integer;
+ v_securityusersid character varying;
+v_roletypekey character varying;
+
+
+BEGIN 
+ 
+ 
+v_securityusersid:=securityusersid;
+
+v_securityusersid:=securityusersid;
+
+v_roletypekey:=roletypekey;
+
+
+IF(status='pending' and v_roletypekey='JSFRC')THEN
+
+ v_status =86;
+ ELSIF(status='approved')THEN
+ 
+ v_status=89;
+ ELSIF(status='submitted')THEN
+ 
+ v_status=87;
+ 
+ END IF;
+
+IF(v_status=87) THEN
+
+ 
+RETURN Query
+(SELECT jsonb_agg(e) as assessmentinfo 
+    from (
+ SELECT 
+  COUNT(1) OVER() totalCOUNT, 
+  ISR.intakeserviceid,
+  ISR.servicerequestnumber,
+  AST.assessmentid,
+  AST.assessmenttemplateid,
+  ASTM.titleheadertext ,
+  (trim( p.lastname ) || ', ' || trim( p.firstname ))::CHARACTER VARYING youthname,p.cjamspid,ast.updatedon :: timestamp AS asssignedon,p.dob,
+  (select * from as_getassessmentdetails(ISR.intakeserviceid :: character varying,AST.assessmenttemplateid,true,v_roletypekey)) as intakassessment 
+
+from routing R
+inner join assessment ast on AST.assessmentid:: character varying= R.objectid and ast.activeflag=1
+inner join assessmenttemplate ASTM on ASTM.assessmenttemplateid=AST.assessmenttemplateid
+
+INNER join intakeservicerequest ISR on ISR.intakeserviceid=AST.objectid
+
+inner join intakeservicerequestactor ISRT on ISRT.intakeserviceid=ISR.intakeserviceid and ISRT.activeflag=1 and ISRT.intakeservicerequestpersontypekey='Youth'
+inner join actor AC on AC.actorid=ISRT.actorid and AC.activeflag=1
+inner join person P on p.personid=AC.personid and p.activeflag=1
+--inner join routingstatustype RST on RST.sequencenumber=R.routingstatustypeid and RST.activeflag=1
+
+where R.fromsecurityusersid=v_securityusersid and R.activeflag=1 and R.routingstatustypeid in(v_status)
+order by R.insertedon desc)e)
+LIMIT _limit OFFSET _offset;
+  
+ELSE 
+
+
+RETURN Query
+(SELECT jsonb_agg(e) as assessmentinfo 
+    from (
+ SELECT 
+  COUNT(1) OVER() totalCOUNT, 
+  ISR.intakeserviceid,
+  ISR.servicerequestnumber,
+  
+ (trim( p.lastname ) || ', ' || trim( p.firstname ))::CHARACTER VARYING youthname,p.cjamspid,R.insertedon :: timestamp AS asssignedon,p.dob,
+ (select json_agg(x) from ((select   at.AssessmentTemplateId,  at.external_templateid ,
+   cast(at.titleheadertext as text)    as description,
+ (select * from as_getassessmentdetails(ISR.intakeserviceid :: character varying,At.assessmenttemplateid,true,v_roletypekey))::jsonb as intakassessment
+
+      from AssessmentTemplate at inner join  AssessmentTemplateCategoryFilterMap  atcm on at.AssessmentTemplateId =atcm.AssessmentTemplateId   
+   INNER JOIN AssessmentTemplateTarget ATT 
+   ON ATT.AssessmentTemplateTargetid = atcm.AssessmentTemplateTargetid
+   AND lower(att.target ) IN ('investigation')
+   and att.activeflag =1
+      and atcm.activeflag =1 
+      and at.activeflag =1
+   where  atcm.intakeservicerequesttypeid = ISR.intakeservreqtypeid 
+   and atcm.intakeservicerequestsubtypeid = ISR.intakeservicerequestclassid 
+   and at.name='frcCrcReferralForm'
+   )) as X ) as assessment 
+
+from routing R
+
+INNER join intakeservicerequest ISR on ISR.intakeserviceid::character varying=R.objectid and ISR.activeflag=1
+
+inner join intakeservicerequestactor ISRT on ISRT.intakeserviceid=ISR.intakeserviceid and ISRT.activeflag=1 and ISRT.intakeservicerequestpersontypekey='Youth'
+inner join actor AC on AC.actorid=ISRT.actorid and AC.activeflag=1
+inner join person P on p.personid=AC.personid and p.activeflag=1
+where 
+
+R.tosecurityusersid=v_securityusersid and R.routingstatustypeid in(v_status)
+  and R.activeflag=1 
+  order by R.insertedon desc)e)
+
+  LIMIT _limit OFFSET _offset;
+  END IF;
+    
+END;
+
+$function$
+

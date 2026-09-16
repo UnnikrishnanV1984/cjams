@@ -1,0 +1,2 @@
+create index Xie1_tb_ticklers on tb_ticklers(cjams_to_date(create_ts),trim(county_cd),system_tickler_id,delete_sw,action_sw);
+create index Xie2_tb_ticklers on tb_ticklers(coalesce(expiry_dt, current_date + 1));

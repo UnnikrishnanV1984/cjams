@@ -1,0 +1,44 @@
+
+DROP FUNCTION IF EXISTS assignuserscase(character varying, uuid, character varying, json, character varying, json, boolean);
+CREATE OR REPLACE FUNCTION assignuserscase(appeventcode character varying, intake_service_req_id uuid, fromuserid character varying, v_assignedsecurityid json, v_responsibilitytypekey character varying, j_assignfolder json DEFAULT '{}'::json, isnotifyuser boolean DEFAULT true)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+
+i json;
+v_routedusers   RECORD;
+asignedusers    json; 
+asignedsecurityuserid character varying;
+caseworker_name text;
+
+
+
+begin
+	
+	
+	asignedusers    :=   v_assignedsecurityid->>'assigneduserid'; 
+	
+
+	
+	FOR  i  IN  SELECT  *  FROM  Json_array_elements(asignedusers)  
+	
+	
+	  loop
+	asignedsecurityuserid=i->>'userid';
+
+	SELECT routingdaAS into  caseworker_name
+    FROM  routingdaAS(appeventcode,intake_service_req_id,fromuserid,asignedsecurityuserid
+   ,v_responsibilitytypekey,j_assignfolder,isnotifyuser);
+   
+	END LOOP;
+	
+	RETURN caseworker_name; 
+	
+	
+END;
+
+$function$
+

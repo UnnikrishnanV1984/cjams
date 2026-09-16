@@ -1,0 +1,2 @@
+update livingarrangement set livingarrangementtypekey='Placement', updatedon=current_timestamp where livingarrangementtypekey='32944';
+update livingarrangement set livingarrangementtypekey='UNK', updatedon=current_timestamp where lower(livingarrangementtypekey)='unknown';

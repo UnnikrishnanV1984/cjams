@@ -1,0 +1,115 @@
+CREATE OR REPLACE FUNCTION prov_getprovidercomplaintdetails(v_complaint_number character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE  
+
+jsondata  json;
+BEGIN
+SELECT  Json_agg(a)  INTO      jsondata  FROM      (  
+
+SELECT distinct TPC.provider_complaintid, TPC.intakeservreqinputtypeid, TPC.complaint_source, 
+TPC.source_information_type, TPC.complaint_date, TPC.narrative, TPC.qa_narrative, TPC.dd_narrative,tpc.source_type,tpc.complainant_title,
+TPC.complainant_firstname, TPC.complainant_lastname, TPC.complainant_phone,
+TPC.complainant_email, TPC.complainant_address1, TPC.complainant_address2,
+TPC.complainant_city, TPC.complainant_state, TPC.complainant_county,
+TPC.isrouted, TPC.complaint_number, TPC.routedon, TPC.teamtype_key, TPC.provider_id,
+TPC.site_id, TPC.is_draft, TPC.complainant_zipcode, TPC.source_specification, 
+TPC.inserted_on,TPC.inserted_by,ISRIT.description as comminucationtype,
+RV.description as sourceinformation, COU.countyname as county,rst.typedescription as statusdescription,
+TPC.updated_on,TPC.updated_by,TPC.complaint_status,
+up.displayname,rst.routingstatustypekey as status,TPC.outcomes,TPC.summary,TPC.investigationenddate,TPC.investigationstartdate,
+TPC.complaint_description,TPC.isphone,TPC.isinterview,TPC.issitevisit,TPC.isemail_req_info,
+TPC.isfax_req_info,TPC.isletter_req_info,TPC.monitoractivityid,tpa.program_name, tpa.prgram, tpa.license_no,
+tpc.qa_signimage, tpc.qa_signdate, tpc.pm_signimage, tpc.pm_signdate, tpc.ed_signimage, tpc.ed_signdate, 
+(select tp.agency from  tb_provider tp where tpc.provider_id = tp.provider_id limit 1) as agency,
+(select jsonb_agg(a ) from (select *
+from prov_signature_capture pscap where pscap.object_id = v_complaint_number and pscap.delete_sw = 'N')a ) as comp_signature,
+(select jsonb_agg(a ) from (select distinct tpa.program_type, prq.question ,prq.question_hint, prq.record_question_id ,pr.record_id ,pr.records_type ,
+    (case when tp.provider_nm is null then tpa.program_name  else tp.provider_nm end) as provider_nm,
+    (case when tp.provider_id::character varying is null then pv.applicant_id else tp.provider_id::character varying end) as site_id,
+    pv.frequency_deficiency, pv.scope_deficiency, pv.impact_deficiency,
+    pv.reference_value_id,
+    pv.reference_id,
+    pv.violation_id,
+    pv.deficiency_number,
+    pv.cap_number,
+    pv.comments,
+    pv.isdraft,
+    pv.cap_status,
+    pv.cap_findings,
+    pv.cap_status_description,
+    pv.planofcorrection,
+    pv.disputecomarcitation,
+    pv.targetdate,
+    pv.isdispute,
+    pv.isacknowledged,
+    m.monitoring_id,
+    pv.isnotificationsent,
+    tc.provider_id,
+    pv.duedate,
+    pv.create_ts
+from  prov_violation pv
+left join prov_record_question prq           on pv.record_question_id = prq.record_question_id and prq.delete_sw = 'N'
+left join prov_record pr                      on pr.record_id = prq.record_id and pr.delete_sw ='N' 
+left join prov_monitoring_exit_conf mec       on pv.exit_conf_number = mec.exit_conf_number and mec.delete_sw = 'N'
+left join tb_provider_applicant tpa           on tpa.applicant_id = pv.applicant_id   and tpa.delete_sw = 'N'
+left join prov.tb_provider_complaint tc on tc.complaint_number = pv.reference_value_id
+left join tb_provider tp                      on (tp.provider_id = pv.site_id or tp.provider_id = tc.site_id) and tp.delete_sw = 'N'
+left join prov_monitoring m                  on m.monitoring_id = pv.reference_value_id   and pv.referencetype = 'Monitoring' and m.delete_sw = 'N'
+where  pv.delete_sw = 'N'
+    and (prq.object_id is null or prq.object_id = pv.reference_value_id)
+    --and (case when pv.referencetype = 'Monitoring' then m.delete_sw = 'N' else true end)
+    and pv.reference_value_id = v_complaint_number )a ) as violations,
+    (select jsonb_agg(a) from (select pi.adm_contact_first_nm,pi.adm_contact_last_nm from tb_provider pi where pi.provider_id=tpc.provider_id
+)a) as provider_staff_adm,
+    (select jsonb_agg(a ) from (select distinct ps.first_nm as first_nm,ps.last_nm as last_nm, ps.affiliation_type, ps.job_title, ps.employee_type,
+' (' || SUBSTRING(ps.staff_phone_no::text, 1, 3) || ') ' || SUBSTRING(ps.staff_phone_no::text, 4,3) || '-' || 
+SUBSTRING(ps.staff_phone_no::text,7,4) as staff_phone_no,ps.provider_staff_id,ps.staff_email
+from providerstaff ps, providerstaffconfig ps1 where
+ps.employee_type = 'Program Administrator' and ps1.object_id = TPC.site_id and ps.object_id =TPC.provider_id and ps1.delete_sw = 'N' and ps.delete_sw = 'N' and ps.end_date is null
+)a) as provider_staff,
+(select jsonb_agg(a)  from 
+    ( select distinct m.username,m.email,
+        (select ' (' || SUBSTRING(phonenumber::text, 1, 3) || ') ' || SUBSTRING(phonenumber::text, 4,3) || '-' || SUBSTRING(phonenumber::text,7,4) ) 
+        as phonenumber,r.name, r.description 
+        from muser m 
+        left join userprofilephonenumber u on u.securityusersid =m.securityusersid 
+        join rolemapping r2 on r2.principalid = m.id and r2.activeflag = '1' and r2.teamtypekey not in ('CW','ASPROV','AS')
+        join role r on r.id = r2.roleid
+        where m.securityusersid = tpc.inserted_by
+    ) a)as site_assignments,
+(select jsonb_agg(a)  from 
+    (SELECt * from tb_provider_addresses tp1  where tp1.parent_key_id = TPC.site_id and tp1.adr_default_sw = 'Y')a) as site_address,
+(select provider_nm from  tb_provider tp where tpc.provider_id = tp.provider_id limit 1) as provider_nm,
+(select provider_nm from  tb_provider tp where tpc.site_id = tp.provider_id limit 1) as provider_nm_site,
+(select tax_id_no from  tb_provider tp where tpc.site_id = tp.provider_id limit 1) as provider_nm_site_tax_id,
+(select value_tx as provider_category_cd_txt from tb_picklist_values tpv 
+where tpv.picklist_type_id = 155 and tpv.picklist_value_cd in (select tpp.picklist_value_cd from TB_PROVIDER_PICKLIST tpp 
+where tpp.provider_id = tpc.site_id and tpp.picklist_type_id=155 and tpp.picklist_value_cd in ('3795', '3302', '3274', '3794') ) ),
+(select jsonb_agg(a ) from (select distinct tpcd.deficiency_violationname,tpcd.citation,tpcd.comments,tpcd.frequencyofdeficiency,tpcd.impactofdeficiency,tpcd.scopeofdeficiency,tpcd.findings
+from tb_provider_complaint_deficiency tpcd where tpcd.provider_complaintid = tpc.provider_complaintid)a ) as non_compliance,
+(select jsonb_agg(a ) from (select distinct tpcc.complaint_contacts_name, tpcc.complaint_contacts_source, tpcc.complainant_contacts_phone
+from tb_provider_complaint tpc1 
+join tb_provider_complaint_contacts tpcc on tpc1.provider_complaintid = tpcc.provider_complaintid
+where tpcc.provider_complaintid = tpc.provider_complaintid)a ) as contacts,
+TPC.qa_narrative,
+TPC.dd_narrative
+FROM tb_provider_complaint TPC
+left join tb_provider_applicant tpa on TPC.site_id = tpa.site_id
+left join intakeservicerequestinputtype ISRIT on ISRIT.intakeservreqinputtypeid=TPC.intakeservreqinputtypeid and ISRIT.activeflag=1
+left join referencevalues RV on RV.ref_key=TPC.source_information_type and RV.activeflag=1  and rv.teamtypekey = tpc.teamtype_key
+left join county COU on COU.countyid=TPC.complainant_county
+left join routingstatustype rst on rst.sequencenumber=tpc.complaint_status::integer
+left join userprofile up on up.securityusersid=tpc.inserted_by
+
+where (TPC.complaint_number=v_complaint_number)
+and TPC.activeflag=1
+ )  a;
+
+RETURN  jsondata;
+END;
+
+$function$
+

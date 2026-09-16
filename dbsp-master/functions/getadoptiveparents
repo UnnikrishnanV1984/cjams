@@ -1,0 +1,129 @@
+CREATE OR REPLACE FUNCTION getadoptiveparents(v_provider_id character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+--------------------------------------------------------------------
+/*
+Revisions
+12-17 - Veera To format the DOB for guardians
+*/
+----------------------------------------------------------------------
+
+DECLARE 
+jsondata json;
+vl_provider_approval_id BIGINT;
+vl_provider_id BIGINT;
+vl_provider2_id BIGINT;
+vs_co_applicant_sw VARCHAR(1);
+vs_adoptiveParent1 VARCHAR(50);
+vs_adoptiveParent1Dob character varying;
+vs_adoptiveParent1ssn character varying;
+vs_adoptiveParent2ssn character varying;
+vl_adoptiveparent1id BIGINT;
+vs_adoptiveParent2 VARCHAR(50);
+vs_adoptiveParent2Dob CHARACTER varying; 
+vl_adoptiveparent2id BIGINT;
+vl_adoptiveparentidtocheck BIGINT;
+    
+BEGIN
+--D-21814 - Provider co-applicant not showing for some providers
+SELECT TBA.provider_approval_id,
+  TBA.provider_id,
+  COALESCE(TBA.co_applicant_sw, '') AS co_applicant_sw 
+ INTO vl_provider_approval_id,
+  vl_provider_id,
+  vs_co_applicant_sw 
+FROM tb_provider_approval TBA 
+WHERE TBA.provider_id = v_provider_id::numeric 
+ AND TBA.active_sw = 'Y' 
+ AND DELETE_SW = 'N'
+ORDER BY TBA.approval_dt 
+DESC LIMIT 1 ;
+
+select provider_id into vl_provider2_id from prov.tb_public_provider_application_mapping tpm where tpm.delete_sw  = 'N' and tpm.old_provider_id = v_provider_id
+order by tpm.create_ts desc limit 1;
+
+IF vl_provider_approval_id > 0 THEN
+ -- Get Applicant
+ SELECT TRIM(CONCAT_WS('', TBAP1.first_nm, ' ', TBAP1.last_nm)) AS adoptiveParent1,
+    TBAP1.approval_person_id AS adoptiveparent1id, 
+    cast(to_char(TBAP1.dob_dt,'MM/DD/YYYY') as character varying), 
+    (regexp_replace(TBAP1.ssn_no::text, '(\\d{3})(\\d{2})(\\d{4})', '***-**-\\3', 'g'))::character varying
+   INTO vs_adoptiveParent1,
+    vl_adoptiveparent1id,
+    vs_adoptiveParent1Dob,
+    vs_adoptiveParent1ssn
+  FROM tb_prov_approval_person TBAP1 
+ WHERE TBAP1.provider_approval_id = vl_provider_approval_id
+  AND TBAP1.person_type_cd = '3610'
+  AND DELETE_SW = 'N' ;
+
+ SELECT tppam.provider_id AS adoptiveparent2id
+  INTO vl_adoptiveparentidtocheck
+  FROM tb_public_provider_application_mapping tppam 
+  WHERE tppam.old_provider_id = v_provider_id
+   AND DELETE_SW = 'N'
+  order by create_ts desc
+  limit 1;
+  
+ -- Get Co-Applicant
+ IF vs_co_applicant_sw <> 'Y' THEN
+   SELECT TRIM(CONCAT_WS('', TBAP2.first_nm, ' ', TBAP2.last_nm)) AS adoptiveParent2,
+     TBAP2.approval_person_id AS adoptiveparent2id,
+     cast(to_char(TBAP2.dob_dt,'MM/DD/YYYY') as character varying),
+     (regexp_replace(TBAP2.ssn_no::text, '(\\d{3})(\\d{2})(\\d{4})', '***-**-\\3', 'g'))::character varying
+    INTO vs_adoptiveParent2,
+     vl_adoptiveparent2id,
+     vs_adoptiveParent2Dob,
+     vs_adoptiveParent2ssn
+    FROM tb_prov_approval_person TBAP2 
+   WHERE TBAP2.provider_approval_id = vl_provider_approval_id
+    AND TBAP2.person_type_cd = '3611'
+    AND DELETE_SW = 'N';
+   
+ ELSE
+  vs_adoptiveParent2 = NULL;
+  vl_adoptiveparent2id = NULL;
+ end if;
+ 
+ELSE
+ -- error
+ vl_provider_id = NULL;
+ vl_provider2_id = NULL;
+ vs_adoptiveParent1 = NULL;
+ vs_adoptiveParent1Dob = NULL;
+ vs_adoptiveParent1ssn = NULL;
+ vl_adoptiveparent1id = NULL;
+ vs_adoptiveParent2 = NULL;
+ vs_adoptiveParent2Dob = NULL;
+ vs_adoptiveParent2ssn = NULL;
+ vl_adoptiveparent2id = NULL;
+ vl_provider_approval_id = NULL;
+ vl_adoptiveparentidtocheck = NULL;
+
+END IF;
+
+SELECT Json_agg(a) INTO jsondata 
+FROM ( 
+  SELECT vl_provider_id AS providerId, 
+  vs_adoptiveParent1 AS adoptiveParent1,
+  vs_adoptiveParent1Dob as adoptiveParent1Dob,
+  vs_adoptiveParent1ssn as adoptiveParent1Ssn,
+  vs_adoptiveParent2 AS adoptiveParent2,
+  vs_adoptiveParent2ssn as adoptiveParent2Ssn,
+  vs_adoptiveParent2Dob as adoptiveParent2Dob,
+  vl_adoptiveparent1id AS adoptiveparent1id,
+  vl_adoptiveparent2id AS adoptiveparent2id,
+  vl_provider_approval_id AS provider_approval_id,
+  vl_provider2_id AS provider2Id,
+  vl_provider_id AS provider_id,
+  vl_adoptiveparentidtocheck as provider_id_check
+) a;
+
+RETURN jsondata;
+
+END;
+
+$function$
+

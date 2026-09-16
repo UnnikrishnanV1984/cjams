@@ -1,0 +1,113 @@
+CREATE OR REPLACE FUNCTION as_namrs_getinvestigationdetails(caseno character varying)
+ RETURNS TABLE(servicerequestnumber character varying, reporteddate character varying, intakenumber character varying, statecountycode character varying, invstartdate character varying, dispositiondate character varying, caseclosedate character varying, v_cjamspid character varying, clientcountycode character varying, age integer, gendertypekey integer, racetypekey character varying, ethnicgrouptypekey integer, miaritalstatustypekey integer, previouscasecount integer, closingcodetypekey character varying, personeducationtesting text, v_allegationlist text, hashedserno character varying, hashedcjamspid character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+v_intakeserviceid uuid;
+v_intakeservreqtypekey character varying;
+v_intakenumber character varying;
+v_cjamspid bigint;
+v_personid uuid;
+v_allegationlist text;
+
+BEGIN
+  
+ select i.intakeserviceid, intakeservreqtypekey, i.intakenumber into v_intakeserviceid, v_intakeservreqtypekey, v_intakenumber from  IntakeServiceRequest i
+ join intakeservicerequesttype it on i.IntakeServReqTypeId=it.IntakeServReqTypeId 
+ where  i.ServiceRequestNumber::bigint  =  caseno::bigint AND i.teamtypekey = 'AS' AND i.activeflag = 1;  
+
+
+
+ select P.cjamspid, P.personid into v_cjamspid, v_personid 
+ from person as P where P.activeflag =1 and P.personid in (
+  select personid  from IntakeServiceRequestActor isra where isra.activeflag = 1 and isra.intakeserviceid = v_intakeserviceid and 
+   -- isra.objecttype like 'as%' and
+   (case v_intakeservreqtypekey
+    when 'APS' then case intakeservicerequestpersontypekey when 'AV' then true  when 'RA' then true else false end
+    when 'Request for services' then case  intakeservicerequestpersontypekey when 'RA' then true  when 'RC' then true  else false end
+    --when 'Provider' then case intakeservicerequestpersontypekey when 'PA' then true else false end
+    else false
+   end) limit 1);
+  
+  
+  
+select json_agg(iag) :: text into v_allegationlist
+ from (
+select p.cjamspid ,
+(case when ig.investigationfindingtypekey = 'ID' then 1 when ig.investigationfindingtypekey ='RO' then 2 when ig.investigationfindingtypekey ='UD' then 3 when ig.investigationfindingtypekey ='UC' then 4 
+end) as investigationfinding,
+--ig.investigationfindingtypekey,
+(case when a."name" = 'Financial Exploitation' then 31 when a."name" = 'Neglect by Others' then 40 when a."name" = 'Physical Abuse' then 50  when a."name" = 'Sexual Abuse/Exploitation' then 60 when a."name" = 'Self-Neglect' then 80 end) as allegation 
+--a."name" 
+from investigationfinding ig
+inner join investigationallegation i on ig.investigationallegationid = i.investigationallegationid 
+inner join allegation a on i.allegationid = a.allegationid 
+inner join investigation i2 on i2.investigationid = i.investigationid 
+inner join intakeservicerequest i3 on i3.intakeserviceid =i2.intakeserviceid 
+inner join person p on p.personid = ig.personid 
+where i3.servicerequestnumber =caseno
+and ig.activeflag =1 
+and i.activeflag =1 and a.activeflag =1 
+) iag;
+
+
+RETURN QUERY  
+
+select 
+ f_afcars_encrypt(i.servicerequestnumber),
+ to_char(i.ReportedDate, 'YYYY-MM-DD') ,
+ --TO_DATE(i.ReportedDate, 'MM/DD/YYYY'),
+ --i.ReportedDate,
+ i.intakenumber,
+ c.statecountycode  :: character varying ,
+ (select to_char(insertedon, 'YYYY-MM-DD') from routing r where r.eventcode ='INTR' and r.objectid=v_intakenumber order by r.insertedon desc limit 1) invstartdate,
+ --(select to_char(r.insertedon, 'YYYY-MM-DD') from routing r where r.eventcode ='INVR' and r.routingstatustypeid =15 and  r.ServiceRequestNumber::bigint  =  caseno::bigint order by r.insertedon desc limit 1) as dispositiondate,
+ --(select to_char(r1.insertedon, 'YYYY-MM-DD') from routing r1 where r1.eventcode ='INVR' and r1.routingstatustypeid =16 and r1.activeflag =1 and  r1.ServiceRequestNumber::bigint  =  caseno::bigint order by r1.insertedon desc limit 1) caseclosedate,
+ 
+(select to_char(id.insertedon, 'YYYY-MM-DD') from intakeservicerequestdispositioncode id
+inner join intakeserreqstatustype st on id.intakeserreqstatustypeid =st.intakeserreqstatustypeid 
+inner join servicerequesttypeconfigdispositioncode sc on sc.servicerequesttypeconfigiddispostionid = id.servicerequesttypeconfigiddispostionid 
+where st.intakeserreqstatustypekey ='Review' and  sc.dispositioncode ='Closed' and id.activeflag =1 and id.intakeserviceid =v_intakeserviceid order by id.insertedon desc limit 1) as dispositiondate,
+
+ (select to_char(id.insertedon, 'YYYY-MM-DD') from intakeservicerequestdispositioncode id
+inner join intakeserreqstatustype st on id.intakeserreqstatustypeid =st.intakeserreqstatustypeid 
+inner join servicerequesttypeconfigdispositioncode sc on sc.servicerequesttypeconfigiddispostionid = id.servicerequesttypeconfigiddispostionid 
+where st.description ='Accepted' and  sc.dispositioncode ='Closed' and id.activeflag =1 and id.intakeserviceid =v_intakeserviceid order by id.insertedon desc limit 1) caseclosedate,
+
+ 
+ f_afcars_encrypt(v_cjamspid :: character varying),
+ (select c.statecountycode  :: character varying  from person p left join county c on c.countyid ::character varying = p.countytypekey and p.cjamspid=v_cjamspid limit 1) as clientcountycode,
+ date_part('year',age(p.dob)) :: integer , 
+ --p.gendertypekey ,
+ case when p.gendertypekey in ('M') then 1 when p.gendertypekey in ('F') then 2 when p.gendertypekey in ('TG','TGIM','TGIF') then 3 else 0 end,
+ p.racetypekey ,
+ case p.ethnicgrouptypekey when 'H' then 10 else 20 end,
+ 
+ case when p.maritalstatustypekey = 'SG' then 1 when p.maritalstatustypekey ='MR' then 2 when p.maritalstatustypekey ='DV' then 4 when p.maritalstatustypekey ='LS' then 5 when p.maritalstatustypekey ='WD' then 6 else 7 end,
+  --,p.maritalstatustypekey
+ 
+
+ (select count(*) :: integer from actor act where act.activeflag =1 and act.objecttype ='as_servicecase' and act.personid=v_personid and act.intakeserviceid !=v_intakeserviceid and act.insertedon < i.ReportedDate) as previouscasecount,
+ (select i.closingcodetypekey from intakeservicerequestdispositioncode i where intakeserviceid =v_intakeserviceid
+order by insertedon desc limit 1),
+ (
+  select json_agg(pet)
+ from
+  (select disabilitytypekey from persondisability pd where pd.personid =v_personid
+   and pd.activeflag = 1 ) pet)::text as "personEducationTesting",
+   v_allegationlist ,
+   f_afcars_encrypt(i.servicerequestnumber::character varying),
+   f_afcars_encrypt(v_cjamspid::character varying)
+from  IntakeServiceRequest i 
+left join person p on p.cjamspid =v_cjamspid
+left join county c on c.countyid=i.countyid 
+ where  IntakeServiceId =  v_intakeserviceid AND i.teamtypekey = 'AS' AND i.activeflag = 1;  
+
+
+END;
+
+
+$function$
+

@@ -1,0 +1,201 @@
+CREATE OR REPLACE FUNCTION as_placementapproval(v_placementid character varying, userid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+
+DECLARE
+v_intakeservicerequestactorid uuid;
+v_entryddate timestamp without time zone;
+v_exitdate timestamp without time zone;
+v_intakeservreqchildremovalid uuid;
+v_servicecaseid uuid;
+v_tbplacementid int;
+v_providerid int;
+v_placement_structureid int;
+v_rate_structureid int;
+v_clientid bigint;
+v_caseid character varying;
+v_removalid bigint;
+v_contract_program_id bigint;
+v_isapproval int;
+v_isapprovaldate timestamp without time zone;
+v_placement_revision_id uuid;
+v_placementid_placementrevision_id uuid;
+v_totalcount bigint;
+v_isvoided  int;
+v_isvoid integer;
+l_response   character varying;
+l_personid uuid;
+l_assignedto character varying;
+v_eventcode  character varying;
+v_routingstatustypeid int;
+
+v_prentrydate timestamp without time zone;
+v_prentrytime character varying;
+v_count int;
+v_voidreasontypekey character varying;
+v_voidremarks character varying;
+v_enddate timestamp without time zone;
+v_endtime character varying;
+v_exittypekey character varying;
+v_remarks character varying;
+v_reasontypekey character varying;
+
+v_pentrydate timestamp without time zone;
+v_prexitdate timestamp without time zone;
+v_prexittime character varying;
+
+v_provider_category_cd VARCHAR(50);  
+v_routingdescription VARCHAR(100);  
+v_routeddescription_voidexit  VARCHAR(100);  
+v_routingstatustypeid_voidexit int;
+v_voiddate  timestamp without time zone;
+
+BEGIN
+/*Get Placement information to process financial tables */
+
+ 
+
+   SELECT pl.alternateid, pl.intakeservicerequestactorid,
+     pl.startdatetime, pl.enddatetime,pl.intakeservreqchildremovalid,
+     pl.servicecaseid,pl.service_id ,pl.service_id,
+     pr.cjamspid ,irl.removalid,contract_id,
+     pl.isssaapproval,pl.ifcapprovaldate, sc.servicecasenumber,
+               pl.altproviderid,pl.isvoided,pr.personid,pl.insertedby
+ INTO   v_tbplacementid,v_intakeservicerequestactorid,
+     v_entryddate,v_exitdate,v_intakeservreqchildremovalid, 
+     v_servicecaseid,v_placement_structureid,v_rate_structureid,
+     v_clientid,v_removalid,v_contract_program_id,
+     v_isapproval,v_isapprovaldate,v_caseid,
+     v_providerid,v_isvoided,l_personid,l_assignedto
+ FROM placement pl  
+ INNER JOIN servicecase sc ON sc.servicecaseid  =pl.servicecaseid AND sc.activeflag =1
+ INNER JOIN  intakeservicerequestactor isra ON  pl.intakeservicerequestactorid = isra.intakeservicerequestactorid AND isra.activeflag =1
+ INNER JOIN person pr ON pr.personid = isra.personid AND pr.activeflag =1
+ INNER JOIN  Intakeservreqchildremoval irl ON irl.intakeservreqchildremovalid =pl.intakeservreqchildremovalid AND irl.activeflag =1
+ LEFT JOIN tb_provider_contracts tbpc ON  tbpc.provider_id = pl.altproviderid AND tbpc.delete_sw ='N'
+ WHERE pl.placementid::  character varying = v_placementid  AND pl.activeflag =1 LIMIT 1;
+
+ 
+
+  SELECT eventcode,routingstatustypeid,routeddescription into v_eventcode,v_routingstatustypeid,v_routingdescription
+    FROM routing WHERE  objectid=v_placementid
+    order by insertedon desc limit 1;
+ 
+    SELECT  routeddescription,routingstatustypeid 
+    into v_routeddescription_voidexit,v_routingstatustypeid_voidexit
+    FROM routing WHERE  objectid=v_placementid and
+     routeddescription in ('Placement Exit Submitted for review','Void placement submitted for review')  
+     
+    order by insertedon desc limit 1 ; 
+   
+    
+    if (v_routingstatustypeid = 16 and v_routingstatustypeid_voidexit = 15 and v_routeddescription_voidexit in ('Placement Exit Submitted for review','Void placement submitted for review') ) then 
+      
+  
+  select provider_category_cd into v_provider_category_cd from tb_provider where provider_id = v_providerid;
+
+  IF v_provider_category_cd = '1783' THEN
+  UPDATE  tb_provider  set  vacancy_no  =  (vacancy_no + 1)  where  provider_id = v_providerid;
+  END IF;
+  
+ end if;
+
+
+  if (v_routingstatustypeid = 17 ) then 
+  raise notice 'v_routingstatustypeid>>>>>>>>>>>> %',v_routingstatustypeid;
+  select provider_category_cd into v_provider_category_cd from tb_provider where provider_id = v_providerid;
+
+  IF v_provider_category_cd = '1783' THEN
+  UPDATE  tb_provider  set  vacancy_no  =  (vacancy_no + 1)  where  provider_id = v_providerid;
+  END IF;
+  
+ end if;
+ 
+
+
+ if (v_routingstatustypeid = 16 ) then 
+
+ 
+
+   raise notice 'v_routingstatustypeid>>>>>>>>>>>> %',v_routingstatustypeid; 
+  /* if (v_routingstatustypeid = 15 ) then 
+ raise notice 'v_routingstatustypeid>>>>>>>>>>>> %',v_routingstatustypeid;
+  select provider_category_cd into v_provider_category_cd from tb_provider where provider_id = v_providerid;
+  raise notice 'v_provider_category_cd>>>>>>>>>>>> %',v_provider_category_cd;
+  IF v_provider_category_cd = '1783' THEN
+  UPDATE  tb_provider  set  vacancy_no  =  (vacancy_no - 1)  where  provider_id = v_providerid;
+  END IF;
+ end if; */
+ 
+
+
+ --if v_routingstatustypeid = 16 then
+   
+  select count (*),entrydate,entrytime,voidreasontypekey,voidremarks,enddate,endtime,exittypekey,remarks,exitreasontypkey,exitdate,exittime,isvoided,voiddate
+   into  v_count,v_prentrydate,v_prentrytime,v_voidreasontypekey ,v_voidremarks, v_enddate,v_endtime , 
+         v_exittypekey  ,v_remarks ,v_reasontypekey,v_prexitdate,v_prexittime,v_isvoid,v_voiddate
+  from placementrevision where placementid=v_placementid:: uuid and activeflag=1 group by entrydate,entrytime,
+ voidreasontypekey,voidremarks,enddate,endtime,exittypekey,remarks,exitreasontypkey,exitdate,exittime,isvoided,voiddate;
+--  raise notice 'v_count>>>>>>>>>>>> %',v_count;
+--  raise notice 'v_prentrydate>>>>>>>>>>>> %',v_prentrydate;
+--  raise notice 'v_entryddate>>>>>>>>>>>> %',v_entryddate;
+  
+    if v_count > 0 then 
+    
+     
+  
+     if v_prentrydate is null then
+      SELECT  startdatetime  into v_prentrydate from placement where placementid=v_placementid:: uuid;
+      end if;
+  raise notice 'v_prentrydate>>>>>>>>>>>> %',v_prentrydate;   
+  update  placementrevision  set activeflag=0,updatedby=userid,updatedon=now() where placementid=v_placementid:: uuid;
+  update placement set
+   startdatetime= case when v_prentrydate is null then v_entryddate else v_prentrydate end ,
+   starttime= v_prentrytime ,
+  --enddatetime = v_enddate,
+  enddatetime = case when v_enddate is null then v_prexitdate else v_enddate end ,
+  -- endtime = v_endtime,
+  endtime = case when v_endtime is null then v_prexittime else v_endtime end ,
+  voidreasontypekey = v_voidreasontypekey,
+  voidremarks = v_voidremarks,
+  voidapprovaldate = current_date,
+  isvoided = v_isvoid,
+  voiddate = v_voiddate,
+  exittypekey = v_exittypekey,
+  remarks = v_remarks,
+  updatedby=userid,
+  updatedon=now()
+  where placementid=v_placementid:: uuid;
+ 
+
+  
+  INSERT INTO placementrevision
+  ( placementid, transactiondate, entrydate, entrytime, exitdate, 
+  exittime, exittypetypkey, exitreasontypkey, exitexplanation, approvalstatustypkey, 
+  approvaldate, isoriginal, insertedon, insertedby, updatedon, updatedby, activeflag,
+  voidreasontypekey,voidremarks,enddate,endtime,exittypekey,remarks,isvoided,voiddate
+  )
+  VALUES(v_placementid:: uuid, null, (v_prentrydate :: date), v_prentrytime, (v_prexitdate :: date)
+  , v_prexittime, null, v_reasontypekey, '', '3047', v_isapprovaldate, 1, now(),userid, now(),  userid, 1,
+  v_voidreasontypekey , v_voidremarks, (v_enddate :: date) , v_endtime , 
+  v_exittypekey  ,v_remarks,v_isvoid,v_voiddate
+  );
+
+  
+
+    END IF;
+  
+end if;
+--     END IF;
+     
+RETURN 'Success';
+  
+END;
+
+
+$function$
+

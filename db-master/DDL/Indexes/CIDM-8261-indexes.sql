@@ -1,0 +1,1 @@
+CREATE INDEX Xie1_activitytask ON cjams.activitytask USING btree (date(duedate),activitytaskstatustypekey);

@@ -1,0 +1,1 @@
+update routing set activeflag=0 where objectid = '12b3be07-9e5f-40b6-b89f-e4088720c30a';

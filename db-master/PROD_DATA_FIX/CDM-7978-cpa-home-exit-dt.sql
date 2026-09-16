@@ -1,0 +1,1 @@
+update placementcpahomes set exitdt = '2020-07-31 00:00:00', exittm = '2020-07-31 09:00:00', updatets = now(), updateuserid = 'CDM-7978' where placementid = '96e85bc7-ae9c-4d29-9925-13550d042179';

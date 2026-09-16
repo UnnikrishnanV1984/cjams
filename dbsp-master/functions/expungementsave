@@ -1,0 +1,256 @@
+CREATE OR REPLACE FUNCTION expungementsave(v_objectid uuid, v_securityuserid character varying)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$                                                                                                                   
+------------------------------------------------------------------------------------------------------------
+-- Revision(s) 
+-- 05/18/2021 Vineet Tirodkar - If the person is having only role of 'Alleged Maltreator' add new role as 'Other' (CDM-12335)
+------------------------------------------------------------------------------------------------------------ 
+DECLARE                                                                                                                           
+ v_servicerequestnumber character varying;                                                                                                       
+ v_intakeserviceid uuid;
+ v_intakeservicerequestactorid uuid;
+ v_maltreatmentid uuid;
+ v_investigationallegationid uuid;
+ v_investigationid uuid;
+ v_maltreatorcount integer;
+ v_actorcount integer;
+ v_newintakeservicerequestactorid uuid; 
+ v_actorid uuid; 
+ v_isunnamed_ud boolean;
+ v_isunnamed_id boolean;
+ v_isremoverofindings boolean;
+ v_isremovemaltreator boolean;
+ v_newpersonid uuid;
+ v_role_cnt integer;
+ 
+BEGIN                                                                                                                             
+
+ RAISE  NOTICE  'v_objectid  %',v_objectid;
+  
+   
+    SELECT maltreatmentid, COALESCE(isunsubstansiated,false), COALESCE(isindicated, false), isremoverofindings, isremovemaltreator  
+ INTO v_maltreatmentid, v_isunnamed_ud, v_isunnamed_id, v_isremoverofindings, v_isremovemaltreator
+    FROM expungement 
+    WHERE expungementid=v_objectid LIMIT 1;
+
+   RAISE  NOTICE  'v_maltreatmentid  %',v_maltreatmentid;
+ 
+ SELECT ia.investigationallegationid ,inv.investigationid into v_investigationallegationid,v_investigationid
+ FROM   Investigationmaltreatment im 
+ INNER JOIN Investigationmaltreatmentactor ima on ima.maltreatmentid = im.maltreatmentid AND ima.activeflag =1                         
+ INNER JOIN intakeservicerequestactor isra on isra.intakeservicerequestactorid = ima.intakeservicerequestactorid
+ INNER JOIN person p on p.personid = isra.personid 
+ INNER JOIN Investigationallegation ia ON  ia.maltreatmentid = im.maltreatmentid
+ LEFT JOIN investigation inv on inv.investigationid = IM.investigationid         
+ INNER JOIN allegation  alle on  alle.allegationid = ia.allegationid AND alle.activeflag = 1
+ WHERE im.maltreatmentid=v_maltreatmentid --.investigationid = v_investigationid
+ AND im.activeflag =1 
+ AND ia.investigationmaltreatmentactorid = ima.investigationmaltreatmentactorid AND ia.activeflag =1 limit 1;   
+    
+  RAISE  NOTICE  'v_investigationallegationid  %',v_investigationallegationid;
+   
+ SELECT distinct intakeservicerequestactorid  into v_intakeservicerequestactorid FROM Investigationallegationmaltreators 
+ WHERE investigationallegationid=v_investigationallegationid;
+      
+   SELECT distinct actorid into v_actorid FROM intakeservicerequestactor 
+ WHERE intakeservicerequestactorid = v_intakeservicerequestactorid ; --and isprimary = true;
+
+  RAISE  NOTICE  'v_intakeservicerequestactorid  %',v_intakeservicerequestactorid;                                                        
+  RAISE  NOTICE  'v_actorid  %', v_actorid;
+
+ -- ## COMMENTED - CHANGE IN LOG TO INSERT UNKNOWN PERSON AND LINK THE ALLEGATION
+ --  update Investigationallegationmaltreators set expungementflag=1 
+ --  where  investigationallegationid=v_investigationallegationid;
+ 
+ 
+ -- ## MANUAL EXPUNGMENT INSERTING A UNKNOW PERSON AND SET AS NEW MALTEATOR -- MAR
+ -- ## EXCLUDE BLOCK WHEN NOT SELECTED OPTION 1 AND 2 
+ IF v_isunnamed_ud = true OR v_isunnamed_id = true THEN
+  WITH NEW_PERSON AS (INSERT INTO person (activeflag,principalident,firstname,lastname,middlename,salutation,suffix,dangerlevel,dangerreason,updatedby,updatedon,insertedby,insertedon,effectivedate,expirationdate,old_id,"timestamp",dob,religiontypekey,maritalstatustypekey,gendertypekey,racetypekey,deceaseddate,ethnicgrouptypekey,incometypekey,interpreterrequired,firstnamesoundex,lastnamesoundex,ssnverified,userphoto,refusessn,refusedob,dangertoself,dangertoselfreason,personphysicalattributetypeid,maidenname,socialmediasource,dateofdeath,prefx,occupation,deceased,stateid,fein,complaintnumber,cjisnumber,petitionid,tribalassociation,physicalattributes,isdraft,strengths,needs,nationalitytypekey,isapproxdod,primarylanguageid,secondarylanguageid,livingsituationkey,licensedfacilitykey,otherlicensedfacility,livingsituationdesc,reporteranonymousflag,url,expungementflag,dobflag,nameunknownflag,actiontypekey,adoptedflag,everbeenadoptedflag,sysdetadptflag,previousadoptionagetypekey,confirmationentitytypekey,clientflag,approximateageno,ssnno,citizenalenagetypekey,alienregistrationtext,doddate,physicalbuildtypekey,skintonetypekey,eyecolortypekey,haircolortypekey,hairtexturetypekey,distinguishedcomments,criminalrecordflag,stateverifieddate,countytypekey,primarycitizenshiptypekey,seccitizenshiptypekey,providerid,cisclientid,datepictaken,datavalidflag,outofstateflag,disabilityflag,afcarsageoutflag,afcarsperiodsent,fetalalcoholspctrmdisordflag,substanceexposednewbornflag,otherdrugs,substanceexposednewbornsourcetypekey,substanceexposednewbornsourceid,substanceexposednewborntimetamp,isapproxdob,otherprimarylanguagetypekey,citizenalenageflag,otherreligion,isqualifiedalien,verificationremarks,alienstatustypekey,safehavenbabyflag,fk_id,personflag,preadoptiondate,aname,batchrunflag,isuscitizen,hairtextureotherdesc,haircolorotherdesc,isglasses,employername,clienttitle,biologicalmothermarriedsw,etl_userid,etl_load_date) VALUES 
+      (1,NULL,'unnamed','unnamed','',NULL,'',NULL,NULL,'EXPUNG',NOW(),'EXPUNG',NOW(),NOW(),NULL,NULL,NULL,'1900-01-01 00:00:00.000',NULL,NULL,'U',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,'',false,false,0,'',NULL,NULL,NULL,NULL,'',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,0,'ENG',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,NULL,'',NULL,NULL,NULL,'','','','','',NULL,NULL,NULL,NULL,NULL,NULL,NULL,'412059162',NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,NULL,NULL,NULL,NULL,NULL,'','',NULL,'','',NULL,NULL,NULL) RETURNING personid 
+        ),
+  NEW_ACTOR AS (INSERT INTO actor (activeflag,personid,actortype,dangerlevel,dangerreason,insertedby,insertedon,updatedby,updatedon,expirationdate,"timestamp",primarylanguageid,secondarylanguageid,employeetypeid,employeetypename,medicaideligibility,blockgranteligibility,recipientstatus,livingarrangementtypekey,interpreterrequired,guardianname,guardianinfo,ramentalhealth,ramentalretarted,ramentalretartedtype,manualupdateflag,intakeserviceid,iscollateralcontact,old_id,ismentalillness,mentalillnessdetail,ismentalimpair,mentalimpairdetail,ishouseholdmember,isdangertoworker,dangertoworkerreason,sphouseholdmemberflag,spchildflag,spreporteranonymousflag,spreporternoletterflag,spexpungementflag,fetalalcoholspctrmdisordflag,drugexposednewbornflag,probationsearchconductedflag,sexoffenderregisteredflag,otherdrugs,unknownreporterflag,spproviderid,servicecaseid,fk_id,fk_c_id,personroletypeid,drugexposedkey,intakenumber,etl_userid,etl_load_date)
+      (SELECT  activeflag,p.personid,actortype,dangerlevel,dangerreason,'EXPUNG',NOW(),'EXPUNG',NOW(),NULL,NULL,primarylanguageid,secondarylanguageid,employeetypeid,employeetypename,medicaideligibility,blockgranteligibility,recipientstatus,livingarrangementtypekey,interpreterrequired,guardianname,guardianinfo,ramentalhealth,ramentalretarted,ramentalretartedtype,manualupdateflag,intakeserviceid,iscollateralcontact,NULL,ismentalillness,mentalillnessdetail,ismentalimpair,mentalimpairdetail,ishouseholdmember,isdangertoworker,dangertoworkerreason,sphouseholdmemberflag,spchildflag,spreporteranonymousflag,spreporternoletterflag,spexpungementflag,fetalalcoholspctrmdisordflag,drugexposednewbornflag,probationsearchconductedflag,sexoffenderregisteredflag,otherdrugs,unknownreporterflag,spproviderid,servicecaseid,fk_id,fk_c_id,personroletypeid,drugexposedkey,intakenumber,etl_userid,etl_load_date
+      FROM  NEW_PERSON p, actor 
+      WHERE  actorid = (SELECT actorid FROM intakeservicerequestactor WHERE intakeservicerequestactorid = v_intakeservicerequestactorid)) RETURNING actorid, personid 
+      ),
+  NEW_ROLE AS (INSERT INTO intakeservicerequestactor (actorid, personid,intakeservicerequestpersontypekey,rapersontypekey,insertedby,insertedon,updatedby,updatedon,expirationdate,"timestamp",intakeserviceid,routingaddressid,employeetypeid,employeetypename,medicaideligibility,blockgranteligibility,livingarrangementtypekey,guardianname,guardianinfo,ramentalhealth,ramentalretarted,ramentalretartedtype,refusessn,refusedob,activeflag,reported,isprimary,old_id,ismaltreator,rcprimaryroletypekey,ncpspriorhistoryflag,householdnumber,ssnverifytypekey,rchandicapflag,rchomelessflag,lvgarrangementtypekey,livingprefixtypekey,lvgfirstname,lvgmiddlename,lvglastname,lvgsuffixtypekey,lvgrelationshiptypekey,lvgcomments,rchouseholdflag,rcchildflag,nonparticipatingflag,householdheadflag,rcinsertedon,rcinsertedby,rcupdatedon,rcupdatedby,rcactiveflag,livingwith,rcreporteranonymousflag,rcreporternoletterflag,clientflag,rcexpungementflag,rcdatavalidflag,rcclientmergeid,arclientid,arsummaryid,altrespclientid,participatingchildflag,aractiveflag,screeningpersonid,prexpungementflag,prdatavalidflag,prinsertedby,prupdatedby,practiveflag,referralclientid,caseclientid,crexpungementflag,crdatavalidflag,crinsertedby,crupdatedby,sphouseholdmemberflag,spchildflag,spreporteranonymousflag,spreporternoletterflag,spexpungementflag,fetalalcoholspctrmdisordflag,drugexposednewbornflag,probationsearchconductedflag,sexoffenderregisteredflag,otherdrugs,unknownreporterflag,spproviderid,fk_id,isvictim,servicecaseid,fk_cl_id,intakenumber,isheadofhousehold,etl_userid,etl_load_date) 
+      (SELECT  a.actorid,a.personid,'AM',rapersontypekey,'EXPUNG',NOW(),'EXPUNG',NOW(),NULL,NULL,intakeserviceid,routingaddressid,employeetypeid,employeetypename,medicaideligibility,blockgranteligibility,livingarrangementtypekey,guardianname,guardianinfo,ramentalhealth,ramentalretarted,ramentalretartedtype,refusessn,refusedob,activeflag,reported,isprimary,NULL,ismaltreator,rcprimaryroletypekey,ncpspriorhistoryflag,householdnumber,ssnverifytypekey,rchandicapflag,rchomelessflag,lvgarrangementtypekey,livingprefixtypekey,lvgfirstname,lvgmiddlename,lvglastname,lvgsuffixtypekey,lvgrelationshiptypekey,lvgcomments,rchouseholdflag,rcchildflag,nonparticipatingflag,householdheadflag,rcinsertedon,rcinsertedby,rcupdatedon,rcupdatedby,rcactiveflag,livingwith,rcreporteranonymousflag,rcreporternoletterflag,clientflag,rcexpungementflag,rcdatavalidflag,rcclientmergeid,arclientid,arsummaryid,altrespclientid,participatingchildflag,aractiveflag,screeningpersonid,prexpungementflag,prdatavalidflag,prinsertedby,prupdatedby,practiveflag,referralclientid,caseclientid,crexpungementflag,crdatavalidflag,crinsertedby,crupdatedby,sphouseholdmemberflag,spchildflag,spreporteranonymousflag,spreporternoletterflag,spexpungementflag,fetalalcoholspctrmdisordflag,drugexposednewbornflag,probationsearchconductedflag,sexoffenderregisteredflag,otherdrugs,unknownreporterflag,spproviderid,fk_id,isvictim,servicecaseid,fk_cl_id,intakenumber,isheadofhousehold,etl_userid,etl_load_date 
+      FROM  NEW_ACTOR a, intakeservicerequestactor 
+      WHERE  intakeservicerequestactorid = v_intakeservicerequestactorid)  RETURNING intakeservicerequestactorid 
+     ),
+  NEW_ROLES AS (INSERT INTO personrole (activeflag, personid, ishouseholdmember, iscollateralcontact, drugexposednewbornflag, drugexposedtypekey, otherdrugs, safehavenbabyflag, probationsearchconductedflag, sexoffenderregisteredflag, dangertoself, dangertoselfreason, isdangertoworker, dangertoworkerreason, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, insertedby, insertedon, updatedby, updatedon, intakenumber, intakeserviceid, servicecaseid)
+      (SELECT 1, p.personid, ishouseholdmember, iscollateralcontact, drugexposednewbornflag, drugexposedtypekey, otherdrugs, safehavenbabyflag, probationsearchconductedflag, sexoffenderregisteredflag, dangertoself, dangertoselfreason, isdangertoworker, dangertoworkerreason, ismentalillness, mentalillnessdetail, ismentalimpair, mentalimpairdetail, 'EXPUNG', NOW(), 'EXPUNG', NOW(), intakenumber, intakeserviceid, servicecaseid 
+      FROM NEW_PERSON p, personrole pr WHERE pr.personid = (SELECT DISTINCT pa.personid FROM intakeservicerequestactor pa WHERE intakeservicerequestactorid = v_intakeservicerequestactorid LIMIT 1))
+  )
+  SELECT R.intakeservicerequestactorid, P.personid  INTO v_newintakeservicerequestactorid, v_newpersonid FROM NEW_ROLE R, NEW_PERSON P;
+
+  RAISE  NOTICE  'v_newintakeservicerequestactorid  %',v_newintakeservicerequestactorid;  
+
+  UPDATE Investigationallegationmaltreators im set im.intakeservicerequestactorid = v_newintakeservicerequestactorid
+  WHERE im.investigationallegationid=v_investigationallegationid;
+
+  -- Add new role
+  select count(*)
+   into v_role_cnt
+  from intakeservicerequestactor a
+  where a.actorid = ( select b.actorid 
+       from intakeservicerequestactor b
+       where b.intakeservicerequestactorid = v_intakeservicerequestactorid
+       )
+   and a.activeflag = 1 
+   and a.intakeservicerequestactorid <> v_intakeservicerequestactorid ;
+  
+  RAISE  NOTICE  'v_intakeservicerequestactorid  %',v_intakeservicerequestactorid;
+  RAISE  NOTICE  'v_role_cnt  %',v_role_cnt;
+  
+  IF v_role_cnt = 0 THEN
+   RAISE  NOTICE  'Insert New role';
+   INSERT INTO intakeservicerequestactor
+    ( intakeservicerequestactorid, actorid, intakeservicerequestpersontypekey, rapersontypekey, insertedby, 
+     insertedon, updatedby, updatedon, expirationdate, "timestamp", 
+     intakeserviceid, routingaddressid, employeetypeid, employeetypename, medicaideligibility, 
+     blockgranteligibility, livingarrangementtypekey, guardianname, guardianinfo, ramentalhealth, 
+     ramentalretarted, ramentalretartedtype, refusessn, refusedob, activeflag, 
+     reported, isprimary, personid, old_id, ismaltreator, 
+     rcprimaryroletypekey, ncpspriorhistoryflag, householdnumber, ssnverifytypekey, rchandicapflag, 
+     rchomelessflag, lvgarrangementtypekey, livingprefixtypekey, lvgfirstname, lvgmiddlename, 
+     lvglastname, lvgsuffixtypekey, lvgrelationshiptypekey, lvgcomments, rchouseholdflag, 
+     rcchildflag, nonparticipatingflag, householdheadflag, rcinsertedon, rcinsertedby, 
+     rcupdatedon, rcupdatedby, rcactiveflag, livingwith, rcreporteranonymousflag, 
+     rcreporternoletterflag, clientflag, rcexpungementflag, rcdatavalidflag, rcclientmergeid, 
+     arclientid, arsummaryid, altrespclientid, participatingchildflag, aractiveflag, 
+     screeningpersonid, prexpungementflag, prdatavalidflag, prinsertedby, prupdatedby, 
+     practiveflag, referralclientid, caseclientid, crexpungementflag, crdatavalidflag, 
+     crinsertedby, crupdatedby, sphouseholdmemberflag, spchildflag, spreporteranonymousflag, 
+     spreporternoletterflag, spexpungementflag, fetalalcoholspctrmdisordflag, drugexposednewbornflag, probationsearchconductedflag, 
+     sexoffenderregisteredflag, otherdrugs, unknownreporterflag, spproviderid, fk_id, 
+     isvictim, servicecaseid, fk_cl_id, intakenumber, isheadofhousehold, 
+     etl_userid, etl_load_date, objectid, objecttype)
+   SELECT gen_random_uuid(), actorid, 'OTH', rapersontypekey, 'EXPUNG', 
+    now(), 'EXPUNG', now(), expirationdate, "timestamp", 
+    intakeserviceid, routingaddressid, employeetypeid, employeetypename, medicaideligibility, 
+    blockgranteligibility, livingarrangementtypekey, guardianname, guardianinfo, ramentalhealth, 
+    ramentalretarted, ramentalretartedtype, refusessn, refusedob, activeflag, 
+    reported, isprimary, personid, old_id, ismaltreator, 
+    rcprimaryroletypekey, ncpspriorhistoryflag, householdnumber, ssnverifytypekey, rchandicapflag, 
+    rchomelessflag, lvgarrangementtypekey, livingprefixtypekey, lvgfirstname, lvgmiddlename, 
+    lvglastname, lvgsuffixtypekey, lvgrelationshiptypekey, lvgcomments, rchouseholdflag, 
+    rcchildflag, nonparticipatingflag, householdheadflag, rcinsertedon, rcinsertedby, 
+    rcupdatedon, rcupdatedby, rcactiveflag, livingwith, rcreporteranonymousflag, 
+    rcreporternoletterflag, clientflag, rcexpungementflag, rcdatavalidflag, rcclientmergeid, 
+    arclientid, arsummaryid, altrespclientid, participatingchildflag, aractiveflag, 
+    screeningpersonid, prexpungementflag, prdatavalidflag, prinsertedby, prupdatedby, 
+    practiveflag, referralclientid, caseclientid, crexpungementflag, crdatavalidflag, 
+    crinsertedby, crupdatedby, sphouseholdmemberflag, spchildflag, spreporteranonymousflag, 
+    spreporternoletterflag, spexpungementflag, fetalalcoholspctrmdisordflag, drugexposednewbornflag, probationsearchconductedflag, 
+    sexoffenderregisteredflag, otherdrugs, unknownreporterflag, spproviderid, fk_id, 
+    isvictim, servicecaseid, fk_cl_id, intakenumber, isheadofhousehold, 
+    etl_userid, etl_load_date, objectid, objecttype
+   FROM intakeservicerequestactor
+   WHERE intakeservicerequestactorid = v_intakeservicerequestactorid;
+     
+  END IF; 
+
+  UPDATE  intakeservicerequestactor ira SET 
+       ira.activeflag = 0
+     , ira.updatedby = 'EXPUNG'
+     , ira.updatedon = NOW()
+  WHERE  ira.intakeservicerequestactorid = v_intakeservicerequestactorid
+    AND ira.intakeservicerequestpersontypekey = 'AM';
+  
+  UPDATE  intakeservicerequestactor ira SET 
+    isheadofhousehold = null, isprimary = true
+  WHERE  ira.intakeservicerequestactorid = v_newintakeservicerequestactorid and personid = v_newpersonid;
+
+  --reset iprimary flag when AM is inactive
+  UPDATE  intakeservicerequestactor isra SET isra.isprimary = true
+  WHERE isra.intakeservicerequestactorid 
+  IN (SELECT MAX(isa.intakeservicerequestactorid::character varying)::UUID
+  FROM intakeservicerequestactor isa WHERE isa.activeflag = 1 AND isa.actorid  = v_actorid );
+
+    END IF;
+ 
+ --## HANDLE ROULED OUT EXPUNGE
+ IF v_isremoverofindings = true OR v_isremovemaltreator = true THEN
+ 
+  RAISE NOTICE 'v_investigationallegationid  %', v_investigationallegationid;
+  
+  UPDATE investigationallegation ia SET
+      ia.activeflag = 0
+    , ia.updatedby = 'EXPUNG'
+    , ia.updatedon = now()
+  WHERE ia.investigationallegationid = v_investigationallegationid;
+
+  UPDATE investigationallegationmaltreators im SET
+      im.activeflag = 0
+    , im.updatedby = 'EXPUNG'
+    , im.updatedon = now()
+  WHERE im.intakeservicerequestactorid = v_intakeservicerequestactorid
+     AND im.investigationallegationid = v_investigationallegationid;
+
+  UPDATE investigationfinding inf SET
+      inf.activeflag = 0
+    , inf.updatedby = 'EXPUNG'
+    , inf.updatedon = now()
+  WHERE inf.investigationallegationid = v_investigationallegationid;
+    
+  --## UPDATE THE OUTBOUND TABLE FOR CROSS-OVER
+  UPDATE tb_cjams_investigation_client td SET
+       td.action_flag = 'D'
+     , td.update_ts = NOW()
+  WHERE td.allegation_id = v_investigationallegationid::character varying; 
+
+  UPDATE    intakeservicerequestactor isra SET 
+      isra.activeflag = 0
+    , isra.spexpungementflag = 1
+    , isra.updatedby = 'EXPUNG'
+    , isra.updatedon = now()
+  WHERE isra.intakeservicerequestactorid = v_intakeservicerequestactorid
+    AND intakeservicerequestpersontypekey = 'AM'
+    AND 0 =  (SELECT COUNT(1) 
+        FROM  investigationallegationmaltreators im 
+        WHERE im.intakeservicerequestactorid = v_intakeservicerequestactorid AND im.activeflag = 1);
+
+  UPDATE  intakeservicerequestactor isra SET isra.isprimary = true
+  WHERE isra.intakeservicerequestactorid 
+    IN (SELECT MAX(isa.intakeservicerequestactorid::character varying)::UUID
+     FROM intakeservicerequestactor isa WHERE isa.activeflag = 1 AND isa.actorid  = v_actorid );
+ END IF;
+ 
+ 
+ -- ## END BLOCK
+
+ select   count(iai.intakeservicerequestactorid) into v_maltreatorcount 
+ FROM Investigationallegationmaltreators iai
+ inner join investigationallegation ia on ia.investigationallegationid= iai.investigationallegationid 
+ JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid= iai.intakeservicerequestactorid
+ AND isra.activeflag =1        
+ join investigationmaltreatment mt on ia.maltreatmentid=mt.maltreatmentid and ia.activeflag=1 and mt.activeflag=1
+ JOIN person pr ON pr.personid= isra.personid AND pr.activeflag =1  and mt.isnotapplicable != 1
+ where ia.investigationid=v_investigationid  
+ group by iai.intakeservicerequestactorid ;
+ 
+ select   count(iai.expungementflag) into v_actorcount
+ FROM Investigationallegationmaltreators iai
+ inner join investigationallegation ia on ia.investigationallegationid= iai.investigationallegationid 
+ JOIN intakeservicerequestactor isra ON isra.intakeservicerequestactorid= iai.intakeservicerequestactorid
+ AND isra.activeflag =1        
+ JOIN person pr ON pr.personid= isra.personid AND pr.activeflag =1
+ where ia.investigationid=v_investigationid and iai.expungementflag is not null 
+ group by iai.expungementflag;
+ 
+ if v_maltreatorcount = v_actorcount  then 
+  update intakeservicerequestactor set activeflag=1 ,updatedby = v_securityuserid,updatedon=now() ,spexpungementflag=1  
+  where   intakeservicerequestpersontypekey='AM' and intakeservicerequestactorid =  v_intakeservicerequestactorid ;
+                                                                
+ end if ; 
+                                                                                                                       
+                                                                                                                                   
+ RETURN 'Success';                                                                                                                 
+                                                                                
+END;                                                    
+                                                                                                                                    
+$function$
+

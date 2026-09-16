@@ -1,0 +1,184 @@
+CREATE OR REPLACE FUNCTION as_getroutingusersive(securityuserid character varying, appeventcode character varying)
+ RETURNS TABLE(userid character varying, teamname character varying, workloads integer, username character varying, agencykey character varying, email character varying, userrole character varying, loadnumber character varying, available character varying, issupervisor boolean, homelocationcode character varying, worklocationcode character varying, juridiction character varying, cjamspid bigint, totalcases bigint, rolecode character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+declare v_teamid uuid =null;
+declare v_teamtypekey character varying ='';
+declare v_securityuserid character varying ='';
+BEGIN
+v_securityuserid:=securityuserid;
+        SELECT  tm.teamid ,t.teamtypekey  into v_teamid,v_teamtypekey
+        FROM    as_teammemberassignment tma 
+        INNER JOIN  teammember tm 
+            ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+        inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+        WHERE  tma.SecurityUsersId = securityuserid
+        AND   tma.activeflag =1;
+
+if (appeventcode in ('INTR','KINR')) then
+RETURN QUERY 
+        Select tm.securityusersid,t.teamname, cast (coalesce(rt.workload,0) as int),
+        cast(up.firstname || ' ' || up.lastname as character varying) ,tm.agency,up.email,
+        cast(tm.rolename as character varying),tm.loadnumber,
+        cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+        ,supervisor,tm.zipcode,tm.zipcodeplus,tm.juridiction,up.cjamspid, cast(coalesce(cc.casecount,0) as bigint),
+         r.roletypecode from 
+        (SELECT   tma.securityusersid,tma.teammemberid,tm.roletypekey ,
+         cast(tty.teamtypekey as character varying) agency
+        ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,
+        coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction
+         
+        FROM as_teammemberassignment tma
+        INNER join teammember tm
+          ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+        INNER join teammemberroletype  tmrt 
+          ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+          and tmrt.isupervisor   = true 
+        left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey 
+          AND tty.activeflag= 1
+        LEFT JOIN UserProfileAddress upa 
+          ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+        INNER join routingcONfig rc  
+         ON rc.targetrolekey  = tm.roletypekey   AND rc.activeflag= 1
+        WHERE rc.eventcode =appeventcode AND tm.teamid = v_teamid
+        AND tma.activeflag =1  ) tm
+        inner join  userprofile up 
+        ON up.securityusersid = tm.securityusersid AND up.activeflag= 1
+        inner join team t on t.teamid = tm.teamid and t.activeflag= 1
+           LEFT JOIN (
+            select routedusersid,count(1) casecount 
+            from intakeservicerequest
+             where isrouted =true group by routedusersid) CC
+            on cc.routedusersid = up.securityusersid 
+        left join (
+        select sr.routedusersid securityusersid, sum (workload) workload  from intakeservicerequest sr  
+        inner join servicerequesttypeconfig src on src.intakeservreqtypeid = sr.intakeservreqtypeid
+        and  src.servicerequestsubtypeid = sr.intakeservicerequestclassid
+        and src.activeflag =1
+        group by sr.routedusersid ) rt on rt.securityusersid = tm.securityusersid 
+         left join( select distinct  r.roletypekey , rt.roletypecode from role r inner join roletype rt on 
+                 rt.shortname = r.name and rt.activeflag =1 and r.activeflag =1) r on
+                 r.roletypekey = tm.roletypekey
+        order by  useravailable desc , coalesce(rt.workload,0)  ; 
+ elseif (appeventcode in ('IVER')) then
+ RETURN QUERY 
+        Select tm.securityusersid,t.teamname, cast (coalesce(rt.workload,0) as int),
+        cast(up.firstname || ' ' || up.lastname as character varying) ,tm.agency,up.email,
+        cast(tm.rolename as character varying),tm.loadnumber,
+        cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+        ,supervisor,tm.zipcode,tm.zipcodeplus,tm.juridiction,up.cjamspid, cast(coalesce(cc.casecount,0) as bigint),
+         r.roletypecode from 
+        (SELECT   tma.securityusersid,tma.teammemberid,tm.roletypekey ,
+         cast(tty.teamtypekey as character varying) agency
+        ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,
+        coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction
+         
+        FROM as_teammemberassignment tma
+        INNER join teammember tm
+          ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+        INNER join teammemberroletype  tmrt 
+          ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+          and tmrt.isupervisor   = true 
+        left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey 
+          AND tty.activeflag= 1
+        LEFT JOIN UserProfileAddress upa 
+          ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+        INNER join routingcONfig rc  
+         ON rc.targetrolekey  = tm.roletypekey   AND rc.activeflag= 1
+        WHERE rc.eventcode =appeventcode AND tm.teamid = v_teamid
+        AND tma.activeflag =1  ) tm
+        inner join  userprofile up 
+        ON up.securityusersid = tm.securityusersid AND up.activeflag= 1
+        inner join team t on t.teamid = tm.teamid and t.activeflag= 1
+           LEFT JOIN (
+            select routedusersid,count(1) casecount 
+            from intakeservicerequest
+             where isrouted =true group by routedusersid) CC
+            on cc.routedusersid = up.securityusersid 
+        left join (
+        select sr.routedusersid securityusersid, sum (workload) workload  from intakeservicerequest sr  
+        inner join servicerequesttypeconfig src on src.intakeservreqtypeid = sr.intakeservreqtypeid
+        and  src.servicerequestsubtypeid = sr.intakeservicerequestclassid
+        and src.activeflag =1
+        group by sr.routedusersid ) rt on rt.securityusersid = tm.securityusersid 
+         left join( select distinct  r.roletypekey , rt.roletypecode from role r inner join roletype rt on 
+                 rt.shortname = r.name and rt.activeflag =1 and r.activeflag =1) r on
+                 r.roletypekey = tm.roletypekey
+        order by  useravailable desc , coalesce(rt.workload,0)  ; 
+ else
+ RETURN Query
+        Select tm.securityusersid,t.teamname, cast (coalesce(rt.workload,0) as int),
+        cast(up.firstname || ' ' || up.lastname as character varying) ,tm.agency,up.email,
+        cast(tm.rolename as character varying),tm.loadnumber,
+        cast(case coalesce(up.unavailableflag,false) when true then 'No' else 'Yes' end  as character varying)  useravailable
+        ,supervisor,tm.zipcode,tm.zipcodeplus,tm.juridiction,up.cjamspid,  cast(coalesce(cc.casecount,0) as bigint),
+        r.roletypecode
+        from 
+        (SELECT   tma.securityusersid,tma.teammemberid,tm.roletypekey ,
+         cast(tty.teamtypekey as character varying) agency
+        ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,
+        coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction
+        FROM as_teammemberassignment tma
+        INNER join teammember tm
+         ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+        INNER join teammemberroletype  tmrt 
+          ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1
+        and tmrt.isupervisor   = false 
+        left join teamtype tty on tty.teamtypekey = tmrt.teamtypekey 
+          AND tty.activeflag= 1
+        LEFT JOIN UserProfileAddress upa
+          ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1
+        INNER join routingcONfig rc  
+         ON rc.targetrolekey  = tm.roletypekey   AND rc.activeflag= 1
+        WHERE rc.eventcode =appeventcode AND tm.teamid = v_teamid
+        AND tma.activeflag =1  
+        union all 
+        
+        SELECT  tma.securityusersid,tma.teammemberid,tm.roletypekey,cast(tty.teamtypekey as character varying)
+        ,tm.teamid, tm.loadnumber,replace(tmrt.description ,','||tmrt.teamtypekey,'') rolename,
+        coalesce(tmrt.isupervisor,false)supervisor , upa.zipcode,upa.zipcodeplus,upa.county as juridiction 
+       
+         FROM as_teammemberassignment tma
+         INNER join teammember tm
+            ON tm.teammemberid = tma.teammemberid  AND tm.activeflag= 1
+         INNER join teammemberroletype  tmrt 
+            ON tmrt.roletypekey = tm.roletypekey  AND tmrt.activeflag= 1 
+            and tmrt.isupervisor   = true 
+         inner join teamtype tty on tty.teamtypekey = tmrt.teamtypekey 
+          AND tty.activeflag= 1 
+          LEFT JOIN UserProfileAddress upa ON upa.securityusersid = tma.securityusersid  AND upa.activeflag= 1      
+ 
+        WHERE    --tm.teamid not in (v_teamid)
+           tma.securityusersid not in (v_securityuserid)
+         and tty.teamtypekey =v_teamtypekey
+
+        AND tma.activeflag =1)  tm
+        inner join  userprofile up 
+            ON up.securityusersid = tm.securityusersid AND up.activeflag= 1
+        inner join team t on t.teamid = tm.teamid and t.activeflag= 1
+        LEFT JOIN (
+             select routedusersid,count(1) casecount 
+             from intakeservicerequest
+                 where isrouted =true group by routedusersid) CC
+                on cc.routedusersid = up.securityusersid 
+        left join (
+          select sr.routedusersid securityusersid, sum (workload) workload 
+             from intakeservicerequest sr  
+             inner join servicerequesttypeconfig src 
+             on src.intakeservreqtypeid = sr.intakeservreqtypeid
+          and  src.servicerequestsubtypeid = sr.intakeservicerequestclassid
+          and src.activeflag =1
+          group by sr.routedusersid ) rt on 
+             rt.securityusersid = tm.securityusersid 
+        left join( select distinct  r.roletypekey , rt.roletypecode from role r inner join roletype rt on 
+                 rt.shortname = r.name and rt.activeflag =1 and r.activeflag =1) r on
+                 r.roletypekey = tm.roletypekey
+        order by  useravailable desc , coalesce(rt.workload,0)  ;  
+end if;        
+  end;
+ 
+
+$function$
+

@@ -1,0 +1,61 @@
+CREATE OR REPLACE FUNCTION get_all_applications(searchreq json)
+ RETURNS TABLE(totalcount bigint, provider_id bigint, provider_nm character varying, provider_category_cd character varying, applications json)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE
+   v_todate       TIMESTAMP;
+   v_fromdate     TIMESTAMP;
+   v_provider_id  CHARACTER VARYING;
+   v_provider_nm  CHARACTER VARYING;
+   v_pageno       INT;
+   searchjson   json;
+   v_prov_category_cd CHARACTER VARYING;
+BEGIN
+   v_pageno := searchreq ->> 'pageno';
+   searchjson := searchreq ->> 'searchform';
+   v_todate := searchjson ->> 'appcreateddate_to';
+   v_fromdate := searchjson ->> 'appcreateddate_from';
+   v_provider_nm := searchjson ->> 'provider_nm';
+   v_provider_id := searchjson ->> 'provider_id';
+   v_provider_id = coalesce(lower(trim(v_provider_id)),'');
+   v_provider_nm = coalesce(lower(trim(v_provider_nm)),'');
+   v_prov_category_cd := searchjson ->> 'provider_category_cd';
+
+      RETURN QUERY
+        SELECT count(*) OVER(),
+        tp.provider_id::bigint, 
+        tp.provider_nm,
+        tpp.picklist_value_cd as provider_category_cd,
+        (select json_agg(x)  from (
+        select count(1) over() as appcount, tpa.applicant_id, tpa.site_id, tpa.application_status,tpa.create_ts::timestamp without time zone
+        from  tb_provider_applicant tpa 
+      where tpa.provider_id = tp.provider_id and tpa.delete_sw = 'N' order by tpa.site_id desc nulls last
+    )x)::json as applications
+        FROM tb_provider tp         
+      inner join tb_provider_picklist tpp on tpp.provider_id = tp.provider_id and tp.delete_sw = 'N' and tpp.delete_sw = 'N'
+        where (CASE WHEN v_prov_category_cd is not null then tpp.picklist_value_cd = v_prov_category_cd else (tpp.picklist_value_cd = '3049' or tpp.picklist_value_cd = '3795') end) and
+        (case when v_provider_nm = '' then true else (
+              lower(tp.provider_nm) like '%'||v_provider_nm||'%' 
+                            or tp.provider_first_nm like '%'||v_provider_nm||'%' 
+                            or tp.provider_middle_nm like '%'||v_provider_nm||'%' 
+                            or tp.provider_last_nm like '%'||v_provider_nm||'%' ) end )
+         and 
+        (case when v_fromdate is null then true else (
+                            tpp.create_ts::date >= v_fromdate::date ) end )
+        and
+        (case when v_todate is null then true else (
+                            tpp.create_ts::date <= v_todate::date ) end ) 
+        and 
+        (case when v_provider_id = '' then true else (
+                            tp.provider_id::character varying like '%'||v_provider_id||'%' ) end )
+        GROUP BY tp.provider_id,tp.provider_id,tp.provider_nm,tpp.picklist_value_cd
+        order by tp.provider_id desc 
+        
+        LIMIT 10 
+        OFFSET  (v_pageno - 1) * 10;
+          
+END;
+$function$
+

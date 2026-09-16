@@ -1,0 +1,214 @@
+CREATE OR REPLACE FUNCTION as_getcdemdocumentprepulation(v_intakeserviceid uuid, v_intakenumber character varying, v_securityuserid character varying)
+ RETURNS TABLE(youthid character varying, youthname character varying, dateofbirth character varying, youthage character varying, gender character varying, race character varying, youthphonenumber character varying, emercontactnumber character varying, youthaddress character varying, youthcounty character varying, school character varying, currentgrade character varying, employername character varying, placementdate character varying, facilityname character varying, releasedate date, parentid character varying, parentguaridanname character varying, parentguardianphonenumber character varying, magistratename character varying, dispositiondate date, workername character varying, workerofficephone character varying, supervisorname character varying, supervisorofficephone character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+declare
+v_workername character varying;
+v_workerofficephone character varying;
+v_supervisorname character varying;
+v_supervisorofficephone character varying;
+v_parentid character varying;
+v_parentguaridanname character varying;
+v_parentguardianphonenumber character varying;
+v_youthphonenumber character varying;
+v_jsondata jsonb;
+v_schoolname character varying;
+v_grade character varying;
+v_employername character varying;
+v_emergencycontactnumber character varying;
+
+begin
+
+select 
+ jsondata into v_jsondata 
+from intakedastaging where intakenumber = v_intakenumber and activeflag = 1;
+
+select 
+ up.fullname,
+ cast(coalesce(uph.phoneextension,'000')||uph.phonenumber as character varying)
+ into v_workername,v_workerofficephone 
+from userprofile up
+left join userprofilephonenumber uph on up.securityusersid = up.securityusersid and uph.activeflag = 1 and userprofiletypekey ilike 'office'
+where up.securityusersid = v_securityuserid and up.activeflag = 1;
+
+select 
+ up.fullname,
+ cast(coalesce(uph.phoneextension,'000')||uph.phonenumber as character varying) 
+ into v_supervisorname,v_supervisorofficephone
+from routing r 
+left join userprofile up on up.securityusersid = r.fromsecurityusersid and up.activeflag = 1
+left join userprofilephonenumber uph on uph.securityusersid = up.securityusersid and uph.activeflag = 1 and userprofiletypekey ilike 'office'
+where 
+(( case when v_intakeserviceid is not null then (cast(v_intakeserviceid as character varying)= r.objectid) else true end) or 
+(case when v_intakenumber is not null then v_intakenumber = r.objectid else true end)) 
+and r.activeflag = 1  and r.fromroleid in ('JSCSP','JSSP') and r.tosecurityusersid = v_securityuserid;
+
+if v_intakeserviceid is null then 
+
+ select  
+  cast(coalesce(ida.obj->>'cjamspid','') as character varying) as parentid,
+  cast(coalesce(INITCAP(TRIM(coalesce(ida.obj->>'Lastname',''))|| CASE WHEN (ida.obj->>'suffix' is not null and ida.obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(ida.obj->>'suffix','')) || ', ' ||TRIM(coalesce(ida.obj->>'Firstname',''))),'') as  character varying) as pg_name
+  into v_parentid,v_parentguaridanname
+ from (select jsonb_array_elements(ids.jsondata->'persons') obj 
+    from (select v_jsondata as jsondata)ids
+   )ida 
+ where ida.obj->>'Role' ='parent-or-guard';
+
+ select  
+  cast(coalesce(ida.personphonejson->>'contactnumber','') as character varying) as pg_contactnumber
+  into v_parentguardianphonenumber
+ from (select jsonb_array_elements(ids.jsondata->'persons') obj
+     ,jsonb_array_elements(jsonb_array_elements(ids.jsondata->'persons')->'phoneNumber') personphonejson 
+    from (select v_jsondata as jsondata) ids
+   )ida 
+ where ida.obj->>'Role' ='parent-or-guard' and ida.personphonejson->>'contacttype' = '1672';
+ 
+ select  
+  cast(coalesce(ida.personphonejson->>'contactnumber','') as character varying) as pg_contactnumber
+  into v_youthphonenumber
+ from (select jsonb_array_elements(ids.jsondata->'persons') obj
+     ,jsonb_array_elements(jsonb_array_elements(ids.jsondata->'persons')->'phoneNumber') personphonejson 
+    from (select v_jsondata as jsondata) ids
+   )ida 
+ where ida.obj->>'Role' ='Youth' and ida.personphonejson->>'contacttype' = '1667';
+
+ select  
+  cast(coalesce(personschooljson->>'educationname','') as character varying) as school,
+  (select cast(typedescription as character varying) from gradetype where gradetypekey = coalesce(personschooljson->>'currentgradetypekey',''))  as currentgrade
+ into v_schoolname,v_grade
+ from (select jsonb_array_elements(ids.jsondata->'persons') obj
+   ,jsonb_array_elements(jsonb_array_elements(ids.jsondata->'persons')->'school') personschooljson 
+   from (select v_jsondata as jsondata) ids
+  )ida limit 1;
+
+ select  
+  cast(coalesce(personempjson->>'employername','') as character varying) as employername
+ into v_employername
+ from (select jsonb_array_elements(ids.jsondata->'persons') obj
+   ,jsonb_array_elements(jsonb_array_elements(ids.jsondata->'persons')->'employer') personempjson 
+  from (select v_jsondata as jsondata) ids
+  )ida limit 1;
+  
+ select  
+  cast(coalesce(personemerjson->>'contactpersonid','') as character varying) as employername
+  into v_emergencycontactnumber
+ from (select jsonb_array_elements(ids.jsondata->'persons') obj
+   ,jsonb_array_elements(jsonb_array_elements(ids.jsondata->'persons')->'emergency') personemerjson 
+   from (select v_jsondata as jsondata) ids
+  )ida
+ left join person epp on epp.personid = cast(coalesce(personemerjson->>'contactpersonid','') as uuid) and epp.activeflag =1 
+ left join personphonenumber eph on eph.personid = epp.personid and eph.activeflag = 1
+ limit 1;
+
+else 
+ 
+ select  cast(p.cjamspid as character varying),
+  cast((case when length(p.suffix)= 0 or p.suffix is null then p.lastname||', '||p.firstname else p.lastname||' '||p.suffix||', '||p.firstname end) as character varying),
+  cast(coalesce(relphone.phoneextension,'000')||relphone.phonenumber as character varying)
+  into v_parentid,v_parentguaridanname,v_parentguardianphonenumber
+ from intakeservicerequestactor isra  
+ left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+ join actor a on a.actorid = isra.actorid and a.activeflag =1
+ join person p on p.personid = a.personid and p.activeflag = 1
+ join (select 1 as seq,'father' as relation union 
+   select 2 as seq,'mother' as relation union
+   select 3 as seq,'fosterparent' as relation union 
+   select 4 as seq,'stepparent' as relation union
+   select 5 as seq,'adoptiveparent' as relation union 
+   select 6 as seq,'guardian' as relation)rel on rel.relation = ac.relationshiptypekey
+ left join (select ph.phoneextension,ph.phonenumber,ph.personid from personphonenumber ph where ph.activeflag =1 and ph.personphonetypekey = '1672' limit 1) relphone on relphone.personid = p.personid 
+ where isra.intakeserviceid=v_intakeserviceid
+ order by rel.seq limit 1;
+ 
+end if;
+
+return query
+
+select 
+ distinct 
+ cast(p.cjamspid as character varying) as youthid,
+ cast(INITCAP(TRIM(coalesce(p.lastname,''))|| CASE WHEN (p.suffix is not null and p.suffix!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(p.suffix,'')) || ', ' ||TRIM(coalesce(p.firstname,''))) as  character varying)   as youthname,
+ cast(to_char(p.dob,'MM/DD/YYYY') as character varying) as dateofbirth,
+ cast(age(now()::date,p.dob::date) as character varying) as youthage,
+ (select distinct typedescription from gendertype where gendertypekey=p.gendertypekey) as gender,  
+ cast(rt.typedescription as character varying) as race,
+ cast(coalesce(relphone.phoneextension,'000')||relphone.phonenumber as character varying) as youthphonenumber,
+ cast(coalesce(eph.phoneextension,'000')||eph.phonenumber as character varying) as emercontactnumber,
+ cast(((case when pa.address is null then '' else pa.address end)||(case when pa.address2 is null then '' else ', '||pa.address2 end)||(case when pa.city is null then '' else ', '||pa.city end)||(case when pa.state is null then '' else ', '||pa.state end)||(case when pa.zipcode is null then '' else ', '||pa.zipcode end) )as character varying) as youthaddress,
+ cast(trim(regexp_replace(pa.county, '\\''+', '''', 'g')) as character varying) as youthcounty,
+ cast(s.schoolname as character varying) as school,
+ cast(gt.typedescription as character varying) as currentgrade,
+ pemp.employername as employername,
+ cast(pl.startdatetime as character varying) as placementdate,
+ cast(pr.providername as character varying) as facilityname,
+ plcmntrl.releasedate::date as releasedate,
+ v_parentid as parentid,
+ v_parentguaridanname as parentguaridanname,
+ v_parentguardianphonenumber as parentguardianphonenumber,
+ ica.magistratename as magistratename,
+ ica.courtorderdatetime::date as dispositiondate,
+ cast(v_workername as character varying) as workername,
+ v_workerofficephone as workerofficephone,
+ cast(v_supervisorname as character varying) as supervisorname,
+ v_supervisorofficephone as supervisorofficephone
+from intakeservicerequest isr 
+join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.activeflag = 1
+join actor a on a.actorid = isra.actorid and a.activeflag = 1
+join person p on p.personid = a.personid and p.activeflag = 1
+left join racetype rt ON rt.racetypekey = P.racetypekey AND rt.activeflag = 1
+left join personaddress pa on pa.personid = p.personid and pa.activeflag = 1
+left join (select ph.phoneextension,ph.phonenumber,ph.personid from personphonenumber ph where ph.activeflag =1 and ph.personphonetypekey = '1667' limit 1) relphone on relphone.personid = p.personid
+left join placement pl on pl.intakenumber = isr.intakenumber and pl.activeflag =1
+left join provider pr on pr.providerid = pl.providerid and pr.activeflag = 1
+left join placementrelease plcmntrl on plcmntrl.placementid = pl.placementid and plcmntrl.activeflag = 1
+left join emergencycontactperson ep on ep.personid = p.personid and ep.activeflag = 1
+left join person epp on epp.personid = ep.contactpersonid and epp.activeflag =1 
+left join personphonenumber eph on eph.personid = epp.personid and eph.activeflag = 1
+left join (select *,row_number() over(partition by personid order by startdate desc) as recno from personeducation) pe on pe.personid = p.personid and pe.recno = 1
+left join school s on s.schoolid = pe.schoolid
+left join gradetype gt on gt.gradetypekey = pe.currentgradetypekey and gt.activeflag = 1
+left join personemployment pemp on pemp.personid = p.personid and pemp.activeflag = 1
+left join intakeservicerequestcourthearing ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1 and ich.hearingtypekey = 'Disp'
+left join intakeservicerequestcourtaction ica on ica.intakeservicerequestcourthearingid = ich.intakeservicerequestcourthearingid and ica.activeflag = 1
+where isra.intakeservicerequestpersontypekey = 'Youth' 
+and isr.intakeserviceid = v_intakeserviceid 
+union
+select distinct
+ cast(coalesce(ida.obj->>'cjamspid','') as character varying) as youthid,
+ cast(INITCAP(TRIM(coalesce(ida.obj->>'Lastname',''))|| CASE WHEN (ida.obj->>'suffix' is not null and ida.obj->>'suffix'!='' ) THEN ' ' ELSE '' END  || TRIM(coalesce(ida.obj->>'suffix','')) || ', ' ||TRIM(coalesce(ida.obj->>'Firstname',''))) as  character varying)   as youthname,
+ cast(ida.obj->>'Dob' as character varying) as dateofbirth,
+ cast(age(now()::date,cast(ida.obj->>'Dob' as date)) as character varying) as youthage,
+ cast(ida.obj->>'Gender' as character varying) as gender,
+ cast(obj->>'Race'as character varying) as race,
+ v_youthphonenumber as youthphonenumber,
+ cast(v_emergencycontactnumber as character varying) as emercontactnumber,
+ cast(ida.obj->>'fullAddress' as character varying) as youthaddress,
+ cast( trim(regexp_replace(ida.obj->>'county', '\\''+', '''', 'g')) as character varying) as youthcounty,
+ cast(v_schoolname as character varying) as school,
+ cast(v_grade as character varying) as currentgrade,
+ cast(v_employername as character varying) as employername,
+ cast(pl.startdatetime as character varying) as placementdate,
+ cast(pr.providername as character varying) as facilityname,
+ plcmntrl.releasedate::date as releasedate,
+ v_parentid as parentid,
+ v_parentguaridanname as parentguaridanname,
+ v_parentguardianphonenumber as parentguardianphonenumber,
+ cast(NULL as character varying) as magistratename,
+ cast(NULL as date) as dispositiondate,
+ cast(v_workername as character varying) as workername,
+ v_workerofficephone as workerofficephone,
+ cast(v_supervisorname as character varying) as supervisorname,
+ v_supervisorofficephone as supervisorofficephone
+from (select v_intakenumber as intakenumber,
+  jsonb_array_elements(ids.jsondata->'persons') obj 
+   from (select v_jsondata  as jsondata) ids
+where v_intakeserviceid is null )ida  
+left join placement pl on ida.intakenumber =pl.intakenumber and pl.activeflag=1
+left JOIN provider pr ON pl.providerid = pr.providerid AND pr.activeflag=1
+left join placementrelease plcmntrl on plcmntrl.placementid = pl.placementid and plcmntrl.activeflag = 1
+where ida.obj->>'Role' ='Youth' and v_intakeserviceid is null limit 1;
+
+end;
+$function$
+

@@ -1,0 +1,569 @@
+CREATE OR REPLACE FUNCTION f_nytd_client_chk_ele20_33(al_client_id uuid, adt_start_dt_srv date, adt_end_dt_srv date)
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$\r
+------------------------------------------------------------------------\r
+-- SQL Stored Procedure\r
+-- Description:  Generate Foster Care AFCARS report\r
+-- Revision(s)\r
+-- 10/20/2020 - Vineet Tirodkar - Changes for Performance improvements\r
+------------------------------------------------------------------------\r
+DECLARE VS_INDEPENDENT_ASSESS VARCHAR(3);\r
+DECLARE VS_ACADEMIC_SUPPORT VARCHAR(3);\r
+DECLARE VS_POST_SECNDRY_EDU_SUPPORT  VARCHAR(3);\r
+DECLARE VS_CAREER_PREPARATION  VARCHAR(3);\r
+DECLARE VS_OTH_FIN_ASSISTANCE  VARCHAR(3);\r
+DECLARE VS_EDU_FINANCIAL_ASSIST  VARCHAR(3);\r
+DECLARE VS_RM_BRD_FIN_ASSIST  VARCHAR(3);\r
+DECLARE VS_SUPVD_IND_LIVING  VARCHAR(3);\r
+DECLARE VS_MENTORING   VARCHAR(3);\r
+DECLARE VS_FM_SUPP_MARG_EDU  VARCHAR(3); \r
+DECLARE VS_HEALTH_EDU_RISK_PREVENTION  VARCHAR(3); \r
+DECLARE VS_HOUS_EDUCATION  VARCHAR(3); \r
+DECLARE VS_FIN_MANGT  VARCHAR(3); \r
+DECLARE VS_VOC_TRAINING  VARCHAR(3); \r
+DECLARE VS_CLNT_CHK VARCHAR(1);\r
+DECLARE VI_CLIENT_ID UUID;\r
+DECLARE VD_START_DT_SRV1 DATE;\r
+DECLARE VD_END_DT_SRV1 DATE;\r
+DECLARE VI_CJAMSPID BIGINT;\r
+\r
+begin\r
+\r
+ VI_CLIENT_ID = al_client_id;\r
+\r
+ VD_START_DT_SRV1 = adt_start_dt_srv;\r
+ VD_END_DT_SRV1 = adt_end_dt_srv;\r
+\r
+ -- Get VI_CJAMSPID\r
+ select cjamspid\r
+  into VI_CJAMSPID\r
+  from person\r
+ where personid = al_client_id\r
+  and activeflag = 1 ;\r
+ \r
+ --element 20\r
+ VS_INDEPENDENT_ASSESS \r
+  = ( SELECT  CASE WHEN assessmentdate BETWEEN (VD_START_DT_SRV1 - interval ' 7 MONTHS ') \r
+      AND (VD_END_DT_SRV1 + interval '7 MONTHS') THEN \r
+      'Yes' \r
+     ELSE \r
+      'No' \r
+     END\r
+   FROM personlifeskillassessment \r
+   WHERE personid = VI_CLIENT_ID    -- personid not available in table personlifeskillassessment\r
+   ORDER BY lifeskillassessid DESC limit 1 \r
+    );\r
+    \r
+ IF (VS_INDEPENDENT_ASSESS IS NULL) THEN\r
+  VS_INDEPENDENT_ASSESS = 'No';\r
+ END IF;\r
+\r
+ IF VS_INDEPENDENT_ASSESS = 'No' THEN\r
+  -- Element ID 21 - Academic Support -\r
+  VS_ACADEMIC_SUPPORT =\r
+   (  SELECT (CASE WHEN ( SELECT COUNT(*) \r
+          FROM tb_service_log SL\r
+           WHERE SL.client_id = VI_CJAMSPID\r
+         AND SL.delete_sw = 'N'                         \r
+         AND SL.start_dt <= VD_END_DT_SRV1\r
+         AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+         AND (SL.provider_service_id \r
+           IN ( SELECT provider_service_id\r
+              FROM tb_provider_services\r
+             WHERE delete_sw = 'N'\r
+              AND service_id IN (1125,11364,11355,1122,1118,1119,1126,1121,11374)\r
+            )\r
+          OR SL.agency_service_ldss_id IN (11387,11378,1217,1223,1224,1219,11397,1220)\r
+          OR SL.service_log_id \r
+           IN ( SELECT SL.service_log_id\r
+              FROM tb_service_log SL\r
+             WHERE SL.delete_sw='N'\r
+              AND SL.provider_service_id IN (SELECT provider_service_id\r
+                       FROM tb_provider_services\r
+                      WHERE delete_sw = 'N'\r
+                       AND service_id IN (11344,11401,1127)\r
+                        )\r
+            )\r
+          )\r
+         ) > 0 THEN\r
+         'Yes'\r
+        ELSE\r
+         'No'\r
+        END)\r
+   );\r
+   \r
+  IF VS_ACADEMIC_SUPPORT = 'No' THEN\r
+   --  Element ID 22 - Post Secondary Educational Support\r
+   VS_POST_SECNDRY_EDU_SUPPORT =\r
+   (SELECT (CASE WHEN (SELECT COUNT(*)\r
+         FROM tb_service_log SL\r
+        WHERE SL.client_id = VI_CJAMSPID\r
+         AND SL.delete_sw='N'\r
+         AND SL.start_dt  <= VD_END_DT_SRV1\r
+         AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+         AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                  FROM tb_provider_services\r
+                 WHERE delete_sw = 'N'\r
+                  AND service_id IN (11365,11356,11373)\r
+                 )\r
+         OR SL.agency_service_ldss_id IN (11388,11396,11379)\r
+                                    )\r
+        ) > 0 THEN\r
+        'Yes'\r
+       ELSE\r
+        'No'\r
+       END)\r
+   ) ;\r
+   \r
+   IF VS_POST_SECNDRY_EDU_SUPPORT = 'No' THEN\r
+    --  Element ID 23 - Career Preparation \r
+    VS_CAREER_PREPARATION =\r
+    (SELECT (CASE WHEN (SELECT COUNT(*)\r
+          FROM tb_service_log SL\r
+         WHERE SL.client_id = VI_CJAMSPID\r
+          AND SL.delete_sw = 'N'\r
+          AND SL.start_dt  <= VD_END_DT_SRV1\r
+          AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+          AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                   FROM tb_provider_services\r
+                  WHERE delete_sw = 'N'\r
+                   AND service_id IN (11357,11366)\r
+                  )\r
+           OR SL.agency_service_ldss_id IN (11389,11380,1274,1271,1273,1275,1272,1276)\r
+           OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                  FROM tb_service_log SL\r
+                   WHERE SL.delete_sw='N'\r
+                  AND SL.provider_service_id \r
+                    IN ( SELECT provider_service_id\r
+                      FROM tb_provider_services\r
+                     WHERE delete_sw = 'N'\r
+                      AND service_id IN (11346)\r
+                     )\r
+                 )\r
+           )\r
+        ) > 0 THEN\r
+       'Yes'\r
+                        ELSE\r
+       'No'\r
+                        END)\r
+    );\r
+   \r
+    IF VS_CAREER_PREPARATION = 'No' THEN\r
+     -- Element ID 24 - Employment Programs or Vocational Training\r
+     VS_VOC_TRAINING =\r
+     ( SELECT (CASE WHEN (SELECT COUNT(*)\r
+           FROM tb_service_log SL\r
+          WHERE SL.client_id = VI_CJAMSPID\r
+           AND SL.delete_sw='N'\r
+           AND SL.start_dt  <= VD_END_DT_SRV1\r
+           AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+           AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                    FROM tb_provider_services\r
+                   WHERE delete_sw = 'N'\r
+                    AND service_id IN (11367,11358,1130,1129,1120,1128,1131) --#13052\r
+                   )\r
+            OR SL.agency_service_ldss_id IN (11390,11381,1226,1228,1216,1221,1227)\r
+            OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                   FROM tb_service_log SL\r
+                    WHERE SL.delete_sw='N'\r
+                   AND SL.provider_service_id \r
+                    IN ( SELECT provider_service_id\r
+                      FROM tb_provider_services\r
+                      WHERE delete_sw = 'N'\r
+                      AND service_id IN (11347)\r
+                       )\r
+                  )\r
+                                         )\r
+        ) > 0 THEN\r
+       'Yes'\r
+                         ELSE\r
+       'No'\r
+                         END)\r
+     );\r
+     \r
+     IF VS_VOC_TRAINING = 'No' THEN\r
+      -- Element ID 25 - Budget and Financial Management\r
+      VS_FIN_MANGT =\r
+      (SELECT (CASE WHEN (SELECT COUNT(*)\r
+            FROM tb_service_log SL\r
+            WHERE SL.client_id = VI_CJAMSPID\r
+             AND SL.delete_sw='N'\r
+             AND SL.start_dt  <= VD_END_DT_SRV1\r
+             AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+             AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                      FROM tb_provider_services\r
+                     WHERE delete_sw = 'N'\r
+                      AND service_id IN (11368,11359,1124,1103)\r
+                     )\r
+              OR SL.agency_service_ldss_id IN (11391,11382,1218,1201)\r
+              OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                     FROM tb_service_log SL\r
+                      WHERE SL.delete_sw='N'\r
+                     AND SL.provider_service_id \r
+                      IN ( SELECT provider_service_id\r
+                        FROM tb_provider_services\r
+                         WHERE delete_sw = 'N'\r
+                        AND service_id IN (11348)\r
+                         )\r
+                    )\r
+              )\r
+        ) > 0 THEN\r
+       'Yes'\r
+                           ELSE\r
+       'No'\r
+                           END)\r
+      );\r
+      \r
+      IF VS_FIN_MANGT = 'No' THEN\r
+       -- Element ID 26 - Housing Education and Home Management Training\r
+       VS_HOUS_EDUCATION =\r
+        (SELECT (CASE WHEN ( SELECT COUNT(*)\r
+         FROM tb_service_log SL\r
+         WHERE SL.client_id = VI_CJAMSPID\r
+         AND SL.delete_sw='N'\r
+         AND SL.start_dt  <= VD_END_DT_SRV1\r
+         AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+         AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                  FROM tb_provider_services\r
+                 WHERE delete_sw = 'N'\r
+                  AND service_id IN (11370,11361,11369,11360,1104)\r
+                 )\r
+          OR SL.agency_service_ldss_id IN (11393,11384,11392,11383,1200,1202,1203)\r
+          OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                 FROM tb_service_log SL\r
+                 WHERE SL.delete_sw='N'\r
+                 AND SL.provider_service_id \r
+                  IN ( SELECT provider_service_id\r
+                    FROM tb_provider_services\r
+                     WHERE delete_sw = 'N'\r
+                    AND service_id IN (11349,11350)\r
+                     )\r
+                 )\r
+           )\r
+        ) > 0 THEN\r
+         'Yes'\r
+        ELSE\r
+         'No'\r
+        END)\r
+       );\r
+        \r
+       IF VS_HOUS_EDUCATION = 'No' THEN \r
+        -- Element ID 27 - Health Education and Risk Prevention\r
+        VS_HEALTH_EDU_RISK_PREVENTION =\r
+         (  SELECT (CASE WHEN ( SELECT COUNT(*)\r
+          FROM tb_service_log SL\r
+         WHERE SL.client_id = VI_CJAMSPID\r
+          AND SL.delete_sw='N'\r
+          AND SL.start_dt  <= VD_END_DT_SRV1\r
+          AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+          AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                   FROM tb_provider_services\r
+                  WHERE delete_sw = 'N'\r
+                   AND service_id IN (11362,11371,1195,1192,1304,1145,1147,1197,1108)\r
+                  )\r
+           OR SL.agency_service_ldss_id IN (11385,11394,1263,1262,1300,1244,1265,1264,1205,1252,1253)\r
+           OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                FROM tb_service_log SL\r
+                WHERE SL.delete_sw='N'\r
+                AND SL.provider_service_id IN ( SELECT provider_service_id\r
+                        FROM tb_provider_services\r
+                        WHERE delete_sw = 'N'\r
+                        AND service_id IN (11351,1196)\r
+                         )\r
+                )\r
+           )\r
+          ) > 0 THEN\r
+          'Yes'\r
+         ELSE\r
+          'No'\r
+         END)\r
+        ) ;\r
+        \r
+        IF VS_HEALTH_EDU_RISK_PREVENTION = 'No' THEN\r
+         -- Element ID 28 - Family Support/Healthy Marriage Education -\r
+         VS_FM_SUPP_MARG_EDU =\r
+         (SELECT (CASE WHEN ( SELECT COUNT(*)\r
+          FROM tb_service_log SL\r
+          WHERE SL.client_id = VI_CJAMSPID\r
+          AND SL.delete_sw='N'\r
+          AND SL.start_dt  <= VD_END_DT_SRV1\r
+          AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+          AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                   FROM tb_provider_services\r
+                  WHERE delete_sw = 'N'\r
+                   AND service_id IN (11363,11372,1100,1157,1144,1117,1101,1107)\r
+                  )\r
+           OR SL.agency_service_ldss_id IN (11395,11386,1198,1245,1241,1214,1199,1204)\r
+           OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                  FROM tb_service_log SL\r
+                  WHERE SL.delete_sw='N'\r
+                  AND SL.provider_service_id \r
+                   IN (SELECT provider_service_id\r
+                     FROM tb_provider_services\r
+                    WHERE delete_sw = 'N'\r
+                     AND service_id IN (11352)\r
+                    )\r
+                 )\r
+            )\r
+           ) > 0 THEN\r
+            'Yes'\r
+          ELSE\r
+           'No'\r
+          END)\r
+         ) ;\r
+         \r
+         IF VS_FM_SUPP_MARG_EDU = 'No' THEN\r
+          -- Element ID 29 - Mentoring -\r
+          VS_MENTORING =\r
+          (SELECT (CASE WHEN ( SELECT COUNT(*)\r
+           FROM tb_service_log SL\r
+           WHERE SL.client_id = VI_CJAMSPID\r
+           AND SL.delete_sw='N'\r
+           AND SL.start_dt  <= VD_END_DT_SRV1\r
+           AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+           AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                    FROM tb_provider_services\r
+                   WHERE delete_sw = 'N'\r
+                    AND service_id IN (11375,1150,1153)\r
+                   )\r
+            OR SL.agency_service_ldss_id IN (11398,1254,1259,1258,1260)\r
+            OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                   FROM tb_service_log SL\r
+                   WHERE SL.delete_sw='N'\r
+                   AND SL.provider_service_id \r
+                    IN ( SELECT provider_service_id\r
+                      FROM tb_provider_services\r
+                     WHERE delete_sw = 'N'\r
+                      AND service_id IN (11353)\r
+                        )\r
+                  )\r
+            )\r
+          ) > 0 THEN\r
+           'Yes'\r
+          ELSE\r
+           'No'\r
+          END)                               \r
+         ) ;\r
+         \r
+         IF VS_MENTORING = 'No' THEN\r
+          -- Element ID 30 - Supervised Independent Living\r
+           VS_SUPVD_IND_LIVING =\r
+           (  SELECT ( CASE WHEN ( select count(*)\r
+            from personprogramarea cpa\r
+           where cpa.personid = VI_CLIENT_ID\r
+            and cpa.startdate <= VD_END_DT_SRV1\r
+            and (cpa.enddate is null or cpa.enddate::date >= VD_START_DT_SRV1 )\r
+            and cpa.programkey in ( 'IL', 'OOH' )\r
+            -- and cpa.agency_program_area_id IN (2,4) -- agencyprogramareaid not found in table personprogramarea\r
+            and cpa.personid  \r
+             in ( select personid\r
+                from placement\r
+               where activeflag = 1\r
+                and startdatetime <= VD_END_DT_SRV1\r
+                and (enddatetime is null \r
+                  or enddatetime::date >= VD_START_DT_SRV1 )\r
+                and service_id = 1 \r
+                --and placement_structure_id = 1  -- field NA in table placement\r
+               order by insertedon desc\r
+               -- order by placementid desc\r
+               fetch first 1 row only\r
+                )\r
+           ) > 0 THEN\r
+            'Yes'\r
+           WHEN ( select count(*)\r
+              from personprogramarea cpa\r
+             where cpa.personid = VI_CLIENT_ID\r
+              and cpa.startdate <= VD_END_DT_SRV1\r
+              and (cpa.enddate is null or cpa.enddate::date >= VD_START_DT_SRV1 )\r
+              and cpa.programkey in ( 'IL', 'OOH' )\r
+              -- and cpa.agency_program_area_id IN (2,4) -- agencyprogramareaid not found in table personprogramarea\r
+              and cpa.personid in ( select personid\r
+                     from placement\r
+                    where activeflag = 1\r
+                     and startdatetime::date <= VD_END_DT_SRV1\r
+                     and (enddatetime is null or enddatetime::date >= VD_START_DT_SRV1 )\r
+                     and service_id = 75 \r
+                     --and placement_structure_id = 75   -- field NA in table placement\r
+                     order by insertedon desc\r
+                     -- order by placementid desc\r
+                     fetch first 1 row only\r
+                   )\r
+            ) > 0 THEN\r
+            'Yes'\r
+           WHEN ( SELECT COUNT(*)\r
+              FROM livingarrangement     \r
+             WHERE livingarrangementtypekey = '13071'\r
+              AND personid = VI_CLIENT_ID\r
+              AND livingstartdate <= VD_END_DT_SRV1\r
+              AND (livingenddate IS NULL OR livingenddate >= VD_START_DT_SRV1)) > 0 THEN\r
+            'Yes'\r
+           ELSE\r
+            'No'\r
+           END)\r
+          );\r
+         \r
+          IF VS_SUPVD_IND_LIVING = 'No' THEN\r
+           -- Element ID 31 - Room and Board Financial Assistance\r
+           VS_RM_BRD_FIN_ASSIST =\r
+           (SELECT ( CASE WHEN ( SELECT COUNT(*)\r
+            FROM tb_service_log SL\r
+            WHERE SL.client_id = VI_CJAMSPID\r
+            AND SL.delete_sw='N'\r
+            AND SL.start_dt  <= VD_END_DT_SRV1\r
+            AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+            AND (SL.provider_service_id IN (SELECT provider_service_id\r
+                     FROM tb_provider_services\r
+                    WHERE delete_sw = 'N'\r
+                     AND service_id IN (1133,1134,11377,1132,1135,\r
+                          11376,1136,1137,1138,1109)\r
+                    )\r
+             OR SL.agency_service_ldss_id IN (1232,1233,11400,1283,1229,1230,\r
+                      11399,1231,1234,1235,1236,1206)\r
+             OR SL.service_log_id IN (SELECT SL.service_log_id\r
+                    FROM tb_service_log SL\r
+                     WHERE SL.delete_sw='N'\r
+                    AND SL.provider_service_id \r
+                     IN  (SELECT provider_service_id\r
+                       FROM tb_provider_services\r
+                       WHERE delete_sw = 'N'\r
+                       AND service_id IN (11343,1033,1034,1032,1035,\r
+                            1036,1037,11342,1039)\r
+                      )\r
+                    )\r
+             )\r
+            ) > 0 THEN\r
+            'Yes'\r
+           WHEN (SELECT COUNT(*)\r
+             FROM livingarrangement\r
+              WHERE livingarrangementtypekey = '13071'\r
+             AND personid = VI_CLIENT_ID\r
+             AND livingstartdate <= VD_END_DT_SRV1\r
+             AND (livingenddate IS NULL OR livingenddate >= VD_START_DT_SRV1)) > 0 THEN\r
+            'Yes'\r
+           WHEN ( select count(*)       \r
+              from personprogramarea cpa\r
+             where cpa.personid = VI_CLIENT_ID\r
+              and cpa.startdate <= VD_END_DT_SRV1\r
+              and (cpa.enddate is null or cpa.enddate >= VD_START_DT_SRV1 )\r
+              and cpa.programkey in ( 'IL', 'OOH' )\r
+              --and cpa.agency_program_area_id IN (2,4) -- field NA in personprogramarea  \r
+              and cpa.personid in ( select personid\r
+                     from placement\r
+                    where activeflag = 1\r
+                     and startdatetime <= VD_END_DT_SRV1\r
+                     and (enddatetime is null or enddatetime >= VD_START_DT_SRV1 )\r
+                     and service_id = 73 \r
+                     --and placement_structure_id = 73   -- field not available\r
+                     order by insertedon desc\r
+                     -- order by placementid desc\r
+                     fetch first 1 row only\r
+                   )\r
+            ) > 0 THEN\r
+             'Yes'\r
+            ELSE\r
+             'No'\r
+            END)\r
+           ) ;\r
+          \r
+           IF VS_RM_BRD_FIN_ASSIST = 'No' THEN\r
+            -- Element ID 32 - education financial assistance\r
+             VS_EDU_FINANCIAL_ASSIST =\r
+             (  SELECT ( CASE WHEN ( SELECT COUNT(*)\r
+              FROM tb_service_log SL\r
+             WHERE SL.client_id = VI_CJAMSPID\r
+              AND SL.delete_sw='N'\r
+              AND SL.start_dt  <= VD_END_DT_SRV1\r
+              AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+              AND (SL.service_log_id IN ( SELECT SL.service_log_id\r
+                      FROM tb_service_log SL\r
+                     WHERE SL.delete_sw='N'\r
+                      AND SL.provider_service_id\r
+                       IN (SELECT provider_service_id\r
+                         FROM tb_provider_services\r
+                        WHERE delete_sw = 'N'\r
+                         AND service_id IN (1018,1019,1021,1022,1025,1026,1027,11322\r
+                               ,11324,11326,11328,11345)\r
+                        )\r
+                     )\r
+                OR SL.agency_service_ldss_id IN (1225)\r
+               )\r
+              ) > 0 THEN\r
+               'Yes'\r
+              ELSE\r
+               'No'\r
+              END)\r
+             );\r
+             \r
+             IF VS_EDU_FINANCIAL_ASSIST = 'No' THEN\r
+              -- Element ID 33 - Other Financial Assistance\r
+              VS_OTH_FIN_ASSISTANCE =\r
+              ( SELECT (CASE WHEN (SELECT COUNT(*)\r
+               FROM tb_service_log SL\r
+                WHERE SL.client_id = VI_CJAMSPID\r
+               AND SL.delete_sw='N'\r
+               AND SL.start_dt  <= VD_END_DT_SRV1\r
+               AND (SL.end_dt IS NULL OR SL.end_dt >= VD_START_DT_SRV1)\r
+               AND ( SL.service_log_id IN (SELECT SL.service_log_id\r
+                       FROM tb_service_log SL\r
+                      WHERE SL.delete_sw='N'\r
+                       AND SL.provider_service_id \r
+                        IN (SELECT provider_service_id\r
+                          FROM tb_provider_services\r
+                         WHERE delete_sw = 'N'\r
+                          AND service_id IN (1066,11341)\r
+                         )\r
+                      )\r
+                OR SL.agency_service_ldss_id IN (1266) \r
+                OR SL.provider_service_id IN (SELECT provider_service_id\r
+                        FROM tb_provider_services\r
+                         WHERE delete_sw = 'N'\r
+                        AND service_id IN (1166)\r
+                         )           \r
+                 )\r
+                ) > 0 THEN\r
+                 'Yes'\r
+                ELSE\r
+                 'No'\r
+                END)\r
+              ) ;\r
+             END IF;\r
+            END IF;\r
+           END IF;\r
+          END IF;\r
+         END IF; \r
+        END IF;   \r
+       END IF;    \r
+      END IF;\r
+     END IF; \r
+    END IF;\r
+   END IF;\r
+  END IF;\r
+ END IF; \r
+\r
+ IF  (RTRIM(LTRIM(VS_INDEPENDENT_ASSESS)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_ACADEMIC_SUPPORT)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_POST_SECNDRY_EDU_SUPPORT)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_CAREER_PREPARATION)) = 'Yes') OR\r
+  (RTRIM(LTRIM(VS_OTH_FIN_ASSISTANCE))  = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_EDU_FINANCIAL_ASSIST)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_RM_BRD_FIN_ASSIST)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_SUPVD_IND_LIVING)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_MENTORING)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_FM_SUPP_MARG_EDU)) = 'Yes') OR  \r
+  (RTRIM(LTRIM(VS_HEALTH_EDU_RISK_PREVENTION)) = 'Yes') OR  \r
+  (RTRIM(LTRIM(VS_HOUS_EDUCATION)) = 'Yes') OR  \r
+  (RTRIM(LTRIM(VS_FIN_MANGT)) = 'Yes') OR \r
+  (RTRIM(LTRIM(VS_VOC_TRAINING)) = 'Yes') THEN\r
+\r
+   VS_CLNT_CHK = 'Y';\r
+ ELSE\r
+   VS_CLNT_CHK = 'N';\r
+ END IF;\r
+\r
+\r
+ return VS_CLNT_CHK;\r
+\r
+END;\r
+$function$
+

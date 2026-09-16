@@ -1,0 +1,119 @@
+CREATE OR REPLACE FUNCTION prov_get_authorization_request(v_authorizationid integer, isapproved boolean DEFAULT NULL::boolean)
+ RETURNS TABLE(service_log_id bigint, tax_id_no character varying, casename character varying, case_id bigint, authorization_id integer, provider_id integer, provider_nm character varying, provider_address text, provider_ph character varying, case_worker jsonb, client_id bigint, justification_tx character varying, fiscal_category_desc character varying, start_dt text, end_dt text, cost_no numeric, voucher_sw character, final_amount_no numeric, service_nm character varying, clientname text, supervisor jsonb, rundate text, funding jsonb, payment jsonb, director jsonb)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+
+BEGIN  
+ if (isapproved = true)
+ then 
+ RETURN query 
+ select tss.service_log_id,
+ lpad(tss.tax_id_no::character varying ,9,'0')::character varying,
+ tss.case_nm,tss.case_id,(tss.authorization_id)::int,(tss.provider_id)::int,tss.provider_name,tss.provider_address::text,
+ tss.provider_phone,
+ (select row_to_json(x) from(select tt.worker_name as fullname,tt.ldss_address as address,c.countyname as localdepartment,tt.worker_staff_id as workerid,
+ tt.requestor_name as requestorname,tt.requestor_phone as requestorphone  from 
+tb_slpa_snapshot tt 
+left join county c on c.statecountycode = tt.ldss_cd
+where tt.authorization_id=v_authorizationid limit 1) as x)::jsonb as case_worker,tss.client_id,tss.justification_tx,
+case when tss.fiscal_category_desc is not null 
+then 
+(tss.fiscal_category_desc || ' (' || tss.fiscal_category_cd || ')')  :: character varying
+else 
+tss.fiscal_category_desc
+end as fiscalcode
+,to_char(tss.start_dt,'MM-DD-YYYY')::text ,to_char(tss.end_dt,'MM-DD-YYYY')::text ,tss.cost_no,tss.voucher_sw,tss.final_amount_no,tss.provider_service_desc,tss.client_name::text,(select row_to_json(x) from(select  tt.supervisor_name as fullname,tt.sprvsr_approval_dt as insertedon from 
+tb_slpa_snapshot tt where tt.authorization_id=v_authorizationid limit 1) as x) ::jsonb,
+--to_char(now(),'MM-DD-YYYY')
+coalesce((select to_char(tspaa.sprvsr_approval_dt ,'MM-DD-YYYY')   from tb_service_purchase_authorization tspaa where tspaa.authorization_id = tss.authorization_id ),'')::text
+as rundate,(select row_to_json(x) from(select  tt.funding_name as fullname,tt.funding_approval_dt as insertedon from 
+tb_slpa_snapshot tt  where tt.authorization_id=v_authorizationid limit 1) as x) ::jsonb,(select row_to_json(x) from(select  tt.payment_name as fullname,tt.payment_approval_dt as insertedon from 
+tb_slpa_snapshot tt where tt.authorization_id=v_authorizationid limit 1) as x) ::jsonb,(select row_to_json(x) from(select  tt.director_name as fullname,tt.ads_approval_dt as insertedon  from 
+tb_slpa_snapshot tt where tt.authorization_id=v_authorizationid limit 1) as x)::jsonb   from tb_slpa_snapshot tss  where tss.authorization_id=v_authorizationid;
+
+else
+
+ 
+ RETURN QUERY 
+select  tsl.service_log_id,
+lpad(prov.tax_id_no::character varying ,9,'0')::character varying,
+(SELECT INITCAP(TRIM(P.firstname)||' '||TRIM(P.lastname) ||
+  CASE WHEN P.middlename IS NOT NULL AND TRIM(P.middlename) != '' THEN ', ' || TRIM(P.middlename) ELSE '' END)
+     FROM person as P WHERE personid in (
+  SELECT PersonId FROM actor WHERE ActorId IN (
+  SELECT Actorid  FROM IntakeServiceRequestActor  where isheadofhousehold = true and servicecaseid = (select servicecaseid from servicecase where 
+   servicecasenumber = tsl.case_id::varchar )
+     LIMIT 1))):: character varying as case_nm 
+,tsl.case_id,payauth.authorization_id,prov.provider_id,(CASE WHEN (prov.provider_nm is null OR prov.provider_nm='') THEN CONCAT(prov.provider_first_nm,' ',prov.provider_last_nm) ELSE prov.provider_nm END) as provider_nm,
+--concat_ws(', ',provadd.adr_street_no,provadd.adr_street_nm,provadd.adr_city_nm,
+--provadd.adr_county_cd,provadd.adr_state_cd,provadd.adr_zip5_no) as provider_address,
+ (select provider_adr as paymentaddress from get_provider_address(prov.provider_id,trim('{3357,3356}') )):: text as provider_address,
+
+coalesce(prov.adr_cell_phone_tx,prov.adr_home_phone_tx,prov.adr_work_phone_tx) :: character varying,
+(select row_to_json(x) from(select distinct up.fullname,up.cjamspid as workerid,upp.phonenumber,upa.county as localdepartment,
+(concat_ws(' ',upa.address,upa.city) :: character varying
+|| ', </span> <span style="padding-left: 155px;display: block;">' ||
+concat_ws(' ',upa.state,upa.zipcode) :: character varying)
+as address,upa.city,upa.state,upa.country,ups.fullname as requestorname,upps.phonenumber as requestorphone from routing rr 
+inner join userprofile up on up.securityusersid=rr.fromsecurityusersid
+inner join userprofile ups on ups.securityusersid = rr.fromsecurityusersid
+left join userprofilephonenumber upps on ups.securityusersid = upps.securityusersid
+left join userprofilephonenumber upp on up.securityusersid = upp.securityusersid and upp.activeflag=1
+left join userprofileaddress upa on up.securityusersid = upa.securityusersid
+where rr.objectid=v_authorizationid::character varying and rr.fromroleid='CWCW' )as x)::jsonb as case_worker,tsl.client_id ,payauth.justification_tx,
+case when tfcm.fiscal_category_desc is not null 
+then 
+(tfcm.fiscal_category_desc || ' (' || tfcm.fiscal_category_cd || ')')  :: character varying
+else 
+tfcm.fiscal_category_desc
+end as fiscalcode
+,
+to_char(payauth.start_dt,'MM-DD-YYYY')::text as start_dt,to_char(payauth.end_dt,'MM-DD-YYYY')::text as end_dt ,payauth.cost_no,payauth.voucher_sw,payauth.final_amount_no,
+--(select ts.service_nm from tb_services ts where service_id =paydet.final_service_id) as service_nm,
+
+(select ts.service_nm from tb_service_log tsl1 
+ join tb_provider_services tps on tps.provider_service_id=tsl1.provider_service_id
+ join tb_provider tp on tps.provider_id=tp.provider_id
+    join tb_services ts on ts.service_id = tps.service_id
+ join tb_service_purchase_authorization tspa on tspa.service_log_id=tsl1.service_log_id and tspa.delete_sw='N'
+where tspa.authorization_id= payauth.authorization_id limit 1)  as service_nm,
+
+concat(client.firstname,' ',client.lastname) as clientname,(select row_to_json(x) from(select up.fullname,to_char(rr.insertedon,'MM-DD-YYYY') as insertedon
+from routing rr 
+inner join userprofile up on up.securityusersid=rr.tosecurityusersid
+inner join tb_service_purchase_authorization tspaaa on tspaaa.authorization_id :: character varying = rr.objectid and tspaaa.sprvsr_approval_status_cd = '3047'
+where rr.objectid=v_authorizationid::character varying  and rr.eventcode  in ('PCAUTH','PCAUTHR') and rr.toroleid='CWSP' limit 1 )as x)::jsonb as supervisor,
+--to_char(now(),'MM-DD-YYYY') as rundate
+coalesce((select to_char(tspaa.sprvsr_approval_dt ,'MM-DD-YYYY')   from tb_service_purchase_authorization tspaa where tspaa.authorization_id = payauth.authorization_id ),'')::text
+,(select row_to_json(x) from(select up.fullname,to_char(rr.insertedon,'MM-DD-YYYY') as insertedon from routing rr 
+inner join userprofile up on up.securityusersid=rr.tosecurityusersid  and rr.eventcode  in ('PCAUTH','PCAUTHR') 
+where rr.objectid=v_authorizationid::character varying and  rr.routingstatustypeid = 44  limit 1)as x)::jsonb as funding,
+(select row_to_json(x) from(select up.fullname,to_char(rr.insertedon,'MM-DD-YYYY')  as insertedon from routing rr 
+inner join userprofile up on up.securityusersid=rr.tosecurityusersid  and rr.eventcode  in ('PCAUTH','PCAUTHR')
+where rr.objectid=v_authorizationid::character varying  and rr.routingstatustypeid in (41,43) limit 1)as x)::jsonb as payment,
+(select row_to_json(x) from(select up.fullname,to_char(rr.insertedon,'MM-DD-YYYY')  as insertedon from routing rr 
+inner join userprofile up on up.securityusersid=rr.tosecurityusersid  and rr.eventcode  in ('PCAUTH','PCAUTHR')
+where rr.objectid=v_authorizationid::character varying and rr.routingstatustypeid = 42 limit 1)as x)::jsonb as director 
+from tb_service_purchase_authorization payauth 
+join tb_service_log tsl on tsl.service_log_id = payauth.service_log_id 
+left join tb_payment_header payhead on payhead.authorization_id = payauth.authorization_id and payhead.delete_sw='N'
+left JOIN tb_payment_detail as paydet ON payhead.payment_id = paydet.payment_id and paydet.delete_sw='N'
+left JOIN person as client ON tsl.client_id = client.cjamspid and client.activeflag=1
+join tb_provider_services tps on tps.provider_service_id = tsl.provider_service_id 
+left JOIN tb_provider as prov ON tps.provider_id = prov.provider_id and prov.delete_sw='N'
+left join tb_provider_addresses provadd on prov.provider_id = provadd.parent_key_id::integer and provadd.delete_sw='N'
+left join tb_fiscal_category_master tfcm on tfcm.fiscal_category_cd = payauth.fiscal_category_cd
+left join (
+select ins.intakeserviceid :: uuid as servicecaseid,ins.servicerequestnumber as servicecasenumber,ins.intakeservreqtypeid from intakeservicerequest ins where ins.activeflag =1
+union 
+select sce.servicecaseid ::uuid  as servicecaseid,sce.servicecasenumber as servicecasenumber,sce.intakeservreqtypeid from servicecase sce  where  sce.activeflag =1
+)
+isr on isr.servicecasenumber = tsl.case_id::character varying
+left join servicecaserequest scr on scr.servicecaseid = isr.servicecaseid
+left join intakeservicerequesttype isrt on isrt.intakeservreqtypeid = scr.intakeservreqtypeid
+where payauth.authorization_id=v_authorizationid limit 1;
+end if;
+ END;
+$function$
+

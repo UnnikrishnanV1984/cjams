@@ -1,0 +1,3 @@
+INSERT INTO cjams.programareaconfig
+(programareaconfigid, programkey, subprogramkey, servicerequestsubtypekey, isdefault, activeflag, effectivedate, insertedby, insertedon, updatedby, updatedon, old_id)
+VALUES('6bdcddb3-4e20-4014-a5c4-7103b991844f', 'ADP', NULL, 'Adoption', 1, 1, '2019-08-31 18:03:33.301', 'admin', '2019-08-31 18:03:33.301', 'admin', '2019-08-31 18:03:33.301', NULL)ON CONFLICT DO NOTHING;

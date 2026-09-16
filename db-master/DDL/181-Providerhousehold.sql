@@ -1,0 +1,1 @@
+alter table publicproviderhomestudyhouseholdmapping add column if not exists personid uuid null; 

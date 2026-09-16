@@ -1,0 +1,30 @@
+ CREATE OR REPLACE FUNCTION public.saverestitutionpaymentflatfile(jsondata json)                                                                                                     
+  RETURNS text                                                                                                                                                                       
+  LANGUAGE plpgsql                                                                                                                                                                   
+ AS $function$                                                                                                                                                                       
+                                                                                                                                                                                     
+                                                                                                                                                                                     
+ DECLARE                                                                                                                                                                             
+                                                                                                                                                                                     
+ v_restitutionpaymentflatfileid uuid;                                                                                                                                                
+ j_restitutionpaymentflatfile json;                                                                                                                                                  
+ v_date timestamp without time zone;                                                                                                                                                 
+                                                                                                                                                                                     
+ BEGIN                                                                                                                                                                               
+         v_date:= now() at time zone 'utc';                                                                                                                                          
+         j_restitutionpaymentflatfile := jsondata;                                                                                                                                   
+         v_restitutionpaymentflatfileid :=   gen_random_uuid();                                                                                                                      
+                                                                                                                                                                                     
+         Insert Into restitutionpaymentflatfile (restitutionpaymentflatfileid, filename, pathname, createddate, modifieddate, activeflag, insertedby, updatedby, insertedon,         
+         updatedon)                                                                                                                                                                  
+                                                                                                                                                                                     
+         values (v_restitutionpaymentflatfileid, cast(j_restitutionpaymentflatfile ->> 'filename' as character varying),  cast(j_restitutionpaymentflatfile ->> 'pathname' as text), 
+         v_date, v_date, 1, 'admin', 'admin', v_date, v_date );                                                                                                                      
+                                                                                                                                                                                     
+ Return v_restitutionpaymentflatfileid;                                                                                                                                              
+                                                                                                                                                                                     
+ END;                                                                                                                                                                                
+                                                                                                                                                                                     
+                                                                                                                                                                                     
+ $function$                                                                                                                                                                          
+

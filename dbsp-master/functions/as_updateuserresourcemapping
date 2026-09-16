@@ -1,0 +1,124 @@
+CREATE OR REPLACE FUNCTION as_updateuserresourcemapping(v_inputrequest json)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+DECLARE
+additionalresource json;
+i json;
+v_userid bigint;
+v_roleid int;
+requestjson json;
+v_currentuser character varying;
+v_roletypekey character varying;
+v_currentroletypekey character varying;
+v_teammemberid uuid;
+v_returnteammemberid uuid;
+v_newteammemberid uuid;
+v_securityuserdid character varying;
+v_currroletypekey character varying;
+v_updateteammemberid uuid;
+v_newroleteammemberid uuid;
+v_additionalroleteammemberid uuid;
+BEGIN
+requestjson := v_inputrequest;
+raise notice 'roleid%','here';
+additionalresource = requestjson -> 'additionalrole';
+v_userid = requestjson ->> 'userid';
+v_currentuser = requestjson ->> 'currentuser';
+v_securityuserdid = requestjson ->> 'securityusersid';
+v_teammemberid = requestjson ->> 'teammemberid';
+v_currroletypekey = requestjson ->> 'roletypekey';
+raise notice 'roleid%','here';
+if(v_securityuserdid is not null) then
+update as_teammemberassignment set activeflag=0 where securityusersid in
+(v_securityuserdid);
+
+select teammemberid into v_teammemberid from as_teammemberassignment where securityusersid in
+(v_securityuserdid) order by insertedon desc limit 1;
+
+update teammember set activeflag=0 where teammemberid in (select teammemberid from as_teammemberassignment where securityusersid in (v_securityuserdid) and activeflag=0);
+end if;
+
+
+v_updateteammemberid := null;
+select tma.teammemberid into v_updateteammemberid from as_teammemberassignment tma
+--inner join teammember tm on tm.teammemberid = tma.teammemberid and tm.roletypekey=v_currroletypekey
+where tma.securityusersid=v_securityuserdid and tma.activeflag=1 limit 1;
+
+
+if(v_updateteammemberid is not null) then
+--update teammember set roletypekey=v_currroletypekey,activeflag=1 where teammemberid=v_updateteammemberid;
+update teammember set activeflag=1 where teammemberid=v_updateteammemberid;
+update as_teammemberassignment set activeflag=1 where teammemberid=v_updateteammemberid;
+end if;
+
+
+if(v_updateteammemberid is null) then
+v_newteammemberid := gen_random_uuid();
+v_updateteammemberid := v_newteammemberid;
+select tma.teammemberid into v_newroleteammemberid from as_teammemberassignment tma
+inner join teammember tm on tm.teammemberid = tma.teammemberid --and tm.roletypekey=v_currroletypekey
+where tma.securityusersid=v_securityuserdid order by tma.insertedon desc limit 1 ;
+INSERT INTO teammember
+(teammemberid, activeflag, teamid, loadnumber, roletypekey, positioncode, description, effectivedate, expirationdate, linenumber, old_id, isdefaultroute, insertedby, insertedon, updatedby, updatedon)
+(select v_newteammemberid,1,teamid,loadnumber,v_currroletypekey,positioncode, description,now(),now(), linenumber, 
+old_id, isdefaultroute,v_currentuser,now(),v_currentuser,now() from teammember where teammemberid=v_newroleteammemberid);
+
+INSERT INTO as_teammemberassignment
+( activeflag, teammemberid, securityusersid, effectivedate, coadate, rtfdate, old_id, insertedby, insertedon, updatedby, updatedon)
+VALUES( 1, v_newteammemberid, v_securityuserdid, now(), NULL, NULL, NULL, v_currentuser, now(), v_currentuser,now());
+
+
+end if;
+raise notice 'roleid%','here';
+
+for i in select * from json_array_elements(additionalresource)
+loop
+raise notice 'roleid%','roleid';
+v_roleid := i->>'roleid';
+raise notice 'v_roleid%',v_roleid;
+if(v_roleid is not null) then
+INSERT INTO userresource
+( userid, permissiongroupid, roleid, resourceid, activeflag, isallowed, isvisible, isenabled, old_id,  insertedby, insertedon, updatedby, updatedon, isrole)
+VALUES( v_userid, '00000000-0000-0000-0000-000000000000', v_roleid, NULL, 1, NULL, NULL, NULL, NULL, v_currentuser, now(), v_currentuser, now(),  true);
+
+
+
+v_additionalroleteammemberid := null;
+select roletypekey into v_roletypekey from role where id=v_roleid limit 1;
+
+select tma.teammemberid into v_additionalroleteammemberid from as_teammemberassignment tma
+inner join teammember tm on tm.teammemberid = tma.teammemberid and tm.roletypekey=v_roletypekey
+where tma.securityusersid=v_securityuserdid limit 1;
+
+if(v_additionalroleteammemberid is not null) then
+
+update teammember set activeflag=1 where teammemberid=v_additionalroleteammemberid;
+update as_teammemberassignment set activeflag=1 where teammemberid=v_additionalroleteammemberid;
+else
+
+v_returnteammemberid := gen_random_uuid();
+
+INSERT INTO teammember
+(teammemberid, activeflag, teamid, loadnumber, roletypekey, positioncode, description, effectivedate, expirationdate, linenumber, old_id, isdefaultroute,insertedby, insertedon, updatedby, updatedon)
+(select v_returnteammemberid,1,teamid,loadnumber,v_roletypekey,positioncode, description,now(),now(), linenumber,
+old_id, isdefaultroute, v_currentuser,now(),v_currentuser,now() from teammember where teammemberid=v_updateteammemberid);
+
+raise notice 'v_returnteammemberid%',v_returnteammemberid;
+
+INSERT INTO as_teammemberassignment
+( activeflag, teammemberid, securityusersid, effectivedate, coadate, rtfdate, old_id, insertedby, insertedon, updatedby, updatedon)
+VALUES( 1, v_returnteammemberid, v_securityuserdid, now(), NULL, NULL, NULL, v_currentuser, now(), v_currentuser,now());
+
+end if;
+
+
+end if;
+end loop;
+
+RETURN 'Success';
+
+END;
+
+$function$
+

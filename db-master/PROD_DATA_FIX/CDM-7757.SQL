@@ -1,0 +1,2 @@
+--User sent the screen shot asking to remove the end date 08/04/2020 of OOH program area highlighted in yellow in the screen shot
+update cjams.personprogramarea set activeflag =0,updatedon = now(),updatedby = 'CDM-7757' where personprogramid = '77a92bc3-ce1d-41ce-a7ec-f03534a6e796'

@@ -1,0 +1,125 @@
+CREATE OR REPLACE FUNCTION cjams.addupdatefinancesupportorder(personid uuid, supportorder json, securityuserid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+DECLARE
+    
+    v_personid uuid;
+    v_supportorder json;
+    v_securityuserid character varying;
+	v_result json;
+    v_supportorderid uuid;
+
+	
+BEGIN
+    
+    v_personid := personid :: uuid;
+    v_supportorder := supportorder;
+    v_securityuserid := securityuserid;
+
+--FOR  v_education  IN  SELECT  *  FROM    json_array_elements(v_educationjson)  LOOP
+
+IF (v_supportorder  ->> 'csesclientsupportorderid') IS NULL THEN
+
+v_supportorderid := gen_random_uuid();
+
+insert into csesclientsupportorder (
+    csesclientsupportorderid,    
+    personid,                    
+    socounty,                    
+    socityname,                  
+    sostate,                     
+    sonumber,                    
+    sodate,                      
+    sostatusdate,                
+    sostatustypekey,             
+    sopaymentamount,             
+    sopaymentfreqtypekey,        
+    sodatasource,                
+    insertedon,                  
+    insertedby,                  
+    updatedon,                   
+    updatedby,                   
+    activeflag                  
+)
+values (
+    v_supportorderid,
+    v_personid,
+    v_supportorder  ->> 'socounty',
+    v_supportorder  ->> 'socityname',
+    v_supportorder  ->> 'sostate',
+    v_supportorder  ->> 'sonumber',
+    (v_supportorder  ->> 'sodate') :: timestamp without time zone,
+    (v_supportorder  ->> 'sostatusdate') :: timestamp without time zone,
+    v_supportorder  ->> 'sostatustypekey',
+    (v_supportorder  ->> 'sopaymentamount') :: numeric,
+    v_supportorder  ->> 'sopaymentfreqtypekey',
+    v_supportorder  ->> 'sodatasource',
+    now(),
+    v_securityuserid,
+    now(),
+    v_securityuserid,
+    1
+);
+
+ELSE
+
+    v_supportorderid := (v_supportorder  ->> 'csesclientsupportorderid') :: uuid;
+
+    update csesclientsupportorder cso SET
+
+    socounty = v_supportorder  ->> 'socounty',                    
+    socityname = v_supportorder  ->> 'socityname',                  
+    sostate = v_supportorder  ->> 'sostate',                     
+    sonumber = v_supportorder  ->> 'sonumber',                    
+    sodate = (v_supportorder  ->> 'sodate') :: timestamp without time zone,                      
+    sostatusdate = (v_supportorder  ->> 'sostatusdate') :: timestamp without time zone,                
+    sostatustypekey = v_supportorder  ->> 'sostatustypekey',             
+    sopaymentamount = (v_supportorder  ->> 'sopaymentamount') :: numeric,             
+    sopaymentfreqtypekey = v_supportorder  ->> 'sopaymentfreqtypekey',
+    updatedon = now(),                   
+    updatedby = v_securityuserid,                   
+    activeflag = 1
+
+    where   cso.csesclientsupportorderid = v_supportorderid;
+
+
+
+
+END IF;
+
+-- END LOOP;
+
+
+
+SELECT to_json(pso) into v_result FROM 
+	(
+	select 
+
+    cso.csesclientsupportorderid,    
+    cso.personid,                    
+    cso.socounty,                    
+    cso.socityname,                  
+    cso.sostate,                     
+    cso.sonumber,                    
+    cso.sodate,                      
+    cso.sostatusdate,                
+    cso.sostatustypekey,             
+    cso.sopaymentamount,             
+    cso.sopaymentfreqtypekey,        
+    cso.sodatasource                
+ 
+   from csesclientsupportorder cso where cso.csesclientsupportorderid = v_supportorderid and cso.activeflag = 1    
+		
+	) pso;
+	
+RETURN v_result;
+
+END;
+
+
+
+$function$;

@@ -1,0 +1,86 @@
+CREATE OR REPLACE FUNCTION listplacementuserdetails(securityusersid character varying, status character varying, pagenumber bigint, pagesize bigint, intakeno character varying, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, id integer, intakenumber character varying, cpsresponse character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, narrative text, raname character varying, entityname character varying, cruworkername character varying, isreview boolean, issupervisor boolean, datesubmitted timestamp without time zone, dateclosed timestamp without time zone, remarks text, reviewstatus character varying, disposition character varying, intakestatus character varying, timeleft character varying, jsondata jsonb, updateddate timestamp without time zone, agencycode character varying, canreopen integer, ispreintake boolean, clwstatus character varying, sdm json, isprior integer, legalguardian character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+                                      
+
+ DECLARE  v_status  int;  
+ v_UserSID  character  varying;
+ v_activeflag  int;
+ v_pageoffset  int;
+ v_pagenumber  int;
+ v_statustext  character  varying;
+      
+BEGIN
+        v_activeflag:=  1;
+        v_UserSID:=  securityusersid;
+        v_pagenumber  :=  pagenumber-1;
+        v_pageoffset  =  v_pagenumber  *  pagesize;
+        v_statustext:=  status;
+          
+ RAISE  NOTICE  'v_status%',sortcolumn;
+ RAISE  NOTICE  'v_status%',sortorder;
+
+ If  (status='DWAN')  THEN
+ v_status:=54;
+ 
+ ELSIF  (status='DWPL')  THEN
+ v_status:=55;
+ 
+ end  if;
+
+ IF  (sortcolumn  =  'datereceived')  THEN
+ sortcolumn  =  'receiveddate';
+ END  IF;
+RETURN  QUERY            
+ SELECT  count(1) over(),IDAS.id,IDAS.IntakeNumber  ,
+ cast(case  ITDS.iscps  when  true  then  'CPS'  when  false  then  'Non  CPS'  else  ''  end    as  character  varying),IDAS.DateRecieved,    
+ (to_char(
+ IDAS.TimeRecieved::timestamp  without    time  zone,
+ 'YYYYMMDD"T"HH24MISS"Z"'  )::timestamptz)::timestamp  without  time  zone,    
+ IDAS.Narrative,  IDAS.RAName,  IDAS.EntityName, cast(up.lastname  ||',  '||  up.firstname  as  character  varying)  ,
+ coalesce(r.isreviewrequest,false),coalesce(rt.isupervisor,false)  ,r.insertedon, r.updatedon, r.remarks,
+ (case when v_status= 54 then 'Assigned' when v_status = 55 then 'Placement Added' else 'Assigned' end)::character  varying  as  typedescription,
+ --ISRST.description::character  varying  as  typedescription,
+ dispositiondescription,statusdescription,
+ cast(  case  r.insertedon  when  null  then  ''  else
+ case when age(now() ) - age(r.insertedon + time  '02:00' ) >  '0:00' then
+ cast(age(now() ) - age( r.insertedon + time '02:00') as character varying(5)) else 'Overdue' end end as character varying),
+ IDAS.jsondata
+ --null::jsonb 
+ ,IDAS.updatedon  ,ITDS.teamtypekey  ,
+ case when ITDS.teamtypekey = 'DJS' and lower(rts.typedescription)='closed'  then    
+ case coalesce((select  count(1) from IntakeAppeal IP where IP.intakenumber =IDAS.intakenumber ),0)when 0 then  
+ case when now()::date - (r.updatedon :: date + 30):: date >0 then 0 else 1 end else 2 end else 0  end,IDAS.ispreintake,  (SELECT ''::character  varying) as clwstatus,
+ (SELECT json_agg(e)    as  fatality  from
+ (select isrs.ischildfatality,isrs.ismaltreatment from intakeservicerequestsdm isrs where isrs.intakenumber = IDAS.IntakeNumber and activeflag  =1 )  as e)  ::json,
+ 0,''::  character  varying
+
+ FROM  IntakeDAStaging  IDAS  
+ INNER JOIN intakeDAStatus ITDS on ITDS.intakenumber  =  IDAS.intakenumber
+ LEFT JOIN  routing  r  ON  r.objectid  =  IDAS.intakenumber AND (r.activeflag =1 or r.activeflag = v_activeflag) and r.routingstatustypeid = v_status
+ LEFT JOIN routingstatustype RTs ON RTs.sequencenumber = r.routingstatustypeid and rts.activeflag  =1  
+ LEFT JOIN teammemberroletype rt on rt.roletypekey = r.toroleid AND  rt.activeflag  =1
+ INNER JOIN userprofile up on up.securityusersid = IDAS.CRUWorkerName
+ LEFT JOIN intakeservicerequest as ISR ON ISR.intakenumber = ITDS.intakenumber and ISR.activeflag  =1  
+ LEFT JOIN intakeserreqstatustype as ISRST ON ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag =1  
+ WHERE  IDAS.IntakeNumber  like  intakeno||'%'
+ AND IDAS.Activeflag = 1 --AND lower(ISRST.intakeserreqstatustypekey) not in('rejected','reopen')
+ AND(coalesce(r.tosecurityusersid,IDAS.intakeuser)    = v_UserSID  
+ OR(case  right(toroleid,2) when 'DU'  then  IDAS.InsertedBy = v_UserSID else r.tosecurityusersid = v_UserSID end ))
+
+ ORDER  BY        
+ (  CASE  sortorder  when  'asc'  then  CASE  sortcolumn  when  'receiveddate'  then  cast(  IDAS.TimeRecieved        as  character  varying)  
+ when  'updateddate'  then  cast(  IDAS.updatedon  as  character  varying)
+ when  'submittedworker'  then    cast(up.lastname  ||',  '||  up.firstname  as  character  varying)  
+ ELSE  IDAS.intakenumber  end    ELSE  cast(  IDAS.EntityName    as  character  varying)    end)    asc,
+ (  CASE  sortorder  when  'desc'  then  CASE  sortcolumn  when  'receiveddate'  then  cast(  IDAS.TimeRecieved        as  character  varying)  
+ when  'updateddate'  then  cast(  IDAS.updatedon  as  character  varying)
+ when  'submittedworker'  then    cast(up.lastname  ||',  '||  up.firstname  as  character  varying)  
+ ELSE  IDAS.intakenumber  end    ELSE  cast(  IDAS.EntityName    as  character  varying)    end  )    desc;
+
+END;
+
+$function$
+

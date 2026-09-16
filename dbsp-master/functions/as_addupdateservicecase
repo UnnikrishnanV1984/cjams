@@ -1,0 +1,410 @@
+CREATE OR REPLACE FUNCTION as_addupdateservicecase(v_servicecase json, v_securityuserid character varying)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ 
+DECLARE
+    v_date      timestamp without time zone;
+ v_start_date   timestamp without time zone;
+ v_asservicesoncaseid  uuid;
+ v_routingid    uuid;
+ v_personid     uuid;
+ v_status    character varying;
+ v_servicerequestnumber character varying;
+ v_personprogramid  uuid;
+ l_response    json;
+ v_request    character varying;
+ v_statustypekey   character varying;
+ v_dispositioncode  character varying;
+ v_recon_due_date   timestamp without time zone;
+ v_duedateoffset INT;
+ v_servicetype  character varying;
+
+ prgmType character varying;
+
+ v_fromsecurityusersid character varying;
+ v_tosecurityusersid character varying;
+ v_fromteamid uuid;
+ v_toteamid uuid;
+ v_srvtype character varying;
+
+ v_as_createduplicatecollaterals character varying;
+ v_programarea record;
+ v_team_member_id uuid;
+ v_servicesubtype  character varying;
+ v_createcasetranferassessment character varying;
+ v_reasoncd  character varying;
+ v_investigationfindingtypekey character varying;
+BEGIN
+ 
+ v_status := 'Success';
+ v_date := now();
+ v_request := '';
+    
+ SELECT servicerequestnumber INTO v_servicerequestnumber
+   FROM intakeservicerequest WHERE intakeserviceid  = (v_servicecase ->> 'ascaseid')::uuid AND activeflag =1;
+
+ v_start_date = (v_servicecase ->> 'startdate')::timestamp without time zone;
+ v_recon_due_date = (v_servicecase ->> 'recon_due_dt')::timestamp without time zone;
+ 
+ if(v_recon_due_date is null) then
+  if(v_servicecase ->> 'caseservicesubtypekey' ='07M1') then
+   select srtc.duedateoffset, ints.intakeservtypekey INTO v_duedateoffset, v_servicetype from intakeserv ints 
+   join servicerequestsubtype srst on srst.classkey  ='APSContinuing'
+   join servicerequesttypeconfig srtc on srst.servicerequestsubtypeid = srtc.servicerequestsubtypeid and srst.activeflag =1
+   where 
+   ints.intakeservid = (v_servicecase ->> 'caseservicetypeid')::uuid
+   and srtc.activeflag=1 and srtc.workload  = 1 limit 1;
+
+  else
+   select srtc.duedateoffset, ints.intakeservtypekey INTO v_duedateoffset, v_servicetype from intakeserv ints 
+   join servicerequestsubtype srst on srst.classkey  =
+   case ints.intakeservtypekey when '24H' then '24 Hours' when '5D' then '5 Days' else  ints.intakeservtypekey end
+   join servicerequesttypeconfig srtc on srst.servicerequestsubtypeid = srtc.servicerequestsubtypeid and srst.activeflag =1
+   where 
+   ints.intakeservid = (v_servicecase ->> 'caseservicetypeid')::uuid
+   and srtc.activeflag=1 and srtc.workload  = 1 limit 1;
+ end if;
+
+ if((v_servicetype !='24H' and v_servicetype !='5D') or v_servicecase ->> 'caseservicesubtypekey' ='07M1' ) then
+  v_recon_due_date = date(v_start_date) + v_duedateoffset -1;
+ else
+  v_recon_due_date = null;
+ end if;
+ end if;
+
+ SELECT trim(st.intakeserreqstatustypekey), trim(srtcdc.dispositioncode) INTO v_statustypekey, v_dispositioncode FROM intakeservicerequestdispositioncode dc
+ JOIN intakeserreqstatustype st ON dc.intakeserreqstatustypeid = st.intakeserreqstatustypeid 
+ JOIN servicerequesttypeconfigdispositioncode srtcdc ON srtcdc.servicerequesttypeconfigiddispostionid = dc.servicerequesttypeconfigiddispostionid
+ WHERE intakeserviceid::CHARACTER VARYING = (v_servicecase ->> 'ascaseid') and dc.activeflag =1 ORDER BY dc.insertedon DESC NULLS LAST LIMIT 1;
+
+ 
+ IF (v_servicecase ->> 'iscoonecttoclosecase' = true and ((v_statustypekey = 'Closed' OR v_statustypekey='Approved') AND v_dispositioncode = 'Closed')) THEN
+  INSERT INTO intakeservicerequestdispositioncode (intakeservicerequestdispositioncodeid,intakeserviceid,insertedby,updatedby,timestamp,description,expirationdate,activeflag,intakeserreqstatustypeid,servicerequesttypeconfigiddispostionid,dateofsubpoena,subpoenareason,
+  lastfacetofacedate,seenwithin,dateseen,reviewcomments,reasonfordelay,old_id,closingcodetypekey,servicerequestdispositionsubtypeconfigid,servicerequestdispositionsubtypenotes,
+  approvalid,approvalnaturetypekey,entitytypetypekey,additionalkey,entitykeyid1,entitykeyid2,requestdate,actiondueddate,approvestaffid,approvalstatustypekey,denialreasontypekey,requestorcomments,
+  approvalcomments,currentstatustypekey,forwardcountytypekey,forwardunitid,administratorid,datavalidflag,clientmergeid,adultassignedsecurityid)
+  SELECT gen_random_uuid(),intakeserviceid,v_securityuserid,v_securityuserid,timestamp,description,expirationdate,1,'52ad4cc7-e8f8-4cbb-9e27-d86f2b817690','4c6d4e10-5572-4cb0-8bd0-5d596e3e2588',dateofsubpoena,subpoenareason,
+  lastfacetofacedate,seenwithin,dateseen,reviewcomments,reasonfordelay,old_id,closingcodetypekey,servicerequestdispositionsubtypeconfigid,servicerequestdispositionsubtypenotes,
+  approvalid,approvalnaturetypekey,entitytypetypekey,additionalkey,entitykeyid1,entitykeyid2,requestdate,actiondueddate,approvestaffid,approvalstatustypekey,denialreasontypekey,requestorcomments,
+  approvalcomments,currentstatustypekey,forwardcountytypekey,forwardunitid,administratorid,datavalidflag,clientmergeid,adultassignedsecurityid
+  FROM intakeservicerequestdispositioncode
+  WHERE intakeserviceid::CHARACTER VARYING = (v_servicecase ->> 'ascaseid') ORDER BY insertedon LIMIT 1;
+
+  UPDATE intakeservicerequest
+  SET isrouted = false, updatedby= v_securityuserid, updatedon = now(), intakeserreqstatustypeid = '52ad4cc7-e8f8-4cbb-9e27-d86f2b817690', isclosecpshistory = null
+  WHERE intakeserviceid::CHARACTER VARYING = (v_servicecase ->> 'ascaseid');
+ 
+ END IF;
+ 
+
+ v_personid := (v_servicecase ->> 'personid')::uuid;
+ 
+ IF (v_servicecase  ->> 'asservicesoncaseid' IS NULL) THEN 
+  IF (v_personid IS NOT NULL) THEN
+   IF (v_servicecase ->> 'approvalstatus' = 'approved'
+    AND v_servicecase ->> 'caseservicesubtypekey' IS NOT NULL) THEN 
+       
+    For prgmType IN SELECT * FROM json_array_elements((v_servicecase ->> 'caseservicesubtypekey')::json)
+    LOOP
+                    IF (prgmType IS NOT NULL AND prgmType != 'NA') THEN 
+                        prgmType:= replace(prgmType,'"','');
+      v_personprogramid := gen_random_uuid();
+      v_request := 'A';
+      INSERT INTO personprogramarea(personprogramid, personid, startdate, enddate, insertedon, insertedby, 
+       updatedon, updatedby, activeflag, endreasonkey, ifpsatriskflag, programkey, subprogramkey, objecttypekey, 
+       objectid, datatransferflag, entityid, sourcetype)
+      VALUES (v_personprogramid, v_personid,
+       (v_servicecase ->> 'startdate')::timestamp without time zone,
+       (v_servicecase ->> 'enddate')::timestamp without time zone,
+       v_date, v_securityuserid::uuid, v_date, v_securityuserid::uuid, 1, v_servicecase ->> 'endreasonkey',
+       0, prgmType, '', v_servicecase ->> 'objecttypekey', v_servicecase ->> 'objectid', 'A', 
+       v_servicerequestnumber, 'AS');
+
+      v_routingid := gen_random_uuid();
+      v_asservicesoncaseid := gen_random_uuid();
+      INSERT INTO routing (routingid,eventcode,fromsecurityusersid,tosecurityusersid,fromroleid,toroleid,objectid,
+       routingstatustypeid,activeflag,insertedby,insertedon,updatedby,updatedon,routeddescription,
+       servicerequestnumber) 
+      VALUES (v_routingid,'ASSC',v_securityuserid,v_securityuserid,'ASSP','ASSP',v_asservicesoncaseid, 16,1,
+      v_securityuserid,now(),v_securityuserid,now(),'New Service on Case',v_servicerequestnumber);
+      v_asservicesoncaseid := gen_random_uuid();
+      INSERT INTO asservicesoncase( asservicesoncaseid, ascaseid, approvalstatus, reason, startdate, enddate, 
+       activeflag, caseserviceid, caseservicetypeid, caseservicesubtypekey, insertedon, insertedby, updatedon, 
+       updatedby, routingid, personprogramid, personid, recon_due_dt, recon_done_dt)
+      VALUES (v_asservicesoncaseid, (v_servicecase ->> 'ascaseid')::uuid, v_servicecase ->> 'approvalstatus',
+       v_servicecase ->> 'reason', (v_servicecase ->> 'startdate')::timestamp without time zone,
+       (v_servicecase ->> 'enddate')::timestamp without time zone, 1,
+       (v_servicecase ->> 'caseserviceid')::uuid, (v_servicecase ->> 'caseservicetypeid')::uuid, prgmType,
+       v_date, v_securityuserid, v_date, v_securityuserid, v_routingid,
+       v_personprogramid, v_personid,
+       --(v_servicecase ->> 'recon_due_dt')::timestamp without time zone,
+       v_recon_due_date, (v_servicecase ->> 'recon_done_dt')::timestamp without time zone);
+     END IF;
+    END LOOP;
+   END IF; 
+
+   IF ((v_servicecase ->> 'intakeservid' IS NOT NULL) OR (v_servicecase ->> 'approvalstatus' = 'draft')) THEN 
+             v_asservicesoncaseid := gen_random_uuid();
+    INSERT INTO asservicesoncase(asservicesoncaseid, ascaseid, approvalstatus, reason, startdate, enddate, 
+     activeflag, caseserviceid, caseservicetypeid, caseservicesubtypekey, insertedon, insertedby, updatedon, 
+     updatedby, routingid, personprogramid, personid, recon_due_dt, recon_done_dt)
+     VALUES (v_asservicesoncaseid, (v_servicecase ->> 'ascaseid')::uuid,
+      v_servicecase ->> 'approvalstatus',
+      v_servicecase ->> 'reason',
+      (v_servicecase ->> 'startdate')::timestamp without time zone,
+      (v_servicecase ->> 'enddate')::timestamp without time zone,
+      1,
+      (v_servicecase ->> 'caseserviceid')::uuid,
+      (CASE WHEN (v_servicecase ->> 'intakeservid') is not null then (v_servicecase ->> 'intakeservid')
+       else (v_servicecase ->> 'caseservicetypeid') end)::uuid,
+      COALESCE(v_servicecase ->>'caseservicesubtypekey',''),
+      v_date,
+      v_securityuserid,
+      v_date,
+      v_securityuserid,
+      (v_servicecase ->> 'routingid')::uuid,
+      v_personprogramid,
+      v_personid,
+      --(v_servicecase ->> 'recon_due_dt')::timestamp without time zone,
+      v_recon_due_date,
+      (v_servicecase ->> 'recon_done_dt')::timestamp without time zone);
+   END IF;
+
+
+  END IF;
+ ELSE
+  v_asservicesoncaseid:= v_servicecase ->> 'asservicesoncaseid';
+  v_personprogramid := v_servicecase ->> 'personprogramid';
+   
+  IF (v_servicecase ->> 'approvalstatus' = 'draft') then
+   update routing set activeflag =0 where objectid::CHARACTER VARYING =(v_servicecase ->> 'asservicesoncaseid')  and activeflag =1;
+  end if;
+
+  IF (v_personprogramid IS NOT NULL) THEN
+   v_request := 'U';     
+   UPDATE personprogramarea
+    SET enddate   = (v_servicecase ->> 'enddate')::timestamp without time zone, 
+     updatedon = v_date, 
+     updatedby = v_securityuserid::uuid, 
+     endreasonkey = v_servicecase ->> 'reason', 
+     programkey = v_servicecase ->> 'caseservicesubtypekey', 
+     datatransferflag = 'U'
+    WHERE personprogramid = (v_servicecase ->> 'personprogramid')::uuid;
+  ELSE
+   IF (v_servicecase ->> 'approvalstatus' = 'approved') THEN
+    v_personprogramid := gen_random_uuid();
+    v_request := 'A';
+    INSERT INTO personprogramarea(
+     personprogramid, 
+     personid, 
+     startdate, 
+     enddate, 
+     insertedon, 
+     insertedby, 
+     updatedon, 
+     updatedby, 
+     activeflag, 
+     endreasonkey, 
+     ifpsatriskflag, 
+     programkey, 
+     subprogramkey, 
+     objecttypekey, 
+     objectid,
+     datatransferflag,
+     entityid,
+     sourcetype)
+    VALUES (v_personprogramid,
+     v_personid,
+     v_date,
+     (v_servicecase ->> 'enddate')::timestamp without time zone,
+     v_date,
+     v_securityuserid::uuid,
+     v_date,
+     v_securityuserid::uuid,
+     1,
+     v_servicecase ->> 'endreasonkey',
+     0,
+     v_servicecase ->> 'caseservicesubtypekey', 
+     '',
+     v_servicecase ->> 'objecttypekey',
+     v_servicecase ->> 'objectid',
+     'A',
+     v_servicerequestnumber,
+     'AS');
+   
+   END IF;
+  END IF;
+  
+  UPDATE asservicesoncase
+   SET ascaseid   = (v_servicecase ->> 'ascaseid')::uuid, 
+    approvalstatus  = v_servicecase ->> 'approvalstatus', 
+    reason    = v_servicecase ->> 'reason',
+    startdate   = (v_servicecase ->> 'startdate')::timestamp without time zone,
+    enddate    = (v_servicecase ->> 'enddate')::timestamp without time zone,
+    caseserviceid  = (v_servicecase ->> 'caseserviceid')::uuid,
+    caseservicetypeid = (v_servicecase ->> 'caseservicetypeid')::uuid, 
+    caseservicesubtypekey = v_servicecase ->> 'caseservicesubtypekey',
+    updatedon   = v_date, 
+    updatedby   = v_securityuserid,
+    personprogramid     = v_personprogramid,
+    routingid    = (v_servicecase ->> 'routingid')::uuid,
+    recon_due_dt  = (v_servicecase ->> 'recon_due_dt')::timestamp without time zone,
+    recon_done_dt  = (v_servicecase ->> 'recon_done_dt')::timestamp without time zone
+  WHERE asservicesoncaseid = (v_servicecase  ->> 'asservicesoncaseid')::uuid;
+
+ END IF;
+ 
+
+
+if(v_servicecase ->> 'iscaseconnect' = true or v_servicecase ->> 'isapscontinuecaseconnect' = true) then
+  if(v_servicecase ->> 'iscaseconnect' = true) then
+  select fromsecurityusersid into v_fromsecurityusersid from routing where eventcode ='SCCR' and routingstatustypeid = 15 and
+  objectid :: character varying =(v_servicecase ->> 'intakeserviceid') :: character varying  order by insertedon desc limit 1;
+ 
+  end if;
+  if(v_servicecase ->> 'isapscontinuecaseconnect' = true) then
+   select insertedby into v_fromsecurityusersid from intakeservicerequestdispositioncode i where activeflag =1 and intakeserviceid :: character varying =(v_servicecase ->> 'intakeserviceid') :: character varying order by insertedon 
+        desc limit 1;
+  end if;
+
+  if v_fromsecurityusersid is not null then
+  
+   select fromteamid ,toteamid ,servicetype  into  v_fromteamid, v_toteamid, v_srvtype from caseassignment where toworkeridno :: character varying = v_fromsecurityusersid and
+   objectid :: character varying =(v_servicecase ->> 'intakeserviceid') :: character varying order by insertedon desc limit 1;
+  
+SELECT description into v_servicesubtype FROM intakeserv ins WHERE ins.intakeservid in (select caseservicetypeid from asservicesoncase where asservicesoncaseid=v_asservicesoncaseid);
+ 
+
+ INSERT INTO caseassignment
+ (fromworkeridno, toworkeridno, insertedby, updatedby, insertedon, updatedon,startdate, objecttypekey, objectid,responsibilitytypekey,fromteamid,toteamid, servicetype)
+ VALUES(v_securityuserid,v_fromsecurityusersid,v_securityuserid,v_securityuserid,now(),now(),now(),'servicecase',(v_servicecase ->> 'ascaseid') :: uuid ,'primary',v_fromteamid, v_toteamid, v_servicesubtype);
+ 
+  end if;
+ 
+  if(v_servicecase ->> 'isapscontinuecaseconnect' = true) then
+                --enddate aps case assignments.
+                update caseassignment 
+                set enddate = now(), updatedon = now(), updatedby = v_securityuserid
+                where objectid :: character varying =(v_servicecase ->> 'intakeserviceid') :: character varying and activeflag=1 and enddate is null;
+
+                --enddate aps case services.
+                For v_programarea in (select asservicesoncaseid , personprogramid,caseservicesubtypekey from asservicesoncase where ascaseid :: character varying =(v_servicecase ->> 'intakeserviceid') :: character varying and caseservicetypeid in ('b91ce433-57a1-4005-a139-4dceae30573e','ce96240b-6eac-4573-866d-3c17c35f4bee') and enddate is null and activeflag = 1) 
+
+                loop
+
+        select investigationfindingtypekey into v_investigationfindingtypekey from investigationfinding ig
+                        inner join investigationallegation i on ig.investigationallegationid =i.investigationallegationid
+                        inner join allegation a on a.allegationid =i.allegationid
+                        inner join investigation iv on i.investigationid =iv.investigationid
+                        where a.name =(CASE WHEN v_programarea.caseservicesubtypekey='07A3' THEN 'Financial Exploitation' 
+                        WHEN v_programarea.caseservicesubtypekey='07A5' THEN 'Self-Neglect'
+                        WHEN v_programarea.caseservicesubtypekey='07A1' THEN 'Physical Abuse'
+                        WHEN v_programarea.caseservicesubtypekey='07A2' THEN 'Sexual Abuse/Exploitation'
+                        WHEN v_programarea.caseservicesubtypekey='07A4' THEN 'Neglect by Others'
+                        else '' end)  and a.activeflag =1
+                        and i.activeflag =1 and ig.activeflag =1 and iv.intakeserviceid  :: character varying = (v_servicecase ->> 'intakeserviceid') :: character varying
+                        order by ig.insertedon desc limit 1;
+                
+                      if (v_programarea.caseservicesubtypekey = '07A5') then
+                      
+                        select investigationfindingtypekey into v_investigationfindingtypekey from investigationfinding ig
+                        inner join investigationallegation ia on ia.investigationallegationid = ig.investigationallegationid 
+                        inner join investigation iv on iv.investigationid = ia.investigationid 
+                        where 
+                        ia.allegationid ='00000000-0000-0000-0000-000000000000' and ia.activeflag =1 and ig.activeflag =1 and
+                        iv.intakeserviceid  :: character varying = (v_servicecase ->> 'intakeserviceid') :: character varying limit 1;
+                      end if;
+                      
+                        v_reasoncd='';
+                        if (v_investigationfindingtypekey = 'UC')                                                                                                                                                                                                                                                                                                                                                                               
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3419';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;                                                                                                                                                                                                                                                                                                                                                                                               
+                                                                                                                                                                                                                          
+                        if (v_investigationfindingtypekey = 'ID')                                                                                                                                                                                                                                                                                                                                                                            
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3420';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;
+
+                        if (v_investigationfindingtypekey = 'UD')                                                                                                                                                                                                                                                                                                                                                                            
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3421';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;
+                        
+                        if (v_investigationfindingtypekey = 'RO')                                                                                                                                                                                                                                                                                                                                                                            
+                        then                                                                                                                                                                                                                                                                                                                                                                                                  
+                        v_reasoncd := '3422';                                                                                                                                                                                                                                                                                                                                                                                
+                        end if;
+
+                          UPDATE asservicesoncase
+                          SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, approvalstatus = 'closed', reason = v_reasoncd
+                          WHERE asservicesoncaseid = v_programarea.asservicesoncaseid;
+
+                          UPDATE personprogramarea
+                          SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = v_reasoncd
+                          WHERE personprogramid = v_programarea.personprogramid;
+
+   
+
+                  UPDATE asservicesoncase
+                  SET enddate=now(), updatedon=now(), updatedby=v_securityuserid , approvalstatus = 'closed', reason = '3414'
+                  WHERE asservicesoncaseid = v_programarea.asservicesoncaseid and enddate is null;
+
+                  UPDATE personprogramarea
+                  SET enddate=now(), updatedon=now(), updatedby=v_securityuserid, endreasonkey = '3414'
+                  WHERE personprogramid = v_programarea.personprogramid and enddate is null;
+
+                End loop;  
+
+
+
+
+          SELECT tm.teammemberid 
+          into v_team_member_id
+              FROM muser m
+              INNER  JOIN rolemapping rm on rm.principalid = m.id and rm.activeflag=1 and rm.teamtypekey = 'AS'
+              INNER  JOIN role r on rm.roleid = r.id and r.activeflag=1
+              INNER  JOIN as_teammemberassignment tma ON tma.SecurityUsersId = m.SecurityUsersId AND   tma.activeflag =1  
+                  INNER JOIN  teammember tm  ON tm.teammemberid = tma.teammemberid AND tm.activeflag =1
+                  inner join team t on t.teamid = tm.teamid  and t.activeflag =1
+                  inner join teammemberroletype tmrt on tmrt.roletypekey = r.roletypekey 
+              WHERE  m.SecurityUsersId = v_fromsecurityusersid;
+            
+
+          INSERT INTO areateammemberservicerequest(
+                          activeflag, teammemberid, intakeserviceid, 
+                          routingstatustypekey,securityusersid, routedby, insertedby, insertedon)
+                  VALUES (1, v_team_member_id, (v_servicecase ->> 'ascaseid')::uuid, 
+                          'New',v_fromsecurityusersid, NULL, v_securityuserid, now());
+
+              INSERT INTO intakeservicerequestuseraccess(
+                          activeflag, securityusersid, 
+                          intakeserviceid, insertedby)
+                  VALUES (1, v_fromsecurityusersid, (v_servicecase ->> 'ascaseid')::uuid,v_securityuserid);
+
+  SELECT as_createcasetranferassessment INTO  v_createcasetranferassessment
+  FROM as_createcasetranferassessment( (v_servicecase ->> 'intakeserviceid')::uuid, (v_servicecase ->> 'ascaseid')::uuid,v_securityuserid);
+
+
+  end if;
+
+
+   RAISE NOTICE 'Calling as_createduplicatecollaterals';
+ SELECT as_createduplicatecollaterals INTO  v_as_createduplicatecollaterals
+ FROM as_createduplicatecollaterals((v_servicecase ->> 'intakeserviceid') :: uuid,(v_servicecase ->> 'ascaseid') :: uuid,v_securityuserid);
+
+end if;
+ 
+ SELECT json_agg(x)   INTO l_response FROM (
+  SELECT  v_personid as personid, 
+    v_personprogramid as personprogramid, 
+    v_asservicesoncaseid as asservicesoncaseid,
+    v_request as requesttype) x;
+
+ return l_response;
+
+END;
+
+$function$
+

@@ -1,0 +1,129 @@
+ CREATE OR REPLACE FUNCTION cjams.pathwayapproval(v_securityuserid character varying, v_intakeserviceid uuid, v_status integer)   
+  RETURNS character varying                                                                                                        
+  LANGUAGE plpgsql                                                                                                                 
+ AS $function$                                                                                                                     
+------------------------------------------------------------------------------------------------------------                       
+-- Revision(s)                                                                                                                     
+-- 08/04/2026 - Sushma Bade CIDM-11511 - Pathway change is not going to affect the decision tab anymore                                             
+------------------------------------------------------------------------------------------------------------                                                                                                                                 
+                                                                                                                                   
+ DECLARE                                                                                                                           
+ v_intakeservreqtypeid uuid;                                                                                                       
+ v_servicerequesttypeconfigid uuid;                                                                                                
+ v_servicerequestsubtypeid uuid;                                                                                                   
+ v_isar boolean;                                                                                                                   
+ v_intakeserreqstatustypeid uuid;                                                                                                  
+ v_servicerequesttypeconfigdispositionid uuid;                                                                                     
+ v_intakeservicerequestsdmid uuid;                                                                                                 
+                                                                                                                                   
+ BEGIN                                                                                                                             
+                                                                                                                                   
+         IF v_status = 16 THEN                                                                                                     
+                                                                                                                                   
+                 SELECT                                                                                                            
+                                 intakeservreqtypeid                                                                               
+                         ,       intakeserreqstatustypeid                                                                          
+                                                                                                                                   
+                 INTO                                                                                                              
+                                 v_intakeservreqtypeid                                                                             
+                         ,       v_intakeserreqstatustypeid                                                                        
+                 FROM intakeservicerequest                                                                                         
+                 WHERE intakeserviceid= v_intakeserviceid AND activeflag =1;                                                       
+                                                                                                                                   
+                 /*Review mode SDM details selected */                                                                             
+                 SELECT  isar                                                                                                      
+                 INTO     v_isar                                                                                                   
+                 FROM intakeservicerequestsdm                                                                                      
+                 WHERE intakeserviceid= v_intakeserviceid AND activeflag =1 AND status = 15;                                       
+                                                                                                                                   
+                 IF v_isar = false THEN                                                                                            
+                         SELECT                                                                                                    
+                                         servicerequestsubtypeid                                                                   
+                         INTO    v_servicerequestsubtypeid                                                                         
+                         FROM servicerequestsubtype                                                                                
+                         WHERE classkey = 'CPS-IR' AND activeflag =1 ;                                                             
+                                                                                                                                   
+                         UPDATE intakeservicerequest SET actiontype = 'IR',                                                        
+                         intakeservicerequestclassid = v_servicerequestsubtypeid                                                   
+                         WHERE intakeserviceid = v_intakeserviceid AND activeflag =1;                                              
+                                                                                                                                   
+                 ELSE                                                                                                              
+                                                                                                                                   
+                         SELECT   servicerequestsubtypeid                                                                          
+                         INTO     v_servicerequestsubtypeid                                                                        
+                         FROM servicerequestsubtype                                                                                
+                         WHERE classkey = 'CPS-AR' AND activeflag =1 ;                                                             
+                                                                                                                                   
+                         UPDATE intakeservicerequest SET actiontype = 'AR',                                                        
+                         intakeservicerequestclassid = v_servicerequestsubtypeid                                                   
+                         WHERE intakeserviceid = v_intakeserviceid AND activeflag =1;                                              
+                                                                                                                                   
+        END IF;                                                                                                                    
+                                                                                                                                   
+        --          UPDATE intakeservicerequestdispositioncode SET activeflag = 0                                                     
+        --          WHERE intakeserviceid = v_intakeserviceid;                                                                        
+                                                                                                                                   
+        --          SELECT          servicerequesttypeconfigid                                                                        
+        --          INTO            v_servicerequesttypeconfigid                                                                      
+        --          FROM servicerequesttypeconfig                                                                                     
+        --          WHERE   intakeservreqtypeid = v_intakeservreqtypeid                                                               
+        --          AND     servicerequestsubtypeid = v_servicerequestsubtypeid                                                       
+        --          AND     activeflag =1 ;                                                                                           
+                                                                                                                                   
+        --          IF v_servicerequesttypeconfigid = null THEN                                                                       
+        --                  v_servicerequestsubtypeid ='00000000-0000-0000-0000-000000000000';                                        
+        --                  SELECT  servicerequesttypeconfigid                                                                        
+        --                  INTO    v_servicerequesttypeconfigid                                                                      
+        --                  FROM servicerequesttypeconfig                                                                             
+        --                  WHERE intakeservreqtypeid = v_intakeservreqtypeid                                                         
+        --                  AND    servicerequestsubtypeid = v_servicerequestsubtypeid                                                
+        --                  AND activeflag =1 ;                                                                                       
+        --          END IF;                                                                                                           
+                                                                                                                                   
+                                                                                                                                   
+        --  SELECT   servicerequesttypeconfigiddispostionid                                                                           
+        --          INTO     v_servicerequesttypeconfigdispositionid                                                                  
+        --          FROM servicerequesttypeconfigdispositioncode                                                                      
+        --          where servicerequesttypeconfigid = v_servicerequesttypeconfigid                                                   
+        --          AND activeflag =1;                                                                                                
+                                                                                                                                   
+                                                                                                                                   
+        --          INSERT INTO intakeservicerequestdispositioncode(intakeservicerequestdispositioncodeid,                            
+        --           intakeserviceid, insertedby, insertedon, updatedby, updatedon,                                                   
+        --       statusdate,  effectivedate, activeflag, intakeserreqstatustypeid,                                                    
+        --           servicerequesttypeconfigiddispostionid)                                                                          
+        --          VALUES ( gen_rANDom_uuid(),v_intakeserviceid,v_securityuserid,now(),v_securityuserid,now(),                       
+        --                                          now(),now(),1,v_intakeserreqstatustypeid,v_servicerequesttypeconfigdispositionid);
+                                                                                                                                   
+                 UPDATE intakeservicerequestsdm SET status = v_Status WHERE intakeserviceid = v_intakeserviceid  AND status =15;   
+                                                                                                                                   
+ elsif v_Status =17 THEN                                                                                                           
+                 
+                 SELECT  intakeservicerequestsdmid   INTO v_intakeservicerequestsdmid                                              
+                 FROM    intakeservicerequestsdm                                                                                   
+                 WHERE   intakeserviceid = v_intakeserviceid AND status =15                                             
+                 ORDER BY insertedon Desc limit 1;
+
+                 UPDATE intakeservicerequestsdm SET status = v_Status                                               
+                 WHERE intakeservicerequestsdmid = v_intakeservicerequestsdmid;
+                 /*
+                 UPDATE intakeservicerequestsdm SET activeflag =1                                                                  
+                 WHERE intakeserviceid = v_intakeserviceid AND                                                                     
+                 intakeservicerequestsdmid  =v_intakeservicerequestsdmid;
+                 */
+                                                                                                                                                    
+                                                                                                                                   
+ END IF;                                                                                                                           
+                                                                                                                                   
+ RETURN 'Success';                                                                                                                 
+                                                                                                                                   
+ -- DROP TABLE v_intakeservreqtypeid;                                                                                              
+ -- DROP TABLE v_servicerequesttypeconfigid ;                                                                                      
+ --DROP TABLE v_servicerequestsubtypeid ;                                                                                          
+ --DROP TABLE v_isar ;                                                                                                             
+ --DROP TABLE v_intakeserreqstatustypeid ;                                                                                         
+ --DROP TABLE v_servicerequesttypeconfigdispositionid ;                                                                            
+ --DROP TABLE v_intakeservicerequestsdmid;                                                                                         
+ END;                                                                                                                              
+                                                                                                                                   
+ $function$                                                                                                                        

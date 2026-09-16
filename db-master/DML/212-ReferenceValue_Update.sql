@@ -1,0 +1,1 @@
+ update referencevalues set activeflag=0 where referencetypeid=82 and teamtypekey='CW' and ref_key in ('CMP','CPD');

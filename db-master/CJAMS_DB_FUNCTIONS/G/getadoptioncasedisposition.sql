@@ -1,0 +1,64 @@
+
+DROP FUNCTION IF EXISTS cjams.getadoptioncasedisposition(uuid, integer, integer);
+
+CREATE OR REPLACE FUNCTION cjams.getadoptioncasedisposition(v_adoptioncaseid uuid, pagenumber integer, pagesize integer)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+
+l_adoptioncasedisposition json;
+v_pageoffset  int;
+v_pagenumber  int;
+
+BEGIN
+
+v_pagenumber  :=  pagenumber-1;
+v_pageoffset  =  v_pagenumber  *  pagesize;
+
+	SELECT json_agg(adoptioncasedisposition) INTO l_adoptioncasedisposition 
+	FROM (
+	SELECT scp.adoptioncasedispositionid, scp.adoptioncaseid, scp.statusdate AS displaydate,
+			       ist.description AS dispstatus, dc.description AS disposition,
+			       scp.comments AS reviewcomments, 
+				   CASE WHEN ro.roletypekey LIKE 'JS%' THEN ro.description ELSE CAST( (rt.RoleTypename) AS character varying) END AS userrole,
+	               CAST( (u.LoadNumber) AS character varying) AS LoadNumber, 
+		           CAST(  (up.displayname) AS character varying) AS username,
+		
+				(SELECT rs.typedescription AS routingstatus 
+				 FROM routing r  
+				 	INNER JOIN routingstatustype rs ON r.routingstatustypeid = rs.sequencenumber AND rs.activeflag    =1
+				 WHERE r.objectid = scp.adoptioncasedispositionid::character varying AND r.eventcode = 'ACDR'AND r.activeflag =1 LIMIT 1
+			    ),
+			    ( SELECT displayname  AS approvedby
+                  FROM   userprofile up 
+                  INNER JOIN routing r 
+                  ON r.objectid = scp.adoptioncasedispositionid::character varying
+                  WHERE up.securityusersid = r.fromsecurityusersid 
+                  AND r.eventcode = 'ACDR' 
+                  and r.routingstatustypeid = 16
+                  AND r.activeflag = 1 
+                  AND up.activeflag = 1 
+                  ORDER BY r.insertedon 
+                  LIMIT 1 )
+	    FROM 	adoptioncasedisposition scp 
+				INNER JOIN intakeserreqstatustype ist ON ist.intakeserreqstatustypekey = scp.intakeserreqstatustypekey AND ist.activeflag = 1
+				INNER JOIN dispositioncode dc ON dc.dispositioncode = scp.dispositioncode AND dc.activeflag = 1
+				LEFT JOIN (SELECT 	TMA.SecurityUsersId , MAX(COALESCE(TM.RoleTypeKey,'')) AS RoleTypeKey, MAX( COALESCE(TM.LoadNumber,'') ) AS LoadNumber    
+							FROM 	TeamMemberAssignment TMA    
+									INNER JOIN TeamMember TM ON TMA.TeamMemberId = TM.TeamMemberId    
+							GROUP BY TMA.SecurityUsersId ) u ON u.SecurityUsersId = scp.insertedby
+			  LEFT JOIN userprofile up ON up.SecurityUsersId = scp.insertedby
+			  LEFT JOIN role  ro ON ro.roletypekey = u.RoleTypeKey AND ro.activeflag =1
+			  LEFT JOIN roletype rt ON rt.shortname = ro.name AND rt.activeflag =1
+		WHERE scp.adoptioncaseid = v_adoptioncaseid AND scp.activeflag = 1 
+		ORDER BY displaydate DESC
+		LIMIT  pagesize  OFFSET  v_pageoffset
+   		) AS adoptioncasedisposition ;
+
+RETURN l_adoptioncasedisposition;      
+end;
+
+$function$
+;

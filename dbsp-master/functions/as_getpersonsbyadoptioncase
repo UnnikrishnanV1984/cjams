@@ -1,0 +1,281 @@
+CREATE OR REPLACE FUNCTION as_getpersonsbyadoptioncase(v_servicecaseid uuid, _page integer, _limit integer)
+ RETURNS TABLE(totalcount bigint, rolename character varying, dcn character varying, personid uuid, firstname character varying, lastname character varying, middlename character varying, suffix character varying, gender character varying, dob timestamp without time zone, age text, dateofdeath timestamp without time zone, isapproxdod integer, address character varying, address2 character varying, state character varying, city character varying, zipcode character varying, county character varying, height character varying, weight character varying, race json, phonenumber character varying, dangerous text, actorid uuid, intakeservicerequestactorid uuid, isalleged integer, priorscount integer, reported boolean, refusessn boolean, refusedob boolean, userphoto text, primarylanguageid character varying, primarylanguage character varying, secondarylanguageid character varying, secondarylanguage character varying, otherprimarylanguagetypekey character varying, email character varying, roles json, relationship text, fourerelid integer, ishousehold integer, iscollateralcontact integer, schoolname json, ssn character varying, assistpid character varying, cjamspid bigint, strengths character varying, needs character varying, medicalinformation json, medicationinformation json, addendum json, medicalcondition json, emergency json, ethinicity character varying, religion character varying, racetypekey character varying, fetalalcoholspctrmdisordflag integer, drugexposednewbornflag integer, probationsearchconductedflag integer, sexoffenderregisteredflag integer, adoptioncaseid uuid, intakeserviceid uuid, caseheadname character varying, statustypekey character varying, isplacement integer, removaldate timestamp without time zone, citizenalenageflag integer, isqualifiedalien integer, alienregistrationtext character varying, verificationremarks character varying, alienstatustypekey character varying, issafe integer, mdm character varying, programarea json)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE                    
+_offset integer;
+BEGIN
+_offset := (_page - 1) * _limit;    
+RETURN QUERY
+SELECT 
+ "Person".totalcount,
+ '' :: character varying ,
+ "Person".dcn,
+ "Person".personid,
+ "Person".firstname,
+ "Person".lastname,
+ "Person".middlename,
+ "Person".suffix,
+ "Person".typedescription,
+ "Person".dob ,
+ "Person".age,
+ "Person".dateofdeath,
+ "Person".isapproxdod,
+ "Person".address,
+ "Person".address2,
+ "Person".state,
+ "Person".city,
+ "Person".zipcode,
+ "Person".county,
+ "Person".height :: character varying,
+ "Person".weight :: character varying,
+ (select json_agg(x) from (select prt.racetypekey from personracetypemap prt where prt.personid="Person".personid) x)
+  as race,
+ (
+  SELECT
+   ph.phonenumber
+  FROM personphonenumber ph  
+  WHERE ph.personid = "Person".personid AND ph.personphonetypekey = 'P' AND activeflag = 1
+  ORDER BY insertedon DESC LIMIT 1
+ ),
+ "Person".dangerous,
+ "Person".actorid,
+ "Person".intakeservicerequestactorid,
+ null :: integer,
+ NULL :: integer,
+ "Person".reported,
+ "Person".RefuseSSN,
+ "Person".RefuseDOB,
+ "Person".userphoto  ::text,
+ "Person".primarylanguageid,
+ null :: character varying,
+ null :: character varying,
+ null :: character varying,
+ null :: character varying,
+ "Person".email :: character  varying  ,
+ "Person".roles ::json,
+ "Person".relationship ,
+ "Person".fourerelid,
+ "Person".ishousehold,
+ "Person".iscollateralcontact,
+ null :: json,
+ null :: character varying,
+ "Person".assistpid,
+ "Person".cjamspid,
+ "Person".strengths,
+ "Person".needs,
+ null ::json,
+ null ::json,
+ null ::json,
+ null ::json,
+ null ::json,
+ "Person".ethinicity :: character varying,
+ "Person".religion :: character varying,
+ "Person".racetypekey :: character varying,
+ null:: integer,
+ null:: integer,
+ null:: integer,
+ null:: integer,
+ "Person".adoptioncaseid,
+ "Person".intakeserviceid,
+ "Person".caseheadname,
+ "Person".statustypekey,
+ "Person".isplacement,
+ "Person".removaldate,
+ "Person".citizenalenageflag,
+ "Person".isqualifiedalien,
+ "Person".alienregistrationtext,
+ "Person".verificationremarks,
+ "Person".alienstatustypekey,
+       (
+   SELECT COALESCE(aa.issafe,0)
+   FROM assessmentactor aa 
+   INNER JOIN routing r ON r.objectid=aa.assessmentid :: character varying AND r.activeflag=1 AND r.routingstatustypeid IN(15, 16)
+   WHERE aa.intakeservicerequestactorid = "Person".intakeservicerequestactorid AND aa.activeflag = 1 ORDER BY routingstatustypeid, r.updatedon DESC LIMIT 1
+  ),
+ cast('Y' as character varying) as mdm,
+ "Person".programarea
+FROM  
+(
+ SELECT
+  count(1) over() AS totalcount,
+        IAR.intakeserviceid,
+        SC.caseheadname,
+        SC.statustypekey,
+        aca.adoptioncaseid,
+  /*IAR.intakeservicerequestpersontypekey  as  "intakeservicerequestpersontypekey",*/
+  (
+   SELECT
+    personidentifiervalue
+   FROM personidentifier pid
+   WHERE pid.personid = P.personid AND personidentifiertypekey = 'DCN' AND activeflag = 1 LIMIT 1
+  ) AS dcn,
+  P.personid,
+  p.firstname,
+  p.lastname,
+  p.middlename,
+  p.suffix,
+  G.typedescription,
+  p.dob,
+  CASE WHEN EXTRACT(YEAR FROM age(now(), p.dob)) <= 0 THEN 
+   CASE WHEN EXTRACT(MONTH FROM age(now(), p.dob)) <= 0 THEN 
+    CONCAT (EXTRACT(DAY FROM age(now(), p.dob)) :: CHARACTER varying, ' ', 'Day(s)') 
+    ELSE CONCAT (EXTRACT(MONTH FROM age(now(), p.dob)) :: CHARACTER varying, ' ', 'Month(s)') 
+   END 
+  ELSE CONCAT (EXTRACT(YEAR FROM age(now(), p.dob)) :: CHARACTER varying,' ', 'Yrs') END AS age,
+     EXTRACT(YEAR FROM age(now(), p.dob)) age1,
+  p.dateofdeath,
+  p.isapproxdod,
+  p.userphoto,
+  p.primarylanguageid,
+  p.secondarylanguageid,
+  p.otherprimarylanguagetypekey, 
+  pa.address,
+  pa.address2,
+  pa.state,
+  pa.city,
+  pa.zipcode,
+  pa.county, 
+  null AS height, 
+  NULL AS weight,
+  (CASE WHEN p.dangerlevel = 0 THEN 'NO' WHEN p.dangerlevel=1 THEN 'YES' ELSE 'UNKNOWN' END) AS dangerous,
+  AC.actorid,
+     IAR.Intakeservicerequestactorid AS intakeservicerequestactorid,
+     NULL isvictim,
+  NULL ::bool reported,
+  NULL ::bool RefuseSSN,
+  NULL ::bool RefuseDOB,
+  NULL email,
+  (
+  select
+   json_agg(e) as roles
+  from
+   (
+   select
+    isrpn.intakeservicerequestpersontypekey,
+    --at.typedescription
+    at.value_text as typedescription
+   from
+    intakeservicerequestactor ISRPN
+   --inner join actortype at on
+    --at.actortype = isrpn.intakeservicerequestpersontypekey
+   inner join referencevalues at on 
+   at.ref_key = isrpn.intakeservicerequestpersontypekey
+   where
+    isrpn.actorid = ac.actorid
+    and (isrpn.adoptioncaseid=v_servicecaseid  )
+    and isrpn.activeflag = 1
+        and at.referencetypeid in (175,176) -- newly added by venky
+    
+   group by
+    isrpn.intakeservicerequestpersontypekey,
+    --at.typedescription 
+    at.value_text 
+   ) as e ) ::json,
+  CASE 
+   WHEN IAR.intakeservicerequestpersontypekey IN ('RC','CHILD','BIOCHILD') 
+   THEN 
+    (SELECT AT.typedescription FROM Actortype AT WHERE AT.Actortype = IAR.intakeservicerequestpersontypekey AND AT.activeflag=1 LIMIT 1)
+   ELSE 
+   (
+    SELECT 
+     rt.description 
+    FROM relationshiptype rt 
+    INNER JOIN actorrelationship ar ON rt.relationshiptypekey= ar.relationshiptypekey AND ar.activeflag=1 AND rt.activeflag =1 
+    INNER JOIN intakeservicerequestactor IR on AR.intakeservicerequestactorid = ir.intakeservicerequestactorid AND IR.adoptioncaseid = aca.adoptioncaseid 
+     AND IR.activeflag = 1
+    INNER JOIN Actor a on a.actorid = IR.actorid
+    WHERE ir.actorid = AC.actorid
+    GROUP BY rt.description LIMIT 1
+   ) 
+  END AS relationship,  
+        (
+            SELECT 
+                rt.fourerelid 
+            FROM relationshiptype rt 
+            INNER JOIN actorrelationship ar ON rt.relationshiptypekey= ar.relationshiptypekey AND ar.activeflag=1 AND rt.activeflag =1 
+            INNER JOIN intakeservicerequestactor IR on AR.intakeservicerequestactorid = ir.intakeservicerequestactorid AND IR.servicecaseid = aca.adoptioncaseid 
+                AND IR.activeflag = 1
+            INNER JOIN Actor a on a.actorid = IR.actorid
+            WHERE ir.actorid = AC.actorid
+            GROUP BY rt.fourerelid LIMIT 1
+        ) AS fourerelid,
+        AC.ishouseholdmember AS ishousehold,  
+        AC.iscollateralcontact AS iscollateralcontact,
+  NULL::json,
+  p.old_id AS assistpid,
+  p.cjamspid,
+  p.strengths,
+  p.needs,  
+        NULL ::json,  
+  NULL ::json,
+  NULL ::json , 
+  NULL ::json,
+  NULL ::json,
+        NULL AS ethinicity,
+        NULL AS religion,
+        NULL racetypekey,
+  NULL fetalalcoholspctrmdisordflag,
+  NULL drugexposednewbornflag,
+  NULL probationsearchconductedflag,
+  NULL sexoffenderregisteredflag,
+  /*(select case when count(1)>0 then 1 else 0 end from tb_placement where client_id = p.cjamspid) */
+     1 AS isplacement,
+  (
+   SELECT
+    icr.removaldate
+   FROM intakeservreqchildremoval icr  
+   INNER JOIN intakeservicerequestactor ir ON ir.intakeservicerequestactorid = icr.intakeservicerequestactorid AND ir.adoptioncaseid=v_servicecaseid
+   WHERE ir.personid = p.personid 
+   ORDER BY 1 DESC LIMIT 1
+  ) AS removaldate,
+  p.citizenalenageflag,
+  p.isqualifiedalien,
+  p.alienregistrationtext,
+  p.verificationremarks,
+  p.alienstatustypekey,
+  
+   (
+   SELECT
+    json_agg(e) AS programarea
+   FROM
+            (
+    SELECT
+     ppa.programkey,
+     ppa.subprogramkey,
+     (SELECT rv.description  FROM referencevalues rv 
+     WHERE rv.ref_key = ppa.subprogramkey AND rv.referencetypeid = 12 AND rv.activeflag =1 LIMIT 1) subprogramname,
+     (SELECT ap.programname FROM agencyprogramarea ap 
+     WHERE ap.programkey = ppa.programkey AND ap.activeflag =1 LIMIT 1) programname
+    FROM personprogramarea ppa 
+    WHERE ppa.personid = P.personid AND ppa.objectid=IAR.servicecaseid::character varying AND ppa.activeflag=1
+                AND ppa.enddate IS NULL 
+   ) AS e
+  ) ::json
+    FROM adoptioncase aca  
+    LEFT OUTER JOIN servicecase SC ON sc.servicecaseid = aca.servicecaseid   
+ INNER JOIN Intakeservicerequestactor IAR ON IAR.adoptioncaseid = aca.adoptioncaseid AND IAR.isprimary =TRUE  AND IAR.activeflag=1 
+ INNER JOIN actor AS AC ON AC.actorid = IAR.actorid AND AC.actorid = IAR.actorid AND AC.activeflag=1   
+ INNER JOIN person AS P ON P.personid=AC.personid AND P.activeflag=1
+ INNER JOIN gendertype AS G ON G.gendertypekey=P.gendertypekey AND G.activeflag=1
+ --LEFT JOIN personidentifier AS PI on P.personid=PI.personid AND PI.activeflag=1
+ --LEFT  JOIN  personaddress  AS  pa  ON  pa.personid  =  p.personid  and  pa.personaddresstypekey  =  'C'  and  pa.activeflag  =  1
+ LEFT JOIN 
+  (
+   SELECT 
+    paa.personid,(MAX(paa.personaddressid::character varying))::uuid personaddressid 
+   FROM personaddress AS paa 
+   WHERE   paa.currentlocationflag = 1 AND paa.activeflag=1 
+   GROUP BY paa.personid
+  ) pa1 ON pa1.personid=p.personid 
+ LEFT JOIN personaddress AS pa ON        pa.currentlocationflag = 1 AND pa.activeflag=1 AND pa.personaddressid=pa1.personaddressid                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+ WHERE  aca.adoptioncaseid=v_servicecaseid      
+ GROUP BY IAR.Intakeservicerequestactorid, IAR.intakeservicerequestpersontypekey,SC.caseheadname,SC.statustypekey,aca.adoptioncaseid,IAR.intakeserviceid,P.personid,G.typedescription,AC.actorid,
+ pa.address,pa.address2,pa.state,pa.city,pa.zipcode,pa.county
+) AS "Person"  
+ORDER BY "Person".age1 DESC
+LIMIT  _limit  OFFSET  _offset;
+END;
+$function$
+

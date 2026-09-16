@@ -1,0 +1,90 @@
+CREATE OR REPLACE FUNCTION as_createnotification1()
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_notification_rec RECORD;
+v_objectid uuid;
+v_notificationtypekey character varying;
+v_datefieldname character varying;
+v_notificationoffset integer;
+v_frequencytype character varying;
+v_offsetminutes integer;
+v_notificationmessage character varying;
+declare v_json json;
+BEGIN
+ 
+ 
+CREATE TEMP TABLE _Temp_usernotification
+(
+ usernotificationid uuid NOT NULL DEFAULT gen_random_uuid(),
+ securityusersid character varying(50),
+    fromsercurityusersid character varying(50),
+ tosecurityusersid    character varying(50),
+ usernotificationtypekey character varying(15) NOT NULL,
+ objectid character varying(50),
+ 
+ 
+ subject character varying(255),
+ priorityleveltypekey character varying(15),
+ body text NOT NULL,
+ 
+ updatedby character varying(50),
+ updatedon timestamp without time zone,
+ insertedby character varying(50),
+ insertedon timestamp without time zone DEFAULT now() ,
+ isda int default 0,
+ supmsg  character varying(255) 
+  
+ );
+  
+  /* Safety Plan notification */    
+
+ 
+ FOR v_notification_rec IN select  objectid,datefieldname, notificationtypekey, notificationoffset,
+ frequencytype, offsetminutes, notificationmessage   from notificationconfig where teamtypekey ='CW'
+ and notificationtypekey ='SP'
+
+            LOOP
+   
+ v_objectid := v_notification_rec.objectid;
+ v_notificationtypekey := v_notification_rec.notificationtypekey;
+ v_datefieldname := v_notification_rec.datefieldname;
+ v_notificationoffset := v_notification_rec.notificationoffset;
+ v_frequencytype := v_notification_rec.frequencytype;
+ v_offsetminutes := v_notification_rec.offsetminutes;
+ v_notificationmessage  := v_notification_rec.notificationmessage;
+
+if (v_notification_rec.notificationtypekey ='SP') then
+
+ insert into _Temp_usernotification (securityusersid, fromsercurityusersid, tosecurityusersid,
+                                        usernotificationtypekey,
+                                        objectid, subject,priorityleveltypekey,
+  body,updatedby,insertedby, insertedon, updatedon)
+  select distinct isr.routedusersid ,'System', isr.routedusersid,'System',
+        isr.intakeserviceid,
+     Replace (v_notificationmessage, '[servreqno]',isr.servicerequestnumber) ,
+        'Normal',Replace (v_notificationmessage, '[servreqno]',isr.servicerequestnumber) 
+        ,'System','System',now() ,now()  
+        
+        from intakeservicerequestsafetyplan ISSP 
+        inner join intakeservicerequest ISR  on ISR.intakeserviceid = ISSP.intakeserviceid
+  where ISSP.activeflag =1  
+        and  ((extract (day from now() -   ISSP.reevaluationdate)))  =  coalesce(v_notificationoffset,0)
+        and ISR.intakeserviceid :: character varying  not in (select objectid from usernotification where  subject  like left(v_notificationmessage,10) ||'%' );
+   
+end if;
+ 
+end loop;
+ 
+ select json_agg(e) into v_json from (
+select usernotificationid,securityusersid  , usernotificationtypekey,objectid, subject,priorityleveltypekey,
+body,updatedby,insertedby, insertedon, updatedon,true  from _Temp_usernotification) e;
+ 
+ RETURN v_json; 
+END; 
+
+$function$
+

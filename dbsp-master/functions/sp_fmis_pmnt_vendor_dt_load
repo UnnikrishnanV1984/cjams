@@ -1,0 +1,166 @@
+CREATE OR REPLACE FUNCTION sp_fmis_pmnt_vendor_dt_load(ai_year integer, as_user_id character varying, OUT ai_sqlcode integer, OUT as_error_msg character varying)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+------------------------------------------------------------------------
+-- SQL Stored Procedure
+-- Author          : Angie Kemerly
+-- Date            : 09/18/2015
+-- Description     : Load each month for the specified year
+--
+-- Argument(s)     : ai_year = Year to load
+--                   as_user_id = User ID
+--                   ai_SQLCode = SQL Code as reference
+--                   as_error_msg = Error message as reference
+--
+-- Revision:
+-- 03/07/2019      :Raghuveer Reddy Dachani converted from DB2 - postgresql
+------------------------------------------------------------------------
+ DECLARE 
+ li_month integer ;
+ ls_month varchar(2) ;
+ ls_year varchar(4) ;
+ ls_vendor_1_day varchar(2) DEFAULT '1' ;
+ ls_pay_1_day varchar(2) DEFAULT '4' ;
+ ls_vendor_2_day varchar(2) DEFAULT '13' ;
+ ls_pay_2_day varchar(2) DEFAULT '16' ;
+ ls_vendor_1_dt varchar(10) ;
+ ls_pay_1_dt varchar(10) ;
+ ls_vendor_2_dt varchar(10) ;
+ ls_pay_2_dt varchar(10) ;
+
+-- Error Handling
+ ls_message_text varchar(3000) DEFAULT '' ;
+ li_rc           integer DEFAULT 0 ;
+ li_RowCount     integer ;
+ ls_proc_name    varchar(100) DEFAULT 'SP_FMIS_PMNT_VENDOR_DT_LOAD' ;
+
+
+-- Validate arguments
+BEGIN
+ai_SQLCode := 0;
+IF (Coalesce (as_user_id, '') = '') THEN
+   
+    ls_message_text := 'User ID is required.' ;
+    ai_SQLCode := -1 ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Error :: ' ||  (CURRENT_TIMESTAMP::VARCHAR) || ' :: ' || ls_proc_name || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Year =  ' || Coalesce (lTrim (rTrim ((ai_year::VARChar))), '') || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'User ID =  ' || Coalesce (lTrim (rTrim (as_user_id)), '') || ' :: ' ;
+    as_error_msg := as_error_msg || ls_message_text ;
+
+Select SP_BATCH_ERROR_LOG(ls_proc_name,NULL::bigint,NULL::bigint,NULL::character varying,NULL::integer,NULL::character varying,'99999'::character varying, as_error_msg::character varying, as_user_id::character varying) INTO li_rc;--
+ 
+    RETURN;
+END IF;
+
+-- When Year is NULL, get the max year and add 1.
+IF ai_year IS NULL THEN
+   SELECT Max (year_no)
+   INTO ai_year
+   FROM tb_fmis_pmnt_vendor_dt
+   WHERE delete_sw = 'N' ;
+
+    ai_year := ai_year + 1 ;
+END IF ;
+
+IF (Coalesce (ai_year, 0) <= 1900) THEN
+    ls_message_text := 'Year is invalid.' ;
+   ai_SQLCode := -1 ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Error :: ' ||  (CURRENT_TIMESTAMP::VARCHAR) || ' :: ' || ls_proc_name || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Year =  ' || Coalesce (lTrim (rTrim ((ai_year::VARChar))), '') || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'User ID =  ' || Coalesce (lTrim (rTrim (as_user_id)), '') || ' :: ' ;
+    as_error_msg := as_error_msg || ls_message_text ;
+
+Select SP_BATCH_ERROR_LOG(ls_proc_name,NULL::bigint,NULL::bigint,NULL::character varying,NULL::integer,NULL::character varying,'99999'::character varying, as_error_msg::character varying, as_user_id::character varying) INTO li_rc;--
+ 
+    RETURN;
+
+END IF ;
+
+-- Can't reload an existing year
+SELECT Count(*)
+INTO li_RowCount
+FROM tb_fmis_pmnt_vendor_dt
+WHERE delete_sw = 'N'
+   AND year_no = ai_year ;
+
+IF li_RowCount > 0 THEN
+    ls_message_text := 'Records already exist for Year = ' || Coalesce (rTrim (lTrim ( (ai_year::VarChar))), '<empty>') ;
+   
+   ai_SQLCode := -2 ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Error :: ' ||  (CURRENT_TIMESTAMP::VARCHAR) || ' :: ' || ls_proc_name || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Year =  ' || Coalesce (lTrim (rTrim ((ai_year::VARChar))), '') || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'User ID =  ' || Coalesce (lTrim (rTrim (as_user_id)), '') || ' :: ' ;
+    as_error_msg := as_error_msg || ls_message_text ;
+
+Select SP_BATCH_ERROR_LOG(ls_proc_name,NULL::bigint,NULL::bigint,NULL::character varying,NULL::integer,NULL::character varying,'88888'::character varying, as_error_msg::character varying, as_user_id::character varying) INTO li_rc;--
+ 
+    RETURN;
+END IF ;
+
+ ls_year := rTrim (lTrim ( (ai_year::VARChar))) ;
+
+--------- Insert: Begin ----------
+ li_month := 1 ;
+WHILE li_month <= 12
+LOOP
+
+    ls_month := rTrim (lTrim ( (li_month::VARCHAR))) ;
+    ls_vendor_1_dt := ls_month || '/' || ls_vendor_1_day || '/' || ls_year ;
+    ls_pay_1_dt := ls_month || '/' || ls_pay_1_day || '/' || ls_year ;
+    ls_vendor_2_dt := ls_month || '/' || ls_vendor_2_day || '/' || ls_year ;
+    ls_pay_2_dt := ls_month || '/' || ls_pay_2_day || '/' || ls_year ;
+
+   INSERT INTO tb_fmis_pmnt_vendor_dt (
+      fmis_pmnt_vendor_dt_id,
+      year_no,
+      month_no,
+      vendor_file_1_dt,
+      pay_file_1_dt,
+      vendor_file_2_dt,
+      pay_file_2_dt,
+      comments_tx,
+      delete_sw,
+      create_ts,
+      create_user_id,
+      update_ts,
+      update_user_id
+   )
+   VALUES (
+      NEXTVAL  ('SQ_FMIS_PMNT_VENDOR_DT'),
+      ai_year,
+      li_month,
+       (ls_vendor_1_dt::DATE),
+       (ls_pay_1_dt::DATE),
+       (ls_vendor_2_dt::DATE),
+       (ls_pay_2_dt::DATE),
+      NULL,
+      'N',
+      Current_Timestamp,
+      as_user_id,
+      Current_Timestamp,
+      as_user_id
+   ) ;
+
+    li_month := li_month + 1 ;
+END LOOP ;
+--------- Insert: End ----------
+
+EXCEPTION WHEN OTHERS THEN
+
+ls_message_text := SQLERRM;
+   
+   ai_SQLCode := -1 ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Error :: ' ||  (CURRENT_TIMESTAMP::VARCHAR) || ' :: ' || ls_proc_name || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'Year =  ' || Coalesce (lTrim (rTrim ((ai_year::VARChar))), '') || ' :: ' ;
+    as_error_msg := Coalesce (as_error_msg, '') || 'User ID =  ' || Coalesce (lTrim (rTrim (as_user_id)), '') || ' :: ' ;
+    as_error_msg := as_error_msg || ls_message_text ;
+
+Select SP_BATCH_ERROR_LOG(ls_proc_name,NULL::bigint,NULL::bigint,NULL::character varying,NULL::integer,NULL::character varying, SQLSTATE::character varying, as_error_msg::character varying, as_user_id::character varying) INTO li_rc;--
+
+    RETURN;
+
+
+END;
+$function$
+

@@ -1,0 +1,1 @@
+create INDEX xie7_routing ON cjams.routing USING btree (fromsecurityusersid,  eventcode, routingstatustypeid, activeflag);

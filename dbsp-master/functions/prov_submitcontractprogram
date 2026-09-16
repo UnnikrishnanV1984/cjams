@@ -1,0 +1,91 @@
+CREATE OR REPLACE FUNCTION prov_submitcontractprogram(objectls json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$ 
+
+declare
+v_fromsecurityuserid character varying;
+v_tosecurityuserid character varying;
+v_prgstatus character varying;
+v_objectid character varying;
+v_subject character VARYING;
+v_remarks character VARYING;
+v_success character VARYING;
+v_tousersid json;
+v_eventcode character varying;
+v_phase character varying;
+v_sign json;
+v_appstatus character varying;
+response CHARACTER varying;
+v_type character varying;
+v_username CHARACTER VARYING;
+v_appstatustext CHARACTER VARYING;
+v_objectname CHARACTER VARYING;
+v_decisiondate character varying;
+
+begin
+v_fromsecurityuserid := objectls->>'fromsecurityusersid';
+v_tosecurityuserid := objectls->>'tosecurityusersid';
+v_appstatus := objectls->>'status';
+v_username := objectls->>'username';
+v_decisiondate = now();
+v_objectname := objectls->>'objectname';
+v_objectid := objectls->>'objectid';
+v_remarks := objectls->>'remarks';
+v_eventcode := objectls->>'eventcode';
+v_phase := objectls->>'phase';
+v_sign := objectls->>'signature';
+
+---------------
+if v_eventcode = 'CON'
+then
+   v_type = 'Contract';
+else 
+   v_type = 'Contract Program';
+end if;
+---------------
+if v_appstatus = 'Submit'
+then
+   v_appstatustext = 'Submitted for approval';
+else 
+   if v_appstatus = 'Approved'
+   then
+      v_appstatustext = 'Approved';
+   elseif v_appstatus = 'Delete Record'
+      then v_appstatustext = 'Delete Record';
+   else 
+      v_appstatustext = 'Returned to worker';
+   end if;
+end if;
+
+
+v_subject := v_type||' "'||v_objectname||'" '|| v_appstatustext||' by ' ||v_username ;
+   
+
+if v_appstatustext = 'Returned to worker' then
+   response := (objectls->>'tosecurityusersid');
+end if;
+if (v_appstatustext = 'Delete Record') then 
+   
+update tb_provider_contracts 
+set delete_sw = 'Y', update_ts = now(), update_user_id = v_fromsecurityuserid
+where contract_id = v_objectid;
+end if; 
+
+
+   INSERT INTO tb_provider_decision
+      (decisionid, eventcode, fromsecurityusersid, fromroleid, objectid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, status, decisiondate,
+      toroleid,tosecurityusersid, signature)
+      VALUES(gen_random_uuid(),objectls->>'eventcode', v_fromsecurityuserid, objectls->>'fromroleid', v_objectid, 1, v_fromsecurityuserid, now(), v_fromsecurityuserid,
+      now(), false, objectls->>'remarks', v_appstatus,  v_decisiondate::Timestamp,null,v_tosecurityuserid,  v_sign);
+
+
+
+      SELECT prov_send_notification into v_success
+      FROM  prov_send_notification(v_tosecurityuserid, v_fromsecurityuserid, v_tosecurityuserid, 'System', 'High', v_subject, v_subject, v_objectid,  false, false);
+
+
+RETURN json_build_object('response',v_success);
+end;
+$function$
+

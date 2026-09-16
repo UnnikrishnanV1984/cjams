@@ -1,0 +1,122 @@
+CREATE OR REPLACE FUNCTION provuirrouting(v_objectid character varying, v_securityuserid character varying, v_appeventcode character varying, v_status integer, commenttext text, v_notifymsg character varying DEFAULT ''::character varying, v_routeddescription character varying DEFAULT ''::character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+declare
+v_agency character varying;
+v_tosecurityusersid character varying;
+v_servicerequestno character varying;
+v_uirno character varying;
+v_fromroleid character varying;
+v_toroleid character varying;  
+v_msg character varying;
+v_username character varying;
+v_date timestamp without time zone;
+v_alertstatus character varying;
+prov_securityusersid character varying;
+worker_securityusersid character varying;
+v_provroleid character varying;
+v_workerroleid character varying;
+
+BEGIN
+v_date = now();
+
+select r.roletypekey into  v_fromroleid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  mu.securityusersid = v_securityuserid;
+
+select fromsecurityusersid , tosecurityusersid, fromroleid,toroleid into prov_securityusersid , worker_securityusersid, v_provroleid , v_workerroleid
+from routing
+where eventcode = 'PRUIR' and objectid = v_objectid and  routingstatustypeid = 50;
+
+if(v_status = 50 )then
+
+select agency into v_agency  from tb_provider tp where provider_id in (select provider_id from provider_uir where provider_uir_id = v_objectid::uuid);
+
+if (v_agency = 'OLM')then
+select mu.securityusersid ,tm.roletypekey into v_tosecurityusersid, v_toroleid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('OLMPM');
+
+elseif(v_agency = 'DJS')THEN
+select mu.securityusersid,tm.roletypekey into v_tosecurityusersid, v_toroleid from team t join teammember tm on tm.teamid=t.teamid and tm.activeflag=1 
+join teammemberassignment tma on tma.teammemberid=tm.teammemberid and tma.activeflag=1 join muser mu on mu.securityusersid = tma.securityusersid and mu.activeflag=1 
+join rolemapping rm on rm.principalid::int=mu.id and rm.activeflag=1 join role r on r.id = rm.roleid :: int 
+where  r.roletypekey in ('PVRDJSR');
+end if;
+
+  /*Mark previous data as inactive and mark as rereiview*/
+UPDATE routing SET  activeflag =0  , updatedby = v_securityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+
+  INSERT INTO routing(
+                            eventcode, fromsecurityusersid, tosecurityusersid, 
+                            fromroleid, toroleid,objectid , routingstatustypeid,
+                            insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+       remarks,routeddescription,servicerequestnumber)
+              values (v_appeventcode, v_securityuserid,v_tosecurityusersid,
+                        v_fromroleid,v_toroleid,v_objectid::uuid,v_status,
+                        v_securityuserid,v_securityuserid,v_date,v_date,true,
+                        commenttext,v_routeddescription,v_servicerequestno);
+v_tosecurityusersid := v_tosecurityusersid;
+elseif(v_status IN (51,53))then 
+
+UPDATE routing SET  activeflag =0  , updatedby = v_securityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+INSERT INTO routing(
+                            eventcode, fromsecurityusersid, tosecurityusersid, 
+                            fromroleid, toroleid,objectid , routingstatustypeid,
+                            insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+       remarks,routeddescription,servicerequestnumber)
+              values (v_appeventcode, v_securityuserid,prov_securityusersid,
+                        v_workerroleid,v_provroleid,v_objectid::uuid,v_status,
+                        v_securityuserid,v_securityuserid,v_date,v_date,true,
+                        commenttext,v_routeddescription,v_servicerequestno);
+v_tosecurityusersid := prov_securityusersid;
+elseif(v_status = 52)THEN
+
+UPDATE routing SET  activeflag =0  , updatedby = v_securityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+INSERT INTO routing(
+                            eventcode, fromsecurityusersid, tosecurityusersid, 
+                            fromroleid, toroleid,objectid , routingstatustypeid,
+                            insertedby,  updatedby,insertedon,updatedon, isreviewrequest,
+       remarks,routeddescription,servicerequestnumber)
+              values (v_appeventcode,prov_securityusersid,worker_securityusersid,
+                        v_fromroleid,v_toroleid,v_objectid::uuid,v_status,
+                        v_securityuserid,v_securityuserid,v_date,v_date,true,
+                        commenttext,v_routeddescription,v_servicerequestno);
+v_tosecurityusersid := worker_securityusersid;
+elseif(v_status = 49 AND v_appeventcode='PRUIR') then
+
+UPDATE routing SET  activeflag =0  , updatedby = v_securityuserid,updatedon= v_date  WHERE objectid = v_objectid; 
+INSERT INTO routing(
+                            eventcode, fromsecurityusersid, tosecurityusersid, 
+                            fromroleid, toroleid,objectid , routingstatustypeid,
+                            insertedby, updatedby,insertedon,updatedon, isreviewrequest,
+       remarks,routeddescription,servicerequestnumber)
+              values (v_appeventcode,v_securityuserid,v_securityuserid,
+                        v_fromroleid,v_fromroleid,v_objectid::uuid,v_status,
+                        v_securityuserid,v_securityuserid,v_date,v_date,true,
+                        commenttext,v_routeddescription,v_servicerequestno);
+update provider_uir set uir_status=v_status, uir_statusdesc = v_routeddescription where provider_uir_id = v_objectid::uuid and active_flag=1;
+
+END IF;
+
+IF (v_status IN (50,51,52,53) AND v_appeventcode='PRUIR') THEN   
+update provider_uir set uir_status=v_status, uir_statusdesc = v_routeddescription where provider_uir_id = v_objectid::uuid and active_flag=1;
+
+-- Dashboard Notification 
+SELECT coalesce(lastname,'')||', '|| coalesce(firstname,'')into v_username
+    FROM userprofile WHERE securityusersid = v_securityuserid;
+select uir_no into v_uirno from provider_uir pu where provider_uir_id = v_objectid::uuid;
+v_msg:=  v_notifymsg || ' by '|| v_username ||' and UIR No: ' || v_uirno ; 
+
+SELECT prov_send_notification into v_alertstatus FROM prov_send_notification(v_tosecurityusersid,v_securityuserid, v_tosecurityusersid,
+   'System', 'High', v_msg,v_msg , v_objectid);
+END IF;
+
+RETURN 'SUCCESS';
+
+END;
+$function$
+

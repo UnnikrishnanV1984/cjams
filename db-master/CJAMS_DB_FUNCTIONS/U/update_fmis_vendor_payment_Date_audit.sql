@@ -1,0 +1,43 @@
+drop function if exists update_fmis_vendor_payment_Date_audit(int,int);
+CREATE OR REPLACE FUNCTION update_fmis_vendor_payment_Date_audit(p_year int ,
+p_month int
+)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+DECLARE
+    
+   
+	v_result json;
+	v_year int;
+	v_month int;
+	
+
+	
+BEGIN
+    v_year := p_year;
+	v_month := p_month;
+    
+        
+    select json_agg(e) into v_result from (select 
+
+   fmis_pmnt_vendor_dt_id, year_no, month_no, 
+vendor_file_1_dt, 
+pay_file_1_dt, 
+vendor_file_2_dt, 
+pay_file_2_dt, 
+comments_tx, delete_sw, create_user_id, create_ts, update_user_id, update_ts
+    from tb_fmis_pmnt_vendor_dt where delete_sw = 'Y' and year_no = v_year and month_no = v_month and teamtypekey = 'CW') e;
+
+	
+RETURN v_result;
+
+END;
+
+
+
+$function$
+;

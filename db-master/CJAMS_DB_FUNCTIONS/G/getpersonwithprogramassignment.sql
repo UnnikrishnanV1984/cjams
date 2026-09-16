@@ -1,0 +1,41 @@
+DROP FUNCTION IF EXISTS cjams.getpersonwithprogramassignment(character varying);
+
+CREATE OR REPLACE FUNCTION cjams.getpersonwithprogramassignment(v_objectid character varying)
+ RETURNS TABLE(id bigint, personid uuid, name text, programname character varying, programkey character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+-------------------------------------------------------------------------------------------------------------------
+-- Revision(s):
+-- 06/26/2023 Sreekanth Marrikanti - CDM-36480 -- Query Fix to fetch persons with past program assignments
+
+--------------------------------------------------------------------------------------------------------------------
+
+DECLARE	
+
+BEGIN
+	
+RETURN query
+ 
+SELECT DISTINCT p.cjamspid as id, p.personid AS personid, concat(p.prefx, ' ', p.firstname ,' ', p.middlename ,' ' ,p.lastname, ' ', p.suffix) as name,
+	CASE  WHEN ppa.programkey IS NULL THEN 'Program Assignment Unavailable' ELSE apa.programname END AS programname, 
+	ppa.programkey
+    
+	FROM person p
+	LEFT OUTER JOIN personprogramarea AS ppa ON ppa.personid=P.personid and ppa.activeflag = 1 and lower(ppa.objecttypekey) = 'servicecase' AND ppa.sourcetype = 'CW'
+										AND ppa.enddate IS NULL
+	LEFT OUTER JOIN agencyprogramarea AS apa ON apa.programkey=ppa.programkey
+    
+		WHERE 
+	--		ppa.enddate IS NULL AND 
+			p.personid IN(
+            	SELECT IAR.personid FROM Intakeservicerequestactor  IAR
+            		WHERE
+            		IAR.intakeserviceid=v_objectid::uuid OR IAR.servicecaseid=v_objectid::uuid AND IAR.activeflag = 1
+            	)
+		ORDER BY concat(p.prefx, ' ', p.firstname ,' ', p.middlename ,' ' ,p.lastname, ' ', p.suffix);
+
+END;
+
+$function$
+;

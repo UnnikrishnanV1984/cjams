@@ -1,0 +1,141 @@
+CREATE OR REPLACE FUNCTION as_f_fm860r(end_date date)
+ RETURNS TABLE(ldss character varying, payment_id integer, provider_id integer, provider_nm text, child_id bigint, last_nm character varying, first_nm character varying, middle_nm character varying, missing_info text, subtotal numeric, payment_status_cd character varying, child_wrk_nm character varying, child_sup_nm character varying, fam_wrk_nm text, family_sup_nm text, payment_start_dt date, payment_end_dt date, payment_status_dt date, start_dt date, end_dt date, service text, final_fiscal_category_cd character, resource_worker character varying, resource_worker_supervisor character varying)
+ LANGUAGE plpgsql
+AS $function$
+ BEGIN
+ RETURN QUERY 
+( 
+SELECT DISTINCT as_f_plvalue(d.county_cd, 104) AS ldss,
+    h.payment_id,
+    h.provider_id,
+    rtrim(h.payee_nm::text) AS provider_nm,
+    d.client_id AS child_id,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT DISTINCT l.lastname
+               FROM person l
+              WHERE l.cjamspid = d.client_id)
+            ELSE ''::character varying
+        END AS last_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT DISTINCT l.firstname
+               FROM person l
+              WHERE l.cjamspid = d.client_id)
+            ELSE ''::character varying
+        END AS first_nm,
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT DISTINCT l.middlename
+               FROM person l
+              WHERE l.cjamspid = d.client_id)
+            ELSE ''::character varying
+        END AS middle_nm,
+    COALESCE(( SELECT tbl_missing_info_view.v_missing_info
+           FROM tbl_missing_info_view
+          WHERE tbl_missing_info_view.v_provider_id = h.provider_id), ('RETURNED CHECK OF PRIOR MONTH'::text || '-'::text) || ((( SELECT as_f_plvalue(tb_payment_header.check_status_cd, 37) AS f_plvalue
+           FROM tb_payment_header
+          WHERE (tb_payment_header.payment_id IN ( SELECT max(tb_payment_header_1.payment_id) AS max
+                   FROM tb_payment_header tb_payment_header_1
+                  WHERE tb_payment_header_1.check_status_cd IS NOT NULL AND tb_payment_header_1.payment_dt < current_date AND tb_payment_header_1.check_status_dt < current_date AND tb_payment_header_1.delete_sw = 'N'::bpchar AND (tb_payment_header_1.check_status_cd::text = ANY (ARRAY['4849'::character varying::text, '4850'::character varying::text, '581'::character varying::text])) AND tb_payment_header_1.provider_id = h.provider_id))))::text), 'NOT RELEASED BY WORKER'::text) AS missing_info,
+    COALESCE(d.final_amount_no, 0::numeric) AS subtotal,
+    s.payment_status_cd, (SELECT F_SNAME (USERPROFILE.CJAMSPID::INTEGER) AS F_SNAME
+               FROM USERPROFILE
+              WHERE     (USERPROFILE.CJAMSPID :: varchar IN
+                            (SELECT caseassignment.toworkeridno
+                                 FROM caseassignment, ASSIGNMENTCLIENTS
+                                WHERE     caseassignment.caseASSIGNMENTID :: varchar =
+                                          ASSIGNMENTCLIENTS.ASSIGNMENTID :: varchar
+                                      AND caseassignment.objecttypekey =
+                                          D.CASE_ID:: varchar
+                                      AND caseassignment.RESPONSIBILITYtypekey::TEXT =
+                                          'S'::TEXT
+                                      AND caseassignment.enddate IS NULL
+                             ORDER BY caseassignment.enddate DESC
+                                fetch first 1 row  only))
+                    AND USERPROFILE.ACTIVEFLAG = 1)
+               AS CHILD_WRK_NM,
+            (SELECT F_SNAME (
+                       F_SUPERVISOR (
+                          USERPROFILE.CJAMSPID::CHARACTER VARYING)::INTEGER) AS F_SNAME
+               FROM USERPROFILE
+              WHERE     (USERPROFILE.CJAMSPID ::VARCHAR IN
+                            (SELECT caseassignment.toworkeridno
+                                 FROM caseassignment, ASSIGNMENTCLIENTS
+                                WHERE     caseassignment.CASEASSIGNMENTID :: varchar =
+                                          ASSIGNMENTCLIENTS.ASSIGNMENTID :: varchar
+                                      AND caseassignment.objecttypekey :: varchar =  D.CASE_ID :: varchar 
+                                     AND D.CLIENT_ID :: text =
+                                          (((SELECT PI.PERSONIDENTIFIERVALUE
+                                              FROM PERSONIDENTIFIER PI,
+                                                   PERSON P_1
+                                             WHERE     PI.PERSONID =
+                                                       P_1.PERSONID
+                                                   AND P_1.PERSONID =
+                                                       ASSIGNMENTCLIENTS.PERSONID))::TEXT) 
+                                      AND caseassignment.RESPONSIBILITYtypekey::TEXT =
+                                          'S'::TEXT
+                                      AND caseassignment.enddate IS NULL
+                             ORDER BY caseassignment.enddate DESC
+                                fetch first 1  row only))
+                    AND USERPROFILE.ACTIVEFLAG = 1)
+               AS CHILD_SUP_NM,  
+           /* (SELECT F_SNAME (USERPROFILE.CJAMSPID::INTEGER) AS F_SNAME
+               FROM USERPROFILE
+              WHERE     (USERPROFILE.CJAMSPID ::VARCHAR IN
+                            (SELECT caseassignment.toworkeridno
+                                 FROM caseassignment
+                                WHERE     caseassignment.objecttypekey ::VARCHAR =
+                                          D.CASE_ID ::VARCHAR
+                                      AND caseassignment.RESPONSIBILITYtypekey::TEXT =
+                                          'P'::TEXT
+                                      AND caseassignment.enddate IS NULL
+                             ORDER BY caseassignment.enddate DESC
+                                fetch first 1 row only))
+                    AND USERPROFILE.ACTIVEFLAG = 1)*/'':: text AS FAM_WRK_NM,
+           /* (SELECT F_SNAME (
+                       F_SUPERVISOR (
+                          USERPROFILE.CJAMSPID::CHARACTER VARYING)) AS F_SNAME
+               FROM USERPROFILE
+              WHERE     (USERPROFILE.CJAMSPID ::VARCHAR  IN
+                            (SELECT caseassignment.toworkeridno
+                                 FROM caseassignment
+                                WHERE     caseassignment.objecttypekey ::VARCHAR =
+                                          D.CASE_ID ::VARCHAR 
+                                      AND caseassignment.RESPONSIBILITYtypekey::TEXT =
+                                          'P'::TEXT
+                                      AND caseassignment.enddate IS NULL
+                             ORDER BY caseassignment.enddate DESC
+                                fetch first 1 row only))
+                    AND USERPROFILE.ACTIVEFLAG = 1)*/ '':: text AS FAMILY_SUP_NM,
+               h.payment_start_dt,
+    h.payment_end_dt,
+    s.payment_status_dt,
+    d.final_service_start_dt AS start_dt,
+    d.final_service_end_dt AS end_dt,
+    (((( SELECT s_1.service_nm
+           FROM tb_services s_1
+          WHERE s_1.service_id = d.final_service_id))::text) || ' - '::text) || as_f_plvalue(d.final_rate_type_cd, 82)::text AS service,
+    d.final_fiscal_category_cd,
+    as_f_sname(as_f_prim_worker(h.provider_id, '2953'::character varying)::integer) AS resource_worker,
+    as_f_sname(as_f_supervisor(as_f_prim_worker(h.provider_id, '2953'::character varying))) AS resource_worker_supervisor
+   FROM tb_payment_header h,
+    tb_payment_detail d,
+    tb_payment_status s,
+    tb_provider p
+  WHERE h.payment_id = d.payment_id AND h.payment_id = s.payment_id AND s.payment_status_cd::text = '1635'::text 
+            and h.payment_end_dt<=CAST(END_DATE  AS DATE)
+AND h.provider_id = p.provider_id AND h.delete_sw = 'N'::bpchar AND d.delete_sw = 'N'::bpchar AND s.delete_sw = 'N'::bpchar AND p.delete_sw = 'N'::bpchar
+  ORDER BY (as_f_plvalue(d.county_cd, 104)), (rtrim(h.payee_nm::text)), (
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT DISTINCT l.firstname
+               FROM person l
+              WHERE l.cjamspid = d.client_id)
+            ELSE ''::character varying
+        END), (
+        CASE
+            WHEN d.client_id > 0 THEN ( SELECT DISTINCT l.lastname
+               FROM person l
+              WHERE l.cjamspid = d.client_id)
+            ELSE ''::character varying
+        END));
+  END;
+  $function$
+

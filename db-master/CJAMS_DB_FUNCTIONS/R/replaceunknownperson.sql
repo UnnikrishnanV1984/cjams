@@ -1,0 +1,266 @@
+DROP FUNCTION IF EXISTS cjams.replaceunknownperson(v_newpersonid uuid, v_unknownpersonid uuid, v_securityuserid uuid);
+CREATE OR REPLACE FUNCTION cjams.replaceunknownperson(v_newpersonid uuid, v_unknownpersonid uuid, v_securityuserid uuid)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+  v_newactorid uuid;
+  v_oldactorid uuid;
+  v_newcjamspid int;
+  v_newintakeservicerequestactorid uuid;
+  v_oldintakeservicerequestactorid uuid;
+  v_status character varying;
+  currentrow RECORD;
+BEGIN
+
+	v_status := 'failed';
+	SELECT actorid INTO v_newactorid FROM actor WHERE personid = v_newpersonid;
+	SELECT actorid INTO v_oldactorid FROM actor WHERE personid = v_unknownpersonid;
+
+	SELECT intakeservicerequestactorid INTO v_newintakeservicerequestactorid FROM intakeservicerequestactor WHERE personid = v_newpersonid AND isprimary = true;
+	SELECT intakeservicerequestactorid INTO v_oldintakeservicerequestactorid FROM intakeservicerequestactor WHERE personid = v_unknownpersonid;
+	
+	SELECT cjamspid INTO v_newcjamspid FROM person WHERE personid = v_newpersonid;
+
+	IF v_newactorid IS NOT NULL AND v_newintakeservicerequestactorid IS NOT NULL AND v_newcjamspid IS NOT NULL THEN
+		UPDATE personrole
+		SET activeflag = 0,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE actor
+		SET activeflag = 0,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE personidentifier
+		SET activeflag = 0,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE intakeservicerequestactor
+		SET activeflag = 0,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE visitationlogclient
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE personauditlog
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE visitationplan
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE visitationplanclients
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE snapshothist
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE caseplan3
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE caseplan4
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE personprogramarea
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE placement
+		SET personid = v_newpersonid, 
+		intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE actorrelationship
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		person1id = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE person1id = v_unknownpersonid;
+
+		UPDATE actorrelationship
+		SET person2id = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE person2id = v_unknownpersonid;
+		
+		UPDATE livingarrangement
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE personnytdsummary
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE intakeservreqchildremoval
+		SET personid = v_newpersonid, 
+		intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE intakeservreqchildremoval
+		SET primarycaregiveractorid = v_newpersonid,
+		primarycaregiverid = v_newcjamspid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE primarycaregiveractorid = v_unknownpersonid;
+
+		FOR currentrow IN (select * from investigationfinding where personid = v_unknownpersonid)
+		LOOP			
+			UPDATE investigationmaltreatmentactor
+			SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+			updatedby = v_securityuserid,
+			updatedon = now()
+			WHERE investigationmaltreatmentactorid = currentrow.investigationmaltreatmentactorid;
+		END LOOP;
+	
+		UPDATE investigationfinding
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+	
+		UPDATE casereview
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE caseplan1
+		SET personid = v_newpersonid,
+		actorid = v_newactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE caseplan2
+		SET personid = v_newpersonid,
+		actorid = v_newactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE hearingclients
+		SET personid = v_newpersonid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+		
+		UPDATE meetingrecordingactor
+		SET personid = v_newpersonid, 
+		intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE personid = v_unknownpersonid;
+
+		UPDATE permanencyplan
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+
+		UPDATE caseclosureparticipant
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+
+		UPDATE tb_service_log
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE intakeservicerequestpetitionactor
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE adoptionplanning
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE contactparticipant
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE investigationallegationmaltreators
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE legalcustody
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE tprdetails
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE caseassignmentactor
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+		
+		UPDATE tprrecommendation
+		SET intakeservicerequestactorid = v_newintakeservicerequestactorid,
+		updatedby = v_securityuserid,
+		updatedon = now()
+		WHERE intakeservicerequestactorid = v_oldintakeservicerequestactorid;
+
+	v_status := 'success';
+	ELSE
+	v_status := 'failed';
+	END IF;
+		
+RETURN v_status;			
+
+END;
+$function$
+;

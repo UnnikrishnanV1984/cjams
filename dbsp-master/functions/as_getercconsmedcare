@@ -1,0 +1,36 @@
+CREATE OR REPLACE FUNCTION as_getercconsmedcare(p_intakenumber character varying, p_intakeserviceid uuid)
+ RETURNS TABLE(youthsname character varying, parentname character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+BEGIN
+
+     RETURN QUERY 
+      select 
+   distinct cast(p.firstname||' '||p.lastname as character varying) as youthsname,
+   pgdetail.parentname
+  from intakeservicerequest isr  
+  left join intakeservicerequestcourthearing ich on ich.intakenumber = isr.intakenumber and ich.activeflag = 1
+  left join intakeservicerequestactor isra on isra.intakeserviceid = isr.intakeserviceid and isra.intakeservicerequestpersontypekey = 'Youth' and isra.activeflag = 1
+  left join actor a on a.actorid = isra.actorid and a.activeflag = 1 and a.actortype = 'Youth'
+  left join person p on p.personid = a.personid and p.activeflag = 1
+  left join (select inr.* from (select isra.intakeserviceid,cast(p.firstname||' '||p.lastname as character varying) as parentname,row_number() over(partition by isra.intakeserviceid order by rel.seq) as recno
+    from 
+    intakeservicerequestactor isra 
+    left join actorrelationship ac on ac.intakeservicerequestactorid = isra.intakeservicerequestactorid
+    join actor a on a.actorid = isra.actorid and a.activeflag =1
+    join person p on p.personid = a.personid and p.activeflag = 1
+    left join (select 1 as seq,'father' as relation union 
+           select 2 as seq,'mother' as relation union
+           select 3 as seq,'fosterparent' as relation union 
+           select 4 as seq,'stepparent' as relation union
+           select 5 as seq,'adoptiveparent' as relation)rel on rel.relation = ac.relationshiptypekey
+    where isra.activeflag = 1 )inr where inr.recno = 1
+     )pgdetail on pgdetail.intakeserviceid = isr.intakeserviceid
+  where isr.activeflag = 1 
+  and (case when p_intakeserviceid is not null then isr.intakeserviceid = p_intakeserviceid else true end)
+  and (case when p_intakenumber is not null then isr.intakenumber = p_intakenumber else true end);
+
+END;
+$function$
+

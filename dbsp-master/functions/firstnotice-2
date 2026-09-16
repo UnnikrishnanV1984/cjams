@@ -1,0 +1,71 @@
+CREATE OR REPLACE FUNCTION firstnotice(i_intakenumber character varying, i_restitutionnumber integer, i_secid character varying)
+ RETURNS TABLE(liablepersonname character varying, liablepersonaddress character varying, youthname character varying, case_number character varying, dateordered character varying, amountordered numeric, balance numeric, restitutionno character varying, todaydate character varying, cw_name character varying, county_name character varying, coordinatorname character varying, coordinatorphone character varying)
+ LANGUAGE plpgsql
+AS $function$
+  declare 
+    restitution_no integer := i_restitutionnumber;
+begin
+ return QUERY (
+  select cast((select distinct p.firstname || ' ' || p.lastname from person p where p.personid = ir.liablepersonid and p.activeflag = 1) as character varying) as liablepersonname,
+  cast((select distinct pa.address || ',' || pa.zipcode || ',' || pa.city || ',' || pa.state || ',' || pa.country from personaddress pa where pa.personid = ir.liablepersonid and pa.activeflag = 1) as character varying) as liablepersonaddress,
+  cast(p.firstname || ' ' || p.lastname as character varying) as youthname,
+  cast(INTSR.intakenumber as character varying) as case_number,
+  cast(to_char(insca.courtorderdatetime, 'MM/DD/YYYY') as character varying) as dateordered,
+  ir.payment as amountordered,
+  rpff.balanceamount as balance ,
+  cast(restitution_no as character varying) as restitutionno,
+  cast(to_char(now(), 'MM/DD/YYYY') as character varying) as todaydate,
+  cast(cw.cwname as character varying) as cw_name,
+  cast((select distinct countyname from county where cast(countyid as character varying)= cast(ir.countyid as character varying)) as character varying) as county_name,
+  (
+   select distinct up.fullname
+  from
+   userprofile up
+  where
+   securityusersid = i_secid) as coordinatorname,
+  (
+   select distinct phonenumber
+  from
+   userprofilephonenumber
+  where
+   securityusersid = i_secid) as coordinatorphone
+ from
+  intakeserreqrestitution ir
+ join person p on
+  p.personid = ir.youthpersonid
+  and p.activeflag = 1
+ left join intakeserreqrestitutionpayment irp on
+  irp.intakeserreqrestitutionid = ir.intakeserreqrestitutionid
+  and irp.activeflag = 1
+ left join restitutionpaymentflatfilecontent rpff on
+  irp.restitutionpaymentflatfilecontentid = rpff.restitutionpaymentflatfilecontentid
+  and rpff.activeflag = 1
+ join intakeservicerequest INTSR on
+  ir.intakenumber = INTSR.intakenumber
+ left join intakeservicerequestcourtaction insca on
+  insca.intakeservicerequestid = INTSR.intakeserviceid
+ left join (
+   select objectid,
+   up.fullname as cwname
+  from
+   routing
+  join userprofile up on
+   routing.tosecurityusersid = up.securityusersid
+   and up.activeflag = 1
+   and routing.toroleid = 'JSCW'
+  left join userprofileaddress upa on
+   routing.tosecurityusersid = upa.securityusersid
+   and upa.activeflag = 1
+  left join userprofilephonenumber upp on
+   routing.tosecurityusersid = upp.securityusersid
+   and upp.activeflag = 1
+   and upp.userprofiletypekey = 'office' ) cw on
+  cast(INTSR.intakeserviceid as character varying)= cw.objectid
+ where
+     ir.restitutionno = restitution_no and
+  INTSR.intakenumber = i_intakenumber) 
+      order by INTSR.intakenumber limit 1;
+end;
+
+$function$
+

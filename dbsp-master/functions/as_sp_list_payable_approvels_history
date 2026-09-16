@@ -1,0 +1,53 @@
+CREATE OR REPLACE FUNCTION as_sp_list_payable_approvels_history(v_authorzationid character varying)
+ RETURNS TABLE(createddate timestamp without time zone, fromuser character varying, touser character varying, fromrole character varying, torole character varying, status text)
+ LANGUAGE plpgsql
+AS $function$
+
+--RAISE NOTICE 'status:%', status;
+begin
+RETURN query 
+
+select r.insertedon ,up1.fullname as fromuser,
+--up2.fullname as touser,
+case when r.routingstatustypeid = 39
+then
+case when (select count(*)
+ from routing rr 
+ inner join userprofile up on up.securityusersid=rr.fromsecurityusersid
+ inner join tb_service_purchase_authorization tspaaa on tspaaa.authorization_id :: character varying = rr.objectid 
+ where rr.objectid=v_authorzationid::character varying  and rr.eventcode  in ('ASPCAUTH','ASPCAUTHR')
+ and rr.routingstatustypeid in (40,42)
+ limit 1) >0
+then 
+ (select up.fullname
+ from routing rr 
+ inner join userprofile up on up.securityusersid=rr.fromsecurityusersid
+ inner join tb_service_purchase_authorization tspaaa on tspaaa.authorization_id :: character varying = rr.objectid 
+ where rr.objectid=v_authorzationid::character varying  and rr.eventcode  in ('ASPCAUTH','ASPCAUTHR')
+ and rr.routingstatustypeid in (40,42)
+ limit 1)
+else
+up2.fullname end
+else
+up2.fullname end as touser,
+rt1.description,
+case when r.routingstatustypeid = 42
+then 
+(select roletypename from roletype where roletypecode = 'DF')
+else
+rt.description end as torole ,
+case when r.routingstatustypeid = 62 then 'Denied' when r.routingstatustypeid = 850 
+then 'Returned' when (r.activeflag = 1 and r.routingstatustypeid != 43) then 'Pending' else 'Approved' end as status
+from routing r 
+join tb_service_purchase_authorization tspa on tspa.authorization_id :: character varying = r.objectid 
+join userprofile up1 on up1.securityusersid=r.fromsecurityusersid
+left join userprofile up2 on up2.securityusersid=r.tosecurityusersid
+ join role rt on rt.roletypekey=r.toroleid
+ join role rt1 on rt1.roletypekey=r.fromroleid
+where r.objectid=v_authorzationid and  r.eventcode in ('ASPCAUTH','ASPCAUTHR') order by r.insertedon asc;
+--(r.activeflag=0 or r.routingstatustypeid in (43,62)) and
+
+END;
+
+$function$
+

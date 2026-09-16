@@ -1,0 +1,1332 @@
+CREATE OR REPLACE FUNCTION listintakedetails_perf22(securityusersid character varying, status character varying, pagenumber bigint, pagesize bigint, intakeno character varying, bpreintake boolean, sortcolumn character varying, sortorder character varying)
+ RETURNS TABLE(totalcount bigint, intakechessieid character varying, id integer, intakenumber character varying, cpsresponse character varying, datereceived timestamp without time zone, timereceived timestamp without time zone, narrative text, raname character varying, entityname character varying, cruworkername character varying, isreview boolean, issupervisor boolean, datesubmitted timestamp without time zone, dateclosed timestamp without time zone, remarks text, reviewstatus character varying, disposition character varying, intakestatus character varying, timeleft character varying, jsondata jsonb, updateddate timestamp without time zone, agencycode character varying, canreopen integer, ispreintake boolean, clwstatus character varying, sdm json, isprior integer, headofhousehlod json, legalguardian json, youthname character varying, victimname character varying, djsyouthname character varying, youthfirstname character varying, youthlastname character varying, youth_suffix character varying, youthcjamspid bigint)
+ LANGUAGE plpgsql
+AS $function$ declare v_status int;\r
+--11/19/21:CDM-18459, SJ: to remove the unwanted record from user dashboard\r
+v_UserSID character varying;\r
+v_activeflag int;\r
+v_pageoffset int;\r
+v_pagenumber int;\r
+v_statustext character varying;\r
+\r
+begin\r
+\r
+v_activeflag := 1;\r
+v_UserSID := securityusersid;\r
+v_pagenumber := pagenumber-1;\r
+v_pageoffset = v_pagenumber * pagesize;\r
+v_statustext := status;\r
+\r
+raise notice 'v_status%', status;\r
+\r
+if (status = 'pending' or status = 'pendingreview') then \r
+ v_status := 1;\r
+elsif (status = 'reopen') then \r
+ v_status := 7;\r
+ v_activeflag := 0;\r
+elsif (status = 'approved') then\r
+ v_status := 8;\r
+elsif (status = 'closed') then \r
+ v_status := 8;\r
+elsif (status = 'assigned') then \r
+ v_status := 10;\r
+elsif (status = 'rejected') then \r
+ v_status := 3;\r
+elsif (status = 'accepted') then \r
+ v_status := 2;\r
+elsif (status = 'completed') then \r
+ v_status := 11;\r
+end if;\r
+\r
+if (sortcolumn = 'datereceived') then \r
+ sortcolumn = 'receiveddate';\r
+end if;\r
+\r
+raise notice 'v_status%',v_status;\r
+raise notice 'v_activeflag%', v_activeflag;\r
+\r
+/*Get  Individual  Intake  details  */\r
+if (lower(status)= 'intake') then \r
+return QUERY\r
+ select\r
+ count(1) over(),\r
+ INSR.old_id as intakechessieid,\r
+ IDAS.id,\r
+ IDAS.IntakeNumber ,\r
+ cast(case DAS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.DateRecieved,\r
+ IDAS.TimeRecieved ::timestamp without time zone,\r
+ IDAS.Narrative,\r
+ --cast(concat (split_part(IDAS.raname,' ',2),', ',split_part(IDAS.raname,' ',1)) as character varying),\r
+ IDAS.raname as raname,\r
+ IDAS.EntityName,\r
+ cast(IDAS.CRUWorkerName as character varying) ,\r
+ false,\r
+ false ,\r
+ (\r
+ select max(insertedon)\r
+ from routing\r
+ where objectid = IDAS.IntakeNumber and isreviewrequest = true and eventcode in ('INTR', 'KINR')\r
+ ),\r
+ IDAS.insertedon ::timestamp ,\r
+ cast ('' as text) ,\r
+ cast ((\r
+ select \r
+ case when r.routingstatustypeid is null then case when \r
+ ids.status is null then 'Draft' end \r
+ else\r
+ case \r
+\r
+ when r.routingstatustypeid = 1 then 'Review'\r
+ when r.routingstatustypeid = 2 then iss.description \r
+ when r.routingstatustypeid = 8 then 'Closed'\r
+\r
+ end end\r
+ from intakedastatus ids\r
+ left join routing r on ids.intakenumber = r.objectid and r.activeflag = 1\r
+ left join intakeservicerequest isr on r.objectid = isr.intakenumber and isr.activeflag = 1\r
+ left join intakeserreqstatustype iss on isr.intakeserreqstatustypeid = iss.intakeserreqstatustypeid and iss.activeflag = 1\r
+ left join routingstatustype rs on rs.sequencenumber = r.routingstatustypeid and rs.activeflag = 1\r
+ where ids.intakenumber = IDAS.IntakeNumber and ids.teamtypekey = 'CW' order by r.insertedon desc limit 1\r
+ ) as character varying),\r
+ dispositiondescription,\r
+ cast( statusdescription as character varying),\r
+ cast( case DAS.submitteddate when null then '' else case when age( now() ) - age(DAS.submitteddate + time '02:00' ) > '0:00' then cast( age( now() ) - age( DAS.submitteddate + time '02:00' ) as character varying(5)) else 'Overdue' end end as character varying),\r
+ (case\r
+  when (status1 in (2, 8)) then (\r
+  select ISS.jsondata as js\r
+  from intakesnapshot ISS\r
+  where ISS.IntakeNumber = intakeno and ISS.activeflag=1\r
+  limit 1)\r
+  else IDAS.jsondata\r
+ end)::jsonb,\r
+ IDAS.updatedon ,\r
+ '':: character varying,\r
+ 0,\r
+ IDAS.ispreintake ,\r
+ (\r
+ select CST.complaintstatustypekey\r
+ from intakeservicerequestevaluation as ISRE\r
+ join complaintstatustype as CST on CST.complaintstatustypekey = ISRE.complaintstatustypekey and CST.activeflag = 1\r
+ where ISRE.intakenumber = IDAS.intakenumber and ISRE.activeflag = 1 limit 1\r
+ ) as clwstatus,\r
+ (\r
+  select json_agg(e) as fatality from\r
+  ( select isrs.ischildfatality, isrs.ismaltreatment\r
+  from intakeservicerequestsdm isrs\r
+  where isrs.intakenumber = IDAS.IntakeNumber and activeflag = 1 ) as e\r
+ ) ::json ,\r
+ 0,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ null:: json,\r
+ (\r
+ select cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from jsonb_array_elements( IDAS.jsondata -> 'persons') persons , jsonb_array_elements(persons -> 'personRole') persl\r
+ where persl ->>'rolekey' = 'Youth' \r
+ ) as youthname,\r
+ (\r
+ select cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from jsonb_array_elements( IDAS.jsondata -> 'persons') persons , jsonb_array_elements(persons -> 'personRole') persl\r
+ where persl ->>'rolekey' = 'Victim' limit 1 \r
+ ) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (select PN.firstname from Person as PN where PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+ (select PN.lastname from Person as PN where PN.personid = IDAS.focuspersonid) as youthlastname,\r
+ (select PN.suffix from Person as PN where PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+ (\r
+  select PN.cjamspid from Person as PN where trim(PN.firstname) = trim(split_part(IDAS.raname, ' ', 1)) \r
+  and trim(PN.lastname) = trim(split_part(IDAS.raname, ' ', 2)) limit 1\r
+ ) as cjamspid\r
+from\r
+(\r
+ select\r
+  submitteddate ,\r
+  DAS1.iscps ,\r
+  DAS1.status as status1,\r
+  DAS1.IntakeNumber,\r
+  rts.typedescription,\r
+  DAS1.teamtypekey\r
+ from IntakeDAStatus DAS1\r
+ left join routingstatustype RTs on RTs.sequencenumber = DAS1.status and rts.activeflag = 1 \r
+) DAS\r
+inner join IntakeDAStaging IDAS on IDAS.IntakeNumber = DAS.IntakeNumber\r
+left join intakeservicerequest INSR on INSR.intakenumber = IDAS.intakenumber and INSR.activeflag =1\r
+where IDAS.IntakeNumber like intakeno || '%' and IDAS.Activeflag = 1 and DAS.teamtypekey = 'CW';\r
+\r
+-- Reopen \r
+else if (v_status = 7) then return QUERY select\r
+ count(1) over(),\r
+ INSR.old_id as intakechessieid,\r
+ IDAS.id,\r
+ IDAS.IntakeNumber ,\r
+ cast(case IDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.DateRecieved,\r
+ IDAS.TimeRecieved ::timestamp without time zone,\r
+ IDAS.Narrative,\r
+  IDAS.raname,\r
+ IDAS.EntityName,\r
+ cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+ coalesce(r.isreviewrequest, false),\r
+ coalesce(rt.isupervisor, false) ,\r
+ r.insertedon,\r
+ r.updatedon ,\r
+ TRIM(IDAS.jsondata->'reviewstatus'->>'commenttext'::text) as remarks, \r
+ cast(case lower(coalesce(rts.typedescription, 'Pending')) when 'pending' then 'Draft' else case when tosecurityusersid = IDAS.intakeuser and r.routingstatustypeid = 1 then 'Reopen' else rts.typedescription end end as character varying) ,\r
+ dispositiondescription,\r
+ statusdescription,\r
+ cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else 'Overdue' end end as character varying),\r
+ null::jsonb ,\r
+ IDAS.updatedon ,\r
+ IDS.teamtypekey ,\r
+ 0,\r
+ IDAS.ispreintake,\r
+ (\r
+ select\r
+  ''::character varying) as clwstatus,\r
+ (\r
+ select\r
+  json_agg(e) as fatality\r
+ from\r
+  (\r
+  select\r
+   isrs.ischildfatality,\r
+   isrs.ismaltreatment\r
+  from\r
+   intakeservicerequestsdm isrs\r
+  where\r
+   isrs.intakenumber = IDAS.IntakeNumber\r
+   and activeflag = 1 ) as e) ::json,\r
+ 0,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ null:: json,\r
+ (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Youth' ) as youthname,\r
+  (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Victim' limit 1) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (\r
+ select\r
+  PN.firstname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+ (\r
+ select\r
+  PN.lastname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthlastname,\r
+ (select PN.suffix from Person as PN where PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+ (select PN.cjamspid from Person as PN where PN.personid = IDAS.focuspersonid) as cjamspid\r
+from IntakeDAStaging IDAS\r
+inner join IntakeDAStatus IDS on IDS.intakenumber = IDAS.intakenumber and ids.status = v_status and IDS.activeflag = 1 and IDS.teamtypekey = 'CW'\r
+left join routing r on r.objectid = IDAS.intakenumber\r
+ and (r.activeflag = 0 or r.activeflag = v_activeflag)\r
+ and r.eventcode in ('INTR', 'KINR')\r
+ and r.routingid = (select r2.routingid from routing r2 \r
+ where r2.objectid = IDAS.intakenumber \r
+ and  r2.activeflag = 0 and r2.eventcode in ('INTR', 'KINR') order by insertedon desc limit 1)\r
+left join routingstatustype RTs on RTs.sequencenumber = r.routingstatustypeid and rts.activeflag = 1\r
+left join teammemberroletype rt on rt.roletypekey = r.toroleid and rt.activeflag = 1\r
+inner join userprofile up on up.securityusersid = IDAS.CRUWorkerName\r
+left join intakeservicerequest INSR on INSR.intakenumber = IDAS.intakenumber and INSR.activeflag =1 \r
+where\r
+ IDAS.IntakeNumber like intakeno || '%'  \r
+ and IDAS.Activeflag = 1 \r
+ and TRIM(IDAS.jsondata->'reviewstatus'->>'status'::text)  = 'Reopen' \r
+ and (  IDAS.intakeuser = v_UserSID   \r
+ or (\r
+ case\r
+  right(fromroleid, 2)\r
+  when 'IW' then IDAS.InsertedBy = v_UserSID\r
+  when 'KW' then IDAS.InsertedBy = v_UserSID \r
+ end ) )\r
+order by\r
+ (\r
+ case\r
+  sortorder\r
+  when 'asc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname  as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end) asc,\r
+ (\r
+ case\r
+  sortorder\r
+  when 'desc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname  || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end ) desc\r
+limit pagesize offset v_pageoffset ;\r
+\r
+-- Approved Closed\r
+elsif (v_status = 8) then  \r
+RAISE NOTICE 'Closed List';\r
+return QUERY \r
+ (SELECT  * \r
+ FROM listintakedetailsbystatus\r
+ (  securityusersid\r
+  , v_status\r
+  , pagenumber\r
+  , pagesize\r
+  , intakeno\r
+  , false\r
+  , sortcolumn\r
+  , sortorder\r
+  , ''))\r
+ \r
+ UNION ALL\r
+ \r
+ (select\r
+ count(1) over(),\r
+ ISR.old_id as intakechessieid,\r
+ IDAS.id,\r
+ IDAS.IntakeNumber ,\r
+ cast(case ITDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.DateRecieved,\r
+ IDAS.TimeRecieved ::timestamp without time zone,\r
+ IDAS.Narrative,\r
+ --(  select a.lastname||', '||a.firstname  from person a where   (a.firstname||' '||a.lastname) = IDAS.RAName limit 1) raname,\r
+  IDAS.raname,\r
+ IDAS.EntityName,\r
+ cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+ coalesce(r.isreviewrequest, false),\r
+ coalesce(rt.isupervisor, false) ,\r
+ r.insertedon,\r
+ r.updatedon,\r
+ r.remarks,\r
+ cast(case lower(coalesce(rts.typedescription, 'Pending')) when 'pending' then 'Draft' else case when tosecurityusersid = IDAS.intakeuser and r.routingstatustypeid = 1 then 'Reopen' else (select ISRST.description::character varying as typedescription from intakeservicerequest as ISR inner join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag = 1 where ISR.intakenumber = IDAS.intakenumber and ISR.activeflag = 1 limit 1 ) end end as character varying) ,\r
+ dispositiondescription,\r
+ statusdescription,\r
+ cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else 'Overdue' end end as character varying),\r
+ IDAS.jsondata,\r
+ IDAS.updatedon ,\r
+ ITDS.teamtypekey ,\r
+ case\r
+  when ITDS.teamtypekey = 'DJS'\r
+  and lower(rts.typedescription)= 'closed' then\r
+  case\r
+   coalesce( (select count(1) from IntakeAppeal IP where IP.intakenumber = IDAS.intakenumber ), 0)\r
+   when 0 then\r
+   case\r
+    when now()::date - (r.updatedon :: date + 30 ):: date >0 then 0\r
+    else 1\r
+   end\r
+   else 2\r
+  end\r
+  else 0\r
+ end,\r
+ IDAS.ispreintake,\r
+ (\r
+ select\r
+  ''::character varying) as clwstatus,\r
+ (\r
+ select\r
+  json_agg(e) as fatality\r
+ from\r
+  (\r
+  select\r
+   isrs.ischildfatality,\r
+   isrs.ismaltreatment\r
+  from\r
+   intakeservicerequestsdm isrs\r
+  where\r
+   isrs.intakenumber = IDAS.IntakeNumber\r
+   and activeflag = 1 ) as e) ::json,\r
+ 0,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ null:: json,\r
+ (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Youth' ) as youthname,\r
+  (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Victim' limit 1 ) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (\r
+ select\r
+  PN.firstname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+ (\r
+ select\r
+  PN.lastname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthlastname,\r
+ (\r
+ select\r
+  PN.suffix\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+ (\r
+ select\r
+  PN.cjamspid\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as cjamspid\r
+from IntakeDAStaging IDAS\r
+inner join intakeDAStatus ITDS on ITDS.intakenumber = IDAS.intakenumber and ITDS.teamtypekey = 'CW'\r
+left join routing r on\r
+ r.objectid = IDAS.intakenumber\r
+ and (r.activeflag = 1\r
+ or r.activeflag = v_activeflag)\r
+ and r.eventcode in ('INTR', 'KINR')\r
+left join routingstatustype RTs on RTs.sequencenumber = r.routingstatustypeid and rts.activeflag = 1\r
+left join teammemberroletype rt on rt.roletypekey = r.toroleid and rt.activeflag = 1\r
+inner join userprofile up on up.securityusersid = IDAS.CRUWorkerName\r
+left  join intakeservicerequest as ISR on ISR.intakenumber = IDAS.intakenumber and ISR.activeflag = 1\r
+left join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag = 1 \r
+\r
+where\r
+ IDAS.IntakeNumber like intakeno || '%'\r
+ and r.routingstatustypeid in (8,\r
+ 2)\r
+ and IDAS.Activeflag = 1\r
+ and ( coalesce(r.tosecurityusersid, IDAS.intakeuser) = v_UserSID\r
+ or (\r
+ case\r
+  right(fromroleid, 2)\r
+  when 'IW' then IDAS.InsertedBy = v_UserSID\r
+  when 'KW' then IDAS.InsertedBy = v_UserSID\r
+  else r.tosecurityusersid = v_UserSID\r
+ end ) ) \r
+   and Lower(ISRST.description)= v_statustext\r
+order by\r
+ (\r
+ case\r
+  sortorder\r
+  when 'asc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end) asc,\r
+ (\r
+ case\r
+  sortorder\r
+  when 'desc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end ) desc\r
+limit pagesize offset v_pageoffset) ;\r
+\r
+--Completed\r
+elsif (v_status = 11) then return QUERY select\r
+ count(1) over(),\r
+ ISR.old_id as intakechessieid,\r
+ IDAS.id,\r
+ IDAS.IntakeNumber ,\r
+ cast(case ITDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.DateRecieved,\r
+ IDAS.TimeRecieved ::timestamp without time zone,\r
+ IDAS.Narrative,\r
+ IDAS.raname,\r
+ IDAS.EntityName,\r
+ cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+ coalesce(r.isreviewrequest, false),\r
+ coalesce(rt.isupervisor, false) ,\r
+ r.insertedon,\r
+ r.updatedon,\r
+ r.remarks,\r
+ cast(case lower(coalesce(rts.typedescription, 'Pending')) when 'pending' then 'Draft' else case when tosecurityusersid = IDAS.intakeuser and r.routingstatustypeid = 1 then 'Reopen' else (select ISRST.description::character varying as typedescription from intakeservicerequest as ISR inner join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag = 1 where ISR.intakenumber = IDAS.intakenumber and ISR.activeflag = 1 limit 1 ) end end as character varying) ,\r
+ dispositiondescription,\r
+ statusdescription,\r
+ cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else 'Overdue' end end as character varying),\r
+ IDAS.jsondata,\r
+ IDAS.updatedon ,\r
+ ITDS.teamtypekey ,\r
+ case\r
+  when ITDS.teamtypekey = 'DJS'\r
+  and lower(rts.typedescription)= 'closed' then\r
+  case\r
+   coalesce( (select count(1) from IntakeAppeal IP where IP.intakenumber = IDAS.intakenumber ), 0)\r
+   when 0 then\r
+   case\r
+    when now()::date - (r.updatedon :: date + 30 ):: date >0 then 0\r
+    else 1\r
+   end\r
+   else 2\r
+  end\r
+  else 0\r
+ end,\r
+ IDAS.ispreintake,\r
+ (\r
+ select\r
+  ''::character varying) as clwstatus,\r
+ (\r
+ select\r
+  json_agg(e) as fatality\r
+ from\r
+  (\r
+  select\r
+   isrs.ischildfatality,\r
+   isrs.ismaltreatment\r
+  from\r
+   intakeservicerequestsdm isrs\r
+  where\r
+   isrs.intakenumber = IDAS.IntakeNumber\r
+   and activeflag = 1 ) as e) ::json,\r
+ 0,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ null:: json,\r
+ (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Youth' ) as youthname,\r
+  (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Victim' limit 1 ) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (\r
+ select\r
+  PN.firstname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+ (\r
+ select\r
+  PN.lastname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthlastname,\r
+ (\r
+ select\r
+  PN.suffix\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+ (\r
+ select\r
+  PN.cjamspid\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as cjamspid\r
+from\r
+ IntakeDAStaging IDAS\r
+inner join intakeDAStatus ITDS on\r
+ ITDS.intakenumber = IDAS.intakenumber and ITDS.teamtypekey = 'CW'\r
+left join routing r on\r
+ r.objectid = IDAS.intakenumber\r
+ and (r.activeflag = 1\r
+ or r.activeflag = v_activeflag)\r
+ and r.eventcode in ('INTR',\r
+ 'KINR')\r
+left join routingstatustype RTs on\r
+ RTs.sequencenumber = r.routingstatustypeid\r
+ and rts.activeflag = 1\r
+left join teammemberroletype rt on\r
+ rt.roletypekey = r.toroleid\r
+ and rt.activeflag = 1\r
+inner join userprofile up on\r
+ up.securityusersid = IDAS.CRUWorkerName\r
+left  join intakeservicerequest as ISR on ISR.intakenumber = IDAS.intakenumber and ISR.activeflag = 1\r
+left join intakeserreqstatustype as ISRST on ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid and ISRST.activeflag = 1 \r
+\r
+where\r
+ IDAS.IntakeNumber like intakeno || '%'\r
+ and r.routingstatustypeid in (8,\r
+ 2)\r
+ and IDAS.Activeflag = 1\r
+ and ( coalesce(r.tosecurityusersid, IDAS.intakeuser) = v_UserSID\r
+ or (\r
+ case\r
+  right(fromroleid, 2)\r
+  when 'IW' then IDAS.InsertedBy = v_UserSID\r
+  when 'KW' then IDAS.InsertedBy = v_UserSID\r
+  else r.tosecurityusersid = v_UserSID\r
+ end ) ) \r
+   and Lower(ISRST.description)= v_statustext\r
+order by\r
+ (\r
+ case\r
+  sortorder\r
+  when 'asc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end) asc,\r
+ (\r
+ case\r
+  sortorder\r
+  when 'desc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end ) desc\r
+limit pagesize offset v_pageoffset ;\r
+-------  Added  by  Gavaskar\r
+\r
+-- Accepted\r
+elsif (v_status = 2) then return QUERY select\r
+ count(1) over(),\r
+ ISR.old_id as intakechessieid,\r
+ IDAS.id,\r
+ IDAS.IntakeNumber ,\r
+ cast(case ITDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.DateRecieved,\r
+ IDAS.TimeRecieved ::timestamp without time zone,\r
+ IDAS.Narrative,\r
+ IDAS.raname,\r
+ IDAS.EntityName,\r
+ cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+ coalesce(r.isreviewrequest, false),\r
+ coalesce(rt.isupervisor, false) ,\r
+ r.insertedon,\r
+ r.updatedon,\r
+ r.remarks,\r
+ ISRST.description::character varying as typedescription,\r
+ dispositiondescription,\r
+ statusdescription,\r
+ cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else 'Overdue' end end as character varying),\r
+ IDAS.jsondata,\r
+ IDAS.updatedon ,\r
+ ITDS.teamtypekey ,\r
+ case\r
+  when ITDS.teamtypekey = 'DJS'\r
+  and lower(rts.typedescription)= 'closed' then\r
+  case\r
+   coalesce( (select count(1) from IntakeAppeal IP where IP.intakenumber = IDAS.intakenumber ), 0)\r
+   when 0 then\r
+   case\r
+    when now()::date - (r.updatedon :: date + 30 ):: date >0 then 0\r
+    else 1\r
+   end\r
+   else 2\r
+  end\r
+  else 0\r
+ end,\r
+ IDAS.ispreintake,\r
+ (\r
+ select\r
+  ''::character varying) as clwstatus,\r
+ (\r
+ select\r
+  json_agg(e) as fatality\r
+ from\r
+  (\r
+  select\r
+   isrs.ischildfatality,\r
+   isrs.ismaltreatment\r
+  from\r
+   intakeservicerequestsdm isrs\r
+  where\r
+   isrs.intakenumber = IDAS.IntakeNumber\r
+   and activeflag = 1 ) as e) ::json,\r
+ 0,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ null:: json,\r
+ (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Youth' ) as youthname,\r
+  (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Victim' limit 1) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (\r
+ select\r
+  PN.firstname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+ (\r
+ select\r
+  PN.lastname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthlastname,\r
+ (\r
+ select\r
+  PN.suffix\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+ (\r
+ select\r
+  PN.cjamspid\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as cjamspid\r
+from\r
+ IntakeDAStaging IDAS\r
+inner join intakeDAStatus ITDS on\r
+ ITDS.intakenumber = IDAS.intakenumber and ITDS.teamtypekey = 'CW'\r
+left join routing r on\r
+ r.objectid = IDAS.intakenumber\r
+ and (r.activeflag = 1\r
+ or r.activeflag = v_activeflag)\r
+ and r.eventcode in ('INTR',\r
+ 'KINR')\r
+left join routingstatustype RTs on\r
+ RTs.sequencenumber = r.routingstatustypeid\r
+ and rts.activeflag = 1\r
+left join teammemberroletype rt on\r
+ rt.roletypekey = r.toroleid\r
+ and rt.activeflag = 1\r
+inner join userprofile up on\r
+ up.securityusersid = IDAS.CRUWorkerName\r
+inner join intakeservicerequest as ISR on\r
+ ISR.intakenumber = ITDS.intakenumber\r
+ and ISR.activeflag = 1\r
+inner join intakeserreqstatustype as ISRST on\r
+ ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid\r
+ and ISRST.activeflag = 1\r
+where\r
+ IDAS.IntakeNumber like intakeno || '%'\r
+ and r.routingstatustypeid in (2,21)\r
+ and IDAS.Activeflag = 1\r
+ and lower(ISRST.intakeserreqstatustypekey) not in('rejected','reopen')\r
+ and ( coalesce(r.fromsecurityusersid, IDAS.intakeuser) = v_UserSID\r
+ or (\r
+ case\r
+  right(fromroleid, 2)\r
+  when 'IW' then IDAS.InsertedBy = v_UserSID\r
+  else r.tosecurityusersid = v_UserSID\r
+ end ) )\r
+and Lower(ISRST.description)= Lower(v_statustext)\r
+order by\r
+ (\r
+ case\r
+  sortorder\r
+  when 'asc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end) asc,\r
+ (\r
+ case\r
+  sortorder\r
+  when 'desc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end ) desc\r
+limit pagesize offset v_pageoffset ;\r
+\r
+-- Rejected\r
+elsif (v_status = 3) then return QUERY select\r
+ count(1) over(),\r
+ ISR.old_id as intakechessieid,\r
+ IDAS.id,\r
+ IDAS.IntakeNumber ,\r
+ cast(case ITDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.DateRecieved,\r
+ IDAS.TimeRecieved ::timestamp without time zone,\r
+ IDAS.Narrative,\r
+ IDAS.raname,\r
+ IDAS.EntityName,\r
+ cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+ coalesce(r.isreviewrequest, false),\r
+ coalesce(rt.isupervisor, false) ,\r
+ r.insertedon,\r
+ r.updatedon,\r
+ r.remarks,\r
+ ISRST.description::character varying as typedescription,\r
+ dispositiondescription,\r
+ statusdescription,\r
+ cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else 'Overdue' end end as character varying),\r
+ IDAS.jsondata,\r
+ IDAS.updatedon ,\r
+ ITDS.teamtypekey ,\r
+ case\r
+  when ITDS.teamtypekey = 'DJS'\r
+  and lower(rts.typedescription)= 'closed' then\r
+  case\r
+   coalesce((select count(1) from IntakeAppeal IP where IP.intakenumber = IDAS.intakenumber ), 0)\r
+   when 0 then\r
+   case\r
+    when now()::date - (r.updatedon :: date + 30 ):: date >0 then 0\r
+    else 1\r
+   end\r
+   else 2\r
+  end\r
+  else 0\r
+ end,\r
+ IDAS.ispreintake,\r
+ (\r
+ select\r
+  ''::character varying) as clwstatus,\r
+ (\r
+ select\r
+  json_agg(e) as fatality\r
+ from\r
+  (\r
+  select\r
+   isrs.ischildfatality,\r
+   isrs.ismaltreatment\r
+  from\r
+   intakeservicerequestsdm isrs\r
+  where\r
+   isrs.intakenumber = IDAS.IntakeNumber\r
+   and activeflag = 1 ) as e) ::json,\r
+ 0,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ null:: json,\r
+ (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Youth' ) as youthname,\r
+  (\r
+ select\r
+  cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+ from\r
+  jsonb_array_elements( IDAS.jsondata -> 'persons') persons ,\r
+  jsonb_array_elements(persons -> 'personRole') persl\r
+ where\r
+  persl ->>'rolekey' = 'Victim' limit 1 ) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (\r
+ select\r
+  PN.firstname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+ (\r
+ select\r
+  PN.lastname\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youthlastname,\r
+ (\r
+ select\r
+  PN.suffix\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+ (\r
+ select\r
+  PN.cjamspid\r
+ from\r
+  Person as PN\r
+ where\r
+  PN.personid = IDAS.focuspersonid) as cjamspid\r
+from\r
+ IntakeDAStaging IDAS\r
+inner join intakeDAStatus ITDS on\r
+ ITDS.intakenumber = IDAS.intakenumber and ITDS.teamtypekey = 'CW'\r
+left join routing r on\r
+ r.objectid = IDAS.intakenumber\r
+ and (r.activeflag = 1\r
+ or r.activeflag = v_activeflag)\r
+ and r.eventcode = 'INTR'\r
+left join routingstatustype RTs on\r
+ RTs.sequencenumber = r.routingstatustypeid\r
+ and rts.activeflag = 1\r
+left join teammemberroletype rt on\r
+ rt.roletypekey = r.toroleid\r
+ and rt.activeflag = 1\r
+inner join userprofile up on\r
+ up.securityusersid = IDAS.CRUWorkerName\r
+inner join intakeservicerequest as ISR on\r
+ ISR.intakenumber = ITDS.intakenumber\r
+ and ISR.activeflag = 1\r
+inner join intakeserreqstatustype as ISRST on\r
+ ISRST.intakeserreqstatustypeid = ISR.intakeserreqstatustypeid\r
+ and ISRST.activeflag = 1\r
+where\r
+ IDAS.IntakeNumber like intakeno || '%'\r
+ and IDAS.Activeflag = 1\r
+ and lower(ISRST.intakeserreqstatustypekey) in('rejected')\r
+ and ( coalesce(r.fromsecurityusersid, IDAS.intakeuser) = v_UserSID\r
+ or\r
+ (case\r
+  right(fromroleid, 2)\r
+  when 'IW' then IDAS.InsertedBy = v_UserSID\r
+  when 'KW' then IDAS.InsertedBy = v_UserSID\r
+  else r.fromsecurityusersid = v_UserSID\r
+ end ) )\r
+order by\r
+ (\r
+ case\r
+  sortorder\r
+  when 'asc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end) asc,\r
+ (\r
+ case\r
+  sortorder\r
+  when 'desc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   else IDAS.intakenumber\r
+  end\r
+  else cast( IDAS.EntityName as character varying)\r
+ end ) desc\r
+limit pagesize offset v_pageoffset ;\r
+\r
+-- Pending and Assigned v_status 1 and 10\r
+else \r
+raise notice 'else %',\r
+sortcolumn;\r
+\r
+return QUERY select\r
+count(1) over(), *\r
+from\r
+ ((\r
+ select\r
+  ISR.old_id as intakechessieid,\r
+  IDAS.id,\r
+  IDAS.IntakeNumber ,\r
+  cast(case ITDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+  IDAS.DateRecieved,\r
+  IDAS.TimeRecieved ::timestamp without time zone,\r
+  IDAS.Narrative,\r
+  IDAS.raname,\r
+  IDAS.EntityName,\r
+  cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+  coalesce(r.isreviewrequest, false),\r
+  coalesce(rt.isupervisor, false) ,\r
+  r.insertedon,\r
+  r.updatedon ,\r
+  r.remarks,\r
+  cast(case lower(coalesce(rts.typedescription, 'Pending')) when 'pending' then case ITDS.status when 10 then 'Assigned' else 'Draft' end else case when tosecurityusersid = IDAS.intakeuser and r.routingstatustypeid = 1 then 'Reopen' else rts.typedescription end end as character varying) ,\r
+  dispositiondescription,\r
+  statusdescription,\r
+  cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) end end as character varying),\r
+  (case\r
+   when (ITDS.status in (2, 8)) then (\r
+   select ISS.jsondata as js\r
+   from intakesnapshot ISS\r
+   where ISS.IntakeNumber = intakeno limit 1)\r
+   else IDAS.jsondata\r
+  end)::jsonb,\r
+  IDAS.updatedon ,\r
+  ITDS.teamtypekey ,\r
+  0,\r
+  IDAS.ispreintake,\r
+  (\r
+  select\r
+   ''::character varying) as clwstatus,\r
+  (\r
+  select json_agg(e) as fatality from\r
+   (\r
+   select isrs.ischildfatality, isrs.ismaltreatment\r
+   from intakeservicerequestsdm isrs\r
+   where isrs.intakenumber = IDAS.IntakeNumber and activeflag = 1 ) as e) ::json,\r
+  0 isprior,\r
+/*   case\r
+   coalesce(priors.casecount, 0)\r
+   when 0 then 0\r
+   else 1\r
+  end as isprior, */\r
+  (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+  (\r
+  select getcasepersonname\r
+  from getcasepersonname ('intake', IDAS.IntakeNumber:: character varying)),\r
+  (\r
+  select cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+  from jsonb_array_elements( IDAS.jsondata -> 'persons') persons , jsonb_array_elements(persons -> 'personRole') persl\r
+  where persl ->>'rolekey' = 'Youth' ) as youthname, (\r
+  select cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+  from jsonb_array_elements( IDAS.jsondata -> 'persons') persons , jsonb_array_elements(persons -> 'personRole') persl\r
+  where persl ->>'rolekey' = 'Victim' limit 1) as victimname,\r
+  ''::CHARACTER VARYING as DJSyouthname,\r
+  (\r
+  select PN.firstname\r
+  from Person as PN\r
+  where PN.personid = IDAS.focuspersonid) as youthfirstname,\r
+  (\r
+  select\r
+   PN.lastname\r
+  from\r
+   Person as PN\r
+  where\r
+   PN.personid = IDAS.focuspersonid) as youthlastname,\r
+  (\r
+  select\r
+   PN.suffix\r
+  from\r
+   Person as PN\r
+  where\r
+   PN.personid = IDAS.focuspersonid) as youth_suffix,\r
+  (\r
+  select\r
+   PN.cjamspid\r
+  from\r
+   Person as PN\r
+  where\r
+   PN.personid = IDAS.focuspersonid) as cjamspid\r
+ from IntakeDAStaging IDAS\r
+ inner join intakeDAStatus ITDS on ITDS.intakenumber = IDAS.intakenumber and ITDS.teamtypekey = 'CW' and ITDS.activeflag = 1\r
+ left join routing r on r.objectid = IDAS.intakenumber and (r.activeflag = 1 or r.activeflag = v_activeflag) and r.eventcode in ('INTR', 'KINR')\r
+ left join routingstatustype RTs on RTs.sequencenumber = r.routingstatustypeid and rts.activeflag = 1\r
+ left join teammemberroletype rt on rt.roletypekey = r.toroleid and rt.activeflag = 1\r
+ left join userprofile up on up.securityusersid = IDAS.CRUWorkerName\r
+ left join intakeservicerequest ISR on ISR.intakenumber = IDAS.intakenumber and ISR.activeflag = 1\r
+/*  left join (\r
+  select ia.intakenumber, count(1) casecount\r
+  from intakedastatus ia, json_array_elements((ia.jsondata::json)->'persons') personjson\r
+  inner join ( select distinct personid from intakeservicerequestactor where activeflag = 1 ) isra on isra.personid::character varying = personjson ->>'Pid'\r
+  where coalesce(personjson ->>'Pid', null) is not null\r
+  group by ia.intakenumber \r
+ ) priors on priors.intakenumber = ITDS.intakenumber */\r
+ where\r
+ IDAS.IntakeNumber like intakeno || '%'\r
+ and\r
+ (case\r
+  v_status\r
+  when 1 then lower(IDAS.Status) = 'pending'\r
+  else r.routingstatustypeid = v_status\r
+ end\r
+ or\r
+ case\r
+  IDAS.intakeuser\r
+  when v_UserSID then r.routingstatustypeid = 6\r
+  else r.routingstatustypeid = v_status\r
+ end )\r
+ and IDAS.Activeflag = 1\r
+    and coalesce(IDAS.ispreintake, false) = false -- removing this created a new issue, approved intakes started showing up as pending review, adding it back\r
+ -- and coalesce(IDAS.ispreintake, false) = false ; Not required as per Debashish\r
+ and (  case v_statustext when 'pending'  then ITDS.InsertedBy = v_UserSID \r
+   else coalesce(r.tosecurityusersid, IDAS.intakeuser) = v_UserSID\r
+   or (\r
+   case right(fromroleid, 2)\r
+    when 'IW' then IDAS.InsertedBy = v_UserSID\r
+    when 'KW' then IDAS.InsertedBy = v_UserSID\r
+    when 'CW' then IDAS.InsertedBy = v_UserSID\r
+    else r.tosecurityusersid = v_UserSID\r
+   end )\r
+  end ) \r
+ AND  CASE  WHEN  coalesce(lower(v_statustext),'') = 'pendingreview'  THEN  (coalesce(rts.typedescription,'') != '')  ELSE  TRUE  END\r
+ order by\r
+  (\r
+  case\r
+   sortorder\r
+   when 'asc' then\r
+   case\r
+    sortcolumn\r
+    when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+    when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+    when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+    when 'intakenumber' then IDAS.intakenumber\r
+    else cast(IDAS.id as character varying)\r
+   end\r
+   else cast( IDAS.EntityName as character varying)\r
+  end) asc,\r
+  (\r
+  case\r
+   sortorder\r
+   when 'desc' then\r
+   case\r
+    sortcolumn\r
+    when 'receiveddate' then cast( IDAS.TimeRecieved as character varying)\r
+    when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+    when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+    when 'intakenumber' then IDAS.intakenumber\r
+    else cast(IDAS.id as character varying)\r
+   end\r
+   else cast( IDAS.EntityName as character varying)\r
+  end ) desc )\r
+ \r
+union all (\r
+select IDAS.old_id as intakechessieid,\r
+ 1,\r
+ IDAS.IntakeNumber ,\r
+ cast(case ITDS.iscps when true then 'CPS' when false then 'Non  CPS' else '' end as character varying),\r
+ IDAS.reporteddate,\r
+ (to_char( IDAS.reportedtime::timestamp without time zone, 'YYYYMMDD"T"HH24MISS"Z"' )::timestamptz)::timestamp without time zone,\r
+ IDAS.Narrative,\r
+ --cast(  TRIM(PN.lastname)||  ','  ||TRIM(PN.firstname)  as    character  varying)  raname :: character varying,\r
+ coalesce(IDAS.title, '') :: character varying RAName,\r
+ cast('' as character varying) EntityName,\r
+ cast(up.firstname || ' ' || up.lastname as character varying) ,\r
+ coalesce(r.isreviewrequest, false),\r
+ coalesce(rt.isupervisor, false) ,\r
+ r.insertedon,\r
+ r.updatedon ,\r
+ r.remarks,\r
+ cast(case lower(coalesce(rts.typedescription, 'Pending')) when 'pending' then case ITDS.status when 10 then 'Assigned' else 'Draft' end else case when tosecurityusersid = intakeuser and r.routingstatustypeid = 1 then 'Reopen' else rts.typedescription end end as character varying) ,\r
+ cast('' as character varying) dispositiondescription,\r
+ cast('' as character varying) statusdescription,\r
+ cast( case r.insertedon when null then '' else case when age( now() at time zone 'utc') - age(r.insertedon + time '02:00' ) > '0:00' then cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) else cast( age( now() at time zone 'utc') - age( r.insertedon + time '02:00' ) as character varying(5)) end end as character varying),\r
+ null::jsonb ,\r
+ IDAS.updatedon ,\r
+ ITDS.teamtypekey ,\r
+ 0,\r
+ ITDS.ispreintake,\r
+ (\r
+ select\r
+  ''::character varying) as clwstatus,\r
+ (\r
+ select\r
+  json_agg(e) as fatality\r
+ from\r
+  (\r
+  select\r
+   isrs.ischildfatality,\r
+   isrs.ismaltreatment\r
+  from\r
+   intakeservicerequestsdm isrs\r
+  where\r
+   isrs.intakenumber = IDAS.IntakeNumber\r
+   and activeflag = 1 ) as e) ::json,\r
+ 0 isprior,\r
+ (SELECT json_agg(x) as headofhousehlod FROM ( \r
+        SELECT distinct concat_ws(' ',coalesce(p.firstname,null),coalesce(p.middlename,null),coalesce(p.lastname,null),coalesce(p.suffix,null) ):: character varying as personname\r
+  FROM  intakeservicerequestactor ISRA  \r
+  INNER JOIN person p on p.personid = ISRA.personid AND  p.activeflag =1 \r
+  INNER JOIN actor A ON A.actorid = ISRA.actorid AND A.activeflag =1 \r
+  WHERE    ISRA.activeflag =1  \r
+  AND ISRA.intakeservicerequestpersontypekey <> 'CHILD' AND ISRA.isheadofhousehold = true\r
+  AND ISRA.intakenumber = IDAS.IntakeNumber\r
+  ORDER BY 1 ) as x):: json,\r
+ (\r
+ select\r
+  getcasepersonname\r
+ from\r
+  getcasepersonname ('intake',\r
+  IDAS.IntakeNumber:: character varying)),\r
+  (\r
+  SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)\r
+  FROM intakeservicerequestactor isra, person PN WHERE PN.personid = isra.personid AND isra.intakeserviceid = IDAS.intakeserviceid LIMIT 1\r
+ )  as youthname,\r
+ ( SELECT\r
+   cast(concat(initcap(persons ->> 'Lastname'), coalesce(' ' ||(persons ->> 'suffix'), ''), ', ', initcap(persons ->> 'Firstname'))as character varying)\r
+  from\r
+   jsonb_array_elements( ITDS.jsondata -> 'persons') persons ,\r
+   jsonb_array_elements(persons -> 'personRole') persl\r
+  where\r
+   persl ->>'rolekey' = 'Victim' limit 1 \r
+ ) as victimname,\r
+ ''::CHARACTER VARYING as DJSyouthname,\r
+ (\r
+  SELECT PN.firstname\r
+  FROM intakeservicerequestactor isra, person PN WHERE PN.personid = isra.personid AND isra.intakeserviceid = IDAS.intakeserviceid LIMIT 1\r
+ )  as youthfirstname,\r
+ (\r
+  SELECT PN.lastname\r
+  FROM intakeservicerequestactor isra, person PN WHERE PN.personid = isra.personid AND isra.intakeserviceid = IDAS.intakeserviceid LIMIT 1\r
+ )  as youthlastname,\r
+ (\r
+  SELECT PN.suffix\r
+  FROM intakeservicerequestactor isra, person PN WHERE PN.personid = isra.personid AND isra.intakeserviceid = IDAS.intakeserviceid LIMIT 1\r
+ )  as youth_suffix,\r
+ (\r
+  SELECT PN.cjamspid\r
+  FROM intakeservicerequestactor isra, person PN WHERE PN.personid = isra.personid AND isra.intakeserviceid = IDAS.intakeserviceid LIMIT 1\r
+ )  as cjamspid\r
+from intakeservicerequest IDAS\r
+inner join intakeDAStatus ITDS on ITDS.intakenumber = IDAS.intakenumber AND ITDS.activeflag =1 and ITDS.teamtypekey = 'CW'\r
+inner join routing r on r.objectid = IDAS.intakenumber and r.activeflag = 1 and r.eventcode in ('INTR', 'KINR')\r
+inner join routingstatustype RTs on RTs.sequencenumber = r.routingstatustypeid and rts.activeflag = 1\r
+inner join teammemberroletype rt on rt.roletypekey = r.toroleid and rt.activeflag = 1\r
+inner join userprofile up on up.securityusersid = ITDS.intakeuser\r
+where IDAS.IntakeNumber like intakeno || '%'\r
+ and (case\r
+  v_status\r
+  when 1 then coalesce (ITDS.Status, 0)in (0, 1 )\r
+  else r.routingstatustypeid = v_status end)\r
+ and IDAS.Activeflag = 1\r
+ and coalesce(ITDS.ispreintake, false) = false\r
+ and (ITDS.InsertedBy = v_UserSID or r.tosecurityusersid = v_UserSID or ITDS.intakeuser = v_UserSID) \r
+ and NOT EXISTS(\r
+    select IDS.intakenumber from intakedastaging IDS where IDS.intakenumber = IDAS.IntakeNumber\r
+   ) \r
+  AND  CASE  WHEN  coalesce(lower(v_statustext),'') = 'pendingreview'  THEN  (coalesce(rts.typedescription,'') != '')  ELSE  TRUE  END\r
+order by\r
+ (\r
+ case\r
+  sortorder\r
+  when 'asc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.reportedtime as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   when 'intakenumber' then IDAS.intakenumber\r
+   else cast(IDAS.servicerequestnumber as character varying)\r
+  end\r
+  else cast( IDAS.reportedarea as character varying)\r
+ end) asc,\r
+ (\r
+ case\r
+  sortorder\r
+  when 'desc' then\r
+  case\r
+   sortcolumn\r
+   when 'receiveddate' then cast( IDAS.reportedtime as character varying)\r
+   when 'updateddate' then cast( IDAS.updatedon as character varying)\r
+   when 'submittedworker' then cast(up.firstname || ' ' || up.lastname as character varying)\r
+   when 'intakenumber' then IDAS.intakenumber\r
+   else cast(IDAS.servicerequestnumber as character varying)\r
+  end\r
+  else cast( IDAS.reportedarea as character varying)\r
+ end ) desc) ) t\r
+limit pagesize offset v_pageoffset ;\r
+end if;\r
+end if;\r
+end;\r
+\r
+$function$
+

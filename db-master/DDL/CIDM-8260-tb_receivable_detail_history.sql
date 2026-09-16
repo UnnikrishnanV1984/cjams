@@ -1,0 +1,1 @@
+alter table tb_receivable_detail_history add primary key (receivable_detail_history_id);

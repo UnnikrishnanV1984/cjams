@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION as_gettasknotes(v_page bigint, v_limit bigint, v_nolimit boolean, v_intakeserviceid uuid, v_amtaskid uuid)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE  
+l_notes json;
+v_pageoffset int;
+v_pagenumber int;
+
+BEGIN                                                                          
+
+v_pagenumber := v_page-1;
+v_pageoffset = v_pagenumber * v_limit;
+
+
+
+IF COALESCE(v_limit, 0) < 1 THEN                     
+  v_limit := 10;
+ END IF;
+
+ IF COALESCE(v_page, 0) < 1 THEN
+  v_page := 1; 
+ END IF;
+
+SELECT json_agg(e) INTO l_notes FROM (
+
+SELECT  COUNT(1) over() as totalcount,
+  PN.progressnotepurposetypekey,
+  PN.description,
+  PN.notesid,
+  PNT.ProgressNoteTypeId,
+  CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN 'System'
+  ELSE COALESCE(UP.DisplayName, '') END AS Author,
+  PN.insertedby as Authorid, 
+  COALESCE(PNT.progressnotetypekey, '') AS RecordingType,
+  COALESCE((SELECT pns.description FROM progressnotesubtype pns  where pns.progressnotesubtypeid = PN.progressnotesubtypeid), '') AS RecordingSubType,
+  CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN 0::boolean ELSE COALESCE(PN.SaveMode,0::boolean) END AS Draft,
+  CASE WHEN (PNT.ProgressNoteClassificationTypeKey = 'System') THEN null ELSE PN.AttemptIndicator END AS AttemptInd,                 
+  CAST(COALESCE (PN.ContactDate, PN.insertedon) AS TIMESTAMP(3)) AS ContactDate,COALESCE (PN.ContactName, '') AS ContactName,     
+  (SELECT json_agg(roletype) FROM 
+  (SELECT prt.contactroletypekey, prt.progressnoteroletypeid from progressnoteroletype prt 
+  WHERE prt.progressnoteid=PN.progressnoteid  and prt.activeflag=1)roletype) :: jsonb  AS progressroletype,  
+  ((extract (day FROM now() at time zone 'utc' -  PN.insertedon at time zone 'utc'))) <=7 as iseditable ,                        
+  COALESCE(PN.ContactPhone, '') AS ContactPhone, COALESCE(PN.ContactEmail, '') AS ContactEmail,       
+  COALESCE (PN.ArchivedOn, NULL) AS ArchivedOn,COALESCE (PN.ArchivedBy, '') AS ArchivedBy, 
+  CAST(COALESCE (PN.insertedon , PN.insertedon) AS TIMESTAMP(3)) AS RecordingDate , PN.insertedby AS Insertedby, 
+  PN.starttime  AS StartTime ,PN.endtime  AS EndTime ,PN.stafftypekey  AS StaffType,
+  RV.description as StaffTypeDescription,
+  PN.instantresults  AS InstantResults,PN.contactstatus  AS ContactStatus,
+  PN.drugscreen  AS DrugScreen,COALESCE(PNPT.description, '')  AS ProgressNotePurposeType
+FROM  activitytaskprogressnoteconfig actpc
+INNER JOIN progressnote pn  ON  (actpc.IntakeServiceId :: character varying) =  pn.entitytypeid  AND actpc.activeflag =1 
+AND actpc.notesid =pn.notesid                       
+INNER JOIN ProgressNoteType AS PNT ON PNT.ProgressNoteTypeId = PN.ProgressNoteTypeId  AND PNT.ActiveFlag= 1        
+INNER JOIN UserProfile up on pn.insertedby = up.SecurityUsersId   AND up.ActiveFlag= 1                     
+INNER JOIN progressnotepurposetype AS PNPT ON PNPT.progressnotepurposetypekey = PN.progressnotepurposetypekey AND PNPT.ActiveFlag = 1 LEFT JOIN referencevalues AS RV ON RV.ref_key = PN.stafftypekey AND RV.ActiveFlag= 1
+INNER JOIN referencetype AS RT ON RT.referencetypeid = RV.referencetypeid AND RT.ActiveFlag= 1 
+AND lower(RT.tablename) ='progressnotestafftype'
+WHERE actpc.intakeserviceid=v_intakeserviceid and actpc.amtaskid =v_amtaskid
+and pn.activeflag =1
+
+LIMIT   CASE WHEN v_nolimit = false  THEN v_limit END offset 
+        CASE WHEN v_nolimit = false  THEN v_pageoffset END      
+
+)e;
+
+RETURN l_notes;
+
+END;
+$function$
+

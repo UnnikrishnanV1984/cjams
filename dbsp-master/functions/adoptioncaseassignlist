@@ -1,0 +1,73 @@
+CREATE OR REPLACE FUNCTION adoptioncaseassignlist(v_usersid character varying, v_status character varying, v_page integer, v_limit integer, v_adoptioncasenumber character varying)
+ RETURNS TABLE(totalcount bigint, childname json, adoptioncaseid uuid, adoptioncasenumber character varying, adoptionplanningid uuid, startdate timestamp without time zone, statustypekey character varying, enddate timestamp without time zone, insertedon timestamp without time zone, updatedon timestamp without time zone, casetype character varying, servicecaseid uuid)
+ LANGUAGE plpgsql
+AS $function$
+DECLARE 
+v_offset    integer;
+v_routingstatustypeid integer;
+err_context text;
+BEGIN
+v_offset  :=  (v_page  -  1)  *  v_limit;
+
+IF lower(v_status) = lower('TBA') THEN
+ v_routingstatustypeid = 2;
+ELSE
+ v_routingstatustypeid = 4;
+END IF;
+
+IF v_adoptioncasenumber = '' THEN
+ RETURN  query
+    SELECT 
+   count(1) over(),
+   (select getcasepersonname as childname from getcasepersonname ('adoptioncase',ac.adoptioncaseid::character varying)),
+   ac.adoptioncaseid, 
+   ac.adoptioncasenumber, 
+   ac.adoptionplanningid,
+   ac.startdate, 
+   ac.statustypekey, 
+   ac.enddate,
+   ac.insertedon,
+   ac.updatedon,
+   'Adoption Case' :: character varying,
+   ac.servicecaseid
+  FROM adoptioncase ac
+  LEFT JOIN routing r ON r.objectid = ac.adoptioncaseid ::character varying 
+  AND r.activeflag =1  
+  where lower(ac.statustypekey) = lower(v_status)
+  AND r.routingstatustypeid in (v_routingstatustypeid ) 
+  AND  r.eventcode = 'ADPC' 
+  AND v_usersid IN (CASE v_routingstatustypeid WHEN 2 THEN coalesce(r.tosecurityusersid,'') ELSE  r.fromsecurityusersid END)
+        AND ac.activeflag = 1
+    ORDER BY ac.insertedon DESC
+        LIMIT v_limit OFFSET v_offset;
+ELSE
+  RETURN  query
+    SELECT 
+   count(1) over(),
+   (select getcasepersonname as childname from getcasepersonname ('adoptioncase',ac.adoptioncaseid::character varying)),
+   ac.adoptioncaseid, 
+   ac.adoptioncasenumber,  
+   ac.adoptionplanningid,
+   ac.startdate, 
+   ac.statustypekey, 
+   ac.enddate,
+   ac.insertedon,
+   ac.updatedon,
+   'Adoption Case' :: character varying,
+   ac.servicecaseid
+  FROM adoptioncase ac
+  LEFT JOIN routing r ON r.objectid = ac.adoptioncaseid ::character varying 
+  AND r.activeflag =1  
+  where lower(ac.statustypekey) = lower(v_status)
+  AND r.routingstatustypeid in (v_routingstatustypeid ) 
+  AND  r.eventcode = 'ADPC' 
+  AND v_usersid IN (CASE v_routingstatustypeid WHEN 2 THEN coalesce(r.tosecurityusersid,'') ELSE  r.fromsecurityusersid END)
+        AND ac.adoptioncasenumber  LIKE  '%'|| v_adoptioncasenumber  ||'%'
+        AND ac.activeflag = 1
+    ORDER BY ac.insertedon DESC
+        LIMIT v_limit OFFSET v_offset;
+END IF;
+    
+END;
+$function$
+

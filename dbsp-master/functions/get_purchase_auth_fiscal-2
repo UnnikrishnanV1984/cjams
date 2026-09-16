@@ -1,0 +1,82 @@
+CREATE OR REPLACE FUNCTION get_purchase_auth_fiscal(searchobj json, v_lipagenumber bigint, v_lipagesize bigint)
+ RETURNS TABLE(fiscalcode character varying, fiscal_description character varying, costnot_exceed numeric, justification_text character varying, voucher_requested character, authorization_id integer, attachments json, service_log_id integer, fiscal_category_cd text, cost_no numeric, fundingstatus text, paymentstatus text, startdt date, enddt date, dateofpreapproval date, final_amount_no numeric, client_account_id integer, client_account_no character varying, status integer, supervisorid character varying, reason_tx text, routingstatus text, ongoingtransflag boolean)
+ LANGUAGE plpgsql
+AS $function$
+
+
+DECLARE  
+
+ v_service_log_id bigint;
+ v_pagenumber int;
+ v_pageoffset int;
+ v_role_id character varying;
+BEGIN
+v_service_log_id := searchobj ->> 'service_log_id';
+v_role_id := searchobj ->> 'roleid';
+
+v_pagenumber := v_liPageNumber - 1;
+v_pageoffset := v_pagenumber * v_liPageSize;
+RETURN QUERY
+SELECT  Trim(SPA.fiscal_category_cd::character varying) ::character varying AS "fiscalcode"
+    , TPV.fiscal_category_desc AS "fiscal_description"
+       ,CASE WHEN SPA.final_amount_no IS NOT NULL 
+          THEN SPA.final_amount_no 
+    END AS "costnot_exceed"
+       ,SPA.justification_tx::character varying AS "justification_text"
+       ,SPA.Voucher_sw       AS "voucher_requested"
+    ,SPA.authorization_id AS "authorization_id"
+    ,( SELECT                                                                                                                                                                                                                                                                                                                                        
+                json_agg(doc)                                                                                                                                                                                                                                                                                                          
+        FROM                                                                                                                                                                                                                                                                                                                                          
+     (                                                                                                                                                                                                                                                                                                                                             
+     SELECT  dp.filename, dp.documentpropertiesid,  dp.title,  dp.mime,  dp.numberofbytes, dp.s3bucketpathname,  dp.originalfilename                                                                                                                                                                                                                                
+          from documentproperties dp where dp.additionalobjecttype like 'purchaseAuthReceipt' and dp.additionalobjectid =  SPA.authorization_id  and dp.activeflag = 1                                                                                                                                                                                                                                           
+                                         ) doc  ) :: json AS "attachments"
+    ,SPA.service_log_id   AS "service_log_id",
+    TRIM(SPA.fiscal_category_cd),SPA.cost_no,
+    case when SPA.funding_approval_status_cd='3047' then 'Approved' else '' end as fundingStatus,
+    case when SPA.payment_approval_status_cd='3047' then 'Approved' else '' end as paymentStatus,
+    SPA.start_dt,SPA.end_dt,SPA.dateofpreapproval   ,SPA.final_amount_no  , case when (trim(SPA.fiscal_category_cd) in ('7502','7503')) then SPA.client_account_id else null end, tca.account_no_tx,
+    (select r.routingstatustypeid
+   from routing r where  r.activeflag=1 and r.eventcode in ('PCAUTH','PCAUTHR') and objectid = SPA.authorization_id :: character varying limit 1)
+   ,(select r.tosecurityusersid
+   from routing r where  r.activeflag=1 and r.eventcode in ('PCAUTH','PCAUTHR') and objectid = SPA.authorization_id :: character varying limit 1)
+   ,SPA.reason_tx,
+   (select 
+     CASE  
+     when r.routingstatustypeid =850 
+        THEN 'Returned' 
+      WHEN r.toroleid=v_role_id and  r.routingstatustypeid =42  
+        THEN r.remarks 
+     WHEN r.toroleid=v_role_id AND r.routingstatustypeid !=62 
+        THEN 'Pending' 
+        ELSE --CASE WHEN tsli.end_dt IS NULL 
+        --  THEN NULL 
+          --ELSE 
+          r.remarks 
+        --END 
+      END as remarks
+   from routing r 
+   join tb_service_purchase_authorization tspa on tspa.authorization_id :: character varying = r.objectid and tspa.delete_sw='N'
+   join tb_service_log tsli on tsli.service_log_id=tspa.service_log_id and tsli.delete_sw='N'
+   where tspa.authorization_id= SPA.authorization_id and r.activeflag=1 and r.eventcode in ('PCAUTH','PCAUTHR') limit 1
+   ),(   select       
+  (case when exists (  select r.remarks from tb_service_purchase_authorization tspa
+   inner join routing r on r.objectid=tspa.authorization_id::character varying and r.eventcode='PCAUTH' and r.remarks not in ('Approved','Denied')
+   where tspa.service_log_id=v_service_log_id)
+    then true 
+    else false 
+  end)) as ongoingtransflag
+FROM tb_service_purchase_authorization AS SPA  
+LEFT JOIN tb_fiscal_category_master AS TPV ON Trim(TPV.fiscal_category_cd ::character varying) ::character varying  
+= Trim(SPA.fiscal_category_cd::character varying) ::character varying
+left join tb_client_account tca on tca.client_account_id=SPA.client_account_id and tca.delete_sw='N' --and tca.account_type_cd='591'
+
+--WHERE TPV.picklist_type_id = 217
+WHERE SPA.service_log_id = v_service_log_id and SPA.delete_sw='N' order by spa.authorization_id desc;
+
+END
+
+
+$function$
+

@@ -1,0 +1,215 @@
+CREATE OR REPLACE FUNCTION prov_getworkloadassignments(searchobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+ v_applications json;
+ v_providers json;
+    v_result json;
+v_casetype character VARYING;
+v_status character VARYING;
+v_teamid CHARACTER VARYING;
+v_toworkerid CHARACTER VARYING;
+v_localdeptid CHARACTER VARYING;
+v_startdate character VARYING;
+v_enddate character VARYING;
+v_sortcolumn character varying;
+v_objectid character varying;
+v_provider_name character varying;
+v_sortorder character varying;
+v_skip integer;
+
+BEGIN
+
+v_casetype = searchobj->>'casetype';
+v_status = searchobj->>'statuscode';
+v_teamid = searchobj->>'teamid';
+v_toworkerid = searchobj->>'toworkerid';
+v_localdeptid = searchobj->>'localdeptid';
+v_provider_name = searchobj->>'provider_name';
+v_objectid = searchobj->>'object_id';
+v_startdate = searchobj->>'startdate';
+v_enddate = searchobj->>'enddate';
+v_sortcolumn = searchobj->>'sortcolumn';
+v_sortorder = searchobj->>'sortorder';
+v_skip = searchobj->>'skip';
+
+select 
+case(v_casetype)  
+    when 'APP' then
+   (select json_agg(agg1) from
+   (select count(1) over() as count, yo.* from 
+   (select --DISTINCT
+    tppa.applicant_id as object_id, 
+    (case when (p.enddate is null or p.enddate > now()) then 'Open' else 'Closed' end) as status, 
+    t.teamname, p.assigndate , p.enddate , 
+    tppa.prgram as object_type ,
+     'APP' as actiontype ,
+     concat(tppa.individual_applicant_first_nm,' ',tppa.individual_applicant_last_nm) as provider_name,
+     p.startdate, p.enddate,
+     u.displayname as assignedto,
+     u.cjamspid as cjamspid,
+     u2.displayname as assignedby,
+    c.countyname as localdepartment,
+    (case when tppa.application_received_date is not null then (SELECT jsonb_agg(x) from(
+     select DATE_PART('day', now()::timestamp-tppa.application_received_date::timestamp) ::integer as dueindays,
+       case
+       when (DATE_PART('day', tppa.application_received_date::timestamp -  now()::timestamp ):: integer >=90) then 'green'
+       when (DATE_PART('day', tppa.application_received_date::timestamp -  now()::timestamp ):: integer <90) then 'yellow'
+       when (DATE_PART('day', tppa.application_received_date::timestamp -  now()::timestamp ):: integer <=0) then 'red'
+       end as color_code,
+       tppa.application_received_date)x) else null end)as receiveddate
+   from providerassignment p 
+   join tb_public_provider_applicant tppa on p.objectid = tppa.applicant_id and (tppa.delete_sw ='N' or tppa.delete_sw is null) and p.activeflag =1 
+   join team t on t.teamid  = p.toteamid and t.activeflag =1 
+   join county c on c.countyid::character varying = tppa.jurisdiction and c.activeflag = 1
+   join userprofile u on u.securityusersid:: character varying = p.toworkeridno  and u.activeflag =1
+   join userprofile u2 on u2.securityusersid:: character varying =  p.fromworkeridno and u2.activeflag =1
+   where 
+    (v_toworkerid IS NULL OR v_toworkerid = '' OR p.toworkeridno::character VARYING = v_toworkerid)
+   AND (v_teamid IS NULL OR v_teamid = '' OR p.toteamid::character varying = v_teamid)
+   AND (v_objectid IS NULL OR v_objectid = '' OR tppa.applicant_id::character varying like '%'||v_objectid||'%' )
+   AND (v_provider_name IS NULL OR v_provider_name = '' OR 
+     (tppa.individual_applicant_first_nm||' '||tppa.individual_applicant_last_nm) ilike '%'||v_provider_name||'%' 
+    or (tppa.individual_applicant_first_nm) ilike '%'||v_provider_name||'%'
+    or (tppa.individual_applicant_last_nm) ilike '%'||v_provider_name||'%'
+    or (tppa.individual_applicant_last_nm||', '||tppa.individual_applicant_first_nm) ilike '%'||v_provider_name||'%'
+    )
+   AND (v_localdeptid IS NULL OR v_localdeptid = '' OR  c.countyid::character varying = v_localdeptid )
+   AND CASE WHEN v_status is not null OR v_status <> '' THEN 
+     CASE v_status
+      WHEN 'Open' THEN  p.enddate is null 
+      WHEN 'Closed' THEN  p.enddate is not null 
+     ELSE true END
+    ELSE true end
+    AND CASE WHEN v_startdate IS NOT null THEN CASE when p.startdate is not null THEN p.startdate::date >= v_startdate ELSE false END 
+     ELSE true END
+    AND CASE WHEN v_enddate IS NOT null THEN CASE when p.enddate is not null THEN p.enddate::date <= v_enddate ELSE false END
+     ELSE true END
+--    order by tppa.applicant_id
+   order by (
+    CASE v_sortorder
+     WHEN 'asc'
+     THEN
+                         CASE v_sortcolumn
+                            WHEN 'object_id' THEN  cast(tppa.applicant_id as character varying)
+                          WHEN 'provider_name' THEN  cast(tppa.individual_applicant_last_nm as character varying)
+                          WHEN 'localdepartment' THEN cast(c.countyname  as character varying)
+                          when 'startdate' then cast(p.startdate as character varying)
+                          when 'enddate' then cast(p.enddate as character varying)
+                          when 'teamname' then cast(t.teamname as character varying)
+                          when 'assignedby' then cast(u2.displayname as character varying)
+                          when 'assignedto' then cast(u.displayname as character varying)
+               ELSE
+                      cast(tppa.applicant_id as character varying)
+               END
+              END) ASC NULLS LAST,
+                (CASE v_sortorder
+                   WHEN 'desc'
+     THEN
+      CASE v_sortcolumn
+                            WHEN 'object_id' THEN  cast(tppa.applicant_id as character varying)
+                          WHEN 'provider_name' THEN cast(tppa.individual_applicant_last_nm as character varying)
+                          WHEN 'localdepartment' THEN cast(c.countyname  as character varying)
+                          when 'startdate' then cast(p.startdate as character varying)
+                          when 'enddate' then cast(p.enddate as character varying)
+                          when 'teamname' then cast(t.teamname as character varying)
+                          when 'assignedby' then cast(u2.displayname as character varying)
+                          when 'assignedto' then cast(u.displayname as character varying)
+               ELSE
+                      cast(tppa.applicant_id as character varying)
+               END
+                   END) DESC NULLS LAST
+    ) yo
+    LIMIT 10 OFFSET v_skip
+
+   ) agg1)
+    when 'PRV' then
+   (select json_agg(agg1) from
+   (select count(1) over() as count, yo.* from 
+   (select --DISTINCT
+     pr.provider_id as object_id, 
+     (case when (p.enddate is null or p.enddate > now()) then 'Open' else 'Closed' end) as status, 
+     t.teamname, p.assigndate , p.enddate , 
+     'Provider' as object_type ,
+     'PRV' as actiontype ,
+     concat(pr.provider_first_nm,' ',pr.provider_last_nm) as provider_name,
+     p.startdate, p.enddate,
+     u.displayname as assignedto,
+     u.cjamspid as cjamspid,
+     u2.displayname as assignedby,
+    c.countyname as localdepartment
+    from providerassignment p 
+    join tb_provider pr on p.objectid = pr.provider_id and (pr.delete_sw ='N' or pr.delete_sw is null) and p.activeflag =1 
+    join tb_provider_picklist tpp on tpp.provider_id = pr.provider_id and (trim(tpp.picklist_type_id) = '155' and trim(tpp.picklist_value_cd) = '1783')
+    join team t on t.teamid  = p.toteamid and t.activeflag =1 
+   join county c on c.statecountycode = pr.county_cd and c.activeflag = 1
+    join userprofile u on u.securityusersid:: character varying = p.toworkeridno  and u.activeflag =1
+    join userprofile u2 on u2.securityusersid:: character varying =  p.fromworkeridno and u2.activeflag =1 
+   where 
+    (v_toworkerid IS NULL OR v_toworkerid = '' OR p.toworkeridno::character VARYING = v_toworkerid)
+   AND (v_teamid IS NULL OR v_teamid = '' OR p.toteamid::character varying = v_teamid)
+   AND (v_objectid IS NULL OR v_objectid = '' OR pr.provider_id::character varying like '%'||v_objectid||'%' )
+   AND (v_provider_name IS NULL OR v_provider_name = '' OR 
+     (pr.provider_first_nm||' '||pr.provider_last_nm) ilike '%'||v_provider_name||'%' 
+    or (pr.provider_first_nm) ilike '%'||v_provider_name||'%'
+    or (pr.provider_last_nm) ilike '%'||v_provider_name||'%'
+    or (pr.provider_last_nm||', '||pr.provider_first_nm) ilike '%'||v_provider_name||'%'
+    )
+   AND (v_localdeptid IS NULL OR v_localdeptid = '' OR  c.countyid::character varying = v_localdeptid )
+   AND CASE WHEN v_status is not null OR v_status <> '' THEN 
+     CASE v_status
+      WHEN 'Open' THEN  p.enddate is null 
+      WHEN 'Closed' THEN  p.enddate is not null 
+     ELSE true END
+    ELSE true end
+    AND CASE WHEN v_startdate IS NOT null THEN CASE when p.startdate is not null THEN p.startdate::date >= v_startdate ELSE false END 
+     ELSE true END
+    AND CASE WHEN v_enddate IS NOT null THEN CASE when p.enddate is not null THEN p.enddate::date <= v_enddate ELSE false END
+     ELSE true END
+   order by (
+    CASE v_sortorder
+     WHEN 'asc'
+     THEN
+                         CASE v_sortcolumn
+                            WHEN 'object_id' THEN  cast(pr.provider_id as character varying)
+                          WHEN 'provider_name' THEN cast(pr.provider_last_nm as character varying)
+                          WHEN 'localdepartment' THEN cast(c.countyname  as character varying)
+                          when 'startdate' then cast(p.startdate as character varying)
+                          when 'enddate' then cast(p.enddate as character varying)
+                          when 'teamname' then cast(t.teamname as character varying)
+                          when 'assignedby' then cast(u2.displayname as character varying)
+                          when 'assignedto' then cast(u.displayname as character varying)
+               ELSE
+                      cast(pr.provider_id as character varying)
+               END
+              END) ASC NULLS LAST,
+                (CASE v_sortorder
+                   WHEN 'desc'
+     THEN
+      CASE v_sortcolumn
+                            WHEN 'object_id' THEN  cast(pr.provider_id as character varying)
+                          WHEN 'provider_name' THEN cast(pr.provider_last_nm as character varying)
+                          WHEN 'localdepartment' THEN cast(c.countyname  as character varying)
+                          when 'startdate' then cast(p.startdate as character varying)
+                          when 'enddate' then cast(p.enddate as character varying)
+                          when 'teamname' then cast(t.teamname as character varying)
+                          when 'assignedby' then cast(u2.displayname as character varying)
+                          when 'assignedto' then cast(u.displayname as character varying)
+               ELSE
+                      cast(pr.provider_id as character varying)
+               END
+                   END) DESC NULLS LAST
+    ) yo
+    LIMIT 10 OFFSET v_skip
+
+    ) agg1)
+end into v_result;
+
+
+return v_result;
+END; 
+
+$function$
+

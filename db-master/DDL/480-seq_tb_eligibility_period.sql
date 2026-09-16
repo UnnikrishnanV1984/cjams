@@ -1,0 +1,21 @@
+DROP SEQUENCE IF EXISTS cjams.seq_tb_eligibility_period;
+
+CREATE SEQUENCE cjams.seq_tb_eligibility_period
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 9223372036854775807
+	START 250000
+	CACHE 1
+	NO CYCLE;
+
+DROP SEQUENCE IF EXISTS cjams.seq_tb_eligibility_events;
+
+CREATE SEQUENCE cjams.seq_tb_eligibility_events
+	INCREMENT BY 1
+	MINVALUE 1
+	MAXVALUE 9223372036854775807
+	START 900000
+	CACHE 1
+	NO CYCLE;
+
+

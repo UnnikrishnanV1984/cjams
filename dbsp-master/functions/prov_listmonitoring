@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION prov_listmonitoring(reqobj json)
+ RETURNS json
+ LANGUAGE plpgsql
+AS $function$
+ DECLARE
+ jsondata json;
+ 
+ BEGIN
+  
+ SELECT JSON_AGG(pla) INTO jsondata FROM (
+ select pm.monitoring_id, pm.prgram, pm.site_id, pm.provider_id, pm.periodic, pm.monitoring_dt,pm.inspectedwith,pm.agency,pm.license_expiry_dt,pm.typeofinspection,
+  pm.time_visit, pm.announced_cd,pm.delete_sw,up.fullname as author_name,pm.end_dt,pm.provider_complaintid,
+  pm.monitoring_period_start_date,pm.monitoring_period_end_date,
+  tpc.complaint_number
+  , (SELECT json_agg(pa) FROM 
+         (
+            SELECT pms.*, tpa.license_agency
+            FROM prov_monitoring_site pms 
+   LEFT JOIN tb_provider_applicant tpa on tpa.applicant_id = pms.applicant_id and tpa.delete_sw = 'N'
+   WHERE pms.monitoring_id = pm.monitoring_id
+   AND pms.activeflag = 1 
+         ) pa)::json AS monitoring_site_list
+  , case tpd.status
+   when 'Submitted' then 'Pending'
+   when 'Incomplete' then 'Return to worker'
+   else tpd.status end as status 
+  from prov_monitoring pm 
+  left join tb_provider_decision tpd on pm.monitoring_id = tpd.objectid and tpd.eventcode = 'MVR' and tpd.activeflag = 1
+  left join userprofile up on up.securityusersid = pm.create_user_id
+  left join tb_provider_complaint tpc on tpc.provider_complaintid = pm.provider_complaintid
+  where ((reqobj ->> 'provider_id') is null or pm.provider_id = (reqobj ->> 'provider_id')::integer)
+  and ((reqobj ->> 'monitoring_id') is null or pm.monitoring_id = (reqobj ->> 'monitoring_id'))
+  and ((reqobj ->> 'complaint_number') is null or pm.provider_id  in ( select provider_id from 
+   prov_complaint_mapping where complaint_number = (reqobj ->> 'complaint_number') ))
+  and pm.delete_sw = 'N'  and pm.provider_id is not null order by monitoring_dt desc 
+ ) AS pla;
+
+ RETURN jsondata;
+ END;
+$function$
+

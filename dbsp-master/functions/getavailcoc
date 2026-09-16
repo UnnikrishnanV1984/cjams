@@ -1,0 +1,131 @@
+CREATE OR REPLACE FUNCTION getavailcoc(v_client_acc_id bigint, date_sw character varying DEFAULT NULL::character varying, date_from date DEFAULT NULL::date, date_to date DEFAULT NULL::date)
+ RETURNS numeric
+ LANGUAGE plpgsql
+AS $function$
+
+begin 
+
+drop table if exists  temp_account_transaction; 
+CREATE TEMP TABLE temp_account_transaction  AS
+SELECT *,to_char(ta.benefit_start_dt  , 'Mon-YY') as benefit_start_dt_MONTH 
+FROM tb_account_transaction ta  WHERE ta.client_account_id = v_client_acc_id ;
+
+return (
+            
+ Select sum(A.coc) as AVAILABLE_BALANCE_NO_COC
+from 
+(             
+select (COALESCE((
+    
+     ( SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00)) 
+       FROM temp_account_transaction TR1,
+          TB_CLIENT_ACCOUNT AC1
+        WHERE TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID 
+        AND AC1.CLIENT_ACCOUNT_ID = v_client_acc_id
+        AND TR1.DELETE_SW = 'N' 
+        AND TR1.CREDIT_DEBIT_SW = 'C'
+         AND AC1.DELETE_SW = 'N'  
+          and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH
+--         AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) =  EXTRACT(MONTH FROM TR.BENEFIT_START_DT)
+--         AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)
+        AND TR1.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) 
+        AND ( TR1.BENEFIT_START_DT::date >  F_daymonth(CURRENT_DATE  - INTERVAL '2 MONTHS'  ,'L' , 'C')::date  OR
+            COALESCE(TR1.LATE_ENTRY_SW, 'N')  = 'Y' )  
+      GROUP BY  to_char(tr1.benefit_start_dt,'Mon-YY'),
+--         EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),
+--            EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),
+            AC1.CLIENT_ID
+      ) 
+     + 
+     COALESCE((
+       SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00))     
+       FROM temp_account_transaction TR1,
+          TB_CLIENT_ACCOUNT AC1
+        WHERE  TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID 
+          AND AC1.CLIENT_ACCOUNT_ID = v_client_acc_id
+          AND TR1.DELETE_SW = 'N' 
+          AND AC1.DELETE_SW = 'N'  
+          AND TR1.TRANSACTION_TYPE_CD = '588'
+           AND TR1.CREDIT_DEBIT_SW = 'C'
+           AND TR1.TRANSACTION_SOURCE_CD = '5473' 
+           AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+            and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH
+--          AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) = EXTRACT(MONTH FROM TR.BENEFIT_START_DT)
+--          AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)
+          AND TR1.REFERENCE_TRANSACTION_ID in 
+            ( 
+              SELECT TR2.TRANSACTION_ID
+              FROM temp_account_transaction TR2,
+                 TB_CLIENT_ACCOUNT AC2
+             WHERE TR2.CLIENT_ACCOUNT_ID = AC2.CLIENT_ACCOUNT_ID 
+               AND AC2.CLIENT_ACCOUNT_ID = v_client_acc_id
+               AND TR2.DELETE_SW = 'N' 
+               AND AC2.DELETE_SW = 'N'  
+               AND TR2.CREDIT_DEBIT_SW = 'C'
+               AND TR2.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) 
+               AND ( TR2.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - INTERVAL '2 MONTHS'  ,'L' , 'C')  
+                  OR COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'Y' )  
+            )
+         GROUP by    to_char(tr1.benefit_start_dt,'Mon-YY'),
+--          EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),
+--            EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),
+            AC1.CLIENT_ID
+
+     ),0.00)
+     -
+     COALESCE((
+       SELECT SUM(COALESCE(TR1.TRANSACTION_AMOUNT_NO,0.00))     
+       FROM temp_account_transaction TR1,
+          TB_CLIENT_ACCOUNT AC1
+        WHERE   TR1.CLIENT_ACCOUNT_ID = AC1.CLIENT_ACCOUNT_ID 
+          AND AC1.CLIENT_ACCOUNT_ID = v_client_acc_id
+          AND TR1.DELETE_SW = 'N' 
+          AND AC1.DELETE_SW = 'N'  
+          AND TR1.TRANSACTION_TYPE_CD = '588'
+           AND TR1.CREDIT_DEBIT_SW = 'D'
+           AND TR1.TRANSACTION_SOURCE_CD = '5473' 
+           AND TR1.ADJUSTMENT_APPROVAL_STATUS_CD = '3047'
+           and to_char(tr1.benefit_start_dt,'Mon-YY') = TR.benefit_start_dt_MONTH
+--          AND EXTRACT(MONTH FROM TR1.BENEFIT_START_DT) =  EXTRACT(MONTH FROM TR.BENEFIT_START_DT)
+--          AND EXTRACT(YEAR FROM TR1.BENEFIT_START_DT) =  EXTRACT(YEAR FROM TR.BENEFIT_START_DT)
+          AND TR1.REFERENCE_TRANSACTION_ID in 
+            ( 
+              SELECT TR2.TRANSACTION_ID
+              FROM temp_account_transaction TR2,
+                 TB_CLIENT_ACCOUNT AC2
+             WHERE TR2.CLIENT_ACCOUNT_ID = AC2.CLIENT_ACCOUNT_ID 
+               AND AC2.CLIENT_ACCOUNT_ID = v_client_acc_id
+               AND TR2.DELETE_SW = 'N' 
+               AND AC2.DELETE_SW = 'N'  
+               AND TR2.CREDIT_DEBIT_SW = 'C'
+               AND TR2.TRANSACTION_SOURCE_CD IN ('587', '586', '585' ) 
+               AND ( TR2.BENEFIT_START_DT >  F_daymonth(CURRENT_DATE  - INTERVAL '2 MONTHS'  ,'L' , 'C')  
+                  OR COALESCE(TR2.LATE_ENTRY_SW, 'N')  = 'Y' )  
+            )
+      GROUP BY   EXTRACT(YEAR FROM TR1.BENEFIT_START_DT),
+            EXTRACT(MONTH FROM TR1.BENEFIT_START_DT),
+            AC1.CLIENT_ID
+
+     ),0.00)
+    ),0))AS coc
+   from temp_account_transaction TR 
+   where client_account_id = v_client_acc_id 
+    and  (date_sw is null 
+     or case 
+     when date_sw = 'M' then 
+      (date_trunc('month', TR.benefit_start_dt) = date_trunc('month', CURRENT_DATE - interval '1' month)) 
+     when date_sw = 'Y' then
+       date_part('year', now() :: date):: integer = date_part('year', TR.benefit_start_dt):: integer
+    --  (tat.benefit_start_dt = date_trunc('year', CURRENT_DATE)) 
+     when date_sw = 'D' then 
+      to_date(cast(TR.benefit_start_dt as TEXT), 'YYYY-MM-DD') 
+      BETWEEN to_date(cast(date_from as TEXT), 'YYYY-MM-DD') 
+       AND to_date( cast(date_to as TEXT), 'YYYY-MM-DD' ) 
+     end) 
+   group by TR.benefit_start_dt_MONTH
+   ) A
+ );
+drop TABLE temp_account_transaction;
+ end;
+ $function$
+

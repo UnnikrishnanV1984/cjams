@@ -1,0 +1,974 @@
+CREATE OR REPLACE FUNCTION cjams.sp_provider_license_contract_edits(as_args character varying, OUT as_results character varying, OUT as_error character varying, OUT al_sqlcode integer)
+ RETURNS record
+ LANGUAGE plpgsql
+AS $function$
+
+----------------------------------------------------------------------------------------------
+-- Author          : Vineet Tirodkar
+-- Date            : 11/25/2013
+-- Description     : Stored Procedure for all LICENSE, CONTRACT & PROGRAM related edits
+--				   : Currently called from following screens:
+--                   1. Placement - Referral (PL5050C)
+--                   2. Placement Entry (PL5102C)
+--                   3. Placement Exit (PL5105C)
+--					 4. Placement Validation (AP0150C) 		
+
+-- Request #       : PRJ-03839 Placement Edits on License Program Dates
+-- Argument(s):
+-- 1) IN as_args (all input parameters as tag values e.g. <ARG01>XYZ</ARG01><ARG02>MM-DD-YYYY</ARG02>.....)
+-- 2) OUT as_results (all input parameters as tag values e.g. <OUT01>ABC</OUT01><OUT02>XYZ</OUT02>......)
+-- 3) OUT as_error (Error Text)
+-- 4) OUT al_sqlcode (SQL code for error handling)
+
+-- Revision:
+-- 04/01/2022 Vineet Tirodkar - To consider the 'Voluntary Closure' (3268) License Status (CDM-21434)
+-- 09/30/2022 - Vineet Tirodkar - To char fix for Aurora DB migration 
+----------------------------------------------------------------------------------------------
+
+
+	DECLARE SQLCODE 				INT DEFAULT 0;
+	DECLARE SQLSTATE 				CHAR(5) DEFAULT '00000';
+
+	DECLARE vs_method				VARCHAR(20) DEFAULT '';
+	DECLARE vs_method_found			CHAR(1) DEFAULT 'N';
+	DECLARE vs_pl_exit_dt			VARCHAR(10);
+	DECLARE vs_msg					VARCHAR(100);
+	DECLARE vs_tag_value			VARCHAR(100);
+	
+	DECLARE vl_provider_id			BIGINT;
+	DECLARE vl_program_id			BIGINT;
+	DECLARE vl_message_id			BIGINT DEFAULT 0;
+	DECLARE vl_sus_lic_appl_id		BIGINT;
+	DECLARE vl_lic_app_id			BIGINT;
+	DECLARE vl_next_lic_app_id		BIGINT;
+		
+	DECLARE vl_count				INTEGER;
+	DECLARE vl_suspension_cnt		INTEGER;
+	DECLARE vl_license_count		INTEGER;
+	DECLARE vl_program_count		INTEGER;
+	DECLARE vl_message_count		INTEGER DEFAULT 0;
+	
+	DECLARE vd_placement_dt			DATE;
+	DECLARE vd_revoke_dt			DATE;
+	DECLARE vd_sus_start_dt			DATE;
+	DECLARE vd_service_start_dt		DATE;
+	DECLARE vd_service_end_dt		DATE;
+	DECLARE vd_pl_exit_dt			DATE;
+	DECLARE	vd_lic_expiry_dt		DATE;
+	DECLARE	vd_next_lic_issue_dt	DATE;
+	DECLARE	vd_next_lic_expiry_dt	DATE;
+		
+	DECLARE vb_License_Revoked		BOOLEAN;
+	DECLARE vb_License_Suspended	BOOLEAN;
+	DECLARE vb_message_1361			BOOLEAN DEFAULT FALSE;
+	DECLARE vb_message_1362			BOOLEAN DEFAULT FALSE;
+	DECLARE vb_message_1363			BOOLEAN DEFAULT FALSE;
+	DECLARE vb_message_1364			BOOLEAN DEFAULT FALSE;
+	var_error_section integer default 0;
+BEGIN
+	raise notice '>>>arguments>>> %', as_args;
+	as_args := '<response>' || as_args || '</response>';
+	-- 	SET as_results as all edits are passed - INITIAL VALUE
+	as_results := '<OUT01>PASS</OUT01>';
+	
+	-- Get Method Name	
+	vs_tag_value := NULL; -- Initial Value
+	--SELECT F_GET_VALUEBYTAG( as_args, 'ARG01') INTO vs_tag_value;
+	SELECT btrim(xpath('./ARG01/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+	--FROM SYSIBM.SYSDUMMY1;	
+
+	vs_method := LTRIM(RTRIM(vs_tag_value));
+	 
+	IF vs_method is NULL OR RTRIM(LTRIM(vs_method)) = '' THEN
+		as_error := 'Method name is missing in as_args';
+		--GOTO ERROR_SECTION; --here
+		var_error_section :=1;
+	ELSE
+		var_error_section :=0;
+		-- Common edits for Placement Referral, Placement entry & Placement Exit screens - START
+		IF vs_method = 'PLC_REFERRAL' OR vs_method = 'PLC_ENTRY_DT' OR vs_method = 'PLC_EXIT_DT' THEN
+			vs_method_found := 'Y';
+		
+			-- Get Provider ID
+			 vs_tag_value := NULL; -- Initial Value
+			--SELECT F_GET_VALUEBYTAG( as_args, 'ARG02') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;	
+			SELECT btrim(xpath('./ARG02/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+	
+			 vl_provider_id := RTRIM(LTRIM(vs_tag_value))::BIGINT;
+									   
+			-- Get Program ID	
+			 vs_tag_value := NULL; -- Initial Value
+			--SELECT F_GET_VALUEBYTAG( as_args, 'ARG03') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;			
+			SELECT btrim(xpath('./ARG03/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+			
+			 vl_program_id := RTRIM(LTRIM(vs_tag_value))::BIGINT;
+									  
+			-- Get Placement Date (Entry or Exit date)		
+			 vs_tag_value := NULL; -- Initial Value
+			--SELECT F_GET_VALUEBYTAG( as_args, 'ARG04') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;			
+			SELECT btrim(xpath('./ARG04/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+			
+			if (vs_tag_value is not null and btrim(vs_tag_value)<> '' and btrim(vs_tag_value)<> '"NULL"') then
+				vd_placement_dt := RTRIM(LTRIM(vs_tag_value))::date;
+			else
+				vd_placement_dt = null;
+			end if;
+
+			IF vl_provider_id is NULL OR vl_provider_id = 0 OR vl_program_id is NULL or vl_program_id = 0 OR vd_placement_dt is NULL THEN
+				as_error := 'Input parameter(s) missing in as_args';
+				--GOTO ERROR_SECTION; --here
+				var_error_section :=1;
+			END IF;
+			
+			-- Check Active License count - START
+			-- 3263 - License Issued
+			-- 3266 - License Issued Under CAP
+			-- 3260 - License Sanctioned - Allow Placement Referrals
+			-- 5503	- License Sanctioned - No New Placement Referrals
+			IF (var_error_section = 0) THEN
+				SELECT COUNT(*)
+						INTO vl_count
+					FROM TB_PROVIDER_LICENSING PL,
+						 TB_PROV_PROGRAM_SITES PPS
+				WHERE PL.SITE_ID = PPS.SITE_ID	
+					AND PL.DELETE_SW = 'N'
+					AND vd_placement_dt BETWEEN PL.LICENSE_ISSUE_DT AND PL.LICENSE_EXPIRY_DT
+					AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503' )
+					AND PPS.SITE_ID = vl_provider_id 
+					AND PPS.PROGRAM_ID = vl_program_id ;
+				
+				al_sqlcode := SQLCODE;
+				IF al_sqlcode < 0 THEN
+					as_error := 'Error in verifying Active License for the Provider.';
+					--GOTO ERROR_SECTION; --here
+					var_error_section :=1;
+				END IF ;
+			END IF ;
+			-- Check Active License count - END
+			
+			--Error Check Wrapper - START
+		    IF (var_error_section = 0) THEN
+				-- Active License not found - START
+				IF vl_count = 0 THEN 
+					-- Check for License Revoked - START
+					-- 3262 - License Revoked
+					SELECT MAX(PL.REVOKE_DT)
+							INTO vd_revoke_dt
+						FROM TB_PROVIDER_LICENSING PL,
+							 TB_PROV_PROGRAM_SITES PPS
+					WHERE PL.SITE_ID = PPS.SITE_ID	
+						AND PL.DELETE_SW = 'N'
+						AND vd_placement_dt BETWEEN PL.LICENSE_ISSUE_DT AND PL.LICENSE_EXPIRY_DT
+						AND PL.LICENSE_STATUS_CD = '3262'
+						AND PL.REVOKE_APPROVAL_STATUS_CD = '3047' 
+						AND PPS.SITE_ID = vl_provider_id 
+						AND PPS.PROGRAM_ID = vl_program_id ;
+
+					
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						 as_error := 'Error in verifying Revoked License for the Provider.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					ELSE
+						IF vd_revoke_dt IS NOT NULL THEN
+							IF vd_placement_dt > vd_revoke_dt THEN
+								-- You cannot entry date the placement after revocation/suspension date. Contact OLM for additional information.
+								vl_message_id := 1118;
+								--GOTO EDIT_FAIL_SECTION;--here
+								var_error_section :=1;
+							END IF;
+						END IF;
+					END IF;
+					-- Check for License Revoked - END
+
+					-- Check for License Suspended - START
+					-- 3261 - License Suspended
+					SELECT MAX(LICENSE_APPLICATION_ID)
+							INTO vl_sus_lic_appl_id
+						FROM TB_PROVIDER_LICENSING PL,
+							 TB_PROV_PROGRAM_SITES PPS
+					WHERE PL.SITE_ID = PPS.SITE_ID	
+						AND PL.DELETE_SW = 'N'
+						AND vd_placement_dt BETWEEN PL.LICENSE_ISSUE_DT AND PL.LICENSE_EXPIRY_DT
+						AND PL.LICENSE_STATUS_CD = '3261'
+						AND PPS.SITE_ID = vl_provider_id 
+						AND PPS.PROGRAM_ID = vl_program_id ;
+						
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						 as_error := 'Error in verifying Suspended License for the Provider';
+						--GOTO ERROR_SECTION;
+						var_error_section:=1;
+					END IF;	
+				
+					IF (var_error_section = 0) THEN
+						IF vl_sus_lic_appl_id IS NULL THEN 
+							 vl_sus_lic_appl_id := 0;
+						END IF;
+					
+						IF vl_sus_lic_appl_id > 0 THEN
+							SELECT MAX(ACTIVITY_DT)
+								INTO vd_sus_start_dt
+									FROM TB_LICPROV_ACTIVITIES 
+							WHERE DELETE_SW = 'N'
+								AND PRE_POST_SW = 'N'	
+								AND LICENSE_APPLICATION_ID = vl_sus_lic_appl_id 
+								AND ACTIVITY_TYPE_CD = '3261';
+							
+							al_sqlcode := SQLCODE;
+							IF al_sqlcode < 0 THEN
+								 as_error := 'Error in getting License Suspension Date.';
+								--GOTO ERROR_SECTION;
+								var_error_section :=1;
+							ELSE
+								IF vd_sus_start_dt IS NOT NULL THEN
+									IF vd_placement_dt > vd_sus_start_dt THEN 
+										-- You cannot entry date the placement after revocation/suspension date. Contact OLM for additional information.
+										vl_message_id := 1118;
+										--GOTO EDIT_FAIL_SECTION;--here
+										var_error_section :=1;
+									END IF;
+								END IF;
+							END IF;
+						END IF;
+					END IF;
+					-- Check for License Suspended - END
+				END IF;
+				-- Active License not found - END
+			END IF;
+			--Error Check Wrapper - END
+			
+			-- Check for License was Suspended during that Service Period - START
+			-- 3261 - License Suspended
+			IF (var_error_section = 0) THEN	
+				SELECT COUNT(*)
+					INTO vl_suspension_cnt
+				FROM TB_LICPROV_ACTIVITIES 
+				WHERE DELETE_SW = 'N'
+					AND PRE_POST_SW = 'N'	
+					AND ACTIVITY_TYPE_CD = '3261'
+					AND vd_placement_dt BETWEEN ACTIVITY_DT AND COALESCE(ACTIVITY_END_DT, CURRENT_DATE )
+					AND LICENSE_APPLICATION_ID in ( SELECT LICENSE_APPLICATION_ID
+														FROM TB_PROVIDER_LICENSING PL,
+															 TB_PROV_PROGRAM_SITES PPS
+													WHERE PL.SITE_ID = PPS.SITE_ID	
+														AND PL.DELETE_SW = 'N'
+														AND vd_placement_dt BETWEEN PL.LICENSE_ISSUE_DT AND PL.LICENSE_EXPIRY_DT
+														AND PPS.SITE_ID = vl_provider_id 
+														AND PPS.PROGRAM_ID = vl_program_id );
+		 
+				
+				al_sqlcode := SQLCODE;
+				IF al_sqlcode < 0 THEN
+					as_error := 'Error in verifying for License was Suspended during Service Period.';
+					--GOTO ERROR_SECTION;--here
+					var_error_section :=1;
+				ELSE
+					IF vl_suspension_cnt > 0 THEN
+						-- You cannot entry date the placement after revocation/suspension date. Contact OLM for additional information.
+						vl_message_id := 1118;
+						--GOTO EDIT_FAIL_SECTION;--here
+						var_error_section :=1;
+					END IF;
+				END IF;
+			END IF;
+			-- Check for License was Suspended during that Service Period - END
+		END IF;
+		-- Common edits for Placement Referral, Placement Entry & Placement Exit screens - END
+		
+		-- Edits for Placement Referral & Placement Entry screens only - START
+		IF (var_error_section = 0) THEN	
+			IF vs_method = 'PLC_REFERRAL' OR vs_method = 'PLC_ENTRY_DT' THEN
+				-- PRJ-03839 for Placement Entry Date - START
+				-- Verify License Issue Date is on or before Placement Entry Date - START
+				IF vl_count = 0 THEN -- Only if Active License not found
+					-- 3263 - License Issued
+					-- 3266 - License Issued Under CAP
+					-- 3260 - License Sanctioned - Allow Placement Referrals
+					-- 5503	- License Sanctioned - No New Placement Referrals
+					SELECT COUNT(*)
+						 INTO vl_license_count
+					FROM TB_PROVIDER_LICENSING PL,
+						 TB_PROV_PROGRAM_SITES PPS
+					WHERE PL.SITE_ID = PPS.SITE_ID
+						AND PL.DELETE_SW = 'N'
+						AND PL.LICENSE_ISSUE_DT <= vd_placement_dt
+						AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503' )
+						AND PPS.SITE_ID = vl_provider_id
+						AND PPS.PROGRAM_ID = vl_program_id ;
+					
+					 al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						as_error := 'Error in verifying License Issue Date is on or before Placement Entry Date.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					ELSE
+						IF vl_license_count = 0 THEN
+						-- The placement start date cannot be prior to the License start date. Please contact OLM.
+						 vb_message_1361 := TRUE;
+						-- SET vl_message_id = 1361;
+						-- GOTO EDIT_FAIL_SECTION;
+						END IF;
+					END IF;
+				END IF;
+				-- Verify License Issue Date is on or before Placement Entry Date - END
+			
+				-- Verify Program Effective Start Date is on or before Placement Entry Date - START
+				IF (var_error_section = 0) THEN	
+					SELECT COUNT(*)
+						INTO vl_program_count
+					FROM TB_CONTRACT_PROGRAM
+					WHERE PROGRAM_ID = vl_program_id
+						AND START_DT <= vd_placement_dt
+						AND DELETE_SW = 'N' ;
+
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						as_error := 'Error in verifying Program Effective Start Date is on or before Placement Entry Date.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					ELSE
+						IF vl_program_count = 0 THEN
+							-- The placement start date cannot be prior to the Program start date. Please contact SSA.
+							vb_message_1362 := TRUE;
+							-- SET vl_message_id = 1362;
+							-- GOTO EDIT_FAIL_SECTION;
+						END IF;
+					END IF;
+				END IF;
+				-- PRJ-03839 for Placement Entry Date - END
+			END IF;
+		END IF;
+		-- Edits for Placement Referral & Placement Entry screens only - END
+		
+		-- Edits for Placement Exit screen only - START
+		IF (var_error_section = 0) THEN
+			IF vs_method = 'PLC_EXIT_DT' THEN
+				-- PRJ-03839 for Placement Exit Date - START
+				-- Verify License Expiration Date is on or after Placement Exit Date - START
+				IF vl_count = 0 THEN -- Only if Active License not found
+					-- 3263 - License Issued
+					-- 3266 - License Issued Under CAP
+					-- 3260 - License Sanctioned - Allow Placement Referrals
+					-- 5503	- License Sanctioned - No New Placement Referrals
+					-- 3268 - Voluntary Closure (CDM-21434)
+					SELECT COUNT(*)
+						   INTO vl_license_count
+					FROM TB_PROVIDER_LICENSING PL,
+						 TB_PROV_PROGRAM_SITES PPS
+					WHERE PL.SITE_ID = PPS.SITE_ID
+						AND PL.DELETE_SW = 'N'
+						AND PL.LICENSE_EXPIRY_DT >= vd_placement_dt
+						AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503', '3268' )
+						AND PPS.SITE_ID = vl_provider_id
+						AND PPS.PROGRAM_ID = vl_program_id ;
+					
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						 as_error := 'Error in verifying License Expiration Date is on or after Placement Exit Date.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					ELSE
+						IF vl_license_count = 0 THEN
+							-- The placement end date cannot extend beyond the License end date. Please contact OLM.
+							 vb_message_1363 := TRUE;
+							-- SET vl_message_id = 1363;
+							-- GOTO EDIT_FAIL_SECTION;
+						END IF;
+					END IF;				
+				END IF;
+				-- Verify License Expiration Date is on or after Placement Exit Date - END
+			
+				-- Verify Program Effective End Date is on or after Placement Exit Date - START
+				IF (var_error_section = 0) THEN	
+					SELECT COUNT(*)
+						INTO vl_program_count
+					FROM TB_CONTRACT_PROGRAM
+					WHERE PROGRAM_ID = vl_program_id
+						AND END_DT >= vd_placement_dt
+						AND DELETE_SW = 'N' ;
+
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						as_error := 'Error in verifying Program Effective End Date is on or after Placement Exit Date.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					ELSE
+						IF vl_program_count = 0 THEN
+							-- The placement end date cannot extend beyond the Program end date. Please contact SSA.
+							 vb_message_1364 := TRUE;
+							-- SET vl_message_id = 1364;
+							-- GOTO EDIT_FAIL_SECTION;
+						END IF;
+					END IF;
+				END IF;
+				-- Verify Program Effective End Date is on or after Placement Exit Date - END
+				-- PRJ-03839 for Placement Exit Date - END
+			END IF;
+		END IF;		
+		-- Edits for Placement Exit screen only - END
+		
+		-- Edits for Placement Validation screen only - START
+		IF (var_error_section = 0) THEN
+			raise notice '>>>method>>> %', vs_method;
+			IF vs_method = 'PLC_VALIDATION' THEN
+				 vs_method_found := 'Y';
+				-- Get Program ID			
+				 vs_tag_value := NULL; -- Initial Value
+				--SELECT F_GET_VALUEBYTAG( as_args, 'ARG02') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;			
+				SELECT btrim(xpath('./ARG02/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+				
+				 vl_program_id := RTRIM(LTRIM(vs_tag_value))::BIGINT;
+										  
+				-- Get Provider ID
+				 vs_tag_value := NULL; -- Initial Value
+				--SELECT F_GET_VALUEBYTAG( as_args, 'ARG03') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;			
+				SELECT btrim(xpath('./ARG03/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+				
+				 vl_provider_id := RTRIM(LTRIM(vs_tag_value))::BIGINT;
+																			   
+				-- Get Service Start Date (for 1st moth Placement Entry date)
+				 vs_tag_value := NULL; -- Initial Value
+				--SELECT F_GET_VALUEBYTAG( as_args, 'ARG04') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;			
+				SELECT btrim(xpath('./ARG04/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+				
+				if (vs_tag_value is not null and btrim(vs_tag_value)<> '' and btrim(vs_tag_value)<> '"NULL"') then
+					vd_service_start_dt := RTRIM(LTRIM(vs_tag_value))::date;
+				else
+					vd_service_start_dt := null;
+				end if;
+
+				-- Get Service End Date (for last moth Placement Exit date)	
+				 vs_tag_value := NULL; -- Initial Value
+				--SELECT F_GET_VALUEBYTAG( as_args, 'ARG05') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;						
+				SELECT btrim(xpath('./ARG05/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+				
+				if (vs_tag_value is not null and btrim(vs_tag_value)<> '' and btrim(vs_tag_value)<> '"NULL"') then
+					vd_service_end_dt := RTRIM(LTRIM(vs_tag_value))::date;
+				else
+					vd_service_end_dt := null;
+				end if;
+										   
+				-- Get Placement Exit Date (value will be 'NULL' for open placement)		
+				 vd_pl_exit_dt := NULL;
+				
+				 vs_tag_value := NULL; -- Initial Value
+				--SELECT F_GET_VALUEBYTAG( as_args, 'ARG06') INTO vs_tag_value FROM SYSIBM.SYSDUMMY1;						
+				SELECT btrim(xpath('./ARG06/text()', as_args::xml)::text, '{}') INTO vs_tag_value;
+				
+				if (vs_tag_value is not null and btrim(vs_tag_value)<> '' and btrim(vs_tag_value)<> '"NULL"') then
+					vs_pl_exit_dt := RTRIM(LTRIM(vs_tag_value))::date;
+				else
+					vs_pl_exit_dt := null;
+				end if;
+
+				-- INITIAL VALUES
+				vb_License_Revoked := FALSE;
+				vb_License_Suspended := FALSE;
+			
+				-- Check Active License count - START
+				-- 3263 - License Issued
+				-- 3266 - License Issued Under CAP
+				-- 3260 - License Sanctioned - Allow Placement Referrals
+				-- 5503	- License Sanctioned - No New Placement Referrals
+				SELECT COUNT(*)
+					INTO vl_count
+				FROM TB_PROVIDER_LICENSING PL,
+					 TB_PROV_PROGRAM_SITES PPS
+				WHERE PL.SITE_ID = PPS.SITE_ID	
+					AND PL.DELETE_SW = 'N'
+					AND PL.LICENSE_ISSUE_DT <= vd_service_start_dt
+					AND PL.LICENSE_EXPIRY_DT >= vd_service_end_dt
+					AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503' )
+					AND PPS.SITE_ID = vl_provider_id 
+					AND PPS.PROGRAM_ID = vl_program_id ;
+
+				al_sqlcode := SQLCODE;
+				IF al_sqlcode < 0 THEN
+					as_error := 'Error in verifying Active License for the Provider.';
+					--GOTO ERROR_SECTION;--here
+					var_error_section :=1;
+				END IF ;
+				-- Check Active License count - END
+			
+				-- Active License not found - START
+				IF (var_error_section = 0) THEN
+					IF vl_count = 0 THEN 
+						-- Check for License Revoked - START
+						-- 3262 - License Revoked
+						SELECT MAX(PL.REVOKE_DT)
+							INTO vd_revoke_dt
+						FROM TB_PROVIDER_LICENSING PL,
+							 TB_PROV_PROGRAM_SITES PPS
+						WHERE PL.SITE_ID = PPS.SITE_ID	
+							AND PL.DELETE_SW = 'N'
+							AND PL.LICENSE_ISSUE_DT <= vd_service_start_dt
+							AND PL.LICENSE_EXPIRY_DT >= vd_service_end_dt
+							AND PL.LICENSE_STATUS_CD = '3262'
+							AND PL.REVOKE_APPROVAL_STATUS_CD = '3047' 
+							AND PPS.SITE_ID = vl_provider_id 
+							AND PPS.PROGRAM_ID = vl_program_id ;
+					
+						al_sqlcode := SQLCODE;
+						IF al_sqlcode < 0 THEN
+							as_error := 'Error in verifying Revoked License for the Provider.';
+							--GOTO ERROR_SECTION;--here
+							var_error_section :=1;
+						END IF;		
+				
+						IF vd_revoke_dt IS NOT NULL THEN
+							IF vd_pl_exit_dt is NULL THEN -- Open Placement
+								-- Placement validation for this child cannot take place until the child's placement is end-dated.
+								 vl_message_id := 1117;
+								 vs_msg := 'RVK_OPEN'; 
+								--GOTO EDIT_FAIL_SECTION;--here
+								var_error_section :=1;
+							ELSE
+								IF vd_pl_exit_dt > vd_revoke_dt THEN
+									-- Placement validation for this child cannot take place until the child's placement is end-dated on or before the revocation date..
+									 vl_message_id := 1117;
+									 vs_msg := 'RVK_CLOSED'; 
+									--GOTO EDIT_FAIL_SECTION;--here
+									var_error_section :=1;
+								END IF;
+							END IF;
+							 vb_License_Revoked := TRUE;
+						END IF;
+						-- Check for License Revoked - END
+					END IF;
+					
+					-- Check for License Suspended - START
+					-- 3261 - License Suspended
+					IF (var_error_section = 0) THEN
+						SELECT MAX(PL.LICENSE_APPLICATION_ID)
+							INTO vl_sus_lic_appl_id
+						FROM TB_PROVIDER_LICENSING PL,
+							 TB_PROV_PROGRAM_SITES PPS
+						WHERE PL.SITE_ID = PPS.SITE_ID	
+							AND PL.DELETE_SW = 'N'
+							AND PL.LICENSE_ISSUE_DT <= vd_service_start_dt
+							AND PL.LICENSE_EXPIRY_DT >= vd_service_end_dt
+							AND PL.LICENSE_STATUS_CD = '3261'
+							AND PPS.SITE_ID = vl_provider_id 
+							AND PPS.PROGRAM_ID = vl_program_id ;
+						
+						al_sqlcode := SQLCODE;
+						IF al_sqlcode < 0 THEN
+							as_error := 'Error in verifying Suspended License for the Provider';
+							--GOTO ERROR_SECTION;--here
+							var_error_section :=1;
+						END IF;
+					
+						IF vl_sus_lic_appl_id IS NULL THEN 
+							 vl_sus_lic_appl_id  := 0;
+						END IF;
+				
+						IF vl_sus_lic_appl_id > 0 THEN
+							SELECT MAX(ACTIVITY_DT)
+								INTO vd_sus_start_dt
+							FROM TB_LICPROV_ACTIVITIES 
+							WHERE DELETE_SW = 'N'
+								AND PRE_POST_SW = 'N'	
+								AND LICENSE_APPLICATION_ID = vl_sus_lic_appl_id 
+								AND ACTIVITY_TYPE_CD = '3261' ;
+								
+							al_sqlcode = SQLCODE;
+							IF al_sqlcode < 0 THEN
+								as_error := 'Error in getting License Suspension Date.';
+								--GOTO ERROR_SECTION;--here
+								var_error_section :=1;
+							END IF;	
+						
+							IF vd_sus_start_dt IS NOT NULL THEN
+								IF vd_pl_exit_dt IS NULL THEN -- Open Placement
+									-- Placement validation for this child cannot take place until the child's placement is end-dated.
+									vl_message_id := 1117;
+									vs_msg := 'SUS_OPEN'; 
+									--GOTO EDIT_FAIL_SECTION;--here
+									var_error_section :=1;
+								ELSE
+									IF vd_pl_exit_dt > vd_sus_start_dt THEN 
+										-- Placement validation for this child cannot take place until the child's placement is end-dated on or before the suspension date..
+										vl_message_id := 1117;
+										vs_msg := 'SUS_CLOSED'; 
+										--GOTO EDIT_FAIL_SECTION;--here
+										var_error_section :=1;
+									END IF;
+								END IF;
+							END IF;
+							vb_License_Suspended := TRUE;
+						END IF;	
+					END IF;	
+					-- Check for License Suspended - END
+				END IF;
+				-- Active License not found - END
+			
+				-- Check for License was Suspended during that Service Period - START
+				-- 3261 - License Suspended
+				IF (var_error_section = 0) THEN
+					SELECT COUNT(*)
+						INTO vl_suspension_cnt
+					FROM TB_LICPROV_ACTIVITIES 
+					WHERE DELETE_SW = 'N'
+						AND PRE_POST_SW = 'N'	
+						AND ACTIVITY_TYPE_CD = '3261'
+						AND ( vd_service_start_dt BETWEEN ACTIVITY_DT AND COALESCE(ACTIVITY_END_DT, CURRENT_DATE ) OR
+							  vd_service_end_dt BETWEEN ACTIVITY_DT AND COALESCE(ACTIVITY_END_DT, CURRENT_DATE ) OR
+							  ACTIVITY_DT BETWEEN vd_service_start_dt AND vd_service_end_dt )
+						AND LICENSE_APPLICATION_ID in ( SELECT LICENSE_APPLICATION_ID
+														FROM TB_PROVIDER_LICENSING PL,
+															 TB_PROV_PROGRAM_SITES PPS
+														WHERE PL.SITE_ID =  PPS.SITE_ID	
+															AND PL.DELETE_SW  = 'N'
+															AND PL.LICENSE_ISSUE_DT <= vd_service_start_dt
+															AND PL.LICENSE_EXPIRY_DT >= vd_service_end_dt
+															AND PPS.SITE_ID = vl_provider_id 
+															AND PPS.PROGRAM_ID = vl_program_id ) ;
+													
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						as_error := 'Error in verifying for License was Suspended during Service Period.';
+					--	GOTO ERROR_SECTION;--here
+					var_error_section :=1;
+					END IF;													
+			
+					IF vl_suspension_cnt > 0 THEN
+						-- License was suspended during this service period; placement cannot be validated.
+						vl_message_id := 1112;
+						vs_msg := 'License was suspended during this service period;'; 
+						--GOTO EDIT_FAIL_SECTION;--here
+						var_error_section :=1;
+					END IF;
+				END IF;
+				-- Check for License was Suspended during that Service Period - END
+			
+				-- No Active/Revoked/Suspended License found - START
+				IF vl_count = 0 AND vb_License_Revoked = FALSE AND vb_License_Suspended = FALSE THEN 
+					-- PRJ-03839 for Service Start Date - START
+					-- Verify License Issue Date is on or before Service Start Date - START
+					-- 3263 - License Issued
+					-- 3266 - License Issued Under CAP
+					-- 3260 - License Sanctioned - Allow Placement Referrals
+					-- 5503	- License Sanctioned - No New Placement Referrals
+					-- 3268 - Voluntary Closure (CDM-21434)
+					SELECT COUNT(*)
+						 INTO vl_license_count
+					FROM TB_PROVIDER_LICENSING PL,
+						 TB_PROV_PROGRAM_SITES PPS
+					WHERE PL.SITE_ID = PPS.SITE_ID
+						AND PL.DELETE_SW = 'N'
+						AND PL.LICENSE_ISSUE_DT <= vd_service_start_dt
+						AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503', '3268' )
+						AND PPS.SITE_ID = vl_provider_id
+						AND PPS.PROGRAM_ID = vl_program_id ;
+				
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						 as_error := 'Error in verifying License Issue Date is on or before Service Start Date.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					END IF;				
+									
+					IF vl_license_count = 0 THEN
+						-- The placement validation start date cannot be prior to the License start date. Please contact OLM.
+						 vb_message_1361 := TRUE;
+						-- SET vl_message_id = 1361;
+						-- GOTO EDIT_FAIL_SECTION;
+					END IF;
+					-- Verify License Issue Date is on or before Service Start Date - END
+
+					-- PRJ-03839 for Service End Date - START
+					-- Verify License Expiration Date is on or after Service End Date - START
+					-- 3263 - License Issued
+					-- 3266 - License Issued Under CAP
+					-- 3260 - License Sanctioned - Allow Placement Referrals
+					-- 5503	- License Sanctioned - No New Placement Referrals
+					-- 3268 - Voluntary Closure (CDM-21434)
+					SELECT COUNT(*)
+						   INTO vl_license_count
+					FROM TB_PROVIDER_LICENSING PL,
+						 TB_PROV_PROGRAM_SITES PPS
+					WHERE PL.SITE_ID = PPS.SITE_ID
+						AND PL.DELETE_SW = 'N'
+						AND PL.LICENSE_EXPIRY_DT >= vd_service_end_dt
+						AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503', '3268' )
+						AND PPS.SITE_ID = vl_provider_id
+						AND PPS.PROGRAM_ID = vl_program_id ;
+
+					
+					al_sqlcode := SQLCODE;
+					IF al_sqlcode < 0 THEN
+						 as_error := 'Error in verifying License Expiration Date is on or after Service End Date.';
+						--GOTO ERROR_SECTION;--here
+						var_error_section :=1;
+					END IF;				
+									
+					IF vl_license_count = 0 THEN
+						-- The placement validation end date cannot extend beyond the License end date. Please contact OLM.
+						 vb_message_1363 := TRUE;
+						-- SET vl_message_id = 1363;
+						-- GOTO EDIT_FAIL_SECTION;
+					END IF;
+					-- Verify License Expiration Date is on or after Service End Date - END
+
+					-- Verify Provider is having License in continuation without any gaps - START
+					IF vb_message_1361 = FALSE AND vb_message_1363 = FALSE THEN
+						-- Get Active License by comparing start dt with expiry dt & end dt with issue dt
+						-- 3263 - License Issued
+						-- 3266 - License Issued Under CAP
+						-- 3260 - License Sanctioned - Allow Placement Referrals
+						-- 5503	- License Sanctioned - No New Placement Referrals
+						-- 3268 - Voluntary Closure (CDM-21434)
+						SELECT MIN(PL.LICENSE_APPLICATION_ID)
+							INTO vl_lic_app_id
+						FROM TB_PROVIDER_LICENSING PL,
+							 TB_PROV_PROGRAM_SITES PPS
+						WHERE PL.SITE_ID = PPS.SITE_ID	
+							AND PL.DELETE_SW  = 'N'
+							AND PL.LICENSE_ISSUE_DT <= vd_service_end_dt
+							AND PL.LICENSE_EXPIRY_DT >= vd_service_start_dt
+							AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503', '3268' )
+							AND PPS.SITE_ID = vl_provider_id 
+							AND PPS.PROGRAM_ID = vl_program_id ;
+					
+						al_sqlcode = SQLCODE;
+						IF al_sqlcode < 0 THEN
+							 as_error := 'Error in verifying License by comparing start dt with expiry dt & end dt with issue dt.';
+							--GOTO ERROR_SECTION;--here
+							var_error_section :=1;
+						END IF;
+					
+						IF vl_lic_app_id IS NULL THEN 
+							 vl_lic_app_id := 0;
+						END IF;
+					
+						IF vl_lic_app_id > 0 THEN
+							SELECT LICENSE_EXPIRY_DT
+								INTO vd_lic_expiry_dt	
+							FROM TB_PROVIDER_LICENSING
+							WHERE LICENSE_APPLICATION_ID = vl_lic_app_id 
+								AND DELETE_SW  = 'N' ;
+						
+							al_sqlcode := SQLCODE;
+							IF al_sqlcode < 0 THEN
+								 as_error := 'Error in getting License Expiry Date.';
+								--GOTO ERROR_SECTION;--here
+								var_error_section :=1;
+							END IF;
+					
+							IF vd_lic_expiry_dt < vd_service_end_dt THEN
+								SELECT MIN(PL.LICENSE_APPLICATION_ID) 
+									INTO vl_next_lic_app_id
+								FROM TB_PROVIDER_LICENSING PL,
+									 TB_PROV_PROGRAM_SITES PPS
+								WHERE PL.SITE_ID = PPS.SITE_ID	
+									AND PL.DELETE_SW = 'N'
+									AND PL.LICENSE_APPLICATION_ID <> vl_lic_app_id
+									AND PL.LICENSE_ISSUE_DT >= vd_lic_expiry_dt
+									AND PL.LICENSE_STATUS_CD in ( '3263', '3266', '3260', '5503' )
+									AND PPS.SITE_ID = vl_provider_id 
+									AND PPS.PROGRAM_ID = vl_program_id ;
+
+								al_sqlcode := SQLCODE;
+								IF al_sqlcode < 0 THEN
+									as_error := 'Error in getting next active License.';
+									--	GOTO ERROR_SECTION;--here
+									var_error_section :=1;
+								END IF;
+						
+								IF vl_next_lic_app_id IS NULL THEN 
+									 vl_next_lic_app_id := 0;
+								END IF;
+							
+								IF vl_next_lic_app_id > 0 THEN
+									SELECT LICENSE_ISSUE_DT,
+										   LICENSE_EXPIRY_DT
+										INTO vd_next_lic_issue_dt,
+											 vd_next_lic_expiry_dt
+									FROM TB_PROVIDER_LICENSING
+									WHERE LICENSE_APPLICATION_ID = vl_next_lic_app_id 
+										  AND DELETE_SW = 'N' ;
+								
+									al_sqlcode := SQLCODE;
+									IF al_sqlcode < 0 THEN
+										 as_error := 'Error in getting next active License Issue/Expiry Dates.';
+										--	GOTO ERROR_SECTION;--here
+										var_error_section :=1;
+									END IF;
+							
+									IF ( vd_next_lic_issue_dt = vd_lic_expiry_dt OR vd_next_lic_issue_dt = (vd_lic_expiry_dt + interval '1 DAY') )  
+											AND vd_next_lic_expiry_dt >= vd_service_end_dt THEN
+										-- Allow Validation (Provider is having License in continuation without any gaps)			
+									ELSE
+										-- License expired for ^, Contact OLM for relicensure/extension. This placement cannot be validated.
+										vl_message_id := 564;
+										--	GOTO EDIT_FAIL_SECTION;--here
+										var_error_section :=1;
+									END IF;
+								ELSE
+									-- License expired for ^, Contact OLM for relicensure/extension. This placement cannot be validated.
+									vl_message_id := 564;
+									--GOTO EDIT_FAIL_SECTION;--here
+									var_error_section :=1;
+								END IF;
+							ELSE
+								-- Allow Validation (Lic Expiry DT >= Service End DT)
+							END IF;
+						ELSE
+							-- License expired for ^, Contact OLM for relicensure/extension. This placement cannot be validated.
+							vl_message_id := 564;
+							--GOTO EDIT_FAIL_SECTION;--here
+							var_error_section :=1;
+						END IF;	
+					END IF;	
+					-- Verify Provider is having License in continuation without any gaps - END
+				END IF;
+				-- No Active/Revoked/Suspended License found - END
+			
+				-- Verify Program Effective Start Date is on or before Service Start Date - START
+				SELECT COUNT(*)
+					INTO vl_program_count
+				FROM TB_CONTRACT_PROGRAM
+				WHERE PROGRAM_ID = vl_program_id
+					AND START_DT <= vd_service_start_dt
+					AND DELETE_SW = 'N' ;
+
+				al_sqlcode := SQLCODE;
+				IF al_sqlcode < 0 THEN
+					as_error := 'Error in verifying Program Effective Start Date is on or before Service Start Date.';
+					--GOTO ERROR_SECTION;--here
+					var_error_section :=1;
+				END IF;
+
+				IF vl_program_count = 0 THEN
+					-- The placement validation start date cannot be prior to the Program start date. Please contact SSA.
+					 vb_message_1362 := TRUE;
+					-- SET vl_message_id = 1362;
+					-- GOTO EDIT_FAIL_SECTION;
+				END IF;
+				-- PRJ-03839 for Service Start Date - END	
+			
+				-- Verify Program Effective End Date is on or after Service End Date - START
+				SELECT COUNT(*)
+					INTO vl_program_count
+				FROM TB_CONTRACT_PROGRAM
+				WHERE PROGRAM_ID = vl_program_id
+					AND END_DT >= vd_service_end_dt
+					AND DELETE_SW = 'N' ;
+
+				al_sqlcode := SQLCODE;
+				IF al_sqlcode < 0 THEN
+					as_error := 'Error in verifying Program Effective End Date is on or after Service End Date.';
+					--GOTO ERROR_SECTION;--here
+					var_error_section :=1;
+				END IF;
+
+				IF vl_program_count = 0 THEN
+					-- The placement validation end date cannot extend beyond the Program end date. Please contact SSA.
+					 vb_message_1364 := TRUE;
+					-- SET vl_message_id = 1364;
+					-- GOTO EDIT_FAIL_SECTION;
+				END IF;			
+				-- Verify Program Effective End Date is on or after Service End Date - END
+				-- PRJ-03839 for Service End Date - END
+				
+			END IF;
+			-- Edits for Placement Validation screen only - END
+		
+			-- Unknown Method error handling
+			IF vs_method_found = 'N' THEN
+				as_error := 'Unknown Method name in as_args';
+				--	GOTO ERROR_SECTION;--here
+				var_error_section :=1;
+			END IF;
+		END IF;	
+		
+		raise notice '>>>> var_error_section %', var_error_section;
+		raise notice '>>>> vb_message_1361 %', vb_message_1361;
+		raise notice '>>>> vb_message_1362 %', vb_message_1362;
+		raise notice '>>>> vb_message_1363 %', vb_message_1363;
+		raise notice '>>>> vb_message_1364 %', vb_message_1364;
+		
+		IF (var_error_section = 0) THEN
+			-- To Capture more than one message IDs - START
+			IF vb_message_1361 = TRUE OR vb_message_1362 = TRUE OR vb_message_1363 = TRUE OR vb_message_1364 = TRUE THEN
+				as_results := NULL;
+				as_results := '<OUT01>FAIL</OUT01>';
+			
+				IF vb_message_1361 = TRUE THEN
+					as_results := as_results || '<OUT02>1361</OUT02>';
+					vl_message_count := vl_message_count + 1;
+				END IF;
+			
+				IF vb_message_1362 = TRUE THEN
+					IF vl_message_count = 0 THEN
+						as_results := as_results || '<OUT02>1362</OUT02>';
+					ELSE
+						as_results := as_results || '<OUT03>1362</OUT03>';
+					END IF;	
+					vl_message_count := vl_message_count + 1;
+				END IF;
+			
+				IF vb_message_1363 = TRUE THEN
+					IF vl_message_count = 0 THEN
+						as_results := as_results || '<OUT02>1363</OUT02>';
+					ELSEIF vl_message_count = 1 THEN
+						as_results := as_results || '<OUT03>1363</OUT03>';
+					ELSEIF vl_message_count = 2 THEN
+						as_results := as_results || '<OUT04>1363</OUT04>';	
+					END IF;	
+					vl_message_count := vl_message_count + 1;
+				END IF;
+			
+				IF vb_message_1364 = TRUE THEN
+					IF vl_message_count = 0 THEN
+						 as_results := as_results || '<OUT02>1364</OUT02>';
+					ELSEIF vl_message_count = 1 THEN
+						 as_results := as_results || '<OUT03>1364</OUT03>';
+					ELSEIF vl_message_count = 2 THEN
+						 as_results := as_results || '<OUT04>1364</OUT04>';	
+					ELSEIF vl_message_count = 3 THEN
+						 as_results := as_results || '<OUT05>1364</OUT05>';		
+					END IF;	
+					-- SET vl_message_count = vl_message_count + 1;
+				END IF;
+				-- To Capture more than one message IDs - END
+			END IF;
+		ELSE
+			as_results := NULL;
+			as_results := '<OUT01>FAIL</OUT01>';
+			IF vl_message_id > 0 THEN
+				as_results :=  as_results || '<OUT02>' || (vl_message_id)::character varying || '</OUT02>';
+			END IF;
+			
+			IF vs_msg is NOT NULL AND RTRIM(LTRIM(vs_msg)) <> '' THEN
+				as_results :=  as_results || '<OUT06>' || RTRIM(vs_msg) || '</OUT06>';
+			END IF;
+		END IF;
+		--RETURN 0; --here
+	
+		--EDIT_FAIL_SECTION:
+		/*<<EDIT_FAIL_SECTION>>
+		BEGIN
+			 as_results := NULL;
+			 as_results := '<OUT01>FAIL</OUT01>';
+			IF vl_message_id > 0 THEN
+				 as_results :=  as_results || '<OUT02>' || RTRIM(TO_CHAR(vl_message_id)) || '</OUT02>';
+			END IF;
+			
+			IF vs_msg is NOT NULL AND RTRIM(LTRIM(vs_msg)) <> '' THEN
+				 as_results :=  as_results || '<OUT06>' || RTRIM(vs_msg) || '</OUT06>';
+			END IF;
+			--RETURN 0; --here
+		END;*/
+	END IF;
+
+	IF (var_error_section = 1) THEN
+		al_sqlcode := -1;
+		RETURN;
+	END IF;
+END;
+
+$function$
+;

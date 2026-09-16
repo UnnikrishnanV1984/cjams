@@ -1,0 +1,130 @@
+DROP FUNCTION servicecasepermanencylist(uuid,integer,integer);
+
+CREATE OR REPLACE FUNCTION cjams.servicecasepermanencylist(v_objectid uuid, _page integer, _limit integer)
+ RETURNS TABLE(personid uuid, cjamspid bigint, firstname character varying, lastname character varying, middlename character varying, prefx character varying, suffix character varying, clientname text, dob date, age text, gender character varying, permanencyplans json)
+ LANGUAGE plpgsql
+AS $function$
+
+------------------------------------------------------------------------
+-- Revision(s)
+-- 10/01/2024 Anil Dharni - Addition of placementid in the json obj(CDM-9282)
+------------------------------------------------------------------------
+
+DECLARE                    
+_offset    integer;
+BEGIN
+_offset  :=  (_page  -  1)  *  _limit;    
+
+RETURN  QUERY 
+
+SELECT
+	p.personid, p.cjamspid,p.firstname,p.lastname,p.middlename,p.prefx,p.suffix,INITCAP(TRIM(P.firstname)||' '||TRIM(p.lastname)) AS clientname,
+	p.dob :: date,
+	CASE 
+		WHEN EXTRACT(YEAR FROM age(now(), p.dob)) <= 0 THEN 
+			CASE WHEN EXTRACT(MONTH FROM age(now(), p.dob)) <= 0 THEN 
+				CONCAT (EXTRACT(DAY FROM age(now(), p.dob)) :: CHARACTER VARYING, ' ', 'Day(s)') 
+				ELSE CONCAT (EXTRACT(MONTH FROM age(now(), p.dob)) :: CHARACTER VARYING, ' ', 'Month(s)') 
+			END 
+		ELSE CONCAT (EXTRACT(YEAR FROM age(now(), p.dob)) :: CHARACTER VARYING,' ', 'Yrs') 	
+	END AS age,
+	(select value_text from referencevalues where referencetypeid = 301 and activeflag = 1
+	and coalesce(teamtypekey,'CW')='CW' and ref_key = p.gendertypekey Limit 1) as typedescription,
+	(SELECT json_agg(f) 
+		FROM (SELECT	
+				(SELECT json_Agg(e)  FROM
+					(SELECT pp1.permanencyplanid,
+						pp1.primarypermanencytype as permanencyplantypekey,
+						pnpt.description as plantypedescription,
+						pnpst.description as plansubtypedescription,
+						g2.gapid as gapstatuscheck
+						FROM permanencyplan pp1
+						 LEFT JOIN permanencyplantype pnpt ON pnpt.permanencyplantypekey=pp1.primarypermanencytype AND pnpt.activeflag=1
+                         LEFT JOIN permanencyplansubtype pnpst ON pnpst.permanencyplantypekey=pnpt.permanencyplantypekey AND pnpst.permanencyplansubtypekey = pp1.primaryarrangetype AND pnpst.activeflag=1
+						 left join guardianship g2 on g2.permanencyplanid = pp1.permanencyplanid 
+                         WHERE  pp1.activeflag =1 AND pp1.servicecaseid =pp.servicecaseid
+						 AND pp1.permanencyplanid = pp.permanencyplanid AND pp1.activeflag=1
+					)  e 
+				)::  json  AS  primarypermanency,
+						
+				(SELECT json_Agg(e) FROM
+					(SELECT pp2.permanencyplanid, 
+							pp2.concurrentpermanencytype as concurrentplantypekey ,
+							pnpt1.description as concurrentplandescription,
+							pnpst1.description as concurrentsubdescription
+						FROM permanencyplan pp2
+							LEFT JOIN permanencyplantype pnpt1 ON pnpt1.permanencyplantypekey=pp2.concurrentpermanencytype AND pnpt1.activeflag=1
+							LEFT JOIN permanencyplansubtype pnpst1 ON pnpst1.permanencyplantypekey=pnpt1.permanencyplantypekey 
+								AND pnpst1.permanencyplansubtypekey = pp2.primaryarrangetype AND pnpst1.activeflag=1
+						WHERE pp2.activeflag =1 AND pp2.servicecaseid = pp.servicecaseid
+							AND pp2.permanencyplanid = pp.permanencyplanid
+						
+					) e 
+				)::  json  AS concurrentpermanency,
+
+				( select count(1) > 0
+					from guardianship g
+					    JOIN gapagreement ga ON ga.gapid = g.gapid
+					    AND ga.activeflag = 1
+					where g.permanencyplanid = pp.permanencyplanid
+					and g.activeflag = 1
+					and  ga.enddate::date > current_date
+					and ( SELECT count(*) AS count
+					              FROM routing
+					      WHERE routing.routingstatustypeid = 16
+					      AND routing.eventcode::text = 'GAAR'::text
+					      AND routing.activeflag = 1
+					      AND routing.objectid::text = ga.gapagreementid::character varying::text
+					      ) > 0
+				) as childHasActiveGap,
+
+				(SELECT json_Agg(e) from
+					(SELECT case when count(1) > 0 then 1 else 0 end as adoptioncase_status,adc.adoptioncaseid,adc.adoptioncasenumber	FROM permanencyplan pp1
+						 LEFT JOIN permanencyplantype pnpt ON pnpt.permanencyplantypekey=pp1.primarypermanencytype AND pnpt.activeflag=1
+	                     LEFT JOIN permanencyplansubtype pnpst ON pnpst.permanencyplantypekey=pnpt.permanencyplantypekey 
+	                     AND pnpst.permanencyplansubtypekey = pp1.primaryarrangetype AND pnpst.activeflag=1
+	                      join adoptionplanning adp on adp.permanencyplanid = pp1.permanencyplanid
+	                     join adoptioncase adc on adc.adoptionplanningid = adp.adoptionplanningid
+						 WHERE  pp1.activeflag =1 AND pp1.servicecaseid =pp.servicecaseid
+						 AND pp1.permanencyplanid = pp.permanencyplanid
+					     group by adc.adoptioncaseid,adc.adoptioncasenumber
+					) e 
+			     )::  json  AS casedetails,
+				
+				pp.projecteddate as primaryplandate,
+				pp.placementid,
+				pp.courtorderreceived,
+				pp.permanencyplanremainssame,
+				pp.permanencyplanremainssamedate,
+				pp.reviewdate,
+				pp.establisheddate,
+				pp.concurrentcomments ,
+				pp.remarks primarycomments,
+				(SELECT typedescription FROM routing r
+					INNER JOIN routingstatustype rt ON rt.sequencenumber=r.routingstatustypeid AND rt.activeflag=1
+					WHERE objectid = pp.permanencyplanid :: character varying 
+					AND r.activeflag=1 order by r.updatedon desc limit 1
+				) as status,
+				pp.permanencyplanid,
+				pp.intakeservicerequestactorid	,
+				pp.enddate,pp.reason,pp.permplanquestdata, pp.parentname parentname, pp.parent2name parent2name, pp.achieveddate
+		FROM Permanencyplan pp    
+		INNER JOIN intakeservicerequestactor isr1 ON pp.intakeservicerequestactorid=isr1.intakeservicerequestactorid
+		INNER JOIN person p1 ON p1.personid=isr1.personid AND p1.activeflag  =  1
+		WHERE pp.servicecaseid=v_objectid AND p1.cjamspid=p.cjamspid AND pp.activeflag=1
+		) f  
+	)	:: json  as permanencyplandetails	
+FROM Permanencyplan ppl 
+INNER JOIN servicecase SC ON ppl.servicecaseid = SC.servicecaseid and SC.activeflag=1 
+INNER JOIN intakeservicerequestactor isr ON ppl.intakeservicerequestactorid=isr.intakeservicerequestactorid 
+INNER JOIN actor a ON isr.actorid = a.actorid AND a.activeflag = 1
+INNER JOIN person p ON p.personid=isr.personid AND p.activeflag  =  1
+-- INNER JOIN gendertype gr ON p.gendertypekey = gr.gendertypekey and gr.activeflag =1
+WHERE  ppl.servicecaseid=v_objectid AND ppl.activeflag=1
+GROUP BY p.personid,p.cjamspid,p.firstname,p.lastname,p.middlename,p.prefx,p.suffix,clientname,p.dob,age 
+LIMIT _limit OFFSET _offset;
+ 
+END;
+
+$function$
+;

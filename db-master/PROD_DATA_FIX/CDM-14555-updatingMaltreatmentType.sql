@@ -1,0 +1,1 @@
+update intakeservicerequestsdm set isnegrh_treatmenthealthrisk = true, updatedby = 'CDM-14555', updatedon = now() where intakeservicerequestsdmid = '824de9c1-7580-4e9b-8837-6a1f67e060a9';

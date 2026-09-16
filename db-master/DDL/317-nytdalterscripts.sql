@@ -1,0 +1,2 @@
+ALTER TABLE cjams.nytddataelements ALTER COLUMN elementdesc TYPE varchar(1000) USING elementdesc::varchar;
+ALTER TABLE cjams.personnytddetail ALTER COLUMN elementvalue TYPE varchar(1000) USING elementvalue::varchar;

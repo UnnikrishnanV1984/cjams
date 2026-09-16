@@ -1,0 +1,1 @@
+update tb_foster_care_rate set delete_sw='Y', update_ts=now(),update_user_id='CDM-1541' where service_id=501 and rate_id=323;

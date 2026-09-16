@@ -1,0 +1,1 @@
+ALTER TABLE cjams.documentattachment ADD attachmentclassificationsubtypekey varchar(100) NULL;

@@ -1,0 +1,25 @@
+ CREATE OR REPLACE FUNCTION public.updaterestitutionpaymentmatched()                                                                           
+  RETURNS text                                                                                                                                 
+  LANGUAGE plpgsql                                                                                                                             
+ AS $function$                                                                                                                                 
+                                                                                                                                               
+                                                                                                                                               
+ DECLARE                                                                                                                                       
+                                                                                                                                               
+ v_date timestamp without time zone;                                                                                                           
+                                                                                                                                               
+ BEGIN                                                                                                                                         
+         v_date:= now() at time zone 'utc';                                                                                                    
+                                                                                                                                               
+                                                                                                                                               
+         update restitutionpaymentflatfilecontent set ismatched = true,updatedon = v_date where activeflag=1 and customernumber                
+         in (select restitutionno::character varying from intakeserreqrestitution where activeflag=1 --group by restitutionno having count(*)=1
+         );                                                                                                                                    
+                                                                                                                                               
+ Return 'success';                                                                                                                             
+                                                                                                                                               
+ END;                                                                                                                                          
+                                                                                                                                               
+                                                                                                                                               
+ $function$                                                                                                                                    
+

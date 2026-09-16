@@ -1,0 +1,1 @@
+create INDEX xie6_routing ON cjams.routing USING btree (Date(insertedon),teamid,routingstatustypeid,activeflag);

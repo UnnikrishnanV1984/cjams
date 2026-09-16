@@ -1,0 +1,115 @@
+CREATE OR REPLACE FUNCTION as_getreviewdetails(v_eventcode character varying, v_securityuserid character varying, pagno integer, pagesize integer, servicereqno character varying)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, intakenumber character varying, intakeservreqtypekey character varying, classkey character varying, reporteddate timestamp without time zone, clientname character varying, asssignedon timestamp without time zone, assingeduser character varying, remarks text, typename character varying, appevent character varying, legalguardian json, dispostionstatus json, objectid character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+  _offset        integer;
+Begin
+  _offset    :=    (pagno    -    1)    *    pagesize;  
+
+IF  (v_eventcode  =  'ASST')  THEN
+  RETURN query
+    SELECT  
+    Count(1) over(), 
+    a.intakeserviceid, a.servicerequestnumber, a.intakenumber, a.intakeservreqtypekey, a.classkey, a.reporteddate, a.clientname, 
+    a.asssignedon, a.assingeduser, a.remarks, a.typename, a.appevent, null::json, null ::json, a.objectid
+    FROM 
+    ( 
+      SELECT 
+        isr.intakeserviceid, (isr.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber, isr.intakenumber, 
+        ( SELECT itsrt.intakeservreqtypekey 
+    FROM   intakeservicerequesttype AS itsrt 
+    WHERE  itsrt.intakeservreqtypeid = isr.intakeservreqtypeid
+    AND    itsrt.activeflag = 1 
+   LIMIT  1), 
+        ( SELECT srst.classkey 
+    FROM   servicerequestsubtype AS srst 
+    WHERE  srst.servicerequestsubtypeid = isr.intakeservicerequestclassid
+    AND    srst.activeflag = 1 
+    LIMIT  1 ),
+        isr.reporteddate :: timestamp, 
+        (SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+    FROM intakeservicerequestactor ISRA 
+    INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+    INNER JOIN person PN ON PN.personid = a.personid 
+    WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV','RC') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) as clientname,
+        a.updatedon :: timestamp AS asssignedon, 
+  cast( up.lastname || ',    ' || up.firstname AS CHARACTER VARYING ) assingeduser,
+        coalesce( r.remarks, '' )::text AS remarks, 
+  (amt.titleheadertext )::CHARACTER VARYING AS typename, 
+  'ASST'::CHARACTER VARYING AS appevent, r.objectid
+      FROM       intakeservicerequest AS isr  
+      INNER JOIN assessment a ON a.objectid = isr.intakeserviceid AND a.activeflag = 1 
+      INNER JOIN assessmenttemplate amt ON a.assessmenttemplateid = amt.assessmenttemplateid AND amt.activeflag = 1 
+     AND lower( a.assessmentstatustypekey ) NOT IN ( 'closed', 'approved','accepted','rejected','denied', 'submitted')
+      JOIN routing r ON routingstatustypeid = 15 AND r.eventcode = 'ASST' AND r.objectid = a.ASSESSMENTID::CHARACTER VARYING AND
+    r.activeflag = 1 
+        AND r.tosecurityusersid=v_securityuserid 
+        AND (servicereqno = '' OR r.servicerequestnumber = servicereqno)
+      INNER JOIN userprofile up ON up.securityusersid = r.fromsecurityusersid AND up.activeflag = 1 
+      INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = isr.intakeserreqstatustypeid AND irst.activeflag = 1 
+     AND lower( irst.intakeserreqstatustypekey ) NOT IN ( 'closed')
+   WHERE isr.teamtypekey = 'AS'
+      ORDER BY r.insertedon  DESC) a  
+  ORDER BY  a.asssignedon DESC 
+  LIMIT    pagesize 
+  offset   _offset;
+--
+ELSIF  (v_eventcode  =  'INVR')  THEN
+  RETURN    query    
+  SELECT
+  a.count, a.intakeserviceid, a.servicerequestnumber, a.intakenumber, a.intakeservreqtypekey, a.classkey, a.reporteddate, 
+  a.clientname, a.asssignedon, a.assingeduser, a.remarks, a.typename, a.appevent, null::json, a.dispostionstatus, a.objectid
+  FROM (
+        SELECT 
+          Count(1) over(), 
+          isr.intakeserviceid, (isr.servicerequestnumber :: CHARACTER VARYING) AS servicerequestnumber, isr.intakenumber, 
+          ( SELECT itsrt.intakeservreqtypekey 
+            FROM intakeservicerequesttype AS itsrt 
+            WHERE  itsrt.intakeservreqtypeid = isr.intakeservreqtypeid
+            AND itsrt.activeflag = 1 
+            LIMIT  1),
+          ( SELECT srst.classkey 
+            FROM  servicerequestsubtype AS srst 
+            WHERE srst.servicerequestsubtypeid = isr.intakeservicerequestclassid
+            AND  srst.activeflag = 1 
+            LIMIT 1),
+            isr.reporteddate :: timestamp, 
+          ( SELECT cast(INITCAP(TRIM(coalesce(PN.lastname,''))|| CASE WHEN PN.suffix is not null THEN ' ' ELSE '' END  || TRIM(coalesce(PN.suffix,'')) || ', ' ||TRIM(coalesce(PN.firstname,''))) as  character varying)
+            FROM intakeservicerequestactor ISRA 
+            INNER JOIN actor a ON ISRA.actorid = a.actorid AND a.activeflag = 1 AND ISRA.activeflag = 1 
+            INNER JOIN person PN ON PN.personid = a.personid 
+            WHERE ISRA.intakeserviceid = ISR.intakeserviceid AND ISRA.intakeservicerequestpersontypekey IN ('RA','AV','RC') ORDER BY ISRA.intakeservicerequestpersontypekey DESC NULLS LAST LIMIT 1) as clientname,
+          null :: timestamp AS asssignedon, cast( up.lastname || ',    ' || up.firstname AS CHARACTER VARYING) assingeduser, 
+          coalesce( r.remarks, '' ) :: text AS remarks,
+          ( select amt.titleheadertext::CHARACTER VARYING from assessment a
+            INNER JOIN assessmenttemplate amt ON a.assessmenttemplateid = amt.assessmenttemplateid AND amt.activeflag = 1 where
+            a.objectid = isr.intakeserviceid AND a.activeflag = 1 limit 1) as typename,
+          'INVR' :: CHARACTER VARYING AS appevent,                                
+          ( SELECT json_agg(e) AS dispostionstatus FROM   (select isrdc.intakeservicerequestdispositioncodeid,
+            ist.description as status,srcdc.description as dispostion,isrdc.insertedon as closedate FROM  
+            intakeservicerequestdispositioncode isrdc 
+            inner join intakeserreqstatustype ist
+            on ist.intakeserreqstatustypeid=isrdc.intakeserreqstatustypeid
+            inner join servicerequesttypeconfigdispositioncode srcdc
+            on srcdc.servicerequesttypeconfigiddispostionid=isrdc.servicerequesttypeconfigiddispostionid
+            WHERE  isrdc.intakeserviceid = isr.intakeserviceid
+            and ist.description='Review' limit 1 ) AS e) ::json, null
+          FROM intakeservicerequest AS isr 
+          JOIN(
+            SELECT DISTINCT r.objectid ,cast( r.insertedon AS date ) assignedon,r.remarks, r.fromsecurityusersid
+            FROM  routing r 
+         WHERE  routingstatustypeid in(12,13) AND r.tosecurityusersid=v_securityuserid AND r.activeflag = 1) r ON  r.objectid = isr.intakeserviceid::CHARACTER VARYING 
+       INNER JOIN userprofile up ON up.securityusersid = r.fromsecurityusersid AND up.activeflag = 1 
+       INNER JOIN intakeserreqstatustype irst ON irst.intakeserreqstatustypeid = isr.intakeserreqstatustypeid AND irst.activeflag = 1 
+         AND lower( irst.intakeserreqstatustypekey ) NOT IN ( 'closed'  )
+       WHERE isr.teamtypekey = 'AS') a  
+  ORDER BY asssignedon DESC 
+  LIMIT    pagesize 
+  offset   _offset;
+END IF;      
+End;
+
+$function$
+

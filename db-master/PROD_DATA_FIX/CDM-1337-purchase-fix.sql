@@ -1,0 +1,4 @@
+delete from routing where eventcode='PCAUTHR' and objectid=1734167 and  routingstatustypeid = 41 and activeflag=1;
+INSERT INTO cjams.routing
+(routingid, eventcode, fromsecurityusersid, tosecurityusersid, teamid, fromroleid, toroleid, objectid, routingstatustypeid, activeflag, insertedby, insertedon, updatedby, updatedon, isreviewrequest, remarks, old_id, routeddescription, servicerequestnumber, objecttypekey, old_from_id, old_to_id, principaltype, actiondatetime, etl_userid, etl_load_date, entityid)
+VALUES(gen_random_uuid(), 'PCAUTHR', '42bef3c1-3d49-4aae-9310-b2b04f5175ee', null, '48661136-51fe-4e97-ac66-1a0a658678cb', 'FNSFS', 'FNSFS', '1734167', 41, 1, '42bef3c1-3d49-4aae-9310-b2b04f5175ee', now(), '42bef3c1-3d49-4aae-9310-b2b04f5175ee', now(), true, 'Forwarded to Payment Approval', NULL, 'Purchase Authorization Forwarded to Payment Approval', '3247213', 'ServiceCase', NULL, NULL, NULL, NULL, NULL, NULL, NULL);

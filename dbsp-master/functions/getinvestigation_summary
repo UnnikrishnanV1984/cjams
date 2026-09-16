@@ -1,0 +1,79 @@
+CREATE OR REPLACE FUNCTION getinvestigation_summary(v_intakeserviceid uuid)
+ RETURNS TABLE(general json, maltreatment json, childremoval json, assessment json, inv_summary text)
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_investigationid uuid;
+v_invtsummary text;
+l_general json;
+l_childremoval  json;
+l_maltreatment json;
+l_assessment json;
+v_supid character varying;
+v_cwid character varying;
+v_spname character varying;
+v_cwname character varying;
+v_cwaddress character varying;
+v_cwzipcode character varying;
+v_cwcounty character varying;
+
+BEGIN  
+
+  select fromsecurityusersid ,tosecurityusersid  into v_supid , v_cwid  
+  from routing where  objectid = v_intakeserviceid::character varying and  routingstatustypeid =4 
+  and eventcode ='INVT' order by updatedon desc limit 1;
+
+  select lastname ||', ' || firstname  into v_spname from userprofile where securityusersid = v_supid;
+  select lastname ||', ' || firstname  into v_cwname from userprofile where securityusersid = v_cwid;
+
+  select address,zipcode,county into v_cwaddress,v_cwzipcode,v_cwcounty from userprofileaddress where securityusersid = v_cwid;
+  
+  SELECT  investigationid, investigationsummary into v_investigationid ,v_invtsummary
+  FROM investigation where intakeserviceid  = v_intakeserviceid;
+
+
+  
+ 
+  SELECT Json_agg(gen) into l_general FROM   (
+        SELECT reporteddate, 
+         servicerequestnumber, 
+         narrative, 
+         actiontype, 
+         ( 
+         SELECT sdm.insertedon 
+         FROM   intakeservicerequestsdm sdm 
+         WHERE  sdm.intakeserviceid =isr.intakeserviceid 
+         and  sdm.activeflag =1 limit 1 )   sdmdate,
+         v_spname supervisorname,
+        v_cwname caseworkername,
+        v_cwaddress caseworkeraddress,
+        v_cwzipcode caseworkerzipcode,
+        v_cwcounty caseworkercounty
+        
+
+   FROM   intakeservicerequest isr 
+   WHERE isr.intakeserviceid = v_intakeserviceid) gen ;
+
+   SELECT getmaltreatment_invsummary into l_maltreatment FROM getmaltreatment_invsummary(v_investigationid);
+
+  SELECT getchildremoval_invsummary into  l_childremoval FROM getchildremoval_invsummary(v_intakeserviceid) ;
+
+   SELECT Json_agg(asst) into l_assessment from 
+  (SELECT
+  amt.name,
+  asm.assessmentstatustypekey,
+  asm.ischildsafe,
+  amt.updatedon
+  FROM
+  assessment asm
+  JOIN assessmenttemplate amt ON amt.assessmenttemplateid=asm.assessmenttemplateid AND amt.activeflag=1
+  WHERE asm.objectid=v_intakeserviceid)asst ;
+
+
+RETURN QUERY 
+select  l_general,l_maltreatment,l_childremoval,l_assessment,v_invtsummary;
+
+ END;
+ $function$
+

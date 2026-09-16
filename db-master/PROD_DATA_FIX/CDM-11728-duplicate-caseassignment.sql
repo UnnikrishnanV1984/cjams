@@ -1,0 +1,1 @@
+update caseassignment set activeflag = 0, updatedby = 'CDM-11728', updatedon = now() where caseassignmentid = 'bad0f40f-70c7-4130-8dde-9facd88b4385';

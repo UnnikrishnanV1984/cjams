@@ -1,0 +1,467 @@
+CREATE OR REPLACE FUNCTION as_createnotification()
+ RETURNS character varying
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+v_notification_rec    RECORD;
+v_objectid    uuid;
+v_notificationtypekey    character    varying;
+v_datefieldname    character    varying;
+v_notificationoffset    integer;
+v_frequencytype    character    varying;
+v_offsetminutes    integer;
+v_notificationmessage    character    varying;
+
+BEGIN
+    
+    
+CREATE    TEMP    TABLE    _Temp_usernotification
+(
+    usernotificationid    uuid    NOT    NULL    DEFAULT    gen_random_uuid(),
+    securityusersid    character    varying(50),
+                fromsercurityusersid    character    varying(50),
+    tosecurityusersid                character    varying(50),
+    usernotificationtypekey    character    varying(15)    NOT    NULL,
+    objectid    character    varying(50),
+    
+    
+    subject    character    varying(500),
+    priorityleveltypekey    character    varying(15),
+    body    text    NOT    NULL,
+    
+    updatedby    character    varying(50),
+    updatedon    timestamp    without    time    zone,
+    insertedby    character    varying(50),
+    insertedon    timestamp    without    time    zone    DEFAULT    now()    ,
+    isda    int    default    0,
+    supmsg        character    varying(500)    
+        
+    );
+    
+    
+insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,    usernotificationtypekey,objectid,    subject,priorityleveltypekey,
+body,updatedby,insertedby,    insertedon,    updatedon)
+                                                            SELECT        distinct        r.tosecurityusersid,'System',    r.tosecurityusersid,'System',IDAS.IntakeNumber    ,    
+                                                            'You    have    failed    to    review    the    Intake('    ||    IDAS.IntakeNumber    ||')    in    the    last    1    hr    and    45    mins.    Kindly    provide    the    necessary    comments    at    the    earliest.',
+
+                                                            /*'    Intake    ('    ||    IDAS.IntakeNumber    ||')    Submitted    for    Review    '||        cast(    age(    now()    at    time    zone    'utc')        -    age(        r.insertedon        +    time    '01:45'    )    as    character    varying(5))    ||    '    Over    due',*/
+                                                            'Normal',
+                                                                        'You    have    failed    to    review    the    Intake('    ||    IDAS.IntakeNumber    ||')    in    the    last    1    hr    and    45    mins.    Kindly    provide    the    necessary    comments    at    the    earliest.',
+                                                                    
+                                                                    'admin','admin',now()    at    time    zone    'utc',now()    at    time    zone    'utc'
+                                                                
+                                                FROM    IntakeDAStaging    IDAS    
+                                                INNER    JOIN    intakeDAStatus    ITDS    on    ITDS.intakenumber    =    IDAS.intakenumber and ITDS.teamtypekey = 'AS' 
+                                                inner    JOIN        routing    r    ON    r.objectid    =    IDAS.intakenumber
+                                                                AND    (r.activeflag    =1        and    r.isreviewrequest    =true)
+                                                                and    r.eventcode    ='INTR'    
+                                                INNER    JOIN    userprofile    up    on    up.securityusersid    =    r.fromsecurityusersid
+                                                WHERE                                                                    
+                                                                r.routingstatustypeid    =1    
+                                                                and    age(        now()at    time    zone    'utc')        -    age(r.insertedon    +    time    '01:45'    )            <    '0:00'    
+                                                                AND        IDAS.Activeflag    =    1    and    coalesce(IDAS.ispreintake,false)    =    false    
+                                                                and    IDAS.intakenumber    not    in    (select    objectid    from    usernotification    where    lower(subject)    like    'you    have    failed    to    review%')        limit    5;
+                                                                
+
+    /*Assessemnt    notification    */
+    
+insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,    usernotificationtypekey,objectid,    subject,priorityleveltypekey,
+body,updatedby,insertedby,    insertedon,    updatedon)
+select    distinct        isr.routedusersid,    'System',    isr.routedusersid,'System',at.AssessmentTemplateid        ,
+'Your    Deadline    to    complete    "'||    at.name    ||    '"    for    the    Case    #'||    isr.servicerequestnumber    ||    '    is    nearing.    Please    make    sure    to    completion    of    this    assessment    within    the    next    2    days.',
+    'Normal',
+'Your    Deadline    to    complete    "'||    at.name    ||    '"    for    the    Case    #'||    isr.servicerequestnumber    ||    '    is    nearing.    Please    make    sure    to    completion    of    this    assessment    within    the    next    2    days.',
+    'admin','admin',now()    at    time    zone    'utc',now()    at    time    zone    'utc'
+            from    AssessmentTemplate    at    
+                inner    join        AssessmentTemplateCategoryFilterMap        atcm    on    at.AssessmentTemplateId    =atcm.AssessmentTemplateId            
+         INNER    JOIN    AssessmentTemplateTarget    ATT    
+         ON    ATT.AssessmentTemplateTargetid    =    atcm.AssessmentTemplateTargetid
+         AND    lower(att.target    )    IN    ('investigation')
+         and    att.activeflag    =1
+                        and    atcm.activeflag    =1    
+                        inner    join    intakeservicerequest    isr    on    isr.intakeservreqtypeid=    atcm.intakeservicerequesttypeid
+                        and    isr.intakeservicerequestclassid    =    atcm.intakeservicerequestsubtypeid
+                        and    coalesce(isr.isaccepted,false)    =true    
+                        left    join    assessment        a    on    a.AssessmentTemplateid    =    at.AssessmentTemplateid    
+                        and    a.objectid    =    isr.intakeserviceid
+         where        atcm.intakeservicerequesttypeid        is    not    null
+         and    atcm.intakeservicerequestsubtypeid        is    not    null
+                        and    a.assessmentid    is    null    
+                        and    coalesce(at.duedays,0)    >0    
+                        and        (coalesce(at.duedays,0)-    (extract    (day    from    now()    -        isr.accepteddate)))    <=3
+                        and    at.AssessmentTemplateid::character    varying    
+                        not    in    (select    objectid    from    usernotification    
+                                                        where    lower(subject)    like    lower('Your    Deadline    to    complete%')    );
+
+        /*    Safety    Plan    notification    */                
+
+ 
+    FOR    v_notification_rec    IN    select        objectid,datefieldname,    notificationtypekey,    notificationoffset,
+    frequencytype,    offsetminutes,    notificationmessage            from    notificationconfig    where    teamtypekey    ='CW'
+    and    notificationtypekey    ='SP'
+
+                                                LOOP
+   
+ v_objectid    :=    v_notification_rec.objectid;
+ v_notificationtypekey    :=    v_notification_rec.notificationtypekey;
+ v_datefieldname    :=    v_notification_rec.datefieldname;
+ v_notificationoffset    :=    v_notification_rec.notificationoffset;
+ v_frequencytype    :=    v_notification_rec.frequencytype;
+ v_offsetminutes    :=    v_notification_rec.offsetminutes;
+ v_notificationmessage        :=    v_notification_rec.notificationmessage;
+
+if    (v_notification_rec.notificationtypekey    ='SP')    then
+
+     insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,
+                                                                                                                                                                usernotificationtypekey,
+                                                                                                                                                                objectid,    subject,priorityleveltypekey,
+  body,updatedby,insertedby,    insertedon,    updatedon)
+  select    distinct    isr.routedusersid    ,'System',    isr.routedusersid,'System',
+                                isr.intakeserviceid,
+              Replace    (v_notificationmessage,    '[servreqno]',isr.servicerequestnumber)    ,
+                                'Normal',Replace    (v_notificationmessage,    '[servreqno]',isr.servicerequestnumber)    
+                                ,'System','System',now()    at    time    zone    'utc',now()    at    time    zone    'utc'    
+                                
+                                from    intakeservicerequestsafetyplan    ISSP    
+                                inner    join    intakeservicerequest    ISR        on    ISR.intakeserviceid    =    ISSP.intakeserviceid
+  where    ISSP.activeflag    =1        
+                                and        ((extract    (day    from    now()    -            ISSP.reevaluationdate)))        <=        coalesce(v_notificationoffset,0)
+                                and    ISR.intakeserviceid    ::    character    varying        not    in    (select    objectid    
+                                                                                                                                                                                                                                                        from    usernotification    
+                                                                                                                                                                                                                                                        where        subject
+                                                                                                                                                                                                                                                        like        'Please    revisit    the    Saftety    Plan    for    the    Case%'    );
+          
+elsif    (v_notification_rec.notificationtypekey    ='DA')    then
+
+ insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,    usernotificationtypekey,
+                                                                                                                                                                objectid,    subject,priorityleveltypekey,
+  body,updatedby,insertedby,    insertedon,    updatedon)
+  
+  
+  select    distinct    isr.routedusersid    ,'System',    isr.routedusersid,'System',isr.intakeserviceid,Replace(v_notificationmessage,    '[servreqno]',isr.servicerequestnumber),    
+                                'Normal',Replace    (v_notificationmessage,    '[servreqno]',isr.servicerequestnumber)    
+                                ,'System','System',now()    at    time    zone    'utc',now()    at    time    zone    'utc'    
+                                
+                                from        intakeservicerequest    ISR    
+  inner    join    servicerequesttypeconfig    SRTC    on    SRTC.servicerequestsubtypeid    =    ISR.intakeservicerequestclassid
+                                and    SRTC.intakeservreqtypeid    =    ISR.intakeservreqtypeid
+                                and    SRTC.servicerequesttypeconfigid    =    v_objectid
+                                and    SRTC.activeflag    =1    
+  where            coalesce(ISR.isaccepted,false    )    =true    
+  and            ((extract    (day    from    now()    -    ISR.accepteddate)))        =            coalesce(v_notificationoffset,0);
+  
+ 
+  
+end    if;    
+end    loop;
+insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,    usernotificationtypekey,
+                                                                                                                                                                objectid,    subject,priorityleveltypekey,
+  body,updatedby,insertedby,    insertedon,    updatedon,isda,supmsg)
+  
+  
+  select    distinct    isr.routedusersid    ,'System',    isr.routedusersid,'System',isr.intakeserviceid,
+                                'You    have    failed    to    respond    to    an    abuse    case    ('||isr.servicerequestnumber||')        in    the    last    20    hrs.    
+                                Please    respond    at    the    earliest    or    contact    your    supervisor.    
+                                Your    Supervisor    has    been    automatically    notified    of    the    same.',    
+                                'Normal',    
+                                'You    have    failed    to    respond    to    an    abuse    case    ('||isr.servicerequestnumber||')    
+                                 in    the    last    12    hrs.    Please    respond    at    the    earliest    or    contact    your    supervisor.    Your    Supervisor    has    been    automatically    notified    of    the    same.'
+                                    ,'System','System',now()    at    time    zone    'utc',now()    at    time    zone    'utc'    
+                                ,1,'has    not    responded    to    the    abuse    case    ('||isr.servicerequestnumber||')        in    the    last    12    hrs.    Kindly    take    necessary    actions    required'
+                                from        intakeservicerequest    ISR        
+                                inner    join    intakeservicerequestsdm    sdm    on    sdm.intakeserviceid    =    ISR.intakeserviceid
+                                and    sdm.activeflag    =1    and    (    
+                                                                coalesce(issexualabuse,false)=true    
+                                                                or        (coalesce(ismalPA_injuryinconsistent,false)=    true)    
+                                                                or        (coalesce(ismalPA_suspeciousdeath,false)=    true)    
+                                                                or        (coalesce(ismalPA_nonaccident,false)=    true)    
+                                                                or        (coalesce(ismalPA_insjury,false)=    true)    
+                                                                or        (coalesce(ismalPA_childtoxic,false)=    true)    
+                                                                or        (coalesce(ismalPA_caregiver,false)=    true)        
+                                                            or        coalesce(ismenAB_psycologicalability,false)=true    )
+  where            coalesce(ISR.isrouted,false    )    =true    and    coalesce(actiontype,'')='IR'
+      and            age(        now()    at    time    zone    'utc')        -    age(    routedon    at    time    zone    'utc'    +    time    '12:00'    )                <    '0:00'                    
+                                and        coalesce(ISR.isaccepted,false    )    =false
+                                and    isr.intakeserviceid    ::    character    varying    not    in    (    select    objectid    from    usernotification
+                                                                                                                                                                where    subject            like    'You    have    failed    to    respond    to    an    abuse    case%')    ;
+  
+    
+    
+insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,    usernotificationtypekey,
+                                                                                                                                                                objectid,    subject,priorityleveltypekey,
+  body,updatedby,insertedby,    insertedon,    updatedon,isda,supmsg)
+  
+  
+  select    distinct    isr.routedusersid    ,'System',    isr.routedusersid,'System',isr.intakeserviceid,
+                                'You    have    failed    to    respond    to    neglect    case    ('||isr.servicerequestnumber||')        in    the    last    72    hrs.    
+                                Please    respond    at    the    earliest    or    contact    your    supervisor.    
+                                Your    Supervisor    has    been    automatically    notified    of    the    same.',
+                                     
+                                'Normal',    
+                                'You    have    failed    to    respond    to    neglect    case    ('||isr.servicerequestnumber||')    
+                                 in    the    last    72    hrs.    Please    respond    at    the    earliest    or    contact    your    supervisor.    Your    Supervisor    has    been    automatically    notified    of    the    same.'
+                                    ,'System','System',now()    at    time    zone    'utc',now()    at    time    zone    'utc'    
+                                ,1,'    has    not    responded    to    the    neglect    case    ('||isr.servicerequestnumber||')        in    the    last    72    hrs.    Kindly    take    necessary    actions    required"'
+                                from        intakeservicerequest    ISR        
+                                inner    join    intakeservicerequestsdm    sdm    on    sdm.intakeserviceid    =    ISR.intakeserviceid
+                                and    sdm.activeflag    =1    and        coalesce(issexualabuse,false)=false    
+                                                                and        coalesce(ismalPA_injuryinconsistent,false)=false        
+                                                                                        and        (coalesce(ismalPA_injuryinconsistent,false)=    false)    
+                                                                and        (coalesce(ismalPA_suspeciousdeath,false)=    false)    
+                                                                and        (coalesce(ismalPA_nonaccident,false)=    false)    
+                                                                and        (coalesce(ismalPA_insjury,false)=    false)    
+                                                                and        (coalesce(ismalPA_childtoxic,false)=    false)    
+                                                                and        (coalesce(ismalPA_caregiver,false)=    false)        
+                                                                and    (coalesce(isoutofhome,false)=true    or    
+                                                                                coalesce(isnegMN_unreasonabledelay,false)=true        or
+                                                                                    coalesce(ismenNG_psycologicalability,false)=true            
+                                                                                )    
+  where            coalesce(ISR.isrouted,false    )    =true    and    coalesce(actiontype,'')='IR'
+          and            ((extract    (day    from    now()    -    ISR.routedon)))    >    3
+                            --    and            age(        now()    at    time    zone    'utc')        -    age(    routedon    at    time    zone    'utc'    +    time    '72:00'    )                <    '0:00'                    
+                                and        coalesce(ISR.isaccepted,false    )    =false
+                                and    isr.intakeserviceid    ::    character    varying    not    in    (    select    objectid    from    usernotification
+                                                                                                                                                                where    subject            like    'You    have    failed    to    respond    to    neglect    case%')    ;
+
+  insert    into    _Temp_usernotification    (securityusersid,    fromsercurityusersid,    tosecurityusersid,    usernotificationtypekey,
+                                                                                                                                                                objectid,priorityleveltypekey,    subject,
+  body,updatedby,insertedby,    insertedon,    updatedon    )
+                                
+                                select    r.fromsecurityusersid,'System',    r.fromsecurityusersid,'System',r.objectid,
+                                'Normal',    up.lastname    ||','    ||    up.firstname    ||'    '||    tu.supmsg,
+                                up.lastname    ||','    ||    up.firstname    ||'    '||    tu.supmsg
+                                ,'System','System',now()    at    time    zone    'utc',now()    at    time    zone    'utc'    
+                                from    _Temp_usernotification    tu    inner    join    routing    r    on    tu.objectid    =    r.objectid    
+                                and    r.routingstatustypeid    =    4    and    r.activeflag    =1    
+                                and    r.tosecurityusersid    =    tu.securityusersid    
+                                inner    join    userprofile    up    on    up.securityusersid    =    r.tosecurityusersid
+                                and    up.activeflag    =1    
+                                and    isda    =1    ;
+
+  insert    into    _Temp_usernotification    (
+          securityusersid,    fromsercurityusersid,    
+          tosecurityusersid,    usernotificationtypekey,    
+          objectid,    subject,    priorityleveltypekey,    
+          body,    updatedby,    insertedby,    insertedon,    
+          updatedon
+  )
+  SELECT                    pn.insertedby,    
+                'System',    
+                pn.insertedby,    
+                'System',    
+                pn.progressnoteid,    
+                'Please    revisit    the    Child    in    the    Trial    Home    Visit    for    Case    ('||isr.servicerequestnumber||')',    
+                'Normal',    
+                'Please    revisit    the    Child    in    the    Trial    Home    Visit    for    Case    ('||isr.servicerequestnumber||')',    
+                'System',    
+                'System',    
+                Now()    at    time    zone    'utc',    
+                now()    at    time    zone    'utc'    
+   FROM                            progressnote    pn    
+   INNER    JOIN    progressnotetype    pnt    
+   ON                                    pnt.progressnotetypeid    =    pn.progressnotetypeid    
+   INNER    JOIN    intakeservicerequest    isr    
+   ON                                    isr.intakeserviceid    =    pn.entitytypeid    ::    uuid    
+   WHERE                        pn.activeflag    =    1    
+   AND                                pnt.progressnotetypekey    LIKE    '%Court    approved    Trial%'    
+   AND                                ((    extract(day    FROM    now()    at    time    zone    'utc'    -    pn.contactdate)))    =    15
+   AND                                pn.progressnoteid    ::    character    VARYING    NOT    IN    
+                (    
+             SELECT    objectid    
+             FROM            usernotification    
+             WHERE        subject    LIKE    '%Trial    Home    Visit%');
+
+ /*    validate    infants    and    allegation    */                
+
+  INSERT    INTO    _temp_usernotification    
+                  (    
+    securityusersid,    
+    fromsercurityusersid,    
+    tosecurityusersid,    
+    usernotificationtypekey,    
+    objectid,    
+    subject,    
+    priorityleveltypekey,    
+    body,    
+    updatedby,    
+    insertedby,    
+    insertedon,    
+    updatedon    
+                  )    
+
+  SELECT                    im.insertedby,    
+              'System',    
+              im.insertedby,    
+              'System',    
+              isr.intakeserviceid,    
+              'There    is    a    child    under    3    years    of    age    in    the    same    home    where    allegation    has    been    indicated    for    case    ('||isr.servicerequestnumber||').    Please    make    a    referral    to    the    local    Infants    and    Toddlers.',    
+              'Normal',    
+              'There    is    a    child    under    3    years    of    age    in    the    same    home    where    allegation    has    been    indicated    for    case    ('||isr.servicerequestnumber||').    Please    make    a    referral    to    the    local    Infants    and    Toddlers.',    
+              'System',    
+              'System',    
+              Now()    at    time    zone    'utc',    
+              now()    at    time    zone    'utc'    
+                                            
+  FROM                            investigationmaltreatment    im    
+  INNER    JOIN    investigation    i    ON            im.investigationid    =    i.investigationid    AND    i.activeflag    =    1    
+  INNER    JOIN    intakeservicerequest    isr    ON        isr.intakeserviceid    =    i.intakeserviceid    AND        isr.activeflag    =    1    
+  INNER    JOIN    intakeservicerequestactor    isra    ON    isr.intakeserviceid    =    isra.intakeserviceid    AND    isra.activeflag    =    1    
+  INNER    JOIN    actor    a    ON    isra.actorid    =    a.actorid    AND    a.activeflag    =    1    
+  INNER    JOIN    person    p    ON    a.personid    =    p.personid    AND    p.activeflag    =    1    
+  WHERE                        extract(year    FROM    age(now(),p.dob))    <=    3    
+  AND                                im.activeflag    =    1    
+  AND                                isr.intakeserviceid    ::    character    VARYING    NOT    IN    (    SELECT    objectid    FROM            usernotification            WHERE        subject    LIKE    '%There    is    a    child    under    3    years    of    age%');          
+
+ /*    Ready  by  21  Survey    */    
+             
+ INSERT  INTO  _temp_usernotification  
+          (  
+    securityusersid,  
+    fromsercurityusersid,  
+    tosecurityusersid,  
+    usernotificationtypekey,  
+    objectid,  
+    subject,  
+    priorityleveltypekey,  
+    body,  
+    updatedby,  
+    insertedby,  
+    insertedon,  
+    updatedon  
+          )  
+ SELECT        distinct    routedusersid,  
+        'System',  
+        routedusersid,  
+        'System',  
+        isr.intakeserviceid,  
+        'Ready  by  21  Survey  status  is  '||COALESCE(asst.assessmentstatustypekey,'Not  Started')  ||'  by  Client  '||p.firstname||'  '||p.lastname  ||'  in  case  no  
+        ('||isr.servicerequestnumber||').',  
+        'Normal',  
+        'Ready  by  21  Survey  status  is  '||COALESCE(asst.assessmentstatustypekey,'Not  Started')  ||'  by  Client  '||p.firstname||'  '||p.lastname  ||'  in  case  no  
+        ('||isr.servicerequestnumber||').',  
+        'System',  
+        'System',  
+        Now()  at  time  zone  'utc',  
+        now()  at  time  zone  'utc'  
+ FROM              intakeservicerequest  isr  
+ INNER  JOIN  intakeservicerequestactor  isra  ON    isr.intakeserviceid  =  isra.intakeserviceid  AND    isra.activeflag  =  1      AND  isra.intakeservicerequestpersontypekey  ='RC'
+ INNER  JOIN  actor  a  ON  isra.actorid  =  a.actorid  AND  a.activeflag  =  1  
+ INNER  JOIN  person  p  ON    a.personid  =  p.personid  AND  p.activeflag  =  1  
+ LEFT  JOIN    assessment  asst  ON    asst.objectid  =  isr.intakeserviceid    and  asst.activeflag  =1
+ LEFT  JOIN    assessmenttemplate  at  ON    asst.assessmenttemplateid  =  at.assessmenttemplateid  AND    external_templateid  ='5bf3f9f48a8a9e41e8000299'  
+ WHERE          (  EXTRACT(year    FROM    age(now()-interval  '0'  day,p.dob)))  =20  
+         AND  (  date(p.dob  +  interval  '21'  year)  -date(now()))    =45  
+ AND                isr.activeflag  =  1  
+ AND                isr.intakeserviceid  ::  character  VARYING  NOT  IN  (  SELECT  objectid  FROM      usernotification  WHERE    subject  LIKE  '%Ready  by  21  Survey  status  is%');
+
+ /*GAP  continuation  beyond  18th  birthday*/
+
+ INSERT  INTO  _temp_usernotification  
+          (  
+    securityusersid,  
+    fromsercurityusersid,  
+    tosecurityusersid,  
+    usernotificationtypekey,  
+    objectid,  
+    subject,  
+    priorityleveltypekey,  
+    body,  
+    updatedby,  
+    insertedby,  
+    insertedon,  
+    updatedon  
+          )  
+          SELECT      distinct    
+        routedusersid,  
+        'System',  
+        routedusersid,  
+        'System',  
+        isr.intakeserviceid,  
+        'Case  ('||isr.servicerequestnumber||').  Child  "'||p.firstname||'  '||p.lastname||'"  turning  18  in  '||(  date(p.dob  +  interval  '18'  year)  -date(now()))||'  Days.  ',
+        'Normal',  
+        'Please  verify  the  following  requirements  are  met:
+   a.  Enrolled  in  an  educational  or  vocational  training  program  subsequent  to  their  18th  birthday;
+   b.  OR  Participating  in  a  program  or  activity  that  promotes  or  removes  barriers  to  employment;
+   c.  OR  Employed  at  least  80  hours  per  month;
+   d.  OR  Determined  incapable  of  any  of  the  above  due  to  a  documented  medical  condition.',  
+        'System',  
+        'System',  
+        Now()  at  time  zone  'utc',  
+        now()  at  time  zone  'utc'  
+        
+  FROM    intakeservicerequest    isr  
+  INNER  JOIN  guardianship  gap  on  isr.intakeserviceid  =  gap.intakeserviceid
+  INNER  JOIN  placement  pl  on  pl.placementid  =  gap.placementid
+  INNER    JOIN    intakeservicerequestactor    isra    ON    pl.intakeservicerequestactorid    =    isra.intakeservicerequestactorid    AND    isra.activeflag    =    1    
+    
+  INNER    JOIN    person    p    ON    p.personid    =    isra.personid    AND    p.activeflag    =    1    
+  WHERE    (  extract(year    FROM    age(now()-interval  '0'  day,p.dob)))    =    17
+    and  (  (  date(p.dob  +  interval  '18'  year)  -date(now())  =90)  
+    OR    (  date(p.dob  +  interval  '18'  year)  -date(now())  =60)  
+    OR    (  date(p.dob  +  interval  '18'  year)  -date(now())  =30))
+  AND      isr.activeflag    =    1    
+    AND                isr.intakeserviceid  ::  character  VARYING  NOT  IN  (  SELECT  objectid  FROM      usernotification  WHERE    subject  LIKE  '%turning  18  in  '||(  date(p.dob  +  interval  '18'  year)  -date(now()))||'  Days%')
+                ;
+
+ 
+    insert    into        usernotification    (usernotificationid,securityusersid        ,    usernotificationtypekey,objectid,    subject,priorityleveltypekey,
+body,updatedby,insertedby,    insertedon,    updatedon,ismailsent, teamtypekey)
+select    usernotificationid,securityusersid        ,    usernotificationtypekey,objectid,    subject,priorityleveltypekey,
+body,updatedby,insertedby,    insertedon,    updatedon,false, 'AS'        from    _Temp_usernotification;
+
+    insert    into        usernotificationmap    (usernotificationid,fromsecurityusersid    ,tosecurityusersid    ,    
+                                                                                                                                            updatedby,insertedby,    insertedon,    updatedon)
+select    usernotificationid,'System'        ,    tosecurityusersid    ,updatedby,insertedby,
+insertedon,    updatedon        from    _Temp_usernotification;
+/*Person  Notification*/
+        INSERT  INTO  notificationlog(
+        objectid,
+        objecttypekey,
+        personid,
+        emailid,
+        message,
+        insertedby,
+        insertedon,
+        updatedby,
+        updatedon,
+        ismailsent,
+        isassessment,
+        external_templateid  ,
+          subject
+        )
+ SELECT        distinct  isr.intakeserviceid  ,  
+                'ServiceRequest',
+                isra.personid,
+                pe.email,
+                '#/external-assessment/'||isr.intakeserviceid::  character  varying||'/'||cjamspid||'/5bf3f9f48a8a9e41e8000299/survey/'||isra.intakeservicerequestactorid::  character  varying,
+                'System',  
+                Now()  at  time  zone  'utc',  
+                'System',  
+                Now()  at  time  zone  'utc',    
+                0,
+                1,
+                '5bf3f9f48a8a9e41e8000299',
+                'Ready  by  21  Survey  '
+ FROM              intakeservicerequest  isr  
+ INNER  JOIN  intakeservicerequestactor  isra  ON    isr.intakeserviceid  =  isra.intakeserviceid  AND    isra.activeflag  =  1    AND  isra.intakeservicerequestpersontypekey  ='RC'
+ INNER  JOIN  actor  a  ON  isra.actorid  =  a.actorid  AND  a.activeflag  =  1  
+ INNER  JOIN  person  p  ON    a.personid  =  p.personid  AND  p.activeflag  =  1  
+        INNER  JOIN  (Select  personid,max(email)  email  FROM  personemail  WHERE  activeflag  =1  
+                                  AND  personemailtypekey  ='P'  AND  COALESCE(email,'')  <>''  GROUP  BY  personid)  pe  ON  pe.personid  =  p.personid  
+    WHERE          
+                      (  EXTRACT(year    FROM    age(now()-interval  '0'  day,p.dob)))    =    20
+                AND      (  date(p.dob  +  interval  '21'  year)-  date(now())    =60)  
+                AND                isr.activeflag  =  1  
+                AND                isr.intakeserviceid  ::  character  VARYING
+            NOT    IN      (  SELECT  objectid  FROM      notificationlog  WHERE  isassessment  =1  AND  external_templateid  ='5bf3f9f48a8a9e41e8000299'
+                        AND  personid  =p.personid);
+                        
+    --update    usernotification    set    ismailsent    =true            where        coalesce(ismailsent,false)=false;
+    drop    TABLE    _Temp_usernotification;
+    RETURN    'SUCCESS';    
+END;    
+
+$function$
+

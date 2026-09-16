@@ -1,0 +1,207 @@
+CREATE OR REPLACE FUNCTION as_countybasedcasetransfer(v_intakeserviceid uuid, v_securityusersid character varying, v_servicerequestnumber character varying, assignedsecurityid character varying)
+ RETURNS text
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE 
+v_newintakeserviceid uuid;
+v_guardianshippersonadd character varying;
+v_Servicereqno character varying;
+v_date timestamp without time zone;
+l_newInvestigationId uuid;
+v_intakeservicerequestdispositioncodeid uuid;
+l_status character varying;
+v_intakenumber character varying;
+v_createcasetranferassessmentadd character varying;
+v_tojurisdictionid uuid;
+v_createduplicateserviceplan character varying;
+v_createcasetranferplacementadd character varying;
+v_createduplicateadultscreentool character varying;
+v_contactnotesadd character varying;
+v_createcasetranferdocumentadd character varying;
+v_createduplicatemonthlyreport character varying;
+BEGIN  
+
+
+
+v_newintakeserviceid :=gen_random_uuid();
+
+   v_date :=now();
+select intakenumber into v_intakenumber from intakeservicerequest where intakeserviceid=v_intakeserviceid;
+
+select tojurisdictionid into v_tojurisdictionid from progressnote PN
+join progressnotetype PNT on PNT.progressnotetypeid=PN.progressnotetypeid and PNT.progressnotetypekey='pre-transfer'
+where entitytypeid ::uuid=v_intakeserviceid;
+
+  INSERT INTO intakeservicerequest 
+ ( 
+ intakeserviceid, 
+ activeflag, 
+ servicerequestnumber, 
+ narrative, 
+ reporteddate, 
+ reportedtime, 
+ intakeservreqinputtypeid, 
+ intakeservreqtypeid, 
+ intakeserreqstatustypeid, 
+ intakeservicerequestclassid, 
+ updatedby, 
+ updatedon, 
+ insertedby, 
+ insertedon, 
+ effectivedate , 
+ targetcompletedate , 
+ suspiciousdeath, 
+ missingpersons , 
+ monumber, 
+ --IntakeServReqInputSourceId, 
+ isanonymousreporter, 
+ intakeservreqpurposeid, 
+ intakenumber, 
+ teamtypekey, 
+ isotheragency, 
+ agencyname, 
+ isunknownreporter, 
+ reporterfirstname, 
+ reporterlastname, 
+ requesterphone, 
+ requesterzipcode, 
+ requesteraddress1, 
+ requesteraddress2, 
+ requestercity, 
+ requesterstate, 
+ requestercounty,  
+ iszipcoderefuse , 
+ countyid ,
+ isrestricted
+ )    
+ select v_newintakeserviceid, 
+ activeflag, 
+ v_servicerequestnumber, 
+ narrative, 
+ reporteddate, 
+ reportedtime, 
+ intakeservreqinputtypeid, 
+ intakeservreqtypeid, 
+ intakeserreqstatustypeid, 
+ intakeservicerequestclassid, 
+ v_securityusersid, 
+ now(), 
+ v_securityusersid, 
+ now(), 
+ now() , 
+ targetcompletedate , 
+ suspiciousdeath, 
+ missingpersons , 
+ monumber, 
+ --IntakeServReqInputSourceId, 
+ isanonymousreporter, 
+ intakeservreqpurposeid, 
+ intakenumber, 
+ teamtypekey, 
+ isotheragency, 
+ agencyname, 
+ isunknownreporter, 
+ reporterfirstname, 
+ reporterlastname,
+ requesterphone, 
+ requesterzipcode, 
+ requesteraddress1, 
+ requesteraddress2, 
+ requestercity, 
+ requesterstate, 
+ requestercounty, 
+ iszipcoderefuse , 
+ v_tojurisdictionid ,
+ isrestricted from intakeservicerequest where intakeserviceid=v_intakeserviceid;
+
+INSERT    INTO    investigation(activeflag,intakeserviceid,insertedby,effectivedate)
+        VALUES    (1,v_newintakeserviceid,v_securityusersid,v_date)    RETURNING    "investigationid"    INTO    l_newInvestigationId;
+       
+       
+      
+       INSERT INTO intakeservicerequestdispositioncode 
+ ( 
+ activeflag, 
+  
+ intakeserviceid, 
+ insertedby, 
+ insertedon, 
+ updatedby, 
+ updatedon, 
+ statusdate, 
+ description, 
+ reasonfordelay, 
+ effectivedate, 
+ intakeserreqstatustypeid, 
+ servicerequesttypeconfigiddispostionid, 
+ servicerequestdispositionsubtypeconfigid, 
+ servicerequestdispositionsubtypenotes 
+ )
+select 1, 
+ 
+ v_newintakeserviceid, 
+ assignedsecurityid, 
+ v_date, 
+ assignedsecurityid, 
+ v_date, 
+ statusdate, 
+ ISDC.description, 
+ reasonfordelay, 
+ v_date, 
+ ISDC.intakeserreqstatustypeid, 
+ servicerequesttypeconfigiddispostionid, 
+ servicerequestdispositionsubtypeconfigid, 
+ servicerequestdispositionsubtypenotes from intakeservicerequestdispositioncode ISDC
+ join intakeserreqstatustype IST on IST.intakeserreqstatustypeid=ISDC.intakeserreqstatustypeid and lower(IST.intakeserreqstatustypekey)='approved'
+ where intakeserviceid=v_intakeserviceid order by ISDC.insertedon asc limit 1;
+
+  
+  SELECT guardianshippersonadd INTO  v_guardianshippersonadd
+ FROM as_guardianshippersonadd(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+ 
+ update routing set tosecurityusersid=assignedsecurityid where objectid= v_intakenumber ;
+/* Cross reference add*/
+INSERT INTO intakeservicerequestcrossreference(
+            fromintakeservicerequestid, withintakeservicerequestid, insertedby, 
+            insertedon, intakeservicerequestcrossreferencereasontypekey, 
+            
+            activeflag)
+    VALUES (v_intakeserviceid,v_newintakeserviceid,v_securityusersid,now(),'JCTS',1);
+   
+   INSERT INTO intakeservicerequestcrossreference(
+            fromintakeservicerequestid, withintakeservicerequestid, insertedby, 
+            insertedon, intakeservicerequestcrossreferencereasontypekey, 
+            
+            activeflag)
+    VALUES (v_newintakeserviceid,v_intakeserviceid,v_securityusersid,now(),'JCTS',1);
+   
+    SELECT createcasetranferassessmentadd INTO  v_createcasetranferassessmentadd
+ FROM as_createcasetranferassessmentadd(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+    
+ SELECT createduplicateserviceplan INTO  v_createduplicateserviceplan
+ FROM as_createduplicateserviceplan(v_intakeserviceid,v_newintakeserviceid);
+
+SELECT createcasetranferplacementadd INTO  v_createcasetranferplacementadd
+ FROM as_createcasetranferplacementadd(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+
+SELECT createduplicateadultscreentool INTO  v_createduplicateadultscreentool
+ FROM as_createduplicateadultscreentool(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+
+
+
+SELECT contactnotesadd INTO  v_contactnotesadd
+ FROM as_contactnotesadd(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+ 
+SELECT createcasetranferdocumentadd INTO  v_createcasetranferdocumentadd
+ FROM as_createcasetranferdocumentadd(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+
+SELECT createduplicatemonthlyreport INTO  v_createduplicatemonthlyreport
+ FROM as_createduplicatemonthlyreport(v_intakeserviceid,v_newintakeserviceid,v_securityusersid);
+
+
+RETURN 'Successfull';
+end;
+
+$function$
+

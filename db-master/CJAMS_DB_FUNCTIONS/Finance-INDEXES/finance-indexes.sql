@@ -1,0 +1,230 @@
+drop index if exists idx_payment_runtimes_log_id_TB_PAYMENT_RUNTIMES_LOG;
+create index idx_payment_runtimes_log_id_TB_PAYMENT_RUNTIMES_LOG on TB_PAYMENT_RUNTIMES_LOG(payment_runtimes_log_id);
+drop index if exists idx_tb_payment_header_payment_id;
+create index idx_tb_payment_header_payment_id on tb_payment_header(payment_id);
+drop index if exists idx_tb_payment_header_provider_id;
+create index idx_tb_payment_header_provider_id on tb_payment_header(provider_id);
+drop index if exists idx_tb_payment_header_authorization_id;
+create index idx_tb_payment_header_authorization_id on tb_payment_header(authorization_id);
+drop index if exists idx_tb_payment_header_client_account_id;
+create index idx_tb_payment_header_client_account_id on tb_payment_header(client_account_id);
+drop index if exists idx_tb_payment_header_adr_county_cd;
+create index idx_tb_payment_header_adr_county_cd on tb_payment_header(adr_county_cd);
+drop index if exists idx_tb_payment_header_check_status_cd;
+create index idx_tb_payment_header_check_status_cd on tb_payment_header(check_status_cd);
+drop index if exists idx_tb_payment_header_approval_status_cd;
+create index idx_tb_payment_header_approval_status_cd on tb_payment_header(approval_status_cd);
+drop index if exists idx_tb_payment_header_interface_to_cd;
+create index idx_tb_payment_header_interface_to_cd on tb_payment_header(interface_to_cd);
+drop index if exists idx_tb_payment_detail_payment_detail_id;
+create index idx_tb_payment_detail_payment_detail_id on tb_payment_detail(payment_detail_id);
+drop index if exists idx_tb_payment_detail_payment_id;
+create index idx_tb_payment_detail_payment_id on tb_payment_detail(payment_id);
+drop index if exists idx_tb_payment_detail_county_cd;
+create index idx_tb_payment_detail_county_cd on tb_payment_detail(county_cd);
+drop index if exists idx_tb_payment_detail_final_service_id;
+create index idx_tb_payment_detail_final_service_id on tb_payment_detail(final_service_id);
+drop index if exists idx_tb_payment_detail_change_reason_cd;
+create index idx_tb_payment_detail_change_reason_cd on tb_payment_detail(change_reason_cd);
+drop index if exists idx_tb_payment_detail_type_1099_cd;
+create index idx_tb_payment_detail_type_1099_cd on tb_payment_detail(type_1099_cd);
+drop index if exists idx_tb_payment_detail_reference_payment_detail_id;
+create index idx_tb_payment_detail_reference_payment_detail_id on tb_payment_detail(reference_payment_detail_id);
+drop index if exists idx_tb_payment_detail_client_id;
+create index idx_tb_payment_detail_client_id on tb_payment_detail(client_id);
+drop index if exists idx_tb_payment_detail_final_fiscal_category_cd;
+create index idx_tb_payment_detail_final_fiscal_category_cd on tb_payment_detail(final_fiscal_category_cd);
+drop index if exists idx_tb_payment_detail_case_id;
+create index idx_tb_payment_detail_case_id on tb_payment_detail(case_id);
+drop index if exists idx_tb_payment_status_payment_status_id;
+create index idx_tb_payment_status_payment_status_id on tb_payment_status(payment_status_id);
+drop index if exists idx_tb_payment_status_payment_status_cd;
+create index idx_tb_payment_status_payment_status_cd on tb_payment_status(payment_status_cd);
+drop index if exists idx_tb_payment_status_approval_status_cd;
+create index idx_tb_payment_status_approval_status_cd on tb_payment_status(approval_status_cd);
+drop index if exists idx_TB_BATCH_ERROR_LOG_error_id;
+create index idx_TB_BATCH_ERROR_LOG_error_id on TB_BATCH_ERROR_LOG(error_id);
+drop index if exists idx_tb_batch_error_log_err_sqlcode;
+create index idx_tb_batch_error_log_err_sqlcode on TB_BATCH_ERROR_LOG(err_sqlcode);
+drop index if exists idx_tb_batch_error_log_batch_log_id;
+create index idx_tb_batch_error_log_batch_log_id on TB_BATCH_ERROR_LOG(batch_log_id);
+drop index if exists idx_tb_payment_error_log_payment_tx;
+create index idx_tb_payment_error_log_payment_tx on tb_payment_error_log(payment_tx);
+drop index if exists idx_tb_payment_error_log_payment_error_line_no;
+create index idx_tb_payment_error_log_payment_error_line_no on tb_payment_error_log(payment_error_line_no);
+drop index if exists idx_TB_PLACEMENT_STRU_CATEGORY_LINK_placement_stru_cate_link_id;
+create index idx_TB_PLACEMENT_STRU_CATEGORY_LINK_placement_stru_cate_link_id on TB_PLACEMENT_STRU_CATEGORY_LINK(placement_stru_cate_link_id);
+drop index if exists idx_TB_PLACEMENT_STRU_CATEGORY_LINK_service_id;
+create index idx_TB_PLACEMENT_STRU_CATEGORY_LINK_service_id on TB_PLACEMENT_STRU_CATEGORY_LINK(service_id);
+drop index if exists idx_TB_PLACEMENT_STRU_CATEGORY_LINK_fiscal_category_id;
+create index idx_TB_PLACEMENT_STRU_CATEGORY_LINK_fiscal_category_id on TB_PLACEMENT_STRU_CATEGORY_LINK(fiscal_category_id);
+drop index if exists idx_TB_FISCAL_CATEGORY_MASTER_fiscal_category_id;
+create index idx_TB_FISCAL_CATEGORY_MASTER_fiscal_category_id on TB_FISCAL_CATEGORY_MASTER(fiscal_category_id);
+drop index if exists idx_TB_FISCAL_CATEGORY_MASTER_fiscal_category_cd;
+create index idx_TB_FISCAL_CATEGORY_MASTER_fiscal_category_cd on TB_FISCAL_CATEGORY_MASTER(fiscal_category_cd);
+drop index if exists idx_TB_FISCAL_CATEGORY_MASTER_eligibility_cd;
+create index idx_TB_FISCAL_CATEGORY_MASTER_eligibility_cd on TB_FISCAL_CATEGORY_MASTER(eligibility_cd);
+drop index if exists idx_TB_FISCAL_CATEGORY_MASTER_payment_type_cd;
+create index idx_TB_FISCAL_CATEGORY_MASTER_payment_type_cd on TB_FISCAL_CATEGORY_MASTER(payment_type_cd);
+drop index if exists idx_TB_RECEIVABLE_DETAIL_receivable_detail_id;
+create index idx_TB_RECEIVABLE_DETAIL_receivable_detail_id on TB_RECEIVABLE_DETAIL(receivable_detail_id);
+drop index if exists idx_TB_RECEIVABLE_DETAIL_payment_detail_id;
+create index idx_TB_RECEIVABLE_DETAIL_payment_detail_id on TB_RECEIVABLE_DETAIL(payment_detail_id);
+drop index if exists idx_TB_RECEIVABLE_DETAIL_receivable_id;
+create index idx_TB_RECEIVABLE_DETAIL_receivable_id on TB_RECEIVABLE_DETAIL(receivable_id);
+drop index if exists idx_TB_RECEIVABLE_DETAIL_county_cd;
+create index idx_TB_RECEIVABLE_DETAIL_county_cd on TB_RECEIVABLE_DETAIL(county_cd);
+drop index if exists idx_TB_RECEIVABLE_HEADER_receivable_id;
+create index idx_TB_RECEIVABLE_HEADER_receivable_id on TB_RECEIVABLE_HEADER(receivable_id);
+drop index if exists idx_TB_RECEIVABLE_HEADER_provider_id;
+create index idx_TB_RECEIVABLE_HEADER_provider_id on TB_RECEIVABLE_HEADER(provider_id);
+drop index if exists idx_TB_RECEIVABLE_OFFSET_offset_id;
+create index idx_TB_RECEIVABLE_OFFSET_offset_id on TB_RECEIVABLE_OFFSET(offset_id);
+drop index if exists idx_TB_RECEIVABLE_OFFSET_payment_id;
+create index idx_TB_RECEIVABLE_OFFSET_payment_id on TB_RECEIVABLE_OFFSET(payment_id);
+drop index if exists idx_TB_RECEIVABLE_LIQUIDATION_rcvbl_liquidation_id;
+create index idx_TB_RECEIVABLE_LIQUIDATION_rcvbl_liquidation_id on TB_RECEIVABLE_LIQUIDATION(rcvbl_liquidation_id);
+drop index if exists idx_TB_RECEIVABLE_LIQUIDATION_receipt_id;
+create index idx_TB_RECEIVABLE_LIQUIDATION_receipt_id on TB_RECEIVABLE_LIQUIDATION(receipt_id);
+drop index if exists idx_TB_RECEIVABLE_LIQUIDATION_receivable_detail_id;
+create index idx_TB_RECEIVABLE_LIQUIDATION_receivable_detail_id on TB_RECEIVABLE_LIQUIDATION(receivable_detail_id);
+drop index if exists idx_TB_RECEIVABLE_LIQUIDATION_offset_id;
+create index idx_TB_RECEIVABLE_LIQUIDATION_offset_id on TB_RECEIVABLE_LIQUIDATION(offset_id);
+drop index if exists idx_TB_TICKLERS_tickler_id;
+create index idx_TB_TICKLERS_tickler_id on TB_TICKLERS(tickler_id);
+drop index if exists idx_TB_TICKLERS_entity_type_cd;
+create index idx_TB_TICKLERS_entity_type_cd on TB_TICKLERS(entity_type_cd);
+drop index if exists idx_TB_TICKLERS_entity_key_id;
+create index idx_TB_TICKLERS_entity_key_id on TB_TICKLERS(entity_key_id);
+drop index if exists idx_TB_TICKLERS_client_id;
+create index idx_TB_TICKLERS_client_id on TB_TICKLERS(client_id);
+drop index if exists idx_TB_TICKLERS_county_cd;
+create index idx_TB_TICKLERS_county_cd on TB_TICKLERS(county_cd);
+drop index if exists idx_TB_TICKLERS_system_tickler_id;
+create index idx_TB_TICKLERS_system_tickler_id on TB_TICKLERS(system_tickler_id);
+drop index if exists idx_TB_SYSTEM_TICKLERS_system_tickler_id;
+create index idx_TB_SYSTEM_TICKLERS_system_tickler_id on TB_SYSTEM_TICKLERS(system_tickler_id);
+drop index if exists idx_TB_RECEIVABLE_COLLECTION_STATUS_collection_status_id;
+create index idx_TB_RECEIVABLE_COLLECTION_STATUS_collection_status_id on TB_RECEIVABLE_COLLECTION_STATUS(collection_status_id);
+drop index if exists idx_TB_RECEIVABLE_COLLECTION_STATUS_collection_status_cd;
+create index idx_TB_RECEIVABLE_COLLECTION_STATUS_collection_status_cd on TB_RECEIVABLE_COLLECTION_STATUS(collection_status_cd);
+drop index if exists idx_TB_PAYMENT_PLAN_payment_plan_id;
+create index idx_TB_PAYMENT_PLAN_payment_plan_id on TB_PAYMENT_PLAN(payment_plan_id);
+drop index if exists idx_TB_PAYMENT_PLAN_receivable_id;
+create index idx_TB_PAYMENT_PLAN_receivable_id on TB_PAYMENT_PLAN(receivable_id);
+drop index if exists idx_TB_FOSTER_CARE_RATE_rate_id;
+create index idx_TB_FOSTER_CARE_RATE_rate_id on TB_FOSTER_CARE_RATE(rate_id);
+drop index if exists idx_TB_FOSTER_CARE_RATE_service_id;
+create index idx_TB_FOSTER_CARE_RATE_service_id on TB_FOSTER_CARE_RATE(service_id);
+drop index if exists idx_TB_FOSTER_CARE_RATE_rate_type_cd;
+create index idx_TB_FOSTER_CARE_RATE_rate_type_cd on TB_FOSTER_CARE_RATE(rate_type_cd);
+drop index if exists idx_TB_PICKLIST_VALUES_picklist_value_cd;
+create index idx_TB_PICKLIST_VALUES_picklist_value_cd on TB_PICKLIST_VALUES(picklist_value_cd);
+drop index if exists idx_TB_PICKLIST_VALUES_picklist_type_id;
+create index idx_TB_PICKLIST_VALUES_picklist_type_id on TB_PICKLIST_VALUES(picklist_type_id);
+drop index if exists idx_TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK_fiscal_audit_trail_entity_link_id;
+create index idx_TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK_fiscal_audit_trail_entity_link_id on TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK(fiscal_audit_trail_entity_link_id);
+drop index if exists idx_TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK_entity_type_cd;
+create index idx_TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK_entity_type_cd on TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK(entity_type_cd);
+drop index if exists idx_TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK_entity_id;
+create index idx_TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK_entity_id on TB_FISCAL_AUDIT_TRAIL_ENTITY_LINK(entity_id);
+drop index if exists idx_TB_FISCAL_AUDIT_TRAIL_fiscal_audit_trail_id;
+create index idx_TB_FISCAL_AUDIT_TRAIL_fiscal_audit_trail_id on TB_FISCAL_AUDIT_TRAIL(fiscal_audit_trail_id);
+drop index if exists idx_TB_FISCAL_AUDIT_TRAIL_event_type_cd;
+create index idx_TB_FISCAL_AUDIT_TRAIL_event_type_cd on TB_FISCAL_AUDIT_TRAIL(event_type_cd);
+drop index if exists idx_tb_payment_receipt_receipt_id;
+create index idx_tb_payment_receipt_receipt_id on tb_payment_receipt(receipt_id);
+drop index if exists idx_tb_payment_receipt_provider_id;
+create index idx_tb_payment_receipt_provider_id on tb_payment_receipt(provider_id);
+drop index if exists idx_tb_payment_receipt_payee_cd;
+create index idx_tb_payment_receipt_payee_cd on tb_payment_receipt(payee_cd);
+drop index if exists idx_tb_payment_receipt_payment_method_cd;
+create index idx_tb_payment_receipt_payment_method_cd on tb_payment_receipt(payment_method_cd);
+drop index if exists idx_tb_payment_receipt_payment_type_cd;
+create index idx_tb_payment_receipt_payment_type_cd on tb_payment_receipt(payment_type_cd);
+drop index if exists idx_TB_FUND_ALLOCATION_MASTER_fund_alloc_id;
+create index idx_TB_FUND_ALLOCATION_MASTER_fund_alloc_id on TB_FUND_ALLOCATION_MASTER(fund_alloc_id);
+drop index if exists idx_TB_FUND_ALLOCATION_MASTER_payment_detail_id;
+create index idx_TB_FUND_ALLOCATION_MASTER_payment_detail_id on TB_FUND_ALLOCATION_MASTER(payment_detail_id);
+drop index if exists idx_TB_FUND_ALLOCATION_MASTER_fiscal_category_cd;
+create index idx_TB_FUND_ALLOCATION_MASTER_fiscal_category_cd on TB_FUND_ALLOCATION_MASTER(fiscal_category_cd);
+drop index if exists idx_TB_FUND_ALLOCATION_DETAIL_fund_alloc_history_id;
+create index idx_TB_FUND_ALLOCATION_DETAIL_fund_alloc_history_id on TB_FUND_ALLOCATION_DETAIL(fund_alloc_history_id);
+drop index if exists idx_TB_FUND_ALLOCATION_DETAIL_fund_alloc_id;
+create index idx_TB_FUND_ALLOCATION_DETAIL_fund_alloc_id on TB_FUND_ALLOCATION_DETAIL(fund_alloc_id);
+drop index if exists idx_TB_FUND_ALLOCATION_DETAIL_payment_detail_id;
+create index idx_TB_FUND_ALLOCATION_DETAIL_payment_detail_id on TB_FUND_ALLOCATION_DETAIL(payment_detail_id);
+drop index if exists idx_TB_FUND_ALLOCATION_DETAIL_fiscal_category_cd;
+create index idx_TB_FUND_ALLOCATION_DETAIL_fiscal_category_cd on TB_FUND_ALLOCATION_DETAIL(fiscal_category_cd);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

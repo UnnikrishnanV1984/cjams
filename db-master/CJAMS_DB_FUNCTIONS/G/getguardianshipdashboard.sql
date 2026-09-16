@@ -1,0 +1,55 @@
+DROP FUNCTION IF Exists getguardianshipdashboard(character varying,character varying,character varying,character varying,int,int);
+
+CREATE OR REPLACE FUNCTION getguardianshipdashboard(p_startdate character varying, p_enddate character varying, p_scheduledate character varying, p_meetingstatus character varying, pageno integer, pagesize integer)
+ RETURNS TABLE(totalcount bigint, intakeserviceid uuid, servicerequestnumber character varying, servicetype character varying, servicesubtype character varying, personname text, countyid uuid, duedate timestamp without time zone, assignedon timestamp without time zone, dateofmeeting timestamp without time zone, meetingstatus character varying)
+ LANGUAGE plpgsql
+AS $function$
+
+
+
+DECLARE v_pageoffset int;
+  v_pagenumber int;
+  
+BEGIN
+	v_pagenumber := pageno-1;
+	v_pageoffset = v_pagenumber * pagesize;
+RETURN QUERY 	
+
+SELECT count(1) OVER() totalcount,ISR.intakeserviceid,ISR.servicerequestnumber,IST.description as servicetype,
+SST.description as servicesubtype,p.firstname||' '|| p.lastname as personname,ISR.countyid,
+acttask.duedate,acttask.assignedon,gm.dateofmeeting,gm.meetingstatus
+
+FROM intakeservicerequest AS ISR 
+inner join intakeservicerequesttype IST on IST.intakeservreqtypeid=ISR.intakeservreqtypeid
+
+inner join servicerequestsubtype SST on SST.servicerequestsubtypeid=ISR.intakeservicerequestclassid
+join (select ir.intakeserviceid,ir.personid FROM intakeservicerequestactor ir
+WHERE intakeservicerequestpersontypekey in('RA','PA') 
+AND activeflag =1 group by ir.personid, ir.intakeserviceid) as ISRA on ISRA.intakeserviceid = ISR.intakeserviceid 
+join person p on ISRA.personid = p.personid and p.activeflag =1
+INNER JOIN Investigation invst ON ISR.intakeserviceid=invst.intakeserviceid and invst.activeflag=1
+INNER JOIN Activity act on invst.investigationid = act.objectid and act.activeflag=1
+INNER JOIN amactivity am on am.amactivityid=act.amactivityid and am.activeflag=1
+INNER JOIN activitytask acttask on act.activityid = acttask.activityid and acttask.activeflag = 1 and act.activeflag = 1 
+inner join activitytaskstatustype atst on acttask.activitytaskstatustypekey = atst.activitytaskstatustypekey and atst.activeflag=1 and acttask.activeflag=1
+left  join intakeservreqguradmeetingconfig igc on igc.intakeserviceid=ISR.intakeserviceid and igc.activeflag=1
+left join guardinshipmeeting gm on gm.guardinshipmeetingid=igc.guardinshipmeetingid and gm.activeflag=1
+where (acttask.duedate::date between now()::date and now()::date + interval '1' day * 90)
+and acttask.activitytaskstatustypekey!='InvClosed'
+and acttask."name" ilike '%Guardianship Review Board%'
+and CASE WHEN p_meetingstatus is NOT NULL THEN (gm.meetingstatus = p_meetingstatus) ELSE TRUE end
+and CASE WHEN p_scheduledate is NOT NULL THEN (gm.dateofmeeting::date = p_scheduledate::date) ELSE TRUE end
+and case
+WHEN p_startdate IS NOT NULL THEN to_date(cast(acttask.duedate::date as text), 'YYYY-MM-DD') 
+BETWEEN to_date(cast(p_startdate::date as TEXT), 'YYYY-MM-DD') and to_date(cast(p_enddate::date as text), 'YYYY-MM-DD')
+else true end
+group by ISR.intakeserviceid,ISR.servicerequestnumber,IST.description,SST.description 
+,personname,ISR.countyid,acttask.duedate,acttask.assignedon,gm.dateofmeeting,gm.meetingstatus
+order by acttask.duedate asc
+
+ limit pagesize  offset v_pageoffset ;
+END;
+
+
+$function$
+

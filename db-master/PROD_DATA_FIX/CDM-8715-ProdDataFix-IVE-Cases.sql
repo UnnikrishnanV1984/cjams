@@ -1,0 +1,1 @@
+update tb_client_eligibility set delete_sw = 'Y' where case_id = 20200246032793 and client_id = 4472674 and delete_sw = 'N';

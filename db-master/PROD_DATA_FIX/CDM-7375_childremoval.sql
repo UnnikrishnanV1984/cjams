@@ -1,0 +1,2 @@
+
+update cjams.intakeservreqchildremoval set activeflag =0,updatedon = now(),updatedby = 'CDM-7375' where intakeservreqchildremovalid in ('6ca00167-c0cc-4201-9a65-c426730ab82d','fba56086-c58a-4dbc-81f4-7c8a14bdccd7','f3ce41e8-497c-4067-a0f3-b89a4d1eff92');

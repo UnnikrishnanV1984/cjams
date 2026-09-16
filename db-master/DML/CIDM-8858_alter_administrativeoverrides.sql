@@ -1,0 +1,1 @@
+ALTER TABLE administrativeoverrides ALTER COLUMN comments TYPE text;

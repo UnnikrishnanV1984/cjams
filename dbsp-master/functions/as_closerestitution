@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION as_closerestitution(restitution json, securityuserid character varying)
+ RETURNS uuid
+ LANGUAGE plpgsql
+AS $function$
+
+DECLARE
+
+ v_restitutionid uuid;
+ v_securityuserid character varying;
+ v_savepersonalert character varying;
+ v_restitutionclosereasontypekey character varying;
+ v_closenotes character varying;
+ v_sendnotification character varying;
+ v_cwuserid character varying;
+ v_alertnotes character varying;
+ v_restitutionno character varying;
+
+BEGIN
+
+ v_restitutionid := restitution->>'restitutionid';
+ v_cwuserid := '';
+ 
+ v_securityuserid := securityuserid;
+  
+ v_restitutionclosereasontypekey := restitution->>'restitutionclosereasontypekey';
+ v_closenotes := restitution->>'closenotes';
+  
+  
+ UPDATE intakeserreqrestitution SET  status = 'Closed', restitutionclosereasontypekey = v_restitutionclosereasontypekey, closenotes = v_closenotes,
+ updatedby = v_securityuserid, updatedon = now()
+ WHERE intakeserreqrestitutionid = v_restitutionid;
+  
+ select personalertid into v_savepersonalert from intakeserreqrestitution where intakeserreqrestitutionid=v_restitutionid;
+ 
+ -- Fetching the Caseworker ID and the Restitution no for the Case of the Restitution
+ select r.tosecurityusersid, isrr.restitutionno into v_cwuserid, v_restitutionno from intakeserreqrestitution isrr 
+ join routing r on r.objectid = isrr.intakeserviceid::varchar --and r.activeflag = 1 
+ and r.toroleid like '%CW' where intakeserreqrestitutionid = v_restitutionid and isrr.activeflag = 1;
+ 
+ IF v_cwuserid != '' THEN
+  -- Sending notification to the Case worker if the Case worker exists
+  v_alertnotes := 'The Restitution (' || v_restitutionno || ') is closed since the full payment is made.';
+  
+  --SELECT send_notification INTO v_sendnotification FROM as_send_notification(v_securityuserid,v_securityuserid,v_cwuserid,'System','High',v_alertnotes,v_alertnotes,v_restitutionid::varchar,false);
+     SELECT send_notification INTO v_sendnotification FROM as_send_notification(v_cwuserid,v_securityuserid,v_cwuserid,'System','High',v_alertnotes,v_alertnotes,v_restitutionid::varchar,false);
+ END IF;
+ 
+ -- Making the Person Alert for this Restitution as inactive
+ UPDATE personalert SET status = 'Inactive', activeflag = 0 WHERE personalertid = v_savepersonalert::uuid AND activeflag = 1; 
+  
+
+RETURN
+   v_restitutionid;
+END;
+
+
+$function$
+
